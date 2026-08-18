@@ -23,6 +23,10 @@ truncated diff is clearly marked in the review. Check actual
 charges in OpenRouter; the earlier Claude Code Action `total_cost_usd` field is
 an internal estimate and is not an OpenRouter invoice.
 
+The reviewer deliberately excludes its own workflow, script and setup document
+from the AI input. That prevents a noisy self-review loop; changes to those
+three files require normal human code review.
+
 Pull requests from forks are deliberately skipped. Do not change the event to
 `pull_request_target` and do not grant `contents: write`: doing either would
 unnecessarily expose credentials or broaden CI authority.

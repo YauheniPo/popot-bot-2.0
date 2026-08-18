@@ -16,6 +16,11 @@ MAX_DIFF_CHARACTERS = 60_000
 MAX_OUTPUT_TOKENS = 900
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 GITHUB_API_URL = "https://api.github.com"
+EXCLUDED_REVIEW_PATHS = (
+    ".github/workflows/claude-review.yml",
+    ".github/scripts/openrouter_pr_review.py",
+    ".github/CLAUDE_CODE_REVIEW_CONFIG.md",
+)
 
 
 def required_env(name: str) -> str:
@@ -38,7 +43,16 @@ def request_json(url: str, method: str, headers: dict[str, str], body: object | 
 
 def read_diff(base_sha: str, head_sha: str) -> tuple[str, bool]:
     result = subprocess.run(
-        ["git", "diff", "--unified=3", base_sha, head_sha],
+        [
+            "git",
+            "diff",
+            "--unified=3",
+            base_sha,
+            head_sha,
+            "--",
+            ".",
+            *(f":(exclude){path}" for path in EXCLUDED_REVIEW_PATHS),
+        ],
         check=True,
         capture_output=True,
         text=True,
@@ -128,6 +142,14 @@ def main() -> None:
     repository = required_env("GITHUB_REPOSITORY")
     pr_number = required_env("PR_NUMBER")
     diff, truncated = read_diff(required_env("BASE_SHA"), required_env("HEAD_SHA"))
+    if not diff:
+        publish_comment(
+            repository,
+            pr_number,
+            github_token,
+            "## OpenRouter review\nSummary: No application-code changes to review.\nFindings: No actionable findings.",
+        )
+        return
     review = review_diff(api_key, diff, truncated)
     publish_comment(repository, pr_number, github_token, review)
 
