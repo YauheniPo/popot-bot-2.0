@@ -17,8 +17,9 @@ coding agent, modify repository files, approve or merge pull requests.
 
 The workflow uses `google/gemini-2.5-flash-lite` directly through OpenRouter,
 not Claude Code's multi-turn tool loop. A review is limited to the first 60,000
-characters of the textual diff and 700 generated tokens, so its token use is
-predictable. A truncated diff is clearly marked in the review. Check actual
+characters of the textual diff, 900 generated tokens, 350 words and three
+findings, so its token use is predictable and its PR comment is not cut off. A
+truncated diff is clearly marked in the review. Check actual
 charges in OpenRouter; the earlier Claude Code Action `total_cost_usd` field is
 an internal estimate and is not an OpenRouter invoice.
 
