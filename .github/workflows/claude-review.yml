@@ -1,0 +1,53 @@
+name: Claude PR review
+
+on:
+  pull_request:
+    # Avoid spending on every small follow-up commit. Re-run this workflow from
+    # the Actions page when a materially changed PR needs another AI review.
+    types: [opened, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Never expose the Anthropic API key to code submitted from a fork.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Review pull request
+        uses: anthropics/claude-code-action@v1
+        with:
+          # OpenRouter's Anthropic-compatible endpoint accepts this key.
+          anthropic_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: >-
+            Review this pull request. Read and follow CLAUDE.md. Leave only
+            actionable findings with a concrete impact and affected file/line.
+            Do not approve the pull request, do not modify files, and do not
+            report style nits.
+          claude_args: >-
+            --model anthropic/claude-3-haiku --max-turns 4 --permission-mode dontAsk
+            --allowedTools "Read,Glob,Grep,Bash(git status --short),Bash(git diff --stat),Bash(git diff -- .)"
+        env:
+          # This endpoint deliberately has no `/v1` suffix.
+          ANTHROPIC_BASE_URL: https://openrouter.ai/api
+          # Keep every Claude Code model slot on the low-cost review model.
+          ANTHROPIC_DEFAULT_OPUS_MODEL: anthropic/claude-3-haiku
+          ANTHROPIC_DEFAULT_SONNET_MODEL: anthropic/claude-3-haiku
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: anthropic/claude-3-haiku
+          CLAUDE_CODE_SUBAGENT_MODEL: anthropic/claude-3-haiku
