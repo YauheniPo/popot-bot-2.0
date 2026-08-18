@@ -39,10 +39,15 @@ jobs:
             Review this pull request. Read and follow CLAUDE.md. Leave only
             actionable findings with a concrete impact and affected file/line.
             Do not approve the pull request, do not modify files, and do not
-            report style nits.
+            report style nits. Prioritize Telegram privacy boundaries,
+            location-consent wording before Nominatim receives coordinates,
+            accidental logging or persistence of personal data/tokens,
+            untrusted API-error handling, Nominatim rate-limit compliance,
+            regressions in private-chat access control, and tests weakened to
+            make a change pass.
           claude_args: >-
-            --model anthropic/claude-3-haiku --max-turns 4 --permission-mode dontAsk
-            --allowedTools "Read,Glob,Grep,Bash(git status --short),Bash(git diff --stat),Bash(git diff -- .)"
+            --model anthropic/claude-3-haiku --max-turns 6 --permission-mode dontAsk
+            --allowedTools "Read,Glob,Grep,Bash(git:*)"
         env:
           # This endpoint deliberately has no `/v1` suffix.
           ANTHROPIC_BASE_URL: https://openrouter.ai/api
