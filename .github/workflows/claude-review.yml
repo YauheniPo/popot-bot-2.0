@@ -44,10 +44,13 @@ jobs:
             accidental logging or persistence of personal data/tokens,
             untrusted API-error handling, Nominatim rate-limit compliance,
             regressions in private-chat access control, and tests weakened to
-            make a change pass.
+            make a change pass. Always publish one concise top-level PR
+            comment using `gh pr comment` after the analysis. Include a short
+            summary and either actionable findings with file/line references
+            or `No actionable findings` when there are none.
           claude_args: >-
             --model anthropic/claude-3-haiku --max-turns 6 --permission-mode dontAsk
-            --allowedTools "Read,Glob,Grep,Bash(git:*)"
+            --allowedTools "Read,Glob,Grep,Bash(git:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*)"
         env:
           # This endpoint deliberately has no `/v1` suffix.
           ANTHROPIC_BASE_URL: https://openrouter.ai/api

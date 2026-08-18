@@ -33,7 +33,8 @@ output tokens). It is limited to six turns and runs when a PR is opened,
 reopened, marked ready, or updated with a new commit. If a newer commit arrives
 while review is running, GitHub cancels the older run. For an unchanged PR,
 use **Actions → Claude PR review → Re-run jobs** only when you explicitly want
-to spend credits on another review.
+to spend credits on another review. Each successful run posts one concise
+top-level review comment, including `No actionable findings` when appropriate.
 
 This is a cost-first choice. If reviews miss important issues, replace all
 four model variables and `--model` with `anthropic/claude-3.5-haiku` for a
