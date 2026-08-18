@@ -2,9 +2,9 @@ name: Claude PR review
 
 on:
   pull_request:
-    # Avoid spending on every small follow-up commit. Re-run this workflow from
-    # the Actions page when a materially changed PR needs another AI review.
-    types: [opened, reopened, ready_for_review]
+    # Review every material PR revision. Concurrency below cancels an older
+    # in-progress review when a newer commit arrives.
+    types: [opened, reopened, ready_for_review, synchronize]
 
 permissions:
   contents: read

@@ -30,8 +30,10 @@ using the workflow for every pull request.
 The workflow explicitly uses `anthropic/claude-3-haiku`, the absolute cheapest
 currently available Claude option ($0.25 / 1M input tokens and $1.25 / 1M
 output tokens). It is limited to six turns and runs when a PR is opened,
-reopened, or marked ready; it does not spend credits on every commit. For a
-material PR update, open **Actions → Claude PR review → Re-run jobs**.
+reopened, marked ready, or updated with a new commit. If a newer commit arrives
+while review is running, GitHub cancels the older run. For an unchanged PR,
+use **Actions → Claude PR review → Re-run jobs** only when you explicitly want
+to spend credits on another review.
 
 This is a cost-first choice. If reviews miss important issues, replace all
 four model variables and `--model` with `anthropic/claude-3.5-haiku` for a
