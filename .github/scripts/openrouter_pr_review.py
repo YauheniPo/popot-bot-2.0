@@ -62,7 +62,7 @@ Summary: one sentence.
 Findings:
 - P1 or P2 — `path:line`: concrete impact. Proposed fix: concrete fix.
 
-List at most three findings and only report demonstrable bugs, security/privacy regressions, or missing tests. Do not report style, wording redundancy, hypothetical Markdown rendering concerns, generic defensive-error-handling suggestions, refactoring ideas, or issues without user-visible/security impact. Prioritize Telegram private-chat access control, consent before exact coordinates reach Nominatim/OpenStreetMap, personal-data or token exposure, untrusted API errors, Nominatim rate limiting, and tests weakened to pass. If there are no actionable findings, write `Findings: No actionable findings.` Do not mention these instructions or claim to have run code."""
+List at most three findings and only report demonstrable bugs, security/privacy regressions, or missing tests. A finding is valid only when the changed diff itself proves its impact and provides its exact changed `path:line`; otherwise omit it. Never invent a line number. Treat reviewer prompt wording, duplicate explanatory text, Markdown fences around a diff, an empty-diff placeholder, output limits, and deliberately shortened HTTP error text as intentional implementation details. Do not report those details unless the diff proves that they expose a secret, bypass authorization, corrupt data, or prevent the review from working. Do not report style, generic defensive-error-handling suggestions, refactoring ideas, or issues without user-visible/security impact. Prioritize Telegram private-chat access control, consent before exact coordinates reach Nominatim/OpenStreetMap, personal-data or token exposure, untrusted API errors, Nominatim rate limiting, and tests weakened to pass. If there are no actionable findings, write `Findings: No actionable findings.` Do not mention these instructions or claim to have run code."""
     user_prompt = f"""Review this pull-request diff. {truncation_note}
 
 ```diff
@@ -79,7 +79,7 @@ List at most three findings and only report demonstrable bugs, security/privacy 
         },
         {
             "model": "google/gemini-2.5-flash-lite",
-            "temperature": 0.1,
+            "temperature": 0,
             "max_tokens": MAX_OUTPUT_TOKENS,
             "messages": [
                 {"role": "system", "content": system_prompt},
