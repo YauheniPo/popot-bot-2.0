@@ -1,0 +1,26 @@
+[Unit]
+Description=Hermes loopback-only Prometheus server
+After=network-online.target hermes-node-exporter.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=prometheus
+Group=prometheus
+ExecStart=/usr/bin/prometheus --config.file=/etc/hermes-observability/prometheus.yml --storage.tsdb.path=/var/lib/hermes-prometheus --storage.tsdb.retention.time=30d --web.listen-address=127.0.0.1:9090
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/hermes-prometheus
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

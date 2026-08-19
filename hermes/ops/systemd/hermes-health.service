@@ -1,0 +1,25 @@
+[Unit]
+Description=Hermes VPS health check and Telegram alerting
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@HERMES_USER@
+Group=@HERMES_GROUP@
+Environment=HOME=@USER_HOME@
+Environment=HERMES_HOME=@HERMES_HOME@
+Environment=HERMES_BIN=@HERMES_BIN@
+Environment=PATH=@USER_HOME@/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-/etc/hermes-ops.conf
+ExecStart=/usr/local/lib/hermes-ops/health-check.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=@HERMES_HOME@/ops
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+

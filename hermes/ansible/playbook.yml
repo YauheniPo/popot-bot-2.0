@@ -1,0 +1,522 @@
+---
+- name: Provision or restore a Hermes VPS
+  hosts: hermes_vps
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Validate supported operating system
+      ansible.builtin.assert:
+        that:
+          - ansible_system == "Linux"
+          - ansible_distribution in ["Debian", "Ubuntu"]
+          - hermes_user != "root"
+          - hermes_user_home.startswith("/")
+          - hermes_home.startswith(hermes_user_home + "/")
+          - hermes_bin.startswith(hermes_user_home + "/")
+          - not (hermes_lock_public_ssh | bool) or (hermes_enable_tailscale | bool)
+        fail_msg: This playbook supports Debian/Ubuntu and a non-root Hermes user.
+
+  tasks:
+    - name: Create the remote Hermes infrastructure bundle directory
+      ansible.builtin.file:
+        path: "{{ hermes_bundle_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Copy the versioned Hermes deployment script
+      ansible.builtin.copy:
+        src: ../deploy-hermes.sh
+        dest: "{{ hermes_bundle_dir }}/deploy-hermes.sh"
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Copy the versioned operations layer without controller secrets
+      ansible.builtin.copy:
+        src: ../ops/
+        dest: "{{ hermes_bundle_dir }}/ops/"
+        owner: root
+        group: root
+        mode: preserve
+        directory_mode: "0755"
+
+    - name: Copy versioned Grafana and Prometheus provisioning files
+      ansible.builtin.copy:
+        src: ../observability/
+        dest: "{{ hermes_bundle_dir }}/observability/"
+        owner: root
+        group: root
+        mode: preserve
+        directory_mode: "0755"
+
+    - name: Check whether Hermes is already installed
+      ansible.builtin.stat:
+        path: "{{ hermes_bin }}"
+      register: hermes_binary
+
+    - name: Install Hermes non-interactively on a new VPS
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [
+              hermes_bundle_dir ~ '/deploy-hermes.sh',
+              '--user', hermes_user,
+              '--branch', hermes_branch,
+              '--skip-setup',
+              '--skip-mcp',
+              '--no-gateway',
+              '--without-ops',
+              '--without-tailscale'
+            ] +
+            ([] if (hermes_host_admin_enabled | bool) else ['--without-host-admin'])
+          }}
+      when: not hermes_binary.stat.exists
+
+    - name: Install the official Tailscale repository key
+      ansible.builtin.get_url:
+        url: "https://pkgs.tailscale.com/stable/{{ ansible_distribution | lower }}/{{ ansible_distribution_release }}.noarmor.gpg"
+        dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
+        owner: root
+        group: root
+        mode: "0644"
+      when: hermes_enable_tailscale | bool
+
+    - name: Install the official Tailscale apt source
+      ansible.builtin.get_url:
+        url: "https://pkgs.tailscale.com/stable/{{ ansible_distribution | lower }}/{{ ansible_distribution_release }}.tailscale-keyring.list"
+        dest: /etc/apt/sources.list.d/tailscale.list
+        owner: root
+        group: root
+        mode: "0644"
+      when: hermes_enable_tailscale | bool
+
+    - name: Install Tailscale
+      ansible.builtin.apt:
+        name: tailscale
+        state: present
+        update_cache: true
+      when: hermes_enable_tailscale | bool
+
+    - name: Start Tailscale
+      ansible.builtin.systemd_service:
+        name: tailscaled.service
+        state: started
+        enabled: true
+      when: hermes_enable_tailscale | bool
+
+    - name: Check whether the VPS is already connected to Tailscale
+      ansible.builtin.command:
+        argv: [tailscale, ip, -4]
+      register: tailscale_connection
+      changed_when: false
+      failed_when: false
+      when: hermes_enable_tailscale | bool
+
+    - name: Join the private tailnet with Tailscale SSH
+      ansible.builtin.command:
+        argv:
+          - tailscale
+          - up
+          - --ssh
+          - "--auth-key={{ tailscale_auth_key }}"
+      when:
+        - hermes_enable_tailscale | bool
+        - tailscale_auth_key | length > 0
+        - (tailscale_connection.rc | default(1)) != 0
+      no_log: true
+      changed_when: true
+
+    - name: Ensure Tailscale SSH stays enabled on an existing connection
+      ansible.builtin.command:
+        argv: [tailscale, set, --ssh]
+      when:
+        - hermes_enable_tailscale | bool
+        - (tailscale_connection.rc | default(1)) == 0
+      changed_when: false
+
+    - name: Verify private connectivity before any firewall lock-down
+      ansible.builtin.command:
+        argv: [tailscale, ip, -4]
+      register: tailscale_connected_after
+      changed_when: false
+      failed_when: false
+      when:
+        - hermes_enable_tailscale | bool
+        - hermes_lock_public_ssh | bool
+
+    - name: Refuse firewall lock-down without a working Tailscale address
+      ansible.builtin.assert:
+        that:
+          - tailscale_connected_after.rc == 0
+        fail_msg: Connect and test Tailscale SSH before setting hermes_lock_public_ssh=true.
+      when:
+        - hermes_enable_tailscale | bool
+        - hermes_lock_public_ssh | bool
+
+    - name: Install UFW for private-only SSH
+      ansible.builtin.apt:
+        name: ufw
+        state: present
+      when: hermes_lock_public_ssh | bool
+
+    - name: Allow SSH only through the Tailscale interface
+      ansible.builtin.command:
+        argv: [ufw, allow, in, on, tailscale0, to, any, port, "22", proto, tcp]
+      when: hermes_lock_public_ssh | bool
+      changed_when: true
+
+    - name: Deny SSH on public interfaces
+      ansible.builtin.command:
+        argv: [ufw, deny, in, to, any, port, "22", proto, tcp]
+      when: hermes_lock_public_ssh | bool
+      changed_when: true
+
+    - name: Set default firewall policies
+      ansible.builtin.command:
+        argv: "{{ ['ufw', 'default', item.policy, item.direction] }}"
+      loop:
+        - {policy: deny, direction: incoming}
+        - {policy: allow, direction: outgoing}
+      when: hermes_lock_public_ssh | bool
+      changed_when: true
+
+    - name: Enable the host firewall
+      ansible.builtin.command:
+        argv: [ufw, --force, enable]
+      when: hermes_lock_public_ssh | bool
+      changed_when: true
+
+    - name: Stop the gateway before restoring a backup
+      ansible.builtin.systemd_service:
+        name: hermes-gateway.service
+        state: stopped
+      failed_when: false
+      when: hermes_backup_archive | length > 0
+
+    - name: Copy the encrypted-at-rest Hermes restore archive temporarily
+      ansible.builtin.copy:
+        src: "{{ hermes_backup_archive }}"
+        dest: /var/tmp/hermes-restore.zip
+        owner: "{{ hermes_user }}"
+        mode: "0600"
+      when: hermes_backup_archive | length > 0
+      no_log: true
+
+    - name: Restore Hermes state, credentials, sessions, skills, and profiles
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - --user
+          - "{{ hermes_user }}"
+          - --
+          - env
+          - "HOME={{ hermes_user_home }}"
+          - "HERMES_HOME={{ hermes_home }}"
+          - "LANG=C.UTF-8"
+          - "LOGNAME={{ hermes_user }}"
+          - "PATH={{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/bin:/usr/bin:/bin"
+          - "USER={{ hermes_user }}"
+          - "{{ hermes_bin }}"
+          - import
+          - /var/tmp/hermes-restore.zip
+          - --force
+      when: hermes_backup_archive | length > 0
+      no_log: true
+
+    - name: Remove the temporary restore archive
+      ansible.builtin.file:
+        path: /var/tmp/hermes-restore.zip
+        state: absent
+      when: hermes_backup_archive | length > 0
+
+    - name: Validate the encrypted Hermes environment map
+      ansible.builtin.assert:
+        that:
+          - hermes_secret_env is mapping
+        fail_msg: hermes_secret_env must be a YAML mapping of ENV_NAME to secret string.
+      when: hermes_manage_secret_env | bool
+      no_log: true
+
+    - name: Validate encrypted Hermes environment entries
+      ansible.builtin.assert:
+        that:
+          - item.key is match('^[A-Z][A-Z0-9_]*$')
+          - item.value is string
+          - item.value | length > 0
+          - item.value != 'replace-inside-ansible-vault'
+        fail_msg: Secret names must be uppercase environment names and values must be non-empty strings.
+      loop: "{{ hermes_secret_env | dict2items }}"
+      when: hermes_manage_secret_env | bool
+      no_log: true
+
+    - name: Decide whether Telegram credentials enable the gateway
+      ansible.builtin.set_fact:
+        hermes_gateway_enabled: >-
+          {{ (hermes_enable_gateway | bool) or
+             ((hermes_auto_enable_gateway | bool) and
+              (hermes_manage_secret_env | bool) and
+              ((hermes_secret_env.TELEGRAM_BOT_TOKEN | default('', true) | string | length) > 0) and
+              ((hermes_secret_env.TELEGRAM_ALLOWED_USERS | default('', true) | string | length) > 0)) }}
+      no_log: true
+
+    - name: Validate encrypted Hermes LLM configuration
+      ansible.builtin.assert:
+        that:
+          - hermes_llm_config is mapping
+        fail_msg: hermes_llm_config must be a YAML mapping of config.yaml top-level keys.
+      no_log: true
+
+    - name: Install sudo for an explicitly administrator-enabled Hermes
+      ansible.builtin.apt:
+        name: sudo
+        state: present
+        update_cache: true
+      when: hermes_host_admin_enabled | bool
+
+    - name: Authorize Hermes for full VPS administration
+      ansible.builtin.copy:
+        content: |
+          # Explicit owner opt-in: Hermes can administer this host via sudo.
+          {{ hermes_user }} ALL=(ALL:ALL) NOPASSWD: ALL
+        dest: /etc/sudoers.d/hermes-host-admin
+        owner: root
+        group: root
+        mode: "0440"
+        validate: /usr/sbin/visudo -cf %s
+      when: hermes_host_admin_enabled | bool
+
+    - name: Remove Hermes VPS administration authorization when disabled
+      ansible.builtin.file:
+        path: /etc/sudoers.d/hermes-host-admin
+        state: absent
+      when: not (hermes_host_admin_enabled | bool)
+
+    - name: Install host-administration instructions in the Hermes workspace
+      ansible.builtin.copy:
+        src: AGENTS.md
+        dest: "{{ hermes_user_home }}/workspace/AGENTS.md"
+        owner: "{{ hermes_user }}"
+        group: "{{ hermes_user }}"
+        mode: "0644"
+      when: hermes_host_admin_enabled | bool
+
+    - name: Publish Vault environment variable names to Hermes without values
+      ansible.builtin.blockinfile:
+        path: "{{ hermes_user_home }}/workspace/AGENTS.md"
+        marker: "<!-- {mark} MANAGED VAULT ENVIRONMENT NAMES -->"
+        insertafter: EOF
+        block: |
+          # Vault-managed environment variable names
+
+          These names are available to guide tool selection. Their values are
+          not included in this document and must never be read or requested in
+          chat.
+
+          {% if (hermes_manage_secret_env | bool) and (hermes_secret_env | length > 0) %}
+          {{ hermes_secret_env.keys() | list | sort | join(', ') }}
+          {% else %}
+          No Vault-managed environment variables are configured.
+          {% endif %}
+        owner: "{{ hermes_user }}"
+        group: "{{ hermes_user }}"
+        mode: "0644"
+      when: hermes_host_admin_enabled | bool
+      no_log: true
+
+    - name: Validate Grafana administrator credentials from Vault
+      ansible.builtin.assert:
+        that:
+          - hermes_grafana_admin_user is match('^[A-Za-z0-9._-]{1,64}$')
+          - hermes_grafana_admin_password is string
+          - hermes_grafana_admin_password | length >= 4
+          - hermes_grafana_admin_password != 'replace-inside-ansible-vault'
+        fail_msg: Set a real Grafana password of at least 4 characters in encrypted vault.yml.
+      when: hermes_enable_ops | bool
+      no_log: true
+
+    - name: Materialize encrypted API keys and tokens for Hermes
+      ansible.builtin.template:
+        src: templates/hermes.env.j2
+        dest: "{{ hermes_home }}/.env"
+        owner: "{{ hermes_user }}"
+        group: "{{ hermes_user }}"
+        mode: "0600"
+      when: hermes_manage_secret_env | bool
+      no_log: true
+      diff: false
+
+    - name: Inspect the existing Hermes configuration
+      ansible.builtin.stat:
+        path: "{{ hermes_home }}/config.yaml"
+      register: hermes_config_file
+      when: hermes_llm_config | length > 0
+
+    - name: Read the existing Hermes configuration
+      ansible.builtin.slurp:
+        path: "{{ hermes_home }}/config.yaml"
+      register: hermes_config_contents
+      when:
+        - hermes_llm_config | length > 0
+        - hermes_config_file.stat.exists
+      no_log: true
+
+    - name: Start the managed Hermes configuration from an empty mapping
+      ansible.builtin.set_fact:
+        hermes_existing_config: {}
+      when: hermes_llm_config | length > 0
+      no_log: true
+
+    - name: Decode the existing Hermes configuration
+      ansible.builtin.set_fact:
+        hermes_existing_config: "{{ (hermes_config_contents.content | b64decode | from_yaml) | default({}, true) }}"
+      when:
+        - hermes_llm_config | length > 0
+        - hermes_config_file.stat.exists
+      no_log: true
+
+    - name: Validate the existing Hermes configuration shape
+      ansible.builtin.assert:
+        that:
+          - hermes_existing_config is mapping
+        fail_msg: Existing Hermes config.yaml must contain a YAML mapping.
+      when: hermes_llm_config | length > 0
+      no_log: true
+
+    - name: Apply the managed Hermes model and voice configuration
+      ansible.builtin.copy:
+        content: "{{ hermes_existing_config | combine(hermes_llm_config) | to_nice_yaml(indent=2, sort_keys=false) }}"
+        dest: "{{ hermes_home }}/config.yaml"
+        owner: "{{ hermes_user }}"
+        group: "{{ hermes_user }}"
+        mode: "0600"
+      when: hermes_llm_config | length > 0
+      no_log: true
+      diff: false
+
+    - name: Configure Firecrawl page extraction when its Vault key is present
+      ansible.builtin.command:
+        argv: ["{{ hermes_bin }}", config, set, web.extract_backend, firecrawl]
+      become_user: "{{ hermes_user }}"
+      environment:
+        HOME: "{{ hermes_user_home }}"
+        HERMES_HOME: "{{ hermes_home }}"
+        PATH: "{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      when:
+        - hermes_manage_secret_env | bool
+        - (hermes_secret_env.FIRECRAWL_API_KEY | default('', true) | string | length) > 0
+      no_log: true
+      changed_when: true
+
+    - name: Install and verify local browser automation
+      ansible.builtin.command:
+        argv:
+          - "{{ hermes_bundle_dir }}/ops/install-browser-automation.sh"
+          - --user
+          - "{{ hermes_user }}"
+          - --user-home
+          - "{{ hermes_user_home }}"
+          - --hermes-home
+          - "{{ hermes_home }}"
+      changed_when: true
+
+    - name: Locate the installed Hermes Edge TTS implementation
+      ansible.builtin.find:
+        paths:
+          - "{{ hermes_user_home }}/.local"
+          - "{{ hermes_home }}"
+        patterns: tts_tool.py
+        file_type: file
+        recurse: true
+      register: hermes_tts_tool_files
+      changed_when: false
+
+    - name: Install transient Edge TTS retry when the upstream tool is found
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ hermes_bundle_dir }}/ops/apply-edge-tts-retry.py"
+          - "{{ (hermes_tts_tool_files.files | map(attribute='path') | list | first) }}"
+      register: hermes_tts_retry
+      changed_when: "'installed Edge TTS transient retry' in hermes_tts_retry.stdout"
+      when: hermes_tts_tool_files.matched | int > 0
+
+    - name: Report when the upstream Edge TTS implementation cannot be located
+      ansible.builtin.debug:
+        msg: >-
+          Edge TTS retry was skipped because no installed tts_tool.py was found.
+          Hermes itself remains installed; check its upstream layout before a retry is added.
+      when: hermes_tts_tool_files.matched | int == 0
+
+    - name: Materialize Grafana administrator credentials from Vault
+      ansible.builtin.template:
+        src: templates/hermes-grafana.env.j2
+        dest: /etc/hermes-grafana.env
+        owner: root
+        group: root
+        mode: "0600"
+      when: hermes_enable_ops | bool
+      no_log: true
+      diff: false
+
+    - name: Install audit, metrics, reporting, and health checks
+      ansible.builtin.command:
+        argv: "{{ [hermes_bundle_dir + '/ops/install-ops.sh', '--user', hermes_user, '--user-home', hermes_user_home, '--hermes-home', hermes_home, '--hermes-bin', hermes_bin] + ([] if hermes_gateway_enabled | bool else ['--defer-timers']) }}"
+      when: hermes_enable_ops | bool
+      changed_when: true
+
+    - name: Install and start the Hermes system gateway
+      ansible.builtin.command:
+        argv:
+          - "{{ hermes_bin }}"
+          - gateway
+          - install
+          - --system
+          - --run-as-user
+          - "{{ hermes_user }}"
+          - --force
+          - --start-now
+          - --start-on-login
+      environment:
+        HOME: "{{ hermes_user_home }}"
+        HERMES_HOME: "{{ hermes_home }}"
+        PATH: "{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      when: hermes_gateway_enabled | bool
+      changed_when: true
+
+    - name: Ensure monitoring timers are active after gateway configuration
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: started
+        enabled: true
+      loop:
+        - hermes-backup.timer
+        - hermes-health.timer
+        - hermes-metrics.timer
+      when:
+        - hermes_enable_ops | bool
+        - hermes_gateway_enabled | bool
+
+    - name: Verify the loopback-only dashboard is active
+      ansible.builtin.command:
+        argv: [systemctl, is-active, --quiet, hermes-dashboard.service]
+      changed_when: false
+      when: hermes_enable_ops | bool
+
+    - name: Verify the loopback-only observability services are active
+      ansible.builtin.command:
+        argv: [systemctl, is-active, --quiet, "{{ item }}"]
+      loop:
+        - hermes-node-exporter.service
+        - hermes-prometheus.service
+        - grafana-server.service
+      changed_when: false
+      when: hermes_enable_ops | bool
+
+    - name: Verify the gateway is active
+      ansible.builtin.command:
+        argv: [systemctl, is-active, --quiet, hermes-gateway.service]
+      changed_when: false
+      when: hermes_gateway_enabled | bool

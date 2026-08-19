@@ -1,0 +1,91 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "gridPos": {"h": 7, "w": 4, "x": 0, "y": 0},
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "hermes_gateway_up", "refId": "A"}],
+      "title": "Gateway up",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "percentunit"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 4, "x": 4, "y": 0},
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "hermes_host_disk_used_ratio", "refId": "A"}],
+      "title": "Disk used",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 4, "x": 8, "y": 0},
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "sum(increase(hermes_cost_usd_total[$__range]))", "refId": "A"}],
+      "title": "LLM cost in selected range",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 4, "x": 12, "y": 0},
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "sum(increase(hermes_tokens_total[$__range]))", "refId": "A"}],
+      "title": "Tokens in selected range",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 7},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (provider, model) (rate(hermes_tokens_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}}", "refId": "A"}],
+      "title": "Token rate by model",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2}, "unit": "currencyUSD"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 7},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (provider, model) (rate(hermes_cost_usd_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}}", "refId": "A"}],
+      "title": "LLM cost rate by model",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 16},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (tool, status) (rate(hermes_tool_calls_total[$__rate_interval]))", "legendFormat": "{{tool}} / {{status}}", "refId": "A"}],
+      "title": "Tool calls by status",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2}, "unit": "percentunit"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 16},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "hermes_host_memory_available_ratio", "legendFormat": "memory available", "refId": "A"}, {"expr": "1 - hermes_host_disk_used_ratio", "legendFormat": "disk available", "refId": "B"}],
+      "title": "Available resources",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 41,
+  "tags": ["hermes", "observability"],
+  "templating": {"list": []},
+  "time": {"from": "now-24h", "to": "now"},
+  "timezone": "browser",
+  "title": "Hermes Overview",
+  "uid": "hermes-overview",
+  "version": 1
+}

@@ -1,0 +1,135 @@
+#!/command/with-contenv sh
+set -eu
+
+state_dir="${HERMES_HOME:-/opt/data}"
+legacy_host_admin_instruction_marker="${state_dir}/workspace/.hermes-host-admin-instructions"
+openrouter_model="${HERMES_LOCAL_OPENROUTER_MODEL:-openrouter/free}"
+openrouter_max_tokens="${HERMES_LOCAL_OPENROUTER_MAX_TOKENS:-2048}"
+edge_tts_voice="${HERMES_LOCAL_EDGE_TTS_VOICE:-ru-RU-SvetlanaNeural}"
+github_host="${HERMES_LOCAL_GITHUB_HOST:-github.com}"
+git_name="${HERMES_LOCAL_GIT_NAME:-}"
+git_email="${HERMES_LOCAL_GIT_EMAIL:-}"
+telegram_token="${TELEGRAM_BOT_TOKEN:-}"
+telegram_allowed_users="${TELEGRAM_ALLOWED_USERS:-}"
+
+case "${openrouter_model}" in
+  ''|*[!A-Za-z0-9._:/+-]*) echo "[hermes-local] invalid HERMES_LOCAL_OPENROUTER_MODEL" >&2; exit 1 ;;
+esac
+case "${openrouter_max_tokens}" in
+  ''|*[!0-9]*) echo "[hermes-local] HERMES_LOCAL_OPENROUTER_MAX_TOKENS must be an integer" >&2; exit 1 ;;
+esac
+if [ "${openrouter_max_tokens}" -lt 256 ] || [ "${openrouter_max_tokens}" -gt 32768 ]; then
+  echo "[hermes-local] HERMES_LOCAL_OPENROUTER_MAX_TOKENS must be between 256 and 32768" >&2
+  exit 1
+fi
+case "${edge_tts_voice}" in
+  ''|*[!A-Za-z0-9-]*) echo "[hermes-local] invalid HERMES_LOCAL_EDGE_TTS_VOICE" >&2; exit 1 ;;
+esac
+case "${github_host}" in
+  ''|*[!A-Za-z0-9.-]*) echo "[hermes-local] invalid HERMES_LOCAL_GITHUB_HOST" >&2; exit 1 ;;
+esac
+if [ -n "${git_name}" ] || [ -n "${git_email}" ]; then
+  if [ -z "${git_name}" ] || [ -z "${git_email}" ]; then
+    echo "[hermes-local] set both HERMES_LOCAL_GIT_NAME and HERMES_LOCAL_GIT_EMAIL" >&2
+    exit 1
+  fi
+fi
+if [ -n "${telegram_token}" ] || [ -n "${telegram_allowed_users}" ]; then
+  if [ -z "${telegram_token}" ] || [ -z "${telegram_allowed_users}" ]; then
+    echo "[hermes-local] Telegram requires both TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_USERS" >&2
+    exit 1
+  fi
+fi
+
+install -d -o hermes -g hermes -m 0700 \
+  "${state_dir}/plugins/ops-observability" \
+  "${state_dir}/plugins/ops-observability/dashboard/dist" \
+  "${state_dir}/ops" \
+  "${state_dir}/workspace" \
+  "${state_dir}/home"
+
+install -o hermes -g hermes -m 0600 \
+  /opt/hermes-local/ops-observability/plugin.yaml \
+  /opt/hermes-local/ops-observability/__init__.py \
+  "${state_dir}/plugins/ops-observability/"
+install -o hermes -g hermes -m 0600 \
+  /opt/hermes-local/ops-observability/dashboard/manifest.json \
+  /opt/hermes-local/ops-observability/dashboard/plugin_api.py \
+  "${state_dir}/plugins/ops-observability/dashboard/"
+install -o hermes -g hermes -m 0600 \
+  /opt/hermes-local/ops-observability/dashboard/dist/index.js \
+  /opt/hermes-local/ops-observability/dashboard/dist/style.css \
+  "${state_dir}/plugins/ops-observability/dashboard/dist/"
+
+if [ ! -e "${state_dir}/ops/model-prices.json" ]; then
+  install -o hermes -g hermes -m 0600 \
+    /opt/hermes-local/model-prices.json "${state_dir}/ops/model-prices.json"
+fi
+
+if [ -e "${legacy_host_admin_instruction_marker}" ] || \
+  [ ! -e "${state_dir}/workspace/AGENTS.md" ]; then
+  install -o hermes -g hermes -m 0644 \
+    /opt/hermes-local/container-admin-AGENTS.md "${state_dir}/workspace/AGENTS.md"
+  rm -f "${legacy_host_admin_instruction_marker}"
+fi
+
+as_hermes() {
+  s6-setuidgid hermes env \
+    HOME="${state_dir}/home" \
+    HERMES_HOME="${state_dir}" \
+    PATH="/opt/hermes/.venv/bin:${state_dir}/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+    "$@"
+}
+
+# Keep terminal commands inside this same container. The compose file supplies
+# no host bind mounts, Docker socket, devices, ports, or privileged access.
+as_hermes hermes config set terminal.backend local
+as_hermes hermes config set terminal.cwd "${state_dir}/workspace"
+as_hermes hermes config set terminal.home_mode profile
+as_hermes hermes config set model.provider openrouter
+as_hermes hermes config set model.default "${openrouter_model}"
+as_hermes hermes config set model.max_tokens "${openrouter_max_tokens}"
+as_hermes hermes config unset model.aliases.serious || true
+as_hermes hermes config unset model_aliases.serious || true
+as_hermes hermes config set tts.provider edge
+as_hermes hermes config set tts.edge.voice "${edge_tts_voice}"
+
+# Apply the retry before the agent process starts. The helper is version-checked
+# and logs a warning instead of blocking startup after an upstream change.
+python3 /opt/hermes-local/apply-edge-tts-retry.py
+
+# Hermes calls the selected backend "brave-free", but it still requires
+# BRAVE_SEARCH_API_KEY. A saved shared backend (for example Nous Firecrawl)
+# otherwise takes precedence over auto-detection, so select Brave explicitly
+# for search when its key is present. Keep the shared backend for extraction.
+if [ -n "${BRAVE_SEARCH_API_KEY:-}" ]; then
+  as_hermes hermes config set web.search_backend brave-free
+else
+  as_hermes hermes config unset web.search_backend || true
+fi
+
+if [ -n "${git_name}" ]; then
+  as_hermes git config --global user.name "${git_name}"
+  as_hermes git config --global user.email "${git_email}"
+fi
+if [ -n "${GITHUB_TOKEN:-}" ] || [ -n "${GH_TOKEN:-}" ]; then
+  # --force configures the credential helper without persisting the token.
+  # gh reads GITHUB_TOKEN/GH_TOKEN from the container environment at use time.
+  as_hermes gh auth setup-git --force --hostname "${github_host}"
+fi
+as_hermes hermes plugins doctor "${state_dir}/plugins/ops-observability" --ci
+as_hermes hermes plugins enable ops-observability
+
+echo "[hermes-local] configured openrouter:${openrouter_model} (max output ${openrouter_max_tokens}) in ${state_dir}"
+echo "[hermes-local] configured Edge TTS voice ${edge_tts_voice} with transient no-audio retries"
+if [ -n "${BRAVE_SEARCH_API_KEY:-}" ]; then
+  echo "[hermes-local] Brave Search API key is present; Hermes will auto-select Brave for web search"
+else
+  echo "[hermes-local] BRAVE_SEARCH_API_KEY is absent; web search requires Nous Tool Gateway login or another configured backend"
+fi
+if [ -n "${telegram_token}" ]; then
+  echo "[hermes-local] Telegram gateway credentials and allowlist are present"
+fi
+if [ -n "${GITHUB_TOKEN:-}" ] || [ -n "${GH_TOKEN:-}" ]; then
+  echo "[hermes-local] GitHub CLI credential helper configured for ${github_host}"
+fi

@@ -1,0 +1,37 @@
+---
+# Non-secret defaults. Override these in host_vars or with --extra-vars.
+hermes_user: hermes
+hermes_user_home: /home/hermes
+hermes_home: /home/hermes/.hermes
+hermes_bin: /home/hermes/.local/bin/hermes
+hermes_branch: main
+hermes_bundle_dir: /opt/hermes-bootstrap
+
+# A full `hermes backup` zip on the Ansible controller. Keep it encrypted at
+# rest and never commit it. Empty means "install infrastructure only".
+hermes_backup_archive: ""
+
+# Ansible auto-starts the gateway only when Vault provides both Telegram
+# credentials. Set this to true only to force a gateway start deliberately.
+hermes_enable_gateway: false
+hermes_auto_enable_gateway: true
+hermes_enable_ops: true
+hermes_enable_tailscale: true
+# The VPS is dedicated to Hermes, so it administers its own server by default.
+# Set false in local encrypted vault.yml only when a restricted VPS is needed.
+hermes_host_admin_enabled: true
+
+# Set true only after a successful SSH login through Tailscale. It enables UFW
+# and blocks public TCP/22 while allowing SSH on tailscale0.
+hermes_lock_public_ssh: false
+
+# Secret values belong in the ignored and encrypted vault.yml, not here.
+hermes_manage_secret_env: false
+hermes_secret_env: {}
+hermes_llm_config: {}
+
+# The password itself must be set in encrypted vault.yml. The account name is
+# non-secret and remains versioned here.
+hermes_grafana_admin_user: hermes
+hermes_grafana_admin_password: ""
+tailscale_auth_key: ""

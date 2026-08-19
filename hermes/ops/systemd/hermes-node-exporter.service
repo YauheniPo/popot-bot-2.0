@@ -1,0 +1,25 @@
+[Unit]
+Description=Hermes loopback-only node exporter
+After=local-fs.target
+
+[Service]
+Type=simple
+User=@HERMES_USER@
+Group=@HERMES_GROUP@
+ExecStart=/usr/bin/prometheus-node-exporter --web.listen-address=127.0.0.1:9100 --collector.textfile.directory=@HERMES_HOME@/ops/metrics
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=@HERMES_HOME@/ops/metrics
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

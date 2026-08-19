@@ -1,0 +1,7 @@
+# Controller-specific connection details and secret material.
+inventory.ini
+group_vars/all/vault.yml
+.vault-password
+
+# Local restore archives must stay outside version control.
+*.zip

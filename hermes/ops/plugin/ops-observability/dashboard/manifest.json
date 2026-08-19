@@ -1,0 +1,14 @@
+{
+  "name": "ops-observability",
+  "label": "Metrics",
+  "description": "Read-only model, token, tool, and health metrics collected by the Hermes observability plugin.",
+  "icon": "ChartNoAxesCombined",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/metrics",
+    "position": "after:analytics"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

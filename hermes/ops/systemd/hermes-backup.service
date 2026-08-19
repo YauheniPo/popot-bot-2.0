@@ -1,0 +1,25 @@
+[Unit]
+Description=Create a consistent local Hermes snapshot
+After=local-fs.target
+
+[Service]
+Type=oneshot
+Environment=HOME=@USER_HOME@
+Environment=HERMES_HOME=@HERMES_HOME@
+Environment=HERMES_BIN=@HERMES_BIN@
+Environment=HERMES_RUN_AS_USER=@HERMES_USER@
+Environment=HERMES_USER_HOME=@USER_HOME@
+Environment=PATH=@USER_HOME@/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-/etc/hermes-ops.conf
+ExecStart=/usr/local/lib/hermes-ops/backup.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@HERMES_HOME@ @USER_HOME@/hermes-backups
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
