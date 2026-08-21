@@ -67,7 +67,7 @@ log "compiling Python sources"
 python_sources=()
 while IFS= read -r source; do
   python_sources+=("$REPOSITORY_ROOT/$source")
-done < <(cd "$REPOSITORY_ROOT" && rg --files hermes -g '*.py' | sort)
+done < <(cd "$REPOSITORY_ROOT" && rg --files hermes .github/scripts -g '*.py' | sort)
 PYTHONPYCACHEPREFIX="$CHECK_TEMP/pycache" python3 -m py_compile "${python_sources[@]}"
 
 log "running Python tests"
@@ -76,6 +76,9 @@ while IFS= read -r test_file; do
   python_tests+=("$REPOSITORY_ROOT/$test_file")
 done < <(cd "$REPOSITORY_ROOT" && rg --files hermes -g 'test_*.py' | sort)
 PYTHONPYCACHEPREFIX="$CHECK_TEMP/pycache" python3 -m unittest "${python_tests[@]}"
+PYTHONPYCACHEPREFIX="$CHECK_TEMP/pycache" python3 -m unittest discover \
+  -s "$REPOSITORY_ROOT/.github/scripts" \
+  -p 'test_*.py'
 
 if optional_tool ansible-playbook; then
   log "checking Ansible syntax"
@@ -89,5 +92,5 @@ if optional_tool ansible-playbook; then
 fi
 
 log "checking patch whitespace"
-git -C "$REPOSITORY_ROOT" diff --check -- hermes .github/workflows/hermes-ci.yml
+git -C "$REPOSITORY_ROOT" diff --check -- hermes .github/workflows .github/scripts .github/REVIEWER.md
 log "all Hermes checks passed"

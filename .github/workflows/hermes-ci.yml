@@ -5,10 +5,16 @@ on:
     paths:
       - "hermes/**"
       - ".github/workflows/hermes-ci.yml"
+      - ".github/scripts/openrouter_pr_review.py"
+      - ".github/scripts/test_openrouter_pr_review.py"
+      - ".github/REVIEWER.md"
   push:
     paths:
       - "hermes/**"
       - ".github/workflows/hermes-ci.yml"
+      - ".github/scripts/openrouter_pr_review.py"
+      - ".github/scripts/test_openrouter_pr_review.py"
+      - ".github/REVIEWER.md"
 
 permissions:
   contents: read
