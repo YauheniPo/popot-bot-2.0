@@ -78,8 +78,13 @@ jobs:
           # inspect the PR and publish its findings without interactive approval.
           claude_args: |
             --max-turns 16
+            --model "${{ env.OPENROUTER_REVIEW_MODEL }}"
             --allowedTools "Task,Read,Glob,Grep,Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*),Bash(git rev-parse:*),mcp__github_inline_comment__create_inline_comment"
         env:
           ANTHROPIC_BASE_URL: https://openrouter.ai/api
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.OPENROUTER_API_KEY }}
+          # Pin every Claude Code role so a CLI default change cannot silently
+          # route the orchestrator or its subagents to an unavailable model.
+          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ env.OPENROUTER_REVIEW_MODEL }}
           ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ env.OPENROUTER_REVIEW_MODEL }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ env.OPENROUTER_REVIEW_MODEL }}
+          CLAUDE_CODE_SUBAGENT_MODEL: ${{ env.OPENROUTER_REVIEW_MODEL }}
