@@ -93,7 +93,9 @@ services:
       HERMES_HOME: /opt/data
       HERMES_METRICS_FILE: /metrics/hermes.prom
       HERMES_METRICS_MODE: "0644"
-      HERMES_GATEWAY_SERVICE: unavailable-in-sidecar.service
+      # The sidecar cannot inspect another container's process namespace. Do
+      # not export a false down state; the metric is explicitly unavailable.
+      HERMES_GATEWAY_STATE: unavailable
     user: "10000:10000"
     volumes:
       - hermes_local_test_data:/opt/data:ro

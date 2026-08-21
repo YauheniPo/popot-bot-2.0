@@ -1,0 +1,121 @@
+---
+- name: Install the official Tailscale repository key
+  ansible.builtin.get_url:
+    url: "https://pkgs.tailscale.com/stable/{{ ansible_distribution | lower }}/{{ ansible_distribution_release }}.noarmor.gpg"
+    dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
+    owner: root
+    group: root
+    mode: "0644"
+  when: hermes_enable_tailscale | bool
+
+- name: Install the official Tailscale apt source
+  ansible.builtin.get_url:
+    url: "https://pkgs.tailscale.com/stable/{{ ansible_distribution | lower }}/{{ ansible_distribution_release }}.tailscale-keyring.list"
+    dest: /etc/apt/sources.list.d/tailscale.list
+    owner: root
+    group: root
+    mode: "0644"
+  when: hermes_enable_tailscale | bool
+
+- name: Install Tailscale
+  ansible.builtin.apt:
+    name: tailscale
+    state: present
+    update_cache: true
+  when: hermes_enable_tailscale | bool
+
+- name: Start Tailscale
+  ansible.builtin.systemd_service:
+    name: tailscaled.service
+    state: started
+    enabled: true
+  when: hermes_enable_tailscale | bool
+
+- name: Check whether the VPS is already connected to Tailscale
+  ansible.builtin.command:
+    argv: [tailscale, ip, -4]
+  register: tailscale_connection
+  changed_when: false
+  failed_when: false
+  when: hermes_enable_tailscale | bool
+
+- name: Join the private tailnet with Tailscale SSH
+  ansible.builtin.command:
+    argv:
+      - tailscale
+      - up
+      - --ssh
+      - "--auth-key={{ tailscale_auth_key }}"
+  when:
+    - hermes_enable_tailscale | bool
+    - tailscale_auth_key | length > 0
+    - (tailscale_connection.rc | default(1)) != 0
+  no_log: true
+  changed_when: true
+
+- name: Ensure Tailscale SSH stays enabled on an existing connection
+  ansible.builtin.command:
+    argv: [tailscale, set, --ssh]
+  when:
+    - hermes_enable_tailscale | bool
+    - (tailscale_connection.rc | default(1)) == 0
+  changed_when: false
+
+- name: Verify private connectivity before any firewall lock-down
+  ansible.builtin.command:
+    argv: [tailscale, ip, -4]
+  register: tailscale_connected_after
+  changed_when: false
+  failed_when: false
+  when:
+    - hermes_enable_tailscale | bool
+    - hermes_lock_public_ssh | bool
+
+- name: Refuse firewall lock-down without a working Tailscale address
+  ansible.builtin.assert:
+    that:
+      - tailscale_connected_after.rc == 0
+    fail_msg: Connect and test Tailscale SSH before setting hermes_lock_public_ssh=true.
+  when:
+    - hermes_enable_tailscale | bool
+    - hermes_lock_public_ssh | bool
+
+- name: Install UFW for private-only SSH
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+  when: hermes_lock_public_ssh | bool
+
+- name: Put private-only SSH rules before existing public SSH allows
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      while IFS= read -r rule_number; do
+        ufw --force delete "$rule_number"
+      done < <(
+        ufw status numbered |
+          sed -n '/Hermes private SSH\|Hermes deny public SSH/s/^\[[[:space:]]*\([0-9][0-9]*\)\].*/\1/p' |
+          sort -rn
+      )
+      ufw insert 1 allow in on tailscale0 to any port 22 proto tcp comment 'Hermes private SSH'
+      ufw insert 2 deny in to any port 22 proto tcp comment 'Hermes deny public SSH'
+    executable: /bin/bash
+  when: hermes_lock_public_ssh | bool
+  changed_when: true
+
+- name: Set default firewall policies
+  ansible.builtin.command:
+    argv: "{{ ['ufw', 'default', item.policy, item.direction] }}"
+  loop:
+    - {policy: deny, direction: incoming}
+    - {policy: allow, direction: outgoing}
+  when: hermes_lock_public_ssh | bool
+  changed_when: true
+
+- name: Enable the host firewall
+  ansible.builtin.command:
+    argv: [ufw, --force, enable]
+  when: hermes_lock_public_ssh | bool
+  changed_when: true
+
+

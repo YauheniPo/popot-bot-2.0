@@ -10,7 +10,8 @@ hermes_manage_secret_env: true
 hermes_secret_env: {}
 
 # This dedicated Hermes VPS allows host administration by default. It creates
-# `hermes ALL=(ALL:ALL) NOPASSWD: ALL`, equivalent to host-root access. Agent
+# `hermes ALL=(ALL:ALL) NOPASSWD: ALL`, installs Docker Engine, and adds Hermes
+# to its `docker` group. Each is equivalent to host-root access. Agent
 # instructions can discourage deletion but cannot technically prevent it. Set
 # false only when a restricted VPS is required.
 hermes_host_admin_enabled: true

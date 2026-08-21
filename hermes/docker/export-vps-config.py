@@ -20,10 +20,12 @@ CONFIG_PATH = Path("/opt/data/config.yaml")
 
 # Keep this list intentionally narrow. Do not add URLs, headers, API keys,
 # OAuth fields, custom provider definitions, or arbitrary plugin settings.
+# Exported values must always be scalar: a nested mapping can hide credentials
+# even when its top-level field name looks safe.
 SAFE_FIELDS: dict[str, tuple[str, ...]] = {
     "model": ("provider", "default", "max_tokens"),
-    "agent": ("max_turns", "reasoning_effort"),
-    "stt": ("enabled", "language", "local", "openai"),
+    "agent": ("reasoning_effort",),
+    "stt": ("enabled", "language"),
     "web": ("backend", "search_backend", "extract_backend", "extract_char_limit"),
     "browser": ("backend", "inactivity_timeout"),
     "compression": (
@@ -42,7 +44,11 @@ def pick_mapping(config: dict[str, Any], section: str, fields: tuple[str, ...]) 
     source = config.get(section)
     if not isinstance(source, dict):
         return {}
-    return {key: source[key] for key in fields if key in source}
+    return {
+        key: source[key]
+        for key in fields
+        if key in source and isinstance(source[key], (str, int, float, bool))
+    }
 
 
 def main() -> int:

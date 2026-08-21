@@ -23,11 +23,12 @@ Ansible Vault и `.env` исключены из Git.
 | [ ] | Firecrawl API key | `FIRECRAWL_API_KEY` | Firecrawl dashboard | `hermes_secret_env` в Ansible Vault; извлечение HTML/PDF и browser-backed web |
 | [ ] | Telegram bot token | `TELEGRAM_BOT_TOKEN` | создать бота у `@BotFather` | `hermes_secret_env` в Ansible Vault |
 | [ ] | Разрешённый Telegram user ID | `TELEGRAM_ALLOWED_USERS="123..."` | ID личного аккаунта, не username | Vault/`.env`; это allowlist, не пароль |
-| [ ] | Часовой пояс | `HERMES_TIMEZONE=Europe/Warsaw` | IANA timezone VPS/владельца | Vault/`.env` или system config; не секрет |
 
-Эта сборка использует только OpenRouter. Задайте `OPENROUTER_API_KEY` и
-выберите доступную через него модель в `hermes_llm_config`. Минимальный
-фрагмент и правила замены placeholders находятся в
+В типовом Ansible-профиле основной provider — OpenRouter. Задайте
+`OPENROUTER_API_KEY` и выберите доступную через него модель в
+`hermes_llm_config`. Другой provider настраивается его собственным набором
+credentials и конфигурацией в том же Vault. Минимальный фрагмент и правила
+замены placeholders находятся в
 [`ansible/group_vars/all/VAULT.md`](ansible/group_vars/all/VAULT.md).
 
 ## Web search и браузер
@@ -155,7 +156,7 @@ credentials. Следите за диском VPS и периодически п
 | VPS SSH private key | защищённый управляющий компьютер/password manager | VPS, Hermes home, Git |
 | Ansible Vault password | отдельный password manager | repository, VPS, `vault.yml` |
 | Provider/model IDs и endpoints | `hermes_llm_config` в encrypted Vault → `config.yaml` | Inline `api_key`, README, shell history |
-| User IDs, public URLs, timezone | Public Ansible vars, inventory или Vault по policy | Не смешивать с secret values без необходимости |
+| User IDs и public URLs | Public Ansible vars, inventory или Vault по policy | Не смешивать с secret values без необходимости |
 
 Важно: `.env` защищает ключи от других непривилегированных Unix users, но сам
 Hermes работает пользователем `hermes` и технически может прочитать собственный

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import sqlite3
@@ -29,7 +30,8 @@ def metric(
     suffix = ""
     if labels:
         suffix = "{" + ",".join(f'{key}="{label(item)}"' for key, item in sorted(labels.items())) + "}"
-    return f"{name}{suffix} {value}"
+    rendered = "NaN" if isinstance(value, float) and math.isnan(value) else str(value)
+    return f"{name}{suffix} {rendered}"
 
 
 def rows(database: Path, sql: str) -> Iterable[tuple]:
@@ -60,7 +62,15 @@ def memory_ratio() -> float:
         return 0.0
 
 
-def gateway_up() -> int:
+def gateway_up() -> float:
+    state = os.environ.get("HERMES_GATEWAY_STATE", "").strip().lower()
+    if state == "unavailable":
+        return float("nan")
+    if state == "up":
+        return 1.0
+    if state == "down":
+        return 0.0
+
     service = os.environ.get("HERMES_GATEWAY_SERVICE", "hermes-gateway.service")
     try:
         result = subprocess.run(
@@ -70,7 +80,7 @@ def gateway_up() -> int:
             stderr=subprocess.DEVNULL,
             timeout=5,
         )
-        return int(result.returncode == 0)
+        return float(result.returncode == 0)
     except (OSError, subprocess.TimeoutExpired):
         return 0
 
@@ -129,7 +139,7 @@ def main() -> int:
     backup_configured, backup_seconds, full_backup_seconds = backup_ages()
     load1, load5, load15 = os.getloadavg()
     lines = [
-        "# HELP hermes_gateway_up Whether the Hermes gateway systemd service is active.",
+        "# HELP hermes_gateway_up Whether the Hermes gateway is active; NaN means this collector cannot observe it.",
         "# TYPE hermes_gateway_up gauge",
         metric("hermes_gateway_up", gateway_up()),
         "# HELP hermes_host_disk_used_ratio Filesystem used fraction for the Hermes disk.",

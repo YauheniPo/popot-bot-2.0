@@ -116,16 +116,16 @@
 
 ### [P1] CI-проверки инфраструктуры Hermes
 
-- Status: idea
+- Status: done
 - Ценность: ловить ошибки Docker, Ansible и provisioning до VPS deploy.
-- Scope: shellcheck, YAML parse, ansible-lint, Python tests и Hermes plugin
-  doctor в GitHub Actions.
+- Scope: Bash syntax/shellcheck, Python compile/tests, Ansible syntax и
+  whitespace checks в GitHub Actions.
 - Риски и security: CI не получает production Vault, Docker `local.env` или
   токены интеграций.
 - Критерии готовности:
-  - [ ] Проверка запускается для изменений в `hermes/**`.
-  - [ ] Ошибки не печатают env values.
-  - [ ] Локальная команда проверки совпадает с CI.
+  - [x] Проверка запускается для изменений в `hermes/**`.
+  - [x] Ошибки не печатают env values.
+  - [x] Локальная команда проверки совпадает с CI.
 - Проверка и rollback: pull request с намеренной синтаксической ошибкой.
 
 ### [P2] Автоматическая маршрутизация запросов между free и paid model

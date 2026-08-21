@@ -1,4 +1,4 @@
-name: OpenRouter PR review
+name: PR AI review comparison
 
 on:
   pull_request:
@@ -8,14 +8,20 @@ on:
 
 permissions:
   contents: read
+  issues: write
   pull-requests: write
 
+env:
+  # A repository variable can override this for both reviewers. Keep the
+  # fallback here so they always evaluate with the same model.
+  OPENROUTER_REVIEW_MODEL: ${{ vars.OPENROUTER_REVIEW_MODEL || '~anthropic/claude-sonnet-latest' }}
+
 concurrency:
-  group: openrouter-pr-review-${{ github.event.pull_request.number }}
+  group: pr-ai-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  review:
+  openrouter-api-review:
     # A pull request from a fork must never receive this repository's secret.
     if: >-
       github.event.pull_request.draft == false &&
@@ -38,3 +44,37 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 .github/scripts/openrouter_pr_review.py
+
+  claude-code-plugin-review:
+    # Run the plugin review alongside the direct OpenRouter API review on each
+    # eligible PR revision, so their results are directly comparable.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out pull request with history for review context
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Review with the official Claude Code plugin via OpenRouter
+        uses: anthropics/claude-code-action@5ee796a55f92566ecd7e39d70dd613abcbea0d7c # v1
+        with:
+          # The action requires this input to start. OpenRouter receives the
+          # request through ANTHROPIC_BASE_URL and bills the same secret below.
+          anthropic_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          plugin_marketplaces: https://github.com/anthropics/claude-code.git
+          plugins: code-review@claude-code-plugins
+          prompt: >-
+            /code-review:code-review
+            ${{ github.repository }}/pull/${{ github.event.pull_request.number }}
+            --comment
+          claude_args: --max-turns 16
+        env:
+          ANTHROPIC_BASE_URL: https://openrouter.ai/api
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ env.OPENROUTER_REVIEW_MODEL }}

@@ -86,10 +86,14 @@ brew install ansible
 
 ### 4. Запустить полный деплой
 
-Из корня репозитория выполните:
+Перейдите в каталог `hermes` внутри репозитория и выполните:
 
 ```bash
-ansible-playbook -i hermes/ansible/inventory.ini hermes/ansible/playbook.yml --ask-vault-pass --ask-pass
+cd hermes
+ansible-playbook -i ansible/inventory.ini \
+  ansible/playbook.yml \
+  --ask-vault-pass \
+  --ask-pass
 ```
 
 Сначала Ansible спросит текущий root password VPS, затем отдельный пароль
@@ -98,9 +102,10 @@ Telegram-переменных и поднимет Dashboard, Prometheus и Grafa
 задаст бесплатный русский Edge TTS (`ru-RU-SvetlanaNeural`) и добавит до двух
 повторных попыток только для временного ответа Edge `NoAudioReceived`.
 
-Успешный запуск заканчивается строкой вида `failed=0` в `PLAY RECAP`. Повторный
-запуск этой же команды безопасен: playbook повторно применяет конфигурацию и
-восстанавливает прерванные шаги.
+Успешный запуск заканчивается строкой вида `failed=0` в `PLAY RECAP` и
+`Hermes deploy completed at … (VPS time)`. Повторный запуск этой же команды
+безопасен: playbook повторно применяет конфигурацию и восстанавливает
+прерванные шаги.
 
 ### 5. Быстро проверить службы на VPS
 
@@ -110,13 +115,16 @@ Telegram-переменных и поднимет Dashboard, Prometheus и Grafa
 systemctl is-active hermes-gateway.service
 systemctl is-active hermes-dashboard.service
 systemctl is-active grafana-server.service
+systemctl is-enabled hermes-startup-notify.service
 systemctl list-timers 'hermes-*'
 ls -lah /home/hermes/hermes-backups
 ```
 
-Все три `is-active` должны вернуть `active`. Первый backup создаётся во время
-deploy; последующие quick backups выполняются ежедневно, а полный — раз в
-неделю.
+Все три `is-active` должны вернуть `active`, а `is-enabled` — `enabled`.
+После каждого запуска gateway `hermes-startup-notify` отправляет в настроенный
+Telegram alert target имя VPS, default model и время; недоставка сообщения не
+останавливает gateway. Первый backup создаётся во время deploy; последующие
+quick backups выполняются ежедневно, а полный — раз в неделю.
 
 Если `tailscale_auth_key` оставлен пустым, Tailscale устанавливается, но не
 входит в tailnet. В таком случае playbook намеренно не включает UFW-lockdown,

@@ -1,0 +1,66 @@
+---
+# Single source of truth for important non-secret Hermes VPS settings.
+# Secrets and provider credentials remain in Ansible Vault / Hermes .env.
+vps_deploy:
+  identity:
+    user: hermes
+    user_home: /home/hermes
+    hermes_home: /home/hermes/.hermes
+    hermes_bin: /home/hermes/.local/bin/hermes
+  source:
+    branch: main
+    bundle_dir: /opt/hermes-bootstrap
+  features:
+    force_gateway: false
+    auto_enable_gateway: true
+    observability: true
+    tailscale: true
+    host_admin: true
+    lock_public_ssh: false
+
+vps_runtime:
+  set:
+    terminal.cwd: "${HERMES_WORKSPACE}"
+    checkpoints.enabled: true
+    updates.pre_update_backup: full
+    updates.non_interactive_local_changes: stash
+    gateway.systemd_watchdog_seconds: 120
+    agent.verify_on_stop: auto
+    browser.backend: "off"
+    tool_loop_guardrails.hard_stop_enabled: true
+    tool_loop_guardrails.hard_stop_after.exact_failure: 3
+    tool_loop_guardrails.hard_stop_after.same_tool_failure: 3
+    tool_loop_guardrails.hard_stop_after.idempotent_no_progress: 3
+    tool_loop_guardrails.loop_caps.max_web_searches: 20
+    tool_loop_guardrails.loop_caps.max_subagents: 10
+    display.tool_progress: "off"
+    display.background_process_notifications: result
+    session_reset.mode: idle
+    session_reset.idle_minutes: 2880
+  set_if_missing:
+    model.max_tokens: 4096
+  unset:
+    - agent.max_turns
+    - goals.max_turns
+  capabilities:
+    brave_search:
+      set:
+        web.search_backend: brave-free
+    firecrawl_extract:
+      set:
+        web.extract_backend: firecrawl
+
+# Only these application-owned services are restarted by deployment. Network,
+# SSH, Docker, and unrelated host services are intentionally excluded.
+vps_services:
+  gateway:
+    - hermes-gateway.service
+  observability:
+    - hermes-node-exporter.service
+    - hermes-prometheus.service
+    - grafana-server.service
+    - hermes-dashboard.service
+  timers:
+    - hermes-backup.timer
+    - hermes-health.timer
+    - hermes-metrics.timer

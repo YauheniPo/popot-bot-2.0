@@ -75,7 +75,7 @@ def read_review_rules() -> str:
     return rules
 
 
-def review_diff(api_key: str, diff: str, truncated: bool) -> str:
+def review_diff(api_key: str, model: str, diff: str, truncated: bool) -> str:
     truncation_note = (
         "The diff was truncated to the first 60,000 characters; explicitly say so in the summary."
         if truncated
@@ -96,7 +96,7 @@ def review_diff(api_key: str, diff: str, truncated: bool) -> str:
             "X-Title": "popot-bot-2.0 PR review",
         },
         {
-            "model": "google/gemini-2.5-flash-lite",
+            "model": model,
             "temperature": 0,
             "max_tokens": MAX_OUTPUT_TOKENS,
             "messages": [
@@ -114,7 +114,9 @@ def review_diff(api_key: str, diff: str, truncated: bool) -> str:
     return content
 
 
-def publish_comment(repository: str, pr_number: str, token: str, review: str) -> None:
+def publish_comment(
+    repository: str, pr_number: str, token: str, model: str, review: str
+) -> None:
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
@@ -123,7 +125,7 @@ def publish_comment(repository: str, pr_number: str, token: str, review: str) ->
     }
     comments_url = f"{GITHUB_API_URL}/repos/{repository}/issues/{pr_number}/comments?per_page=100"
     comments = request_json(comments_url, "GET", headers)
-    body = f"{COMMENT_MARKER}\n{review}"
+    body = f"{COMMENT_MARKER}\n> Provider: OpenRouter · Model: `{model}`\n\n{review}"
     existing_comment = next(
         (comment for comment in comments if COMMENT_MARKER in comment.get("body", "")), None
     )
@@ -143,6 +145,9 @@ def publish_comment(repository: str, pr_number: str, token: str, review: str) ->
 def main() -> None:
     api_key = required_env("OPENROUTER_API_KEY")
     github_token = required_env("GITHUB_TOKEN")
+    model = required_env("OPENROUTER_REVIEW_MODEL").strip()
+    if not model:
+        raise RuntimeError("OPENROUTER_REVIEW_MODEL must not be blank")
     repository = required_env("GITHUB_REPOSITORY")
     pr_number = required_env("PR_NUMBER")
     diff, truncated = read_diff(required_env("BASE_SHA"), required_env("HEAD_SHA"))
@@ -151,11 +156,12 @@ def main() -> None:
             repository,
             pr_number,
             github_token,
-            "## OpenRouter review\nSummary: No application-code changes to review.\nFindings: No actionable findings.",
+            model,
+            "## OpenRouter API review\nSummary: No application-code changes to review.\nFindings: No actionable findings.",
         )
         return
-    review = review_diff(api_key, diff, truncated)
-    publish_comment(repository, pr_number, github_token, review)
+    review = review_diff(api_key, model, diff, truncated)
+    publish_comment(repository, pr_number, github_token, model, review)
 
 
 if __name__ == "__main__":

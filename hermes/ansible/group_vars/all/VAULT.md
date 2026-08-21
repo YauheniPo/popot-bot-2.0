@@ -5,6 +5,9 @@
 Шаблон структуры и названий полей находится в
 [`vault.yml.example`](vault.yml.example).
 
+Все команды ниже запускаются прямо из этого каталога:
+`hermes/ansible/group_vars/all`.
+
 Пароль Ansible Vault — отдельный секрет. Он **не совпадает** с root-паролем
 VPS, паролем панели провайдера или паролем SSH. Если этот пароль утрачен,
 расшифровать существующий `vault.yml` невозможно: создайте новый Vault и
@@ -12,20 +15,19 @@ VPS, паролем панели провайдера или паролем SSH.
 
 ## Первое создание
 
-Выполните на Mac из корня репозитория:
+Выполните на Mac из текущего каталога:
 
 ```bash
-cd hermes/ansible
-cp group_vars/all/vault.yml.example group_vars/all/vault.yml
-chmod 600 group_vars/all/vault.yml
-ansible-vault encrypt group_vars/all/vault.yml
+cp vault.yml.example vault.yml
+chmod 600 vault.yml
+ansible-vault encrypt vault.yml
 ```
 
 Сразу сохраните пароль Vault в password manager. Проверить, что файл
 зашифрован, можно без чтения его содержимого:
 
 ```bash
-head -n 1 group_vars/all/vault.yml
+head -n 1 vault.yml
 ```
 
 Ожидаемый результат начинается с `$ANSIBLE_VAULT;`.
@@ -37,21 +39,33 @@ head -n 1 group_vars/all/vault.yml
 зашифрованном виде.
 
 ```bash
-cd hermes/ansible
-EDITOR=nano ansible-vault edit group_vars/all/vault.yml
+EDITOR=nano ansible-vault edit vault.yml
 ```
 
 На macOS можно заменить `nano` на предпочитаемый текстовый редактор. Внесите
 значения в `hermes_secret_env` и при необходимости в `hermes_llm_config`, затем
 сохраните файл и выйдите из редактора.
 
+## Приватный просмотр
+
+Чтобы один раз посмотреть расшифрованное содержимое без изменения файла,
+выполните в локальном приватном terminal:
+
+```bash
+ansible-vault view vault.yml
+```
+
+Команда выводит все secrets в открытом виде. Не перенаправляйте вывод в файл,
+не запускайте её в логируемом terminal/чате и не копируйте результат в Git,
+issue или сообщение. Для изменения значений используйте `ansible-vault edit`,
+а не `view`.
+
 Не используйте для обычного редактирования `ansible-vault decrypt`: он оставит
 секреты в открытом виде на диске. Если файл уже был расшифрован осознанно,
 зашифруйте его до следующего deploy:
 
 ```bash
-cd hermes/ansible
-ansible-vault encrypt group_vars/all/vault.yml
+ansible-vault encrypt vault.yml
 ```
 
 Никогда не отправляйте содержимое `vault.yml`, вывод `ansible-vault view`,
@@ -108,12 +122,13 @@ hermes_llm_config:
 
 ## Применить изменения
 
-После каждого изменения Vault запустите playbook из корня репозитория:
+После каждого изменения Vault вернитесь в каталог `hermes` и запустите:
 
 ```bash
-ansible-playbook -i hermes/ansible/inventory.ini \
-  hermes/ansible/playbook.yml \
-  --ask-vault-pass --ask-pass
+ansible-playbook -i ansible/inventory.ini \
+  ansible/playbook.yml \
+  --ask-vault-pass \
+  --ask-pass
 ```
 
 Сначала будет запрошен текущий SSH/root-пароль VPS, затем пароль Ansible Vault.
