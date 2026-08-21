@@ -27,7 +27,9 @@ jobs:
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # The direct reviewer covers the full eligible diff in bounded parallel
+    # chunks. Leave enough time for provider retries on large pull requests.
+    timeout-minutes: 12
 
     steps:
       - name: Check out pull request
@@ -35,7 +37,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Review and publish summary
+      - name: Review changed files and publish formal review
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -82,6 +84,10 @@ jobs:
             --allowedTools "Task,Read,Glob,Grep,Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*),Bash(git rev-parse:*),mcp__github_inline_comment__create_inline_comment"
         env:
           ANTHROPIC_BASE_URL: https://openrouter.ai/api
+          # Claude Code uses bearer-token authentication with OpenRouter's
+          # Anthropic-compatible endpoint. The action input remains required
+          # for its own validation and receives the same short-lived secret.
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.OPENROUTER_API_KEY }}
           # Pin every Claude Code role so a CLI default change cannot silently
           # route the orchestrator or its subagents to an unavailable model.
           ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ env.OPENROUTER_REVIEW_MODEL }}
