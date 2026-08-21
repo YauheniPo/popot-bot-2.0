@@ -74,6 +74,8 @@ BROWSER_CONFIG="${HERMES_HOME}/agent-browser-config.json"
 [[ -x "${NPM_BIN}" ]] || die "Hermes-managed npm was not found at ${NPM_BIN}"
 
 run_as_hermes() {
+    # The single-quoted script is intentionally expanded by the child Bash.
+    # shellcheck disable=SC2016
     runuser --user "${HERMES_USER}" -- env -i \
         HOME="${USER_HOME}" \
         HERMES_HOME="${HERMES_HOME}" \
@@ -94,6 +96,8 @@ if [[ ! -x "${AGENT_BROWSER_BIN}" ]]; then
 fi
 
 log "writing persistent local browser launch configuration"
+# The single-quoted script is intentionally expanded by the child Bash.
+# shellcheck disable=SC2016
 run_as_hermes /bin/bash -c '
     set -Eeuo pipefail
     config_path="$1"

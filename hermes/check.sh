@@ -11,8 +11,10 @@ if (($# > 0)); then
   exit 2
 fi
 
-readonly HERMES_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPOSITORY_ROOT="$(cd -- "$HERMES_DIR/.." && pwd)"
+HERMES_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly HERMES_DIR
+REPOSITORY_ROOT="$(cd -- "$HERMES_DIR/.." && pwd)"
+readonly REPOSITORY_ROOT
 CHECK_TEMP="$(mktemp -d /tmp/hermes-check.XXXXXX)"
 readonly CHECK_TEMP
 trap 'rm -rf -- "$CHECK_TEMP"' EXIT
@@ -48,7 +50,9 @@ done < <(cd "$REPOSITORY_ROOT" && rg --files hermes -g '*.sh' | sort)
 
 if optional_tool shellcheck; then
   log "running shellcheck"
-  shellcheck \
+  shellcheck -x \
+    -P "$HERMES_DIR" \
+    -P "$HERMES_DIR/ops" \
     "$HERMES_DIR/check.sh" \
     "$HERMES_DIR/deploy-hermes.sh" \
     "$HERMES_DIR/ops/install-ops.sh" \

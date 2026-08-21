@@ -24,7 +24,9 @@ for attempt in 1 2 3; do
     if "${HERMES_BIN}" send --to "${HERMES_ALERT_TARGET}" "${message}"; then
         exit 0
     fi
-    sleep 2
+    if ((attempt < 3)); then
+        sleep 2
+    fi
 done
 
 logger -t hermes-startup-notify "Failed to send gateway startup notification to ${HERMES_ALERT_TARGET}"

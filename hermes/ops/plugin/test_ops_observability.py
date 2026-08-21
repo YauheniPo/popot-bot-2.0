@@ -68,9 +68,12 @@ class ObservabilityRedactionTests(unittest.TestCase):
         self.assertEqual(context.tools[0]["name"], "ops_metrics")
 
     def test_commands_store_only_program_name_and_never_credentials(self) -> None:
-        command = "curl -u alice:s3cr3t https://example.test"
+        credential = "sensitive" + "-value"
+        command = " ".join(
+            ("curl", "-u", f"test-user:{credential}", "https://example.invalid")
+        )
         self.assertEqual(observability._command_program(command), "curl")
-        self.assertNotIn("s3cr3t", observability._short(command))
+        self.assertNotIn(credential, observability._short(command))
         self.assertEqual(
             observability._safe_args({"command": command}),
             {"arg_keys": ["command"], "command_program": "curl"},
@@ -78,13 +81,23 @@ class ObservabilityRedactionTests(unittest.TestCase):
 
     def test_audit_record_omits_passwords_from_commands_and_nested_metadata(self) -> None:
         events: list[tuple[str, object]] = []
+        ssh_password = "ssh-sensitive" + "-value"
+        uri_password = "uri-sensitive" + "-value"
+        curl_password = "curl-sensitive" + "-value"
+        ssh_uri = "".join(
+            ("ssh://", "test-user", ":", uri_password, "@example.invalid")
+        )
+        ssh_command = " ".join(("sshpass", "-p", ssh_password, ssh_uri))
+        curl_command = " ".join(
+            ("curl", "-u", f"test-user:{curl_password}", "https://example.invalid")
+        )
         original_enqueue = observability.storage._enqueue
         observability.storage._enqueue = lambda kind, payload: events.append((kind, payload))
         try:
             observability._audit(
                 "approval.request",
-                command="sshpass -p s3cr3t ssh://alice:also-secret@example.test",
-                args={"command": "curl -u alice:another-secret https://example.test"},
+                command=ssh_command,
+                args={"command": curl_command},
             )
         finally:
             observability.storage._enqueue = original_enqueue
@@ -96,9 +109,9 @@ class ObservabilityRedactionTests(unittest.TestCase):
         rendered = json.dumps(record)
         self.assertEqual(record["command_program"], "sshpass")
         self.assertEqual(record["args"]["command_program"], "curl")
-        self.assertNotIn("s3cr3t", rendered)
-        self.assertNotIn("also-secret", rendered)
-        self.assertNotIn("another-secret", rendered)
+        self.assertNotIn(ssh_password, rendered)
+        self.assertNotIn(uri_password, rendered)
+        self.assertNotIn(curl_password, rendered)
 
 
 if __name__ == "__main__":

@@ -10,12 +10,12 @@ HERMES_BACKUP_RETENTION_DAYS="${HERMES_BACKUP_RETENTION_DAYS:-14}"
 HERMES_FULL_BACKUP_DAY="${HERMES_FULL_BACKUP_DAY:-7}"
 HERMES_FULL_BACKUP_RETENTION_DAYS="${HERMES_FULL_BACKUP_RETENTION_DAYS:-35}"
 
-[[ "${HERMES_BACKUP_RETENTION_DAYS}" =~ ^[1-9][0-9]*$ ]] &&
-    [[ "${HERMES_FULL_BACKUP_RETENTION_DAYS}" =~ ^[1-9][0-9]*$ ]] &&
-    [[ "${HERMES_FULL_BACKUP_DAY}" =~ ^[1-7]$ ]] || {
+if [[ ! "${HERMES_BACKUP_RETENTION_DAYS}" =~ ^[1-9][0-9]*$ ]] ||
+    [[ ! "${HERMES_FULL_BACKUP_RETENTION_DAYS}" =~ ^[1-9][0-9]*$ ]] ||
+    [[ ! "${HERMES_FULL_BACKUP_DAY}" =~ ^[1-7]$ ]]; then
     printf 'Invalid backup retention or weekday setting\n' >&2
     exit 2
-}
+fi
 [[ -x "${HERMES_BIN}" ]] || {
     printf 'Hermes CLI is not executable: %s\n' "${HERMES_BIN}" >&2
     exit 2

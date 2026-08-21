@@ -7,7 +7,8 @@ umask 027
 readonly DEFAULT_HERMES_USER="hermes"
 readonly DEFAULT_HERMES_BRANCH="main"
 readonly INSTALLER_URL="https://hermes-agent.nousresearch.com/install.sh"
-readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
 readonly VPS_SETTINGS_FILE="$SCRIPT_DIR/config/vps-defaults.yml"
 readonly VPS_CONFIG_APPLIER="$SCRIPT_DIR/runtime/apply-config.py"
 
