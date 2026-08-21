@@ -300,5 +300,8 @@
     - name: Configure Hermes runtime
       ansible.builtin.import_tasks: tasks/runtime.yml
 
+    - name: Configure managed GitHub tooling and access
+      ansible.builtin.import_tasks: tasks/github.yml
+
     - name: Install and reconcile Hermes services
       ansible.builtin.import_tasks: tasks/services.yml

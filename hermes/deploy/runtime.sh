@@ -124,6 +124,8 @@ install_local_browser_automation() {
 configure_development_clis() {
   [[ "$INSTALL_DEV_CLIS" == true ]] || return 0
 
+  local github_wrapper="$SCRIPT_DIR/runtime/github-cli-wrapper.py"
+
   log "Configuring safe Git defaults for the Hermes user"
   run_as_hermes git config --global init.defaultBranch main
   run_as_hermes git config --global fetch.prune true
@@ -133,8 +135,16 @@ configure_development_clis() {
     run_as_hermes git lfs install --skip-repo
   fi
 
-  if ! command -v gh >/dev/null 2>&1; then
+  if [[ -x /usr/bin/gh && -f "$github_wrapper" ]]; then
+    install -o "$HERMES_USER" -g "$HERMES_GROUP" -m 0750 \
+      "$github_wrapper" "$HERMES_USER_HOME/.local/bin/gh"
+    run_as_hermes git config --global --replace-all credential.https://github.com.helper ""
+    run_as_hermes git config --global --add credential.https://github.com.helper \
+      "!$HERMES_USER_HOME/.local/bin/gh auth git-credential"
+  elif ! command -v gh >/dev/null 2>&1; then
     warn "GitHub CLI (gh) was not available; regular git clone/pull/push still work"
+  else
+    warn "managed GitHub CLI wrapper was not found: $github_wrapper"
   fi
 }
 
@@ -221,5 +231,3 @@ apply_recommended_defaults() {
   log "Applying shared VPS runtime settings"
   run_as_hermes "$hermes_python" "$VPS_CONFIG_APPLIER" "${args[@]}"
 }
-
-

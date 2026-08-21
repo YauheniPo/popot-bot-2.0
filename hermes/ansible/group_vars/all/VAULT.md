@@ -80,8 +80,14 @@ Vault password или API keys в чат, Git, issue либо shell history.
 - `BRAVE_SEARCH_API_KEY` — поиск через Brave;
 - `TELEGRAM_BOT_TOKEN` вместе с `TELEGRAM_ALLOWED_USERS` — запуск Telegram
   gateway;
+- `GITHUB_TOKEN` — private repositories, PR/reviews/issues и GitHub Actions
+  через managed `gh`; используйте fine-grained PAT с selected repositories;
 - `hermes_grafana_admin_password` — пароль администратора Grafana;
 - `tailscale_auth_key` — временный ключ подключения Tailscale.
+
+Для совместимости deployment также принимает `GH_TOKEN` или
+`GITHUB_PERSONAL_ACCESS_TOKEN`, но в managed Vault предпочтительно единое имя
+`GITHUB_TOKEN`, которое напрямую понимают bundled Hermes GitHub skills.
 
 При применении playbook Hermes получает в своём `workspace/AGENTS.md` только
 отсортированные **названия** ключей из `hermes_secret_env`. Это помогает ему
@@ -112,6 +118,7 @@ hermes_secret_env:
   FIRECRAWL_API_KEY: "replace-inside-ansible-vault"
   TELEGRAM_BOT_TOKEN: "replace-inside-ansible-vault"
   TELEGRAM_ALLOWED_USERS: "123456789"
+  GITHUB_TOKEN: "replace-inside-ansible-vault"
 
 hermes_llm_config:
   model:

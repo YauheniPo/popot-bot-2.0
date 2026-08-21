@@ -23,6 +23,18 @@ hermes_enable_tailscale: "{{ vps_deploy.features.tailscale }}"
 # group. That group is root-equivalent; set false only for a restricted VPS.
 hermes_host_admin_enabled: "{{ vps_deploy.features.host_admin }}"
 
+# Git/GitHub non-secret policy comes from the shared VPS settings file.
+hermes_github_enabled: "{{ vps_github.enabled }}"
+hermes_github_require_auth: "{{ vps_github.require_auth }}"
+hermes_github_host: "{{ vps_github.host }}"
+hermes_github_expected_login: "{{ vps_github.expected_login }}"
+hermes_github_default_owner: "{{ vps_github.default_owner }}"
+hermes_github_access_probe_repository: "{{ vps_github.access_probe_repository }}"
+hermes_github_repositories_dir: "{{ vps_github.repositories_dir }}"
+hermes_github_write_owners: "{{ vps_github.write_owners }}"
+hermes_github_write_repositories: "{{ vps_github.write_repositories }}"
+hermes_git_identity: "{{ vps_github.git_identity }}"
+
 # Set true only after a successful SSH login through Tailscale. It enables UFW
 # and blocks public TCP/22 while allowing SSH on tailscale0.
 hermes_lock_public_ssh: "{{ vps_deploy.features.lock_public_ssh }}"

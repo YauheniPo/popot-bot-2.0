@@ -50,6 +50,23 @@ vps_runtime:
       set:
         web.extract_backend: firecrawl
 
+# Managed GitHub access for terminal + bundled Hermes GitHub skills. The token
+# itself belongs in Ansible Vault as GITHUB_TOKEN; this section is non-secret.
+vps_github:
+  enabled: true
+  require_auth: true
+  host: github.com
+  expected_login: YauheniPo
+  default_owner: YauheniPo
+  access_probe_repository: YauheniPo/popot-bot-2.0
+  repositories_dir: /home/hermes/workspace/repositories
+  write_owners:
+    - YauheniPo
+  write_repositories: []
+  git_identity:
+    name: YauheniPo
+    email: ip.popovich@mail.ru
+
 # Only these application-owned services are restarted by deployment. Network,
 # SSH, Docker, and unrelated host services are intentionally excluded.
 vps_services:

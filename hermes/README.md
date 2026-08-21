@@ -186,7 +186,7 @@ sudo ./deploy-hermes.sh --portal
 | OpenRouter LLM | Готово после Vault deploy | Задать `OPENROUTER_API_KEY`, model и разумный `model.max_tokens` в `hermes_llm_config` |
 | API keys через Ansible Vault | Готово | Создать и зашифровать локальный `group_vars/all/vault.yml` |
 | Public GitHub clone | Готово сразу | Ничего |
-| Private clone, push, PR, issues | CLI установлен | `gh auth login`, Git name/email, минимальные repo permissions |
+| Private clone, push, PR, reviews, issues, Actions | Управляется Ansible | `GITHUB_TOKEN` с минимальными repo permissions в Vault; identity и access probe находятся в `vps_github` |
 | Chromium/browser automation | Установлено | Иногда login конкретного сайта |
 | `web_search` | Автоматический выбор backend Hermes | Для Brave задать `BRAVE_SEARCH_API_KEY`; либо войти в Nous Portal/настроить другой backend |
 | Gmail и Calendar | CLI и skill готовы | Google Cloud project и OAuth consent |
@@ -211,7 +211,7 @@ terminal и не создают отдельные MCP schemas в model context.
 | Группа | Команды/пакеты | Для чего нужны |
 |---|---|---|
 | База | `ca-certificates`, `curl`, `wget` | HTTPS, API и загрузка файлов |
-| Git и GitHub | `git`, `gh`, `git-lfs`, `openssh-client` | clone/fetch/branch/commit/push/PR/issues и большие файлы |
+| Git и GitHub | `git`, managed `gh`, `git-lfs`, `openssh-client` | clone/fetch/branch/commit/push/PR/reviews/issues/Actions и большие файлы |
 | Поиск и данные | `ripgrep`, `jq`, `sqlite3` | Быстрый поиск, JSON и локальная аналитика |
 | Сборка | `build-essential`, `pkg-config` | Компиляция C/C++ dependencies и многих language packages |
 | Shell quality | `shellcheck` | Проверка Bash-скриптов |
@@ -308,11 +308,13 @@ GitHub permissions и messenger tokens подключаются отдельно
 | [`docker/`](docker) | Локальный Docker image c GitHub CLI, Compose, bootstrap и ignored `local.env` для provider, Telegram и GitHub credentials |
 | [`docker/AGENTS.md`](docker/AGENTS.md) | Поведение Hermes в local container: `sudo` только внутри container, без доступа к Docker host или macOS |
 | [`ansible/playbook.yml`](ansible/playbook.yml) | Порядок provision/restore; network, runtime и services вынесены в [`ansible/tasks/`](ansible/tasks) |
+| [`ansible/tasks/github.yml`](ansible/tasks/github.yml) | Git/GitHub packages, identity, credential helper, private-repository probe и managed workflow instructions |
 | [`ansible/AGENTS.md`](ansible/AGENTS.md) | Поведение Hermes на выделенном VPS: полный `sudo`, запрет удаления и обращения с secrets |
 | [`ansible/inventory.example.ini`](ansible/inventory.example.ini) | Шаблон inventory; рабочий файл — `ansible/inventory.ini`, он игнорируется Git |
 | [`ansible/group_vars/all/vars.yml`](ansible/group_vars/all/vars.yml) | Публичные IaC defaults без credentials |
 | [`ansible/group_vars/all/vault.yml.example`](ansible/group_vars/all/vault.yml.example) | Шаблон private API keys и tokens; рабочий файл — `ansible/group_vars/all/vault.yml`, он шифруется и игнорируется Git; команды находятся в [`VAULT.md`](ansible/group_vars/all/VAULT.md) |
-| [`ansible/templates/hermes.env.j2`](ansible/templates/hermes.env.j2) | Безопасно формирует Hermes `.env` из расшифрованных только на время deploy значений |
+| [`ansible/templates/hermes.env.j2`](ansible/templates/hermes.env.j2) | Безопасно формирует Hermes `.env` из расшифрованных только на время deploy значений и нормализует GitHub token alias |
+| [`runtime/github-cli-wrapper.py`](runtime/github-cli-wrapper.py) | Передаёт `gh` только managed GitHub token из Hermes environment без отдельного plaintext credential store |
 | [`check.sh`](check.sh) | Одна локальная и CI-команда для Bash, Python tests, Ansible syntax и whitespace |
 
 ### Единый файл критических настроек VPS
@@ -733,7 +735,7 @@ terminal без отдельного MCP:
 
 | Инструмент | Простое объяснение |
 |---|---|
-| `git`, `gh`, Git LFS, SSH | Клонировать GitHub-репозитории, создавать ветки, коммиты, PR, issues и делать push |
+| `git`, managed `gh`, Git LFS, SSH | Клонировать GitHub-репозитории, создавать ветки, коммиты, PR/reviews/issues, читать Actions и делать push |
 | `gws` | Работать с Gmail, Calendar, Drive, Contacts, Sheets и Docs через Google OAuth |
 | `build-essential`, `pkg-config`, `shellcheck` | Собирать проекты и проверять shell-скрипты |
 | `jq`, SQLite | Читать JSON и работать с локальными базами данных |
@@ -741,10 +743,11 @@ terminal без отдельного MCP:
 | `dig`, `lsof`, `nc`, `file`, `tree` | Диагностировать сеть, процессы, порты и структуру файлов |
 | `ffmpeg`, `ripgrep` | Обрабатывать аудио/видео и быстро искать по исходному коду |
 
-Для Git автоматически включаются безопасные удобные настройки: ветка `main`
-по умолчанию, очистка удалённых веток при fetch и автоматическая привязка новой
-ветки при первом push. Имя и email коммитов скрипт не придумывает — их нужно
-задать самому.
+Для Git автоматически включаются безопасные настройки: ветка `main` по
+умолчанию, prune веток/tags, fast-forward-only pull и автоматическая привязка
+новой ветки при первом push. Ansible берёт commit identity, GitHub owner,
+workspace и write boundaries из `vps_github` в едином файле
+[`config/vps-defaults.yml`](config/vps-defaults.yml).
 
 ### Web search и работа с интернетом
 
@@ -842,23 +845,42 @@ Docs/Sheets.
 
 ### GitHub: clone, файлы, commit, push и PR
 
-Hermes сможет клонировать публичные репозитории сразу, а приватные — после
-авторизации. Он сможет создавать, менять и удалять файлы внутри доступных
-пользователю `hermes` каталогов, запускать тесты, делать commit, push и PR.
+Hermes использует встроенный terminal и bundled skills `github-auth`,
+`github-code-review`, `github-issue-to-pr`, `github-issues`,
+`github-pr-workflow` и `github-repo-management`. Отдельный GitHub MCP не нужен.
+`git` выполняет локальные операции, а `gh` — PR, unresolved review threads,
+issues, Actions и API-запросы.
 
-Один раз настройте личность Git и вход в GitHub:
+Для Ansible deployment задайте fine-grained PAT в encrypted Vault:
 
-```bash
-sudo -u hermes -H git config --global user.name "Your Name"
-sudo -u hermes -H git config --global user.email "you@example.com"
-sudo -u hermes -H gh auth login
+```yaml
+hermes_secret_env:
+  GITHUB_TOKEN: "replace-inside-ansible-vault"
 ```
 
-Выдавайте только нужные репозитории и права. Для постоянного VPS лучше
-отдельный fine-grained token, GitHub App либо отдельный SSH deploy key, а не
-основной личный ключ. Push сработает только туда, куда разрешает GitHub;
-защищённые ветки по-прежнему потребуют PR и проверки. Для большинства задач
-`git` + `gh` экономнее отдельного GitHub MCP.
+В `vps_github` задаются ожидаемый login, default owner, commit identity,
+repository workspace, write owners и приватный access probe. Каждый deploy
+устанавливает `git`/`gh`/LFS/SSH/`jq`/`ripgrep`/`rsync`, проверяет GitHub login,
+доступ к probe repository и HTTPS clone/fetch. Managed `gh` wrapper получает
+токен из Hermes `.env` во время запуска и не создаёт второй plaintext token
+store. После изменения Vault gateway перезапускается и получает новый token.
+
+Рекомендуемые fine-grained permissions: Metadata read, Contents read/write,
+Pull requests read/write, Issues read/write и Actions read. Workflows
+read/write добавляйте только если Hermes должен изменять `.github/workflows`.
+Токен ограничьте владельцем `YauheniPo` и только нужными repositories.
+
+Проверка после deploy не раскрывает token:
+
+```bash
+sudo -u hermes -H /home/hermes/.local/bin/gh auth status
+sudo -u hermes -H /home/hermes/.local/bin/gh api user --jq .login
+sudo -u hermes -H /home/hermes/.local/bin/gh repo view YauheniPo/popot-bot-2.0
+```
+
+Workspace `AGENTS.md` предписывает сохранять dirty worktrees, работать через
+отдельную branch + PR, учитывать unresolved review threads и не выполнять
+опасные repository/admin операции без явного разрешения владельца.
 
 ### Работа 24/7
 

@@ -32,6 +32,8 @@ hermes_host_admin_enabled: true
 #   # Providing both values starts the Telegram gateway automatically.
 #   TELEGRAM_BOT_TOKEN: "replace-inside-ansible-vault"
 #   TELEGRAM_ALLOWED_USERS: "123456789"
+#   # Preferred name for the bundled Hermes GitHub skills and gh. Use a
+#   # fine-grained PAT limited to the repositories and permissions you need.
 #   GITHUB_TOKEN: "replace-inside-ansible-vault"
 
 # Optional authoritative OpenRouter overlay for /home/hermes/.hermes/config.yaml.

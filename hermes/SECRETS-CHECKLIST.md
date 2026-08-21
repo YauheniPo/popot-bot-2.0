@@ -78,17 +78,19 @@ TELEGRAM_ALLOWED_USERS=<numeric-user-id>
 
 | Готово | Данные | Рекомендация | Хранение |
 |---|---|---|---|
-| [ ] | GitHub OAuth через `gh auth login` | Предпочтительно для личной работы и PR | credential store пользователя `hermes` |
-| [ ] | Fine-grained token `GH_TOKEN` | Для automation с минимальными repo permissions | Ansible Vault, если OAuth неудобен |
+| [ ] | Fine-grained token `GITHUB_TOKEN` | Предпочтительно для управляемого VPS и bundled GitHub skills | Ansible Vault → managed `.env` `0600` |
+| [ ] | GitHub OAuth через `gh auth login` | Для неуправляемой интерактивной установки | credential store пользователя `hermes` |
 | [ ] | GitHub deploy key | Для одного repository и SSH clone/push | private key на VPS mode `0600`; public часть в GitHub |
-| [ ] | `git user.name` | Имя автора commit | Git config; не секрет |
-| [ ] | `git user.email` | Email автора commit | Git config; персональные данные, но не credential |
+| [ ] | `vps_github.git_identity` | Имя/email автора commit | `config/vps-defaults.yml`; не credential |
 
-`GITHUB_TOKEN` в Hermes также используется Skills Hub, а для GitHub Copilot
-inference существуют отдельные `COPILOT_GITHUB_TOKEN`/`GH_TOKEN`. Не выдавайте
-classic или organization-wide token, если достаточно fine-grained token для
-одного repository. Никогда не используйте SSH private key, которым вы входите
-на VPS, как GitHub deploy key.
+Минимальные fine-grained permissions для полного PR workflow: Metadata read,
+Contents read/write, Pull requests read/write, Issues read/write и Actions
+read. Workflows read/write требуется только для изменения workflow-файлов.
+`GITHUB_TOKEN` также понимают bundled Hermes GitHub skills; managed `gh`
+wrapper использует его без второго plaintext credential store. Для GitHub
+Copilot inference существуют отдельные credentials. Не выдавайте classic или
+organization-wide token, если достаточно selected repositories. Никогда не
+используйте SSH private key входа на VPS как GitHub deploy key.
 
 ## Gmail, Calendar и Google Workspace
 
@@ -152,7 +154,7 @@ credentials. Следите за диском VPS и периодически п
 |---|---|---|
 | Hermes API keys и Telegram token | encrypted Ansible `vault.yml` → Hermes `.env` `0600` | README, Git, shell history, Telegram |
 | Google OAuth JSON/token | Hermes home `0600` + encrypted full backup | `.env`, Git, сообщения |
-| GitHub OAuth | credential store `gh` пользователя `hermes` | README, общий root account |
+| GitHub PAT | encrypted Ansible Vault → managed Hermes `.env` `0600` | README, Git, shell history, отдельный plaintext `gh` store |
 | VPS SSH private key | защищённый управляющий компьютер/password manager | VPS, Hermes home, Git |
 | Ansible Vault password | отдельный password manager | repository, VPS, `vault.yml` |
 | Provider/model IDs и endpoints | `hermes_llm_config` в encrypted Vault → `config.yaml` | Inline `api_key`, README, shell history |
@@ -177,8 +179,9 @@ sudo stat -c '%a %U:%G %n' \
   /home/hermes/.hermes/google_client_secret.json \
   /home/hermes/.hermes/google_token.json
 
-# GitHub login без печати token
-sudo -u hermes -H gh auth status
+# GitHub login и private-repository access без печати token
+sudo -u hermes -H /home/hermes/.local/bin/gh auth status
+sudo -u hermes -H /home/hermes/.local/bin/gh repo view YauheniPo/popot-bot-2.0
 ```
 
 Не используйте `cat`, `env`, `set`, `printenv`, `hermes dump --show-keys` или

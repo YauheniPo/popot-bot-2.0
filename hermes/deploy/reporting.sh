@@ -31,7 +31,7 @@ print_summary() {
 
   if [[ "$INSTALL_DEV_CLIS" == true ]]; then
     printf '\nConnect GitHub and set the commit identity:\n'
-    printf '  sudo -u %q -H gh auth login\n' "$HERMES_USER"
+    printf '  sudo -u %q -H %q auth login\n' "$HERMES_USER" "$HERMES_USER_HOME/.local/bin/gh"
     printf '  sudo -u %q -H git config --global user.name "Your Name"\n' "$HERMES_USER"
     printf '  sudo -u %q -H git config --global user.email "you@example.com"\n' "$HERMES_USER"
   fi
@@ -96,5 +96,4 @@ print_summary() {
   printf '\nRun diagnostics:\n'
   printf '  sudo -u %q -H %q doctor\n' "$HERMES_USER" "$HERMES_BIN"
 }
-
 

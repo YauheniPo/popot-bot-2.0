@@ -25,6 +25,14 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertEqual(settings["vps_runtime"]["set"]["browser.backend"], "off")
         self.assertEqual(settings["vps_runtime"]["set"]["display.tool_progress"], "off")
         self.assertIn("agent.max_turns", settings["vps_runtime"]["unset"])
+        self.assertTrue(settings["vps_github"]["enabled"])
+        self.assertTrue(settings["vps_github"]["require_auth"])
+        self.assertEqual(settings["vps_github"]["expected_login"], "YauheniPo")
+        self.assertEqual(
+            settings["vps_github"]["access_probe_repository"],
+            "YauheniPo/popot-bot-2.0",
+        )
+        self.assertEqual(settings["vps_github"]["write_owners"], ["YauheniPo"])
         self.assertIn("hermes-gateway.service", settings["vps_services"]["gateway"])
 
     def test_build_operations_applies_defaults_capabilities_and_unsets_overrides(self) -> None:

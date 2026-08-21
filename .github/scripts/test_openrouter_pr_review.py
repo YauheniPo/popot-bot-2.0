@@ -9,6 +9,9 @@ from unittest import mock
 
 
 SCRIPT_PATH = Path(__file__).with_name("openrouter_pr_review.py")
+sys.path.insert(0, str(SCRIPT_PATH.parent))
+import pr_review_context
+
 SPEC = importlib.util.spec_from_file_location("openrouter_pr_review", SCRIPT_PATH)
 assert SPEC is not None and SPEC.loader is not None
 reviewer = importlib.util.module_from_spec(SPEC)
@@ -117,7 +120,7 @@ class OpenRouterRequestTest(unittest.TestCase):
             mock.patch.object(reviewer, "request_json", return_value=response) as request,
             mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
         ):
-            result = reviewer.review_chunk("api-key", "review-model", chunk, 1, 2)
+            result = reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 2)
 
         self.assertEqual(result["findings"], [])
         request_body = request.call_args.args[3]
@@ -125,7 +128,10 @@ class OpenRouterRequestTest(unittest.TestCase):
         self.assertTrue(request_body["provider"]["require_parameters"])
         self.assertEqual(request_body["response_format"]["type"], "json_schema")
         self.assertTrue(request_body["response_format"]["json_schema"]["strict"])
+        self.assertIn("rules", request_body["messages"][0]["content"])
+        self.assertIn("OpenRouter adapter instructions", request_body["messages"][0]["content"])
         self.assertIn("chunk 1 of 2", request_body["messages"][1]["content"])
+        self.assertIn("UNRESOLVED_REVIEW_THREADS", request_body["messages"][1]["content"])
 
     def test_retries_transient_provider_failures(self) -> None:
         response = {
@@ -143,7 +149,7 @@ class OpenRouterRequestTest(unittest.TestCase):
             mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
             mock.patch.object(reviewer.time, "sleep") as sleep,
         ):
-            reviewer.review_chunk("api-key", "review-model", chunk, 1, 1)
+            reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
 
         self.assertEqual(request.call_count, 2)
         sleep.assert_called_once_with(1)
@@ -168,13 +174,41 @@ class GitHubReviewTest(unittest.TestCase):
             "Restore the expected value.",
         )
 
+    def publication(self) -> reviewer.PublicationPlan:
+        return reviewer.PublicationPlan((self.finding,), (), ())
+
+    def review_thread(self) -> reviewer.ReviewThread:
+        return reviewer.ReviewThread(
+            node_id="thread-1",
+            path="app.py",
+            side="RIGHT",
+            line=5,
+            original_line=5,
+            outdated=False,
+            viewer_can_reply=True,
+            comments=(
+                pr_review_context.ReviewComment(
+                    "comment-node",
+                    101,
+                    "reviewer",
+                    "The current implementation breaks a different behavior.",
+                ),
+            ),
+        )
+
     def test_publishes_formal_review_with_inline_comments(self) -> None:
         with (
             mock.patch.object(reviewer, "request_json", side_effect=[[], {}]) as request,
             mock.patch("builtins.print"),
         ):
             reviewer.publish_review(
-                "owner/repository", "2", "token", "review-model", "head-sha", self.plan, [self.finding]
+                "owner/repository",
+                "2",
+                "token",
+                "review-model",
+                "head-sha",
+                self.plan,
+                self.publication(),
             )
 
         post_call = request.call_args_list[1]
@@ -193,10 +227,129 @@ class GitHubReviewTest(unittest.TestCase):
             mock.patch("builtins.print"),
         ):
             reviewer.publish_review(
-                "owner/repository", "2", "token", "review-model", "head-sha", self.plan, []
+                "owner/repository",
+                "2",
+                "token",
+                "review-model",
+                "head-sha",
+                self.plan,
+                reviewer.PublicationPlan((), (), ()),
             )
 
         request.assert_called_once()
+
+    def test_replies_to_existing_thread_without_duplicate_inline_comment(self) -> None:
+        follow_up = reviewer.FindingFollowUp(self.finding, self.review_thread())
+        publication = reviewer.PublicationPlan((), (follow_up,), ())
+        with (
+            mock.patch.object(reviewer, "request_json", side_effect=[[], {}]) as request,
+            mock.patch.object(reviewer, "reply_to_review_thread") as reply,
+            mock.patch("builtins.print"),
+        ):
+            reviewer.publish_review(
+                "owner/repository",
+                "2",
+                "token",
+                "review-model",
+                "head-sha",
+                self.plan,
+                publication,
+            )
+
+        reply.assert_called_once()
+        self.assertEqual(reply.call_args.args[:4], ("owner/repository", "2", "token", 101))
+        self.assertIn("openrouter-thread-followup:head-sha:thread-1", reply.call_args.args[4])
+        review_payload = request.call_args_list[1].args[3]
+        self.assertEqual(review_payload["comments"], [])
+
+    def test_does_not_repeat_follow_up_for_the_same_head_and_thread(self) -> None:
+        original = self.review_thread()
+        thread = reviewer.ReviewThread(
+            node_id=original.node_id,
+            path=original.path,
+            side=original.side,
+            line=original.line,
+            original_line=original.original_line,
+            outdated=original.outdated,
+            viewer_can_reply=original.viewer_can_reply,
+            comments=(
+                *original.comments,
+                pr_review_context.ReviewComment(
+                    "existing-reply",
+                    102,
+                    "github-actions",
+                    "<!-- openrouter-thread-followup:head-sha:thread-1 -->",
+                ),
+            ),
+        )
+        publication = reviewer.PublicationPlan(
+            (),
+            (reviewer.FindingFollowUp(self.finding, thread),),
+            (),
+        )
+        with (
+            mock.patch.object(reviewer, "request_json", side_effect=[[], {}]),
+            mock.patch.object(reviewer, "reply_to_review_thread") as reply,
+            mock.patch("builtins.print"),
+        ):
+            reviewer.publish_review(
+                "owner/repository",
+                "2",
+                "token",
+                "review-model",
+                "head-sha",
+                self.plan,
+                publication,
+            )
+
+        reply.assert_not_called()
+
+
+class PublicationPlanTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.finding = reviewer.Finding(
+            "P1",
+            "network.yml",
+            "RIGHT",
+            48,
+            "Tailscale key exposed",
+            "The Tailscale authentication key is visible in process argv.",
+            "Read the key from a protected file.",
+        )
+
+    def review_thread(self, body: str) -> reviewer.ReviewThread:
+        return reviewer.ReviewThread(
+            node_id="thread-1",
+            path="network.yml",
+            side="RIGHT",
+            line=48,
+            original_line=48,
+            outdated=False,
+            viewer_can_reply=True,
+            comments=(
+                pr_review_context.ReviewComment("comment-node", 101, "reviewer", body),
+            ),
+        )
+
+    def test_suppresses_semantic_duplicate(self) -> None:
+        publication = reviewer.build_publication_plan(
+            [self.finding],
+            (self.review_thread("Tailscale auth key exposed in argv"),),
+        )
+
+        self.assertEqual(publication.new_findings, ())
+        self.assertEqual(publication.follow_ups, ())
+        self.assertEqual(publication.duplicates, (self.finding,))
+
+    def test_routes_distinct_same_anchor_evidence_to_reply(self) -> None:
+        publication = reviewer.build_publication_plan(
+            [self.finding],
+            (self.review_thread("This command resets previously advertised routes"),),
+        )
+
+        self.assertEqual(publication.new_findings, ())
+        self.assertEqual(publication.follow_ups[0].finding, self.finding)
+        self.assertEqual(publication.duplicates, ())
 
 
 if __name__ == "__main__":
