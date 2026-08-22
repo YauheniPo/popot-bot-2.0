@@ -90,6 +90,7 @@ run_tailscale_login() {
 install_development_clis() {
   local package
   local -a requested_packages=(
+    ansible-core
     build-essential
     dnsutils
     file
@@ -100,6 +101,8 @@ install_development_clis() {
     netcat-openbsd
     openssh-client
     pkg-config
+    python3-pytest
+    python3-yaml
     rsync
     shellcheck
     sqlite3
