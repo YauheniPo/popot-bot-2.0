@@ -81,10 +81,16 @@ id "${HERMES_USER}" >/dev/null 2>&1 || die "user does not exist: ${HERMES_USER}"
 for path in "${USER_HOME}" "${HERMES_HOME}" "${HERMES_BIN}"; do
     [[ "${path}" =~ ^/[A-Za-z0-9._/@+-]+$ ]] || die "unsafe or unsupported path: ${path}"
 done
-# The CLI path is later executed in a privileged context. A symlink planted
-# in a parent directory could redirect that execution to attacker-controlled
-# code, so the final resolved target must not be a link.
-[[ ! -L "${HERMES_BIN}" ]] || die "HERMES_BIN must not be a symlink: ${HERMES_BIN}"
+# The CLI path is later executed in a privileged context. An attacker with
+# write access to any parent directory could plant a symlink that redirects
+# that execution, so reject a link at every component of the absolute path,
+# not only at the final element.
+path_component="${HERMES_BIN}"
+while [[ "${path_component}" != "/" ]]; do
+    [[ ! -L "${path_component}" ]] ||
+        die "HERMES_BIN path must not contain a symlink component: ${path_component}"
+    path_component="$(dirname -- "${path_component}")"
+done
 
 HERMES_GROUP="$(id -gn "${HERMES_USER}")"
 
