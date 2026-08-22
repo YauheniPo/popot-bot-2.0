@@ -32,6 +32,20 @@
   changed_when: "'installed Edge TTS transient retry' in hermes_tts_retry.stdout"
   when: hermes_tts_tool_files.matched | int > 0
 
+- name: Apply local Hermes gateway command patches
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ hermes_bundle_dir }}/runtime/apply-hermes-patches.py"
+  become_user: "{{ hermes_user }}"
+  environment:
+    HERMES_HOME: "{{ hermes_home }}"
+    HERMES_INSTALL_DIR: "{{ hermes_home }}/hermes-agent"
+    HOME: "{{ hermes_user_home }}"
+  register: hermes_local_patches
+  changed_when: "'applied' in hermes_local_patches.stdout"
+  failed_when: hermes_local_patches.rc != 0
+
 - name: Report when the upstream Edge TTS implementation cannot be located
   ansible.builtin.debug:
     msg: >-

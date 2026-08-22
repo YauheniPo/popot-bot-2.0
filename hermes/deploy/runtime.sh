@@ -208,6 +208,18 @@ install_local_browser_automation() {
     --hermes-home "$HERMES_HOME"
 }
 
+apply_local_hermes_patches() {
+  local patch_applier="$SCRIPT_DIR/runtime/apply-hermes-patches.py"
+  [[ -f "$patch_applier" ]] || {
+    warn "Hermes patch applier is missing: $patch_applier"
+    return 0
+  }
+
+  log "Applying local Hermes gateway command patches"
+  run_as_hermes env HERMES_INSTALL_DIR="$HERMES_INSTALL_DIR" \
+    python3 "$patch_applier"
+}
+
 configure_development_clis() {
   [[ "$INSTALL_DEV_CLIS" == true ]] || return 0
 
