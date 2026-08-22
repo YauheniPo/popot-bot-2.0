@@ -124,6 +124,10 @@ jobs:
           fi
           sleep "${OPENROUTER_REVIEW_COOLDOWN_SECONDS}"
 
+      - name: Install bubblewrap for Claude Code subprocess isolation
+        shell: bash
+        run: sudo apt-get update -qq && sudo apt-get install -y bubblewrap
+
       - name: Review with Claude Code via OpenRouter
         id: claude_review
         uses: anthropics/claude-code-action@5ee796a55f92566ecd7e39d70dd613abcbea0d7c # v1
