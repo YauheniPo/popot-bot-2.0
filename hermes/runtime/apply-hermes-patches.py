@@ -8,8 +8,10 @@ a warning instead of breaking the deploy. Nothing is written unless the old
 code matches exactly.
 
 Covered customizations (not yet upstream):
- * gateway commands: /gw-restart alias for /restart and /model-global
+ * gateway commands: /gw-restart (canonical, with /restart and /gw_restart
+   aliases so the Telegram menu entry resolves) and /model-global
  * /status shows reasoning effort and visibility
+ * busy-session dispatch handles /gw-restart like /restart
 The existing Edge TTS retry lives in ops/apply-edge-tts-retry.py and is not
 touched here.
 """
@@ -28,6 +30,8 @@ HERMES_AGENT_DIR = Path(
 _PREFIX = "# Local Hermes:"
 
 _PATCHES: list[tuple[str, str, str, str]] = [
+    # NOTE: every ``new`` block MUST include its marker as a comment line so
+    # the idempotency check (marker already present -> skip) works on re-run.
     (
         "hermes_cli/commands.py",
         _PREFIX + " model-global CommandDef",
@@ -38,7 +42,7 @@ _PATCHES: list[tuple[str, str, str, str]] = [
         '''    CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
                args_hint="[model] [--provider name] [--global|--session] [--refresh]",
                busy_policy="reject", busy_handler="model"),
-    # Local Hermes: model-global alias for /model <name> --global
+    # Local Hermes: model-global CommandDef
     CommandDef("model-global", "Set the global default model for all topics/sessions", "Configuration",
                aliases=("model_global",),
                args_hint="[model] [--provider name]",
@@ -47,12 +51,13 @@ _PATCHES: list[tuple[str, str, str, str]] = [
     ),
     (
         "hermes_cli/commands.py",
-        _PREFIX + " gw-restart alias",
+        _PREFIX + " gw-restart canonical",
         '''    CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True, busy_policy="dispatch"),
 ''',
-        '''    CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
-               gateway_only=True, busy_policy="dispatch", aliases=("gw-restart",)),
+        '''    # Local Hermes: gw-restart canonical
+    CommandDef("gw-restart", "Gracefully restart the gateway after draining active runs", "Session",
+               gateway_only=True, busy_policy="dispatch", aliases=("restart", "gw_restart")),
 ''',
     ),
     (
@@ -65,7 +70,7 @@ _PATCHES: list[tuple[str, str, str, str]] = [
         """Handle /model-global — switch model persistently for ALL topics/sessions.
 
         Thin wrapper: rewrites the incoming command text to
-        ``model <args> --global`` and delegates to the standard /model
+        ``/model <args> --global`` and delegates to the standard /model
         pipeline so parsing, provider resolution, and config persistence
         stay in one place (hermes_cli.model_switch.switch_model).
         """
@@ -76,14 +81,43 @@ _PATCHES: list[tuple[str, str, str, str]] = [
                 "Sets the global default model in config.yaml — applies to every "
                 "topic/session, not just this one."
             )
+        # Keep the leading "/" on the rewritten text: get_command_args()
+        # only splits arguments when is_command() sees a leading "/", so a
+        # bare "model ..." text makes _handle_model_command read the whole
+        # string (command word included) as the model name and fail with
+        # "Model names cannot contain spaces."
         if "--global" in raw_args:
-            event.text = f"model {raw_args}"
+            event.text = f"/model {raw_args}"
         else:
-            event.text = f"model {raw_args} --global"
+            event.text = f"/model {raw_args} --global"
         return await self._handle_model_command(event)
 
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model.
+        # Local Hermes: model-global handler
+''',
+    ),
+    (
+        "gateway/slash_commands.py",
+        _PREFIX + " model-global rewrite slash fix",
+        '''        # Rewrite the event text to go through the shared /model handler with
+        # the --global flag appended, so persistence and provider logic are
+        # identical to /model <name> --global.
+        if "--global" in raw_args:
+            event.text = f"model {raw_args}"
+        else:
+            event.text = f"model {raw_args} --global"
+''',
+        '''        # Rewrite the event text to go through the shared /model handler with
+        # the --global flag appended, so persistence and provider logic are
+        # identical to /model <name> --global.
+        # Keep the leading "/" on the rewritten text (Local Hermes): without it
+        # get_command_args() returns the whole "model ..." line and the command
+        # word leaks into the model name ("Model names cannot contain spaces.").
+        if "--global" in raw_args:
+            event.text = f"/model {raw_args}"
+        else:
+            event.text = f"/model {raw_args} --global"
 ''',
     ),
     (
@@ -96,8 +130,7 @@ _PATCHES: list[tuple[str, str, str, str]] = [
             return await self._handle_model_command(event)
 
         if canonical in ("model-global", "model_global"):
-            # Alias for /model <name> --global: persist to config.yaml so the
-            # switch applies to every topic/session, not just this one.
+            # Local Hermes: model-global route
             return await self._handle_model_global_command(event)
 ''',
     ),
@@ -108,18 +141,28 @@ _PATCHES: list[tuple[str, str, str, str]] = [
             return await self._handle_restart_command(event)
 ''',
         '''        if canonical in ("restart", "gw-restart"):
-            # /gw-restart is the user-facing alias; /restart is kept for
-            # backward compatibility with scripts that already use it.
+            # Local Hermes: gw-restart route
             return await self._handle_restart_command(event)
+''',
+    ),
+    (
+        "gateway/run.py",
+        _PREFIX + " gw-restart busy map",
+        '''                "restart": self._handle_restart_command,
+''',
+        '''                "restart": self._handle_restart_command,
+                "gw-restart": self._handle_restart_command,  # Local Hermes: gw-restart busy map
 ''',
     ),
     (
         "gateway/slash_commands.py",
         _PREFIX + " status reasoning",
         '''            t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),
+        ])
 ''',
         '''            t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),
-        # Local Hermes: report reasoning effort and whether it is shown.
+        ])
+        # Local Hermes: status reasoning
         reasoning_cfg = getattr(self, "_reasoning_config", None)
         if isinstance(reasoning_cfg, dict) and reasoning_cfg.get("enabled") is False:
             reasoning_effort = "disabled"
