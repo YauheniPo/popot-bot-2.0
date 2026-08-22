@@ -111,6 +111,10 @@ def _required_env(name: str) -> str:
 
 
 def _github_token() -> str:
+    # Precedence is deliberate. GitHub Actions exports GITHUB_TOKEN on every
+    # run; GH_TOKEN is the documented CLI-level override; OVERRIDE_GITHUB_TOKEN
+    # is the explicit escape hatch for the deterministic publish step and for
+    # local testing. Keep this order and the names in sync with the workflow env.
     for name in ("GITHUB_TOKEN", "GH_TOKEN", "OVERRIDE_GITHUB_TOKEN"):
         value = os.environ.get(name)
         if value:

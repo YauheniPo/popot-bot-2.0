@@ -59,8 +59,14 @@ fi
 # Hermes --quick creates a consistent state snapshot in state-snapshots rather
 # than a zip at --output.  Only the scheduled full run has an archive to move.
 if [[ "${backup_mode}" == "full" ]]; then
-    chmod 600 "${temporary_file}"
-    mv -f "${temporary_file}" "${backup_file}"
+    # Move first so a chmod failure can never destroy a completed backup:
+    # on mv failure the EXIT trap removes the .partial file and the next
+    # scheduled run recreates it.
+    if ! mv -f "${temporary_file}" "${backup_file}"; then
+        printf 'Failed to move the completed full backup into place\n' >&2
+        exit 2
+    fi
+    chmod 600 "${backup_file}"
     trap - EXIT
 fi
 

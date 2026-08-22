@@ -81,6 +81,10 @@ id "${HERMES_USER}" >/dev/null 2>&1 || die "user does not exist: ${HERMES_USER}"
 for path in "${USER_HOME}" "${HERMES_HOME}" "${HERMES_BIN}"; do
     [[ "${path}" =~ ^/[A-Za-z0-9._/@+-]+$ ]] || die "unsafe or unsupported path: ${path}"
 done
+# The CLI path is later executed in a privileged context. A symlink planted
+# in a parent directory could redirect that execution to attacker-controlled
+# code, so the final resolved target must not be a link.
+[[ ! -L "${HERMES_BIN}" ]] || die "HERMES_BIN must not be a symlink: ${HERMES_BIN}"
 
 HERMES_GROUP="$(id -gn "${HERMES_USER}")"
 
