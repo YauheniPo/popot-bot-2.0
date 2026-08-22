@@ -50,7 +50,11 @@ run_as_hermes_impl() {
   if [[ "$allow_stdin" == true ]]; then
     runuser "${runuser_args[@]}"
   else
-    runuser "${runuser_args[@]}" </dev/null
+    # setsid detaches from any controlling terminal, not just fd 0. Some
+    # bundled installers open /dev/tty directly to prompt even when stdin is
+    # redirected; without a controlling terminal that open fails immediately
+    # instead of hanging forever waiting for input nobody can supply here.
+    setsid runuser "${runuser_args[@]}" </dev/null
   fi
 }
 
@@ -93,6 +97,10 @@ download_installer() {
 
 backup_existing_installation() {
   [[ -x "$HERMES_BIN" ]] || return 0
+  if [[ ! -x "$HERMES_INSTALL_DIR/venv/bin/python" ]]; then
+    warn "existing Hermes venv interpreter is missing; skipping backup of an unusable installation"
+    return 0
+  fi
   [[ -f "$UPDATE_STATE_VERIFIER" ]] ||
     die "update-state verifier is missing: $UPDATE_STATE_VERIFIER"
 

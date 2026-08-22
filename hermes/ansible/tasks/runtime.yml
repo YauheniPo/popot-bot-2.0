@@ -92,6 +92,7 @@
   register: hermes_runtime_configuration
   changed_when: "'0 change(s)' not in hermes_runtime_configuration.stdout"
   no_log: true
+  when: hermes_venv_python.stat.exists
 
 - name: Check for a bundled npm workspace to audit
   ansible.builtin.stat:

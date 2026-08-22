@@ -1,5 +1,20 @@
 # shellcheck shell=bash
 
+# Ubuntu's unattended-upgrades timer can hold /var/lib/dpkg/lock-frontend for
+# a minute or two in the background. Retry instead of failing the whole
+# deploy on that transient lock contention.
+apt_get_retry() {
+    local attempt
+    for attempt in 1 2 3 4 5 6; do
+        if DEBIAN_FRONTEND=noninteractive apt-get "$@"; then
+            return 0
+        fi
+        log "apt-get busy (dpkg lock likely held by unattended-upgrades), retrying in 20s (attempt ${attempt}/6)"
+        sleep 20
+    done
+    die "apt-get failed after 6 attempts: apt-get $*"
+}
+
 install_observability_dependencies() {
     command -v apt-get >/dev/null 2>&1 || die "Grafana observability requires apt-get on Debian/Ubuntu"
     command -v curl >/dev/null 2>&1 || die "curl is required to install the official Grafana package repository"
@@ -8,8 +23,8 @@ install_observability_dependencies() {
     install -d -o root -g root -m 0755 /etc/apt/keyrings
     # `openssl` is needed only for the direct-deploy fallback password. Install
     # it before creating that file; Ansible normally creates the file from Vault.
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssl
+    apt_get_retry update
+    apt_get_retry install -y --no-install-recommends openssl
     # Prepare Grafana's password and unit override before package installation:
     # the package manager may otherwise start Grafana with its default admin
     # account before our first-run credentials are visible.
@@ -28,8 +43,8 @@ install_observability_dependencies() {
     chmod 0644 /etc/apt/keyrings/grafana.asc
     printf '%s\n' 'deb [signed-by=/etc/apt/keyrings/grafana.asc] https://apt.grafana.com stable main' \
         >/etc/apt/sources.list.d/grafana.list
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    apt_get_retry update
+    apt_get_retry install -y --no-install-recommends \
         grafana prometheus prometheus-node-exporter
 
     chown root:root /etc/hermes-grafana.env

@@ -105,6 +105,29 @@
       changed_when: false
       when: hermes_binary.stat.exists
 
+    # follow: true so a dangling symlink (broken venv interpreter) reports as
+    # missing, not present -- lstat on the link itself would say "exists" even
+    # though exec-ing it fails with ENOENT.
+    - name: Stat the installed Hermes Python interpreter path
+      ansible.builtin.stat:
+        path: "{{ hermes_home }}/hermes-agent/venv/bin/python"
+        follow: true
+      register: hermes_venv_python
+
+    # The bundled installer recreates this venv on every update. If any file
+    # under it ended up owned by a different UID (e.g. a prior run before
+    # become_user was consistently hermes), `rm` during recreation fails with
+    # Permission denied and aborts the whole install. This is metadata-only
+    # (owner/group), never deletes anything, so it is safe to run every time.
+    - name: Ensure the Hermes virtual environment directory exists
+      ansible.builtin.file:
+        path: "{{ hermes_home }}/hermes-agent/venv"
+        state: directory
+        owner: "{{ hermes_user }}"
+        group: "{{ hermes_user }}"
+        recurse: true
+      when: hermes_binary.stat.exists
+
     - name: Install or update Hermes to the pinned commit
       ansible.builtin.command:
         argv: >-
@@ -127,7 +150,8 @@
           }}
       when: >-
         (not hermes_binary.stat.exists) or
-        (hermes_installed_commit.stdout | default('') != hermes_commit)
+        (hermes_installed_commit.stdout | default('') != hermes_commit) or
+        (not hermes_venv_python.stat.exists)
 
     - name: Configure private networking and firewall
       ansible.builtin.import_tasks: tasks/network.yml
@@ -322,8 +346,30 @@
       when: hermes_enable_ops | bool
       no_log: true
 
+    # Re-stat after the install task above, which reinstalls the full venv
+    # (interpreter + Hermes package + dependencies) via deploy-hermes.sh
+    # whenever the earlier stat found it missing or broken. A bare
+    # `python3 -m venv` here would only recreate an empty interpreter with no
+    # Hermes package installed into it, breaking the next task differently.
+    - name: Re-stat the Hermes venv Python interpreter
+      ansible.builtin.stat:
+        path: "{{ hermes_home }}/hermes-agent/venv/bin/python"
+        follow: true
+      register: hermes_venv_python
+
+    - name: Fail loudly if the Hermes venv is still broken after installation
+      ansible.builtin.assert:
+        that: hermes_venv_python.stat.exists
+        fail_msg: >-
+          {{ hermes_home }}/hermes-agent/venv/bin/python is still missing or
+          broken after running deploy-hermes.sh. Investigate the installer
+          output on the VPS manually; Hermes runtime configuration and
+          dependent services cannot proceed.
+      when: hermes_binary.stat.exists
+
     - name: Configure Hermes runtime
       ansible.builtin.import_tasks: tasks/runtime.yml
+      when: hermes_venv_python.stat.exists
 
     - name: Configure managed GitHub tooling and access
       ansible.builtin.import_tasks: tasks/github.yml
