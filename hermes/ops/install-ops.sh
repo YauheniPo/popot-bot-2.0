@@ -83,9 +83,11 @@ for path in "${USER_HOME}" "${HERMES_HOME}" "${HERMES_BIN}"; do
 done
 # The CLI path is later executed in a privileged context. An attacker with
 # write access to any parent directory could plant a symlink that redirects
-# that execution, so reject a link at every component of the absolute path,
-# not only at the final element.
-path_component="${HERMES_BIN}"
+# that execution, so reject a link both at the CLI path itself and at every
+# parent component of the absolute path.
+[[ ! -L "${HERMES_BIN}" ]] ||
+    die "HERMES_BIN must not be a symlink: ${HERMES_BIN}"
+path_component="$(dirname -- "${HERMES_BIN}")"
 while [[ "${path_component}" != "/" ]]; do
     [[ ! -L "${path_component}" ]] ||
         die "HERMES_BIN path must not contain a symlink component: ${path_component}"
