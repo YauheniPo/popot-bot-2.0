@@ -53,6 +53,18 @@ hermes_llm_config: {}
 #   # Optional OpenRouter settings:
 #   openrouter:
 #     response_cache: true
+#   # Reasoning effort: "xhigh" (max), "high", "medium" (upstream default),
+#   # "low", "minimal", "none" (disable). Higher effort costs more tokens and
+#   # latency. Per-model overrides go in agent.reasoning_overrides (see
+#   # hermes-agent's cli-config.yaml.example) and require editing config.yaml
+#   # directly -- `hermes config set` does not support that key.
+#   agent:
+#     reasoning_effort: "high"
+#   # Show the model's reasoning/thinking box above each response. Off by
+#   # default upstream. Toggle per session with `/reasoning show|hide` without
+#   # touching this file.
+#   display:
+#     show_reasoning: true
 #   # Free built-in Russian TTS. The playbook also adds up to two retries only
 #   # for Edge's transient NoAudioReceived response.
 #   tts:

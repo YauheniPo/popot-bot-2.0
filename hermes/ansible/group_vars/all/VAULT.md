@@ -125,6 +125,10 @@ hermes_llm_config:
     provider: "openrouter"
     default: "openrouter/free"
     max_tokens: 4096
+  agent:
+    reasoning_effort: "medium"
+  display:
+    show_reasoning: false
 ```
 
 ## Применить изменения

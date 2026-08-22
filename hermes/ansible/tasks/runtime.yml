@@ -93,6 +93,29 @@
   changed_when: "'0 change(s)' not in hermes_runtime_configuration.stdout"
   no_log: true
 
+- name: Check for a bundled npm workspace to audit
+  ansible.builtin.stat:
+    path: "{{ hermes_home }}/hermes-agent/package.json"
+  register: hermes_npm_workspace
+
+# Force-patches upstream advisories (e.g. electron/extract-zip) in the vendored
+# apps/desktop workspace, which this headless VPS never runs. Re-applied on
+# every playbook run so the fix survives `hermes update`'s
+# updates.non_interactive_local_changes: stash, which would otherwise discard
+# a one-off manual patch. --force can move a workspace dependency outside the
+# range upstream tested; acceptable here only because the component is unused.
+- name: Force-fix upstream npm audit advisories in the bundled workspace
+  ansible.builtin.command:
+    argv: [npm, audit, fix, --force]
+    chdir: "{{ hermes_home }}/hermes-agent"
+  become_user: "{{ hermes_user }}"
+  environment:
+    HOME: "{{ hermes_user_home }}"
+  register: hermes_npm_audit_fix
+  changed_when: "'up to date' not in hermes_npm_audit_fix.stdout"
+  failed_when: false
+  when: hermes_npm_workspace.stat.exists
+
 - name: Locate the unused Browser Use CLI
   ansible.builtin.shell:
     cmd: command -v browser-use
