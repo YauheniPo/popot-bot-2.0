@@ -292,6 +292,7 @@ GitHub permissions и messenger tokens подключаются отдельно
 | [`config/vps-defaults.yml`](config/vps-defaults.yml) | Единый источник важных non-secret deploy/runtime настроек и групп перезапускаемых services |
 | [`deploy-hermes.sh`](deploy-hermes.sh) | Тонкий оркестратор прямой установки; реализация доменов находится в [`deploy/`](deploy) |
 | [`runtime/apply-config.py`](runtime/apply-config.py) | Идемпотентно применяет общие runtime settings через Hermes CLI и выдаёт service groups |
+| [`runtime/verify-update-state.py`](runtime/verify-update-state.py) | Fail-closed проверяет full backup, SQLite integrity и Kanban counts до/после managed update |
 | [`SECRETS-CHECKLIST.md`](SECRETS-CHECKLIST.md) | Единый checklist обязательных и optional tokens, OAuth, SSH и backup-данных без настоящих значений |
 | [`ops/install-ops.sh`](ops/install-ops.sh) | Тонкий оркестратор ops installation; packages, plugin, assets и services разделены в [`ops/install/`](ops/install) |
 | [`ops/plugin/ops-observability`](ops/plugin/ops-observability) | Hermes plugin hooks, audit, SQLite accounting и `/ops` |
@@ -322,7 +323,8 @@ GitHub permissions и messenger tokens подключаются отдельно
 Меняйте [`config/vps-defaults.yml`](config/vps-defaults.yml), когда настройка
 должна одинаково применяться повторными Ansible deploy:
 
-- `vps_deploy` — пользователь, paths, branch и критические feature switches;
+- `vps_deploy` — пользователь, paths, зафиксированные version/release/commit
+  Hermes, SHA-256 installer и критические feature switches;
 - `vps_runtime.set` — обязательные Hermes runtime defaults;
 - `vps_runtime.set_if_missing` — безопасные fallback-значения, не
   перезаписывающие явный выбор;
@@ -596,22 +598,46 @@ tailnet policy или auth key может отрезать администра�
 
 ### Управляемое обновление и автоподъём
 
-Из Telegram отправьте:
+Production VPS обновляется повторным запуском Ansible playbook. Playbook
+сравнивает установленный commit с `vps_deploy.source.commit` и запускает
+обновление только при расхождении. Перед изменением кода deploy обязательно:
+
+1. останавливает managed gateway;
+2. запускает `PRAGMA integrity_check` для `kanban.db` и всех
+   `kanban/boards/**/kanban.db`;
+3. записывает counts задач по статусам;
+4. создаёт полный backup и проверяет ZIP CRC, полноту Kanban DB и counts внутри
+   архива;
+5. после обновления повторяет integrity/counts и требует точного совпадения.
+
+Любая ошибка до установки прекращает обновление и возвращает прежний gateway в
+работу. Ошибка после начала установки прекращает дальнейший deploy и оставляет
+gateway остановленным для безопасного ручного разбора. Отчёты и архив находятся
+в `/home/hermes/hermes-backups/pre-deploy-*`. После применения config, ops и
+timers Ansible перезапускает включённый gateway последней изменяющей операцией,
+а затем проверяет, что service находится в состоянии `active`.
+
+Запускайте управляемое обновление с Ansible controller:
+
+```bash
+ansible-playbook -i hermes/ansible/inventory.ini \
+  hermes/ansible/playbook.yml --ask-vault-pass
+```
+
+Встроенная команда Telegram:
 
 ```text
 /update
 ```
 
-Hermes сам создаст pre-update backup, подтянет код, проверит синтаксис,
-установит зависимости и автоматически перезапустит активный system gateway.
-Служба gateway также поднимается после reboot и рестартует после сбоя; health
-timer сообщит, если после обновления она не восстановилась.
+использует upstream updater и не проходит через обязательную проверку архива и
+сравнение всех Kanban DB. Для production VPS её не используйте.
 
-Из SSH доступны безопасная проверка и принудительный полный backup:
+Из SSH доступны read-only проверка версии и отдельный ручной полный backup:
 
 ```bash
 sudo -u hermes -H /home/hermes/.local/bin/hermes update --check
-sudo -u hermes -H /home/hermes/.local/bin/hermes update --backup
+sudo -u hermes -H /home/hermes/.local/bin/hermes backup
 sudo systemctl status hermes-gateway.service
 ```
 
@@ -938,8 +964,8 @@ sudo -u hermes -H /home/hermes/.local/bin/hermes checkpoints prune
 
 ### Резервное копирование
 
-Перед повторным развёртыванием существующая конфигурация Hermes сохраняется, а
-systemd ежедневно создаёт backup:
+Перед управляемым обновлением полный backup и Kanban-проверка обязательны, а
+systemd дополнительно создаёт scheduled backup:
 
 ```text
 /home/hermes/hermes-backups
@@ -997,6 +1023,7 @@ cd /root/hermes # замените путь, если repository находит�
 | `sudo ./deploy-hermes.sh --without-host-admin` | Оставить Hermes без системного `sudo` |
 | `sudo ./deploy-hermes.sh --user NAME` | Использовать другое имя сервисного пользователя |
 | `sudo ./deploy-hermes.sh --branch NAME` | Установить указанную ветку Hermes |
+| `sudo ./deploy-hermes.sh --expected-version VER --release TAG --commit SHA --installer-sha256 HASH` | Осознанно заменить зафиксированный релиз, commit и checksum installer |
 
 Явные флаги `--with-browser`, `--with-dev-cli`, `--with-google-cli`, `--setup`,
 `--setup-mcp`, `--enable-gateway`, `--with-ops`, `--with-tailscale` и

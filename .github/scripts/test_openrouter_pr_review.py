@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 from pathlib import Path
 import sys
 import unittest
+import urllib.error
 from unittest import mock
 
 
@@ -152,7 +154,76 @@ class OpenRouterRequestTest(unittest.TestCase):
             reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
 
         self.assertEqual(request.call_count, 2)
-        sleep.assert_called_once_with(1)
+        sleep.assert_called_once_with(15.0)
+
+    def test_uses_provider_reset_header_for_rate_limit_retry(self) -> None:
+        response = {
+            "choices": [
+                {"message": {"content": json.dumps({"summary": "Reviewed.", "findings": []})}}
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        error_body = json.dumps(
+            {
+                "error": {
+                    "metadata": {
+                        "headers": {"X-RateLimit-Reset": "2000000000000"}
+                    }
+                }
+            }
+        ).encode()
+        http_error = urllib.error.HTTPError(
+            reviewer.OPENROUTER_URL,
+            429,
+            "Too Many Requests",
+            {},
+            io.BytesIO(error_body),
+        )
+        self.addCleanup(http_error.close)
+        second_response = mock.MagicMock()
+        second_response.__enter__.return_value = io.BytesIO(json.dumps(response).encode())
+        with (
+            mock.patch.object(
+                reviewer.urllib.request,
+                "urlopen",
+                side_effect=[http_error, second_response],
+            ),
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch.object(reviewer.time, "sleep") as sleep,
+            mock.patch.object(reviewer.time, "time", return_value=1_999_999_950.0),
+        ):
+            reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
+
+        sleep.assert_called_once_with(51.0)
+
+    def test_spaces_chunk_requests_below_configured_rpm(self) -> None:
+        chunks = (
+            reviewer.ReviewChunk("first", frozenset({"a.py"}), ("a.py",)),
+            reviewer.ReviewChunk("second", frozenset({"b.py"}), ("b.py",)),
+        )
+        with (
+            mock.patch.dict(reviewer.os.environ, {"OPENROUTER_REVIEW_RPM": "10"}),
+            mock.patch.object(
+                reviewer,
+                "review_chunk",
+                side_effect=[
+                    {"summary": "one", "findings": []},
+                    {"summary": "two", "findings": []},
+                ],
+            ) as review_chunk,
+            mock.patch.object(reviewer.time, "monotonic", side_effect=[0.0, 0.0, 0.0, 1.0, 6.0]),
+            mock.patch.object(reviewer.time, "sleep") as sleep,
+        ):
+            responses = reviewer.review_chunks("api-key", "model", (), chunks)
+
+        self.assertEqual(len(responses), 2)
+        self.assertEqual(review_chunk.call_count, 2)
+        sleep.assert_called_once_with(5.0)
+
+    def test_rejects_invalid_rpm_configuration(self) -> None:
+        with mock.patch.dict(reviewer.os.environ, {"OPENROUTER_REVIEW_RPM": "0"}):
+            with self.assertRaisesRegex(RuntimeError, "between 1 and 60"):
+                reviewer.configured_requests_per_minute()
 
 
 class GitHubReviewTest(unittest.TestCase):

@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -19,6 +21,9 @@ MAX_CONTEXT_CHARACTERS = 24_000
 MAX_RENDERED_COMMENTS_PER_THREAD = 3
 MAX_RENDERED_COMMENT_CHARACTERS = 1_000
 MAX_REPLY_CHARACTERS = 4_000
+MAX_INLINE_COMMENT_CHARACTERS = 4_000
+COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
+HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 SEMANTIC_DUPLICATE_THRESHOLD = 0.42
 ANCHOR_DUPLICATE_THRESHOLD = 0.24
 WORD_PATTERN = re.compile(r"[a-zа-яё0-9_]{4,}", re.IGNORECASE)
@@ -81,6 +86,17 @@ class ThreadMatch:
     thread: ReviewThread
     relationship: str
     similarity: float
+
+
+@dataclass(frozen=True)
+class ReviewFinding:
+    severity: str
+    path: str
+    side: str
+    line: int
+    title: str
+    impact: str
+    fix: str
 
 
 class GitHubRequestError(RuntimeError):
@@ -386,6 +402,113 @@ def reply_to_review_thread(
     )
 
 
+def _required_commit_sha(name: str) -> str:
+    value = _required_env(name)
+    if not COMMIT_SHA_PATTERN.fullmatch(value):
+        raise RuntimeError(f"{name} must be a full Git commit SHA")
+    return value
+
+
+def _run_git(*arguments: str, text: bool = True) -> str | bytes:
+    result = subprocess.run(
+        ["git", *arguments],
+        check=True,
+        capture_output=True,
+        text=text,
+    )
+    return result.stdout
+
+
+def _changed_paths(base_sha: str, head_sha: str) -> set[str]:
+    raw_paths = _run_git(
+        "diff",
+        "--name-only",
+        "-z",
+        base_sha,
+        head_sha,
+        "--",
+        ".",
+        text=False,
+    )
+    assert isinstance(raw_paths, bytes)
+    return {
+        path
+        for path in raw_paths.decode("utf-8", errors="surrogateescape").split("\0")
+        if path
+    }
+
+
+def changed_diff_lines(base_sha: str, head_sha: str, path: str) -> dict[str, set[int]]:
+    if path not in _changed_paths(base_sha, head_sha):
+        raise RuntimeError("Inline review path is not changed by this pull request")
+    diff = _run_git(
+        "diff",
+        "--unified=0",
+        "--no-ext-diff",
+        base_sha,
+        head_sha,
+        "--",
+        path,
+    )
+    assert isinstance(diff, str)
+    changed_lines = {"LEFT": set(), "RIGHT": set()}
+    old_line: int | None = None
+    new_line: int | None = None
+    for raw_line in diff.splitlines():
+        hunk = HUNK_HEADER.match(raw_line)
+        if hunk:
+            old_line = int(hunk.group(1))
+            new_line = int(hunk.group(2))
+            continue
+        if old_line is None or new_line is None:
+            continue
+        if raw_line.startswith("+"):
+            changed_lines["RIGHT"].add(new_line)
+            new_line += 1
+        elif raw_line.startswith("-"):
+            changed_lines["LEFT"].add(old_line)
+            old_line += 1
+        elif raw_line.startswith(" "):
+            old_line += 1
+            new_line += 1
+    return changed_lines
+
+
+def create_inline_comment(
+    repository: str,
+    pr_number: str | int,
+    token: str,
+    commit_id: str,
+    path: str,
+    side: str,
+    line: int,
+    body: str,
+) -> None:
+    clean_body = body.strip()
+    if not clean_body:
+        raise RuntimeError("Inline comment body must not be empty")
+    if len(clean_body) > MAX_INLINE_COMMENT_CHARACTERS:
+        raise RuntimeError(
+            f"Inline comment body exceeds {MAX_INLINE_COMMENT_CHARACTERS} characters"
+        )
+    if side not in {"LEFT", "RIGHT"}:
+        raise RuntimeError("Inline comment side must be LEFT or RIGHT")
+    if isinstance(line, bool) or line < 1:
+        raise RuntimeError("Inline comment line must be a positive integer")
+    _request_json(
+        f"{GITHUB_API_URL}/repos/{repository}/pulls/{pr_number}/comments",
+        "POST",
+        token,
+        {
+            "body": clean_body,
+            "commit_id": commit_id,
+            "path": path,
+            "side": side,
+            "line": line,
+        },
+    )
+
+
 def _command_render() -> None:
     threads = fetch_unresolved_review_threads(
         _required_env("GITHUB_REPOSITORY"),
@@ -410,6 +533,199 @@ def _command_reply(comment_id: int, body: str) -> None:
     reply_to_review_thread(repository, pr_number, token, comment_id, body)
 
 
+def _clean_result_text(value: object, limit: int) -> str:
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.split())[:limit]
+
+
+def _validated_claude_result(
+    raw_result: str,
+    base_sha: str,
+    head_sha: str,
+) -> tuple[str, list[ReviewFinding]]:
+    try:
+        result = json.loads(raw_result)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("Claude review output is not valid JSON") from error
+    if not isinstance(result, dict):
+        raise RuntimeError("Claude review output must be a JSON object")
+    summary = _clean_result_text(result.get("summary"), 1_000)
+    raw_findings = result.get("findings")
+    if not summary or not isinstance(raw_findings, list):
+        raise RuntimeError("Claude review output omitted summary or findings")
+
+    findings: list[ReviewFinding] = []
+    seen_locations: set[tuple[str, str, int]] = set()
+    changed_lines_by_path: dict[str, dict[str, set[int]]] = {}
+    valid_paths = _changed_paths(base_sha, head_sha)
+    for raw in raw_findings[:5]:
+        if not isinstance(raw, dict):
+            continue
+        severity = raw.get("severity")
+        path = raw.get("path")
+        side = raw.get("side")
+        line = raw.get("line")
+        if (
+            severity not in {"P1", "P2"}
+            or not isinstance(path, str)
+            or side not in {"LEFT", "RIGHT"}
+            or isinstance(line, bool)
+            or not isinstance(line, int)
+            or line < 1
+        ):
+            continue
+        if path.startswith("./"):
+            path = path[2:]
+        if path not in valid_paths:
+            continue
+        location = (path, side, line)
+        if location in seen_locations:
+            continue
+        if path not in changed_lines_by_path:
+            changed_lines_by_path[path] = changed_diff_lines(base_sha, head_sha, path)
+        if line not in changed_lines_by_path[path][side]:
+            continue
+        title = _clean_result_text(raw.get("title"), 160)
+        impact = _clean_result_text(raw.get("impact"), 700)
+        fix = _clean_result_text(raw.get("fix"), 700)
+        if not all((title, impact, fix)):
+            continue
+        seen_locations.add(location)
+        findings.append(ReviewFinding(severity, path, side, line, title, impact, fix))
+    findings.sort(key=lambda item: (0 if item.severity == "P1" else 1, item.path, item.line))
+    return summary, findings
+
+
+def _finding_text(finding: ReviewFinding) -> str:
+    return f"{finding.title} {finding.impact} {finding.fix}"
+
+
+def _command_publish() -> None:
+    repository = _required_env("GITHUB_REPOSITORY")
+    pr_number = _required_env("PR_NUMBER")
+    base_sha = _required_commit_sha("BASE_SHA")
+    head_sha = _required_commit_sha("HEAD_SHA")
+    token = _github_token()
+    model = _clean_result_text(_required_env("CLAUDE_REVIEW_MODEL"), 200)
+    run_id = _required_env("CLAUDE_REVIEW_RUN_ID")
+    if not run_id.isdigit():
+        raise RuntimeError("CLAUDE_REVIEW_RUN_ID must be numeric")
+    marker = f"<!-- claude-pr-review:{head_sha}:{run_id} -->"
+    comments_url = f"{GITHUB_API_URL}/repos/{repository}/issues/{pr_number}/comments"
+    existing_comments = _request_json(f"{comments_url}?per_page=100", "GET", token)
+    if not isinstance(existing_comments, list):
+        raise GitHubRequestError("GitHub returned an invalid issue-comment list")
+    if any(
+        marker in (comment.get("body") or "")
+        for comment in existing_comments
+        if isinstance(comment, dict)
+    ):
+        print("The Claude review already exists for this run; skipping duplicate.")
+        return
+
+    summary, findings = _validated_claude_result(
+        _required_env("CLAUDE_REVIEW_RESULT"),
+        base_sha,
+        head_sha,
+    )
+    threads = fetch_unresolved_review_threads(repository, pr_number, token)
+    new_findings: list[ReviewFinding] = []
+    follow_ups: list[tuple[ReviewFinding, ReviewThread]] = []
+    duplicates: list[ReviewFinding] = []
+    for finding in findings:
+        match = match_existing_thread(
+            finding.path,
+            finding.side,
+            finding.line,
+            _finding_text(finding),
+            threads,
+        )
+        if match is None:
+            new_findings.append(finding)
+        elif match.relationship == "duplicate":
+            duplicates.append(finding)
+        elif match.thread.viewer_can_reply and match.thread.reply_to_comment_id is not None:
+            follow_ups.append((finding, match.thread))
+        else:
+            new_findings.append(finding)
+
+    for finding in new_findings:
+        location_digest = hashlib.sha256(
+            f"{finding.path}:{finding.side}:{finding.line}".encode("utf-8")
+        ).hexdigest()[:16]
+        inline_marker = (
+            f"<!-- claude-inline:{head_sha}:{location_digest} -->"
+        )
+        create_inline_comment(
+            repository,
+            pr_number,
+            token,
+            head_sha,
+            finding.path,
+            finding.side,
+            finding.line,
+            (
+                f"{inline_marker}\n**{finding.severity} — {finding.title}**\n\n"
+                f"Impact: {finding.impact}\n\nProposed fix: {finding.fix}"
+            ),
+        )
+
+    posted_follow_ups: list[ReviewFinding] = []
+    for finding, thread in follow_ups:
+        comment_id = thread.reply_to_comment_id
+        assert comment_id is not None
+        follow_up_marker = f"<!-- claude-thread-followup:{head_sha}:{thread.node_id} -->"
+        if any(follow_up_marker in comment.body for comment in thread.comments):
+            continue
+        reply_to_review_thread(
+            repository,
+            pr_number,
+            token,
+            comment_id,
+            (
+                f"{follow_up_marker}\n**Additional evidence — {finding.severity}: "
+                f"{finding.title}**\n\nImpact: {finding.impact}\n\n"
+                f"Proposed fix: {finding.fix}"
+            ),
+        )
+        posted_follow_ups.append(finding)
+
+    lines = [
+        "## Claude Code review",
+        "",
+        f"> Provider: OpenRouter · Model: `{model}`",
+        f"> Reviewed Head SHA: `{head_sha}`",
+        "",
+        f"Summary: {summary}",
+        "",
+        f"New inline findings: {len(new_findings)}.",
+        f"Material thread follow-ups: {len(posted_follow_ups)}.",
+        f"Existing unresolved findings not repeated: {len(duplicates)}.",
+    ]
+    if not new_findings and not posted_follow_ups:
+        lines.extend(["", "Findings: No new actionable findings."])
+    if new_findings:
+        lines.extend(["", "New findings:"])
+        lines.extend(
+            f"- **{finding.severity} — `{finding.path}:{finding.line}`**: {finding.title}."
+            for finding in new_findings
+        )
+    if posted_follow_ups:
+        lines.extend(["", "Material additions to existing threads:"])
+        lines.extend(
+            f"- **{finding.severity} — `{finding.path}:{finding.line}`**: {finding.title}."
+            for finding in posted_follow_ups
+        )
+    lines.extend(["", marker])
+    _request_json(comments_url, "POST", token, {"body": "\n".join(lines)})
+    print(
+        "Published the validated Claude review with "
+        f"{len(new_findings)} inline finding(s), {len(posted_follow_ups)} follow-up(s), "
+        f"and {len(duplicates)} duplicate(s) suppressed."
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -417,11 +733,17 @@ def main() -> None:
     reply_parser = subparsers.add_parser("reply", help="Reply to a validated unresolved thread")
     reply_parser.add_argument("--comment-id", required=True, type=int)
     reply_parser.add_argument("--body", required=True)
+    subparsers.add_parser(
+        "publish",
+        help="Validate and publish the structured Claude review result",
+    )
     arguments = parser.parse_args()
     if arguments.command == "render":
         _command_render()
-    else:
+    elif arguments.command == "reply":
         _command_reply(arguments.comment_id, arguments.body)
+    else:
+        _command_publish()
 
 
 if __name__ == "__main__":

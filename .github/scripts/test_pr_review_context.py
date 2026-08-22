@@ -144,5 +144,115 @@ class ReviewThreadReplyTest(unittest.TestCase):
         reply.assert_not_called()
 
 
+class InlineCommentTest(unittest.TestCase):
+    def test_tracks_changed_lines_on_both_sides(self) -> None:
+        with (
+            mock.patch.object(context, "_changed_paths", return_value={"app.py"}),
+            mock.patch.object(
+                context,
+                "_run_git",
+                return_value="""diff --git a/app.py b/app.py
+--- a/app.py
++++ b/app.py
+@@ -4,2 +4,2 @@
+-old
++new
+ context
+""",
+            ),
+        ):
+            lines = context.changed_diff_lines("a" * 40, "b" * 40, "app.py")
+
+        self.assertEqual(lines["LEFT"], {4})
+        self.assertEqual(lines["RIGHT"], {4})
+
+    def test_validates_structured_findings_against_the_diff(self) -> None:
+        result = {
+            "summary": "Found one issue.",
+            "findings": [
+                {
+                    "severity": "P2",
+                    "path": "app.py",
+                    "side": "RIGHT",
+                    "line": 12,
+                    "title": "Wrong value",
+                    "impact": "The API returns stale data.",
+                    "fix": "Return the current value.",
+                },
+                {
+                    "severity": "P1",
+                    "path": "app.py",
+                    "side": "RIGHT",
+                    "line": 11,
+                    "title": "Context-only claim",
+                    "impact": "Invalid.",
+                    "fix": "Invalid.",
+                },
+            ],
+        }
+        with (
+            mock.patch.object(context, "_changed_paths", return_value={"app.py"}),
+            mock.patch.object(
+                context,
+                "changed_diff_lines",
+                return_value={"LEFT": set(), "RIGHT": {12}},
+            ),
+        ):
+            summary, findings = context._validated_claude_result(
+                context.json.dumps(result),
+                "a" * 40,
+                "b" * 40,
+            )
+
+        self.assertEqual(summary, "Found one issue.")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].line, 12)
+
+    def test_publisher_posts_validated_inline_and_summary_comments(self) -> None:
+        result = {
+            "summary": "Found one issue.",
+            "findings": [
+                {
+                    "severity": "P2",
+                    "path": "app.py",
+                    "side": "RIGHT",
+                    "line": 12,
+                    "title": "Wrong value",
+                    "impact": "The API returns stale data.",
+                    "fix": "Return the current value.",
+                }
+            ],
+        }
+        environment = {
+            "GITHUB_REPOSITORY": "owner/repo",
+            "PR_NUMBER": "2",
+            "GITHUB_TOKEN": "token",
+            "BASE_SHA": "a" * 40,
+            "HEAD_SHA": "b" * 40,
+            "CLAUDE_REVIEW_MODEL": "review-model",
+            "CLAUDE_REVIEW_RUN_ID": "123",
+            "CLAUDE_REVIEW_RESULT": context.json.dumps(result),
+        }
+        with (
+            mock.patch.dict(context.os.environ, environment, clear=True),
+            mock.patch.object(context, "_changed_paths", return_value={"app.py"}),
+            mock.patch.object(
+                context,
+                "changed_diff_lines",
+                return_value={"LEFT": set(), "RIGHT": {12}},
+            ),
+            mock.patch.object(context, "fetch_unresolved_review_threads", return_value=[]),
+            mock.patch.object(context, "create_inline_comment") as create,
+            mock.patch.object(context, "_request_json", side_effect=[[], {}]) as request,
+            mock.patch("builtins.print"),
+        ):
+            context._command_publish()
+
+        self.assertEqual(create.call_count, 1)
+        summary_payload = request.call_args_list[1].args[3]
+        self.assertIn("Found one issue.", summary_payload["body"])
+        self.assertIn("<!-- claude-pr-review:" + "b" * 40 + ":123 -->", summary_payload["body"])
+
+
 if __name__ == "__main__":
     unittest.main()

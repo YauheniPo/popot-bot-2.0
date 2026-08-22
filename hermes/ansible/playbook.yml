@@ -16,6 +16,10 @@
           - hermes_user_home.startswith("/")
           - hermes_home.startswith(hermes_user_home + "/")
           - hermes_bin.startswith(hermes_user_home + "/")
+          - hermes_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+          - hermes_release is match('^v[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}$')
+          - hermes_commit is match('^[0-9a-f]{40}$')
+          - hermes_installer_sha256 is match('^[0-9a-f]{64}$')
           - not (hermes_lock_public_ssh | bool) or (hermes_enable_tailscale | bool)
         fail_msg: This playbook supports Debian/Ubuntu and a non-root Hermes user.
 
@@ -86,7 +90,22 @@
         path: "{{ hermes_bin }}"
       register: hermes_binary
 
-    - name: Install Hermes non-interactively on a new VPS
+    - name: Read the installed Hermes commit
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - "{{ hermes_home }}/hermes-agent"
+          - rev-parse
+          - HEAD
+      become_user: "{{ hermes_user }}"
+      environment:
+        HOME: "{{ hermes_user_home }}"
+      register: hermes_installed_commit
+      changed_when: false
+      when: hermes_binary.stat.exists
+
+    - name: Install or update Hermes to the pinned commit
       ansible.builtin.command:
         argv: >-
           {{
@@ -94,6 +113,10 @@
               hermes_bundle_dir ~ '/deploy-hermes.sh',
               '--user', hermes_user,
               '--branch', hermes_branch,
+              '--expected-version', hermes_version,
+              '--release', hermes_release,
+              '--commit', hermes_commit,
+              '--installer-sha256', hermes_installer_sha256,
               '--skip-setup',
               '--skip-mcp',
               '--no-gateway',
@@ -102,7 +125,9 @@
             ] +
             ([] if (hermes_host_admin_enabled | bool) else ['--without-host-admin'])
           }}
-      when: not hermes_binary.stat.exists
+      when: >-
+        (not hermes_binary.stat.exists) or
+        (hermes_installed_commit.stdout | default('') != hermes_commit)
 
     - name: Configure private networking and firewall
       ansible.builtin.import_tasks: tasks/network.yml

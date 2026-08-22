@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 import json
 import os
 from pathlib import Path
@@ -27,8 +27,10 @@ from pr_review_context import (
 
 MAX_CHUNK_CHARACTERS = 48_000
 MAX_REVIEW_CHUNKS = 12
-MAX_PARALLEL_REQUESTS = 3
-MAX_REQUEST_ATTEMPTS = 3
+DEFAULT_REQUESTS_PER_MINUTE = 8
+DEFAULT_RATE_LIMIT_RETRY_SECONDS = 15.0
+MAX_REQUEST_ATTEMPTS = 5
+MAX_RETRY_DELAY_SECONDS = 90.0
 MAX_OUTPUT_TOKENS = 1_400
 MAX_FINDINGS = 5
 MAX_RENDERED_LINE_CHARACTERS = 4_000
@@ -144,9 +146,69 @@ class PublicationPlan:
 
 
 class RequestError(RuntimeError):
-    def __init__(self, message: str, status: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        status: int | None = None,
+        retry_after_seconds: float | None = None,
+    ) -> None:
         super().__init__(message)
         self.status = status
+        self.retry_after_seconds = retry_after_seconds
+
+
+def _seconds_until_reset(value: object) -> float | None:
+    if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+        return None
+    raw_value = str(value).strip()
+    if not raw_value:
+        return None
+    try:
+        timestamp = float(raw_value)
+    except ValueError:
+        try:
+            timestamp = parsedate_to_datetime(raw_value).timestamp()
+        except (TypeError, ValueError, OverflowError):
+            return None
+    if timestamp > 10_000_000_000:
+        timestamp /= 1_000
+    return max(0.0, timestamp - time.time())
+
+
+def _retry_after_seconds(response_headers: object, details: str) -> float | None:
+    headers: dict[str, object] = {}
+    if response_headers is not None and hasattr(response_headers, "items"):
+        headers.update(
+            {str(key).lower(): value for key, value in response_headers.items()}
+        )
+    try:
+        payload = json.loads(details)
+    except (json.JSONDecodeError, TypeError):
+        payload = None
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        metadata = error.get("metadata") if isinstance(error, dict) else None
+        metadata_headers = metadata.get("headers") if isinstance(metadata, dict) else None
+        if isinstance(metadata_headers, dict):
+            headers.update({str(key).lower(): value for key, value in metadata_headers.items()})
+
+    candidates: list[float] = []
+    retry_after = headers.get("retry-after")
+    if isinstance(retry_after, (str, int, float)) and not isinstance(retry_after, bool):
+        try:
+            candidates.append(max(0.0, float(retry_after)))
+        except ValueError:
+            reset_delay = _seconds_until_reset(retry_after)
+            if reset_delay is not None:
+                candidates.append(reset_delay)
+    reset_delay = _seconds_until_reset(headers.get("x-ratelimit-reset"))
+    if reset_delay is not None:
+        candidates.append(reset_delay)
+    if not candidates:
+        return None
+    # Add a small boundary margin, but never let an untrusted provider header
+    # stall a CI runner indefinitely.
+    return min(max(candidates) + 1.0, MAX_RETRY_DELAY_SECONDS)
 
 
 def required_env(name: str) -> str:
@@ -167,6 +229,7 @@ def request_json(url: str, method: str, headers: dict[str, str], body: object | 
         raise RequestError(
             f"{method} {url} failed with HTTP {error.code}: {details[:500]}",
             status=error.code,
+            retry_after_seconds=_retry_after_seconds(error.headers, details),
         ) from error
     except urllib.error.URLError as error:
         raise RequestError(f"{method} {url} failed before receiving a response") from error
@@ -450,8 +513,25 @@ UNRESOLVED_REVIEW_THREADS:
             retryable = error.status is None or error.status in RETRYABLE_HTTP_STATUSES
             if not retryable or attempt == MAX_REQUEST_ATTEMPTS:
                 raise
-            time.sleep(2 ** (attempt - 1))
+            fallback_delay = float(2 ** (attempt - 1))
+            if error.status == 429:
+                fallback_delay = max(fallback_delay, DEFAULT_RATE_LIMIT_RETRY_SECONDS)
+            time.sleep(error.retry_after_seconds or fallback_delay)
     return parse_review_response(response)
+
+
+def configured_requests_per_minute() -> int:
+    raw_value = os.environ.get(
+        "OPENROUTER_REVIEW_RPM",
+        str(DEFAULT_REQUESTS_PER_MINUTE),
+    ).strip()
+    try:
+        requests_per_minute = int(raw_value)
+    except ValueError as error:
+        raise RuntimeError("OPENROUTER_REVIEW_RPM must be an integer") from error
+    if not 1 <= requests_per_minute <= 60:
+        raise RuntimeError("OPENROUTER_REVIEW_RPM must be between 1 and 60")
+    return requests_per_minute
 
 
 def review_chunks(
@@ -462,24 +542,26 @@ def review_chunks(
 ) -> list[dict[str, object]]:
     if not chunks:
         return []
-    results: dict[int, dict[str, object]] = {}
-    workers = min(MAX_PARALLEL_REQUESTS, len(chunks))
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {
-            executor.submit(
-                review_chunk,
+    request_interval = 60.0 / configured_requests_per_minute()
+    results: list[dict[str, object]] = []
+    next_request_at = time.monotonic()
+    for index, chunk in enumerate(chunks, start=1):
+        delay = next_request_at - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
+        request_started_at = time.monotonic()
+        results.append(
+            review_chunk(
                 api_key,
                 model,
                 review_threads,
                 chunk,
                 index,
                 len(chunks),
-            ): index
-            for index, chunk in enumerate(chunks, start=1)
-        }
-        for future in as_completed(futures):
-            results[futures[future]] = future.result()
-    return [results[index] for index in range(1, len(chunks) + 1)]
+            )
+        )
+        next_request_at = request_started_at + request_interval
+    return results
 
 
 def _clean_text(value: object, limit: int) -> str:

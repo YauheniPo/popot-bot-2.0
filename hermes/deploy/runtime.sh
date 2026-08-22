@@ -62,38 +62,78 @@ run_as_hermes_interactive() {
   run_as_hermes_impl true "$@"
 }
 
+quiesce_existing_gateway_for_update() {
+  [[ -x "$HERMES_BIN" ]] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl is-active --quiet hermes-gateway.service || return 0
+
+  log "Stopping the managed gateway for a consistent update snapshot"
+  systemctl stop hermes-gateway.service
+  if systemctl is-active --quiet hermes-gateway.service; then
+    die "hermes-gateway.service remained active after stop"
+  fi
+  GATEWAY_WAS_QUIESCED=true
+}
+
 download_installer() {
+  local installer_url="$HERMES_RAW_BASE_URL/$HERMES_COMMIT/scripts/install.sh"
   INSTALLER_FILE="$(mktemp /tmp/hermes-installer.XXXXXX)"
   chmod 0755 "$INSTALLER_FILE"
 
-  log "Downloading the official Hermes installer"
+  log "Downloading the Hermes installer pinned to $HERMES_COMMIT"
   curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
-    "$INSTALLER_URL" --output "$INSTALLER_FILE"
+    "$installer_url" --output "$INSTALLER_FILE"
 
-  if [[ -n "$INSTALLER_SHA256" ]]; then
-    local actual_sha256
-    actual_sha256="$(sha256sum "$INSTALLER_FILE" | cut -d' ' -f1)"
-    [[ "$actual_sha256" == "$INSTALLER_SHA256" ]] ||
-      die "installer checksum mismatch (got $actual_sha256)"
-    log "Installer checksum verified"
-  fi
+  local actual_sha256
+  actual_sha256="$(sha256sum "$INSTALLER_FILE" | cut -d' ' -f1)"
+  [[ "$actual_sha256" == "$INSTALLER_SHA256" ]] ||
+    die "installer checksum mismatch (got $actual_sha256)"
+  log "Installer checksum verified"
 }
 
 backup_existing_installation() {
   [[ -x "$HERMES_BIN" ]] || return 0
+  [[ -f "$UPDATE_STATE_VERIFIER" ]] ||
+    die "update-state verifier is missing: $UPDATE_STATE_VERIFIER"
 
-  local backup_file
-  backup_file="$HERMES_BACKUP_DIR/pre-deploy-$(date -u +%Y%m%d-%H%M%S).zip"
+  local timestamp backup_file backup_output
+  timestamp="$(date -u +%Y%m%d-%H%M%S)"
+  backup_file="$HERMES_BACKUP_DIR/pre-deploy-$timestamp.zip"
+  KANBAN_BEFORE_SNAPSHOT="$HERMES_BACKUP_DIR/pre-deploy-$timestamp-kanban-before.json"
+  KANBAN_AFTER_SNAPSHOT="$HERMES_BACKUP_DIR/pre-deploy-$timestamp-kanban-after.json"
+  UPDATE_GUARD_ACTIVE=true
+
+  log "Checking every Kanban database before the update"
+  python3 "$UPDATE_STATE_VERIFIER" snapshot \
+    --hermes-home "$HERMES_HOME" \
+    --output "$KANBAN_BEFORE_SNAPSHOT"
+  chown "$HERMES_USER:$HERMES_GROUP" "$KANBAN_BEFORE_SNAPSHOT"
+  chmod 0600 "$KANBAN_BEFORE_SNAPSHOT"
 
   log "Backing up the existing Hermes data to $backup_file"
-  run_as_hermes "$HERMES_BIN" backup --output "$backup_file"
+  if ! backup_output="$(run_as_hermes "$HERMES_BIN" backup --output "$backup_file" 2>&1)"; then
+    printf '%s\n' "$backup_output" >&2
+    die "Hermes full backup command failed; update aborted"
+  fi
+  printf '%s\n' "$backup_output"
+  [[ "$backup_output" == *"Backup complete:"* ]] ||
+    die "Hermes did not report a complete full backup; update aborted"
+  [[ -s "$backup_file" ]] || die "Hermes full backup is missing or empty; update aborted"
   chmod 0600 "$backup_file"
+
+  log "Validating the full backup archive and its Kanban snapshots"
+  python3 "$UPDATE_STATE_VERIFIER" verify-backup \
+    --backup "$backup_file" \
+    --snapshot "$KANBAN_BEFORE_SNAPSHOT"
+  log "Mandatory pre-update backup verified"
 }
 
 install_hermes() {
   local installer_args=(
     --skip-setup
     --branch "$HERMES_BRANCH"
+    --commit "$HERMES_COMMIT"
+    --force-commit
     --hermes-home "$HERMES_HOME"
   )
 
@@ -101,9 +141,48 @@ install_hermes() {
     installer_args=(--skip-browser "${installer_args[@]}")
   fi
 
-  log "Installing Hermes branch '$HERMES_BRANCH' as $HERMES_USER"
+  if [[ "$UPDATE_GUARD_ACTIVE" == true ]]; then
+    UPDATE_MUTATION_STARTED=true
+  fi
+  log "Installing Hermes $HERMES_RELEASE ($HERMES_VERSION, $HERMES_COMMIT) as $HERMES_USER"
   run_as_hermes bash "$INSTALLER_FILE" "${installer_args[@]}"
   [[ -x "$HERMES_BIN" ]] || die "Hermes launcher was not created at $HERMES_BIN"
+
+  local actual_commit actual_version
+  actual_commit="$(run_as_hermes git -C "$HERMES_INSTALL_DIR" rev-parse HEAD)"
+  [[ "$actual_commit" == "$HERMES_COMMIT" ]] ||
+    die "installed Hermes commit mismatch (got $actual_commit)"
+  actual_version="$(
+    run_as_hermes "$HERMES_INSTALL_DIR/venv/bin/python" -c \
+      'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["project"]["version"])' \
+      "$HERMES_INSTALL_DIR/pyproject.toml"
+  )"
+  [[ "$actual_version" == "$HERMES_VERSION" ]] ||
+    die "installed Hermes version mismatch (got $actual_version)"
+  log "Hermes source identity verified"
+}
+
+verify_updated_kanban_state() {
+  [[ "$UPDATE_GUARD_ACTIVE" == true ]] || return 0
+
+  log "Checking every Kanban database after the update"
+  python3 "$UPDATE_STATE_VERIFIER" snapshot \
+    --hermes-home "$HERMES_HOME" \
+    --output "$KANBAN_AFTER_SNAPSHOT"
+  chown "$HERMES_USER:$HERMES_GROUP" "$KANBAN_AFTER_SNAPSHOT"
+  chmod 0600 "$KANBAN_AFTER_SNAPSHOT"
+  python3 "$UPDATE_STATE_VERIFIER" compare \
+    --before "$KANBAN_BEFORE_SNAPSHOT" \
+    --after "$KANBAN_AFTER_SNAPSHOT"
+  log "Post-update Kanban integrity and task counts verified"
+
+  if [[ "$GATEWAY_WAS_QUIESCED" == true && "$ENABLE_GATEWAY" != false ]]; then
+    log "Restarting the gateway after successful update verification"
+    systemctl start hermes-gateway.service
+    systemctl is-active --quiet hermes-gateway.service ||
+      die "hermes-gateway.service did not restart after the verified update"
+    GATEWAY_WAS_QUIESCED=false
+  fi
 }
 
 install_local_browser_automation() {

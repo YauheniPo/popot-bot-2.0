@@ -21,6 +21,18 @@ class ApplyConfigTests(unittest.TestCase):
         settings = apply_config.load_settings(settings_path)
 
         self.assertEqual(settings["vps_deploy"]["identity"]["user"], "hermes")
+        source = settings["vps_deploy"]["source"]
+        self.assertEqual(source["branch"], "main")
+        self.assertEqual(source["version"], "0.20.5")
+        self.assertEqual(source["release"], "v2026.8.19")
+        self.assertEqual(
+            source["commit"],
+            "fcbd1076a93841fa88855acce810e342a5b78101",
+        )
+        self.assertEqual(
+            source["installer_sha256"],
+            "0582d9b1562efcb6e0ac62f4451021667830b830a72ce7d91eaea9fee8b6c09b",
+        )
         self.assertTrue(settings["vps_deploy"]["features"]["observability"])
         self.assertEqual(settings["vps_runtime"]["set"]["browser.backend"], "off")
         self.assertEqual(settings["vps_runtime"]["set"]["display.tool_progress"], "off")
@@ -34,6 +46,22 @@ class ApplyConfigTests(unittest.TestCase):
         )
         self.assertEqual(settings["vps_github"]["write_owners"], ["YauheniPo"])
         self.assertIn("hermes-gateway.service", settings["vps_services"]["gateway"])
+
+    def test_manual_deploy_defaults_match_global_source_pin(self) -> None:
+        hermes_dir = MODULE_PATH.parent.parent
+        settings = apply_config.load_settings(hermes_dir / "config" / "vps-defaults.yml")
+        source = settings["vps_deploy"]["source"]
+        deploy_script = (hermes_dir / "deploy-hermes.sh").read_text(encoding="utf-8")
+
+        expected_defaults = {
+            "DEFAULT_HERMES_BRANCH": source["branch"],
+            "DEFAULT_HERMES_VERSION": source["version"],
+            "DEFAULT_HERMES_RELEASE": source["release"],
+            "DEFAULT_HERMES_COMMIT": source["commit"],
+            "DEFAULT_INSTALLER_SHA256": source["installer_sha256"],
+        }
+        for variable, value in expected_defaults.items():
+            self.assertIn(f'readonly {variable}="{value}"', deploy_script)
 
     def test_build_operations_applies_defaults_capabilities_and_unsets_overrides(self) -> None:
         settings = {
