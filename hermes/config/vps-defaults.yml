@@ -40,6 +40,10 @@ vps_runtime:
     display.tool_progress: "off"
     display.platforms.telegram.interim_assistant_messages: false
     display.background_process_notifications: result
+    # Local Hermes: keep /gw_restart and /model_global visible in the
+    # Telegram menu — the default 60-command cap would hide them.
+    platforms.telegram.extra.command_menu.priority_mode: prepend
+    platforms.telegram.extra.command_menu.priority: [gw_restart, model_global]
     session_reset.mode: idle
     session_reset.idle_minutes: 2880
   set_if_missing:
