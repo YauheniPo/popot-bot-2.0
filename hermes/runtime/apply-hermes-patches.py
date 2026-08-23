@@ -158,10 +158,8 @@ _PATCHES: list[tuple[str, str, str, str]] = [
         "gateway/slash_commands.py",
         _PREFIX + " status reasoning",
         '''            t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),
-        ])
 ''',
         '''            t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),
-        ])
         # Local Hermes: status reasoning
         reasoning_cfg = getattr(self, "_reasoning_config", None)
         if isinstance(reasoning_cfg, dict) and reasoning_cfg.get("enabled") is False:
@@ -175,6 +173,15 @@ _PATCHES: list[tuple[str, str, str, str]] = [
             f"**Reasoning:** {reasoning_effort}",
             f"**Show reasoning:** {'on' if show_reasoning else 'off'}",
         ])
+        # Local Hermes: model info (global + session)
+        try:
+            global_model = getattr(self, '_global_model_name', None) or "(none set)"
+            session_key_str = str(session_key or "")
+            session_model = (getattr(self, '_session_model_overrides', None) or {}).get(session_key_str) or getattr(self, 'model', None) or "(default)"
+            lines.append(f"**Global model:** {global_model}")
+            lines.append(f"**Session model:** {session_model}")
+        except Exception:
+            pass
 ''',
     ),
 ]
