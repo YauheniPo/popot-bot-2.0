@@ -11,7 +11,7 @@ happen directly on the host files — no copies, no sync.
 | `~/workspace/repositories` | `/home/coder/workspace/repositories` | read-write | all managed repos; edit + git here |
 | `~/.hermes` | `/home/coder/hermes-home` | **read-write** | full access to configs and skills from the IDE |
 | `~/.gitconfig` | `/home/coder/.gitconfig` | read-only | host Git identity and defaults |
-| `~/.config/gh` | `/home/coder/.config/gh` | read-write | GitHub CLI auth for push/pull |
+| `~/.config/gh` | `/home/coder/gh-config` | read-write | GitHub CLI auth for push/pull (`GH_CONFIG_DIR`) |
 
 Git identity comes from the shared `~/.gitconfig` (user YauheniPo). The
 compose file overrides only the credential helper to use the container's own
@@ -34,21 +34,24 @@ Manual deploy (without Ansible):
 
 ```bash
 cd hermes/vscode-server
-echo "CODE_SERVER_PASSWORD=your-strong-password" > /etc/code-server.env  # root-only
+echo "PASSWORD=your-strong-password" > /etc/code-server.env  # root-only
 sudo docker compose up -d --build
 ```
 
-code-server binds to port 3000 on the VPS and is not published beyond it;
-access is SSH-tunnel-only:
+The codercom image reads the password from the `PASSWORD` variable
+(`CODE_SERVER_PASSWORD` is ignored by code-server).
+
+code-server binds to port **3001** on the VPS (loopback only; host 3000
+is taken by Grafana) and is not published beyond it; access is SSH-tunnel-only:
 
 ```bash
-ssh -L 8080:localhost:3000 hermes@VPS_IP
+ssh -L 8080:localhost:3001 hermes@VPS_IP
 # then open http://localhost:8080
 ```
 
 ## Security model
 
-- Nothing is exposed publicly: port 3000 is reachable only through the SSH tunnel.
+- Nothing is exposed publicly: port 3001 is reachable only through the SSH tunnel.
 - Browser access = SSH key + code-server password (from encrypted vault.yml).
 - `.hermes` is mounted read-write per owner choice: the IDE can edit gateway
   configs directly. Treat browser edits with the same care as SSH edits.

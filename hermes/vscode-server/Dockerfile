@@ -13,4 +13,4 @@ USER coder
 # Open straight into the shared repositories workspace.
 WORKDIR /home/coder/workspace/repositories
 
-EXPOSE 3000
+EXPOSE 8080

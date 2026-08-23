@@ -52,6 +52,6 @@
 - name: Report code-server access instructions
   ansible.builtin.debug:
     msg: >-
-      code-server is up on VPS port 3000. Connect with
-      ssh -L 8080:localhost:3000 {{ hermes_user }}@<VPS_IP> and open
+      code-server is up on VPS port 3001. Connect with
+      ssh -L 8080:localhost:3001 {{ hermes_user }}@<VPS_IP> and open
       http://localhost:8080 (password from encrypted vault.yml).

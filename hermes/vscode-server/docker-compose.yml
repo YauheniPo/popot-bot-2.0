@@ -25,6 +25,9 @@ services:
       # parent ~/.config as root-owned, breaking code-server's own config dir.
       - ${VPS_USER_HOME:-/home/hermes}/.config/gh:/home/coder/gh-config:rw
       - ./code-server-config.json:/etc/code-server/config.json:ro
+    # Note: the image entrypoint overrides bind-addr with its own
+    # `--bind-addr 0.0.0.0:8080` default; config.json is mounted for
+    # documentation/parity but the effective listen port is 8080.
     env_file:
       - /etc/code-server.env
     environment:
