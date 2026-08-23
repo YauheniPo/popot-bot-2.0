@@ -158,8 +158,10 @@ _PATCHES: list[tuple[str, str, str, str]] = [
         "gateway/slash_commands.py",
         _PREFIX + " status reasoning",
         '''            t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),
+        ])
 ''',
         '''            t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),
+        ])
         # Local Hermes: status reasoning
         reasoning_cfg = getattr(self, "_reasoning_config", None)
         if isinstance(reasoning_cfg, dict) and reasoning_cfg.get("enabled") is False:
