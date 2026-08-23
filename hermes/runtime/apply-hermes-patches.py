@@ -173,13 +173,23 @@ _PATCHES: list[tuple[str, str, str, str]] = [
             f"**Reasoning:** {reasoning_effort}",
             f"**Show reasoning:** {'on' if show_reasoning else 'off'}",
         ])
-        # Local Hermes: model info (global + session)
+        # Local Hermes: model info (global + topic)
         try:
-            global_model = getattr(self, '_global_model_name', None) or "(none set)"
-            session_key_str = str(session_key or "")
-            session_model = (getattr(self, '_session_model_overrides', None) or {}).get(session_key_str) or getattr(self, 'model', None) or "(default)"
+            # Global default = config.yaml model.default (single source of truth).
+            global_model = _resolve_gateway_model(user_config) if user_config else _resolve_gateway_model()
+            # Session override = /model <name> stored for this topic (if any).
+            session_model = (getattr(self, "_session_model_overrides", None) or {}).get(
+                str(session_key or "")
+            )
+            # Topic model = what this topic actually runs with right now:
+            # the /model override if set, otherwise the live/cached agent's
+            # runtime model, otherwise the global default.
+            live_agent_model = ""
+            if status_agent is not None and status_agent is not _AGENT_PENDING_SENTINEL:
+                live_agent_model = _clean_str(getattr(status_agent, "model", ""))
+            topic_model = session_model or live_agent_model or global_model
             lines.append(f"**Global model:** {global_model}")
-            lines.append(f"**Session model:** {session_model}")
+            lines.append(f"**Topic model:** {topic_model}" + (" *(override)*" if session_model else ""))
         except Exception:
             pass
 ''',
