@@ -2,11 +2,15 @@ name: vscode-server
 services:
   code-server:
     build: .
-    # Run as the host 'hermes' user (UID/GID 1000) so files created in the IDE
-    # are owned by hermes on the host, not by root or an unknown UID.
-    user: "1000:1000"
+    # The codercom image already runs as UID/GID 1000 (= host 'hermes'), so
+    # files created in the IDE are owned by hermes on the host. Do not set an
+    # explicit user: the image entrypoint (fixuid) breaks under
+    # no-new-privileges when overridden.
     ports:
-      - "3000:3000" # Bind port for SSH tunnel only; never publish publicly
+      # Loopback only: reachable through the SSH tunnel, never from the network.
+      # Host port 3001 -> container port 8080 (the image's default listen
+      # port); host 3000 is taken by the loopback-only Grafana service.
+      - "127.0.0.1:3001:8080"
     volumes:
       # Repositories: full read-write — edits land directly on the host.
       - ${VPS_USER_HOME:-/home/hermes}/workspace/repositories:/home/coder/workspace/repositories
@@ -16,8 +20,10 @@ services:
       # Reuse the host Git identity (user name/email, defaults).
       - ${VPS_USER_HOME:-/home/hermes}/.gitconfig:/home/coder/.gitconfig:ro
       # GitHub CLI auth state so push/pull works inside the container without
-      # copying any token value into the image or compose file.
-      - ${VPS_USER_HOME:-/home/hermes}/.config/gh:/home/coder/.config/gh:rw
+      # copying any token value into the image or compose file. Mounted away
+      # from ~/.config on purpose: Docker would otherwise create the missing
+      # parent ~/.config as root-owned, breaking code-server's own config dir.
+      - ${VPS_USER_HOME:-/home/hermes}/.config/gh:/home/coder/gh-config:rw
       - ./code-server-config.json:/etc/code-server/config.json:ro
     env_file:
       - /etc/code-server.env
@@ -27,6 +33,8 @@ services:
       - GIT_CONFIG_COUNT=1
       - GIT_CONFIG_KEY_0=credential.https://github.com.helper
       - GIT_CONFIG_VALUE_0=!/usr/bin/gh auth git-credential
+      # gh auth state lives on the separate mount (see volumes).
+      - GH_CONFIG_DIR=/home/coder/gh-config
       - TZ=UTC
     restart: unless-stopped
     security_opt:
