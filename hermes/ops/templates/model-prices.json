@@ -1,0 +1,9 @@
+{
+  "_comment": "Optional fallback prices in USD per 1M tokens. Provider-reported cost wins when available. Verify current prices before adding a model.",
+  "example-provider/example-model": {
+    "input_per_million": 0,
+    "output_per_million": 0,
+    "cache_read_per_million": 0
+  }
+}
+

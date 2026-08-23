@@ -1,0 +1,86 @@
+---
+# Template only. Copy this file to `ansible/group_vars/all/vault.yml`, encrypt
+# that working file immediately, and then use `ansible-vault edit
+# group_vars/all/vault.yml`. Never put real values in this example.
+
+# When true, Ansible fully manages /home/hermes/.hermes/.env. Put every
+# environment-based Hermes secret you use in this mapping; manual edits to the
+# remote .env will be replaced on the next playbook run.
+hermes_manage_secret_env: true
+hermes_secret_env: {}
+
+# This dedicated Hermes VPS allows host administration by default. It creates
+# `hermes ALL=(ALL:ALL) NOPASSWD: ALL`, installs Docker Engine, and adds Hermes
+# to its `docker` group. Each is equivalent to host-root access. Agent
+# instructions can discourage deletion but cannot technically prevent it. Set
+# false only when a restricted VPS is required.
+hermes_host_admin_enabled: true
+
+# Replace the empty mapping above with the OpenRouter key and only the
+# non-LLM integration credentials you use:
+# hermes_secret_env:
+#   OPENROUTER_API_KEY: "replace-inside-ansible-vault"
+#
+#   # Non-LLM integrations are managed by the same map:
+#   # Brave's Hermes backend is named `brave-free`, but Brave still requires
+#   # this key for `web_search`. Without it Hermes may use Nous Tool Gateway
+#   # after OAuth or another configured backend instead.
+#   BRAVE_SEARCH_API_KEY: "replace-inside-ansible-vault"
+#   # Optional but recommended for reading HTML pages, PDFs, and public Drive
+#   # documents. The free Firecrawl plan has a monthly credit limit.
+#   FIRECRAWL_API_KEY: "replace-inside-ansible-vault"
+#   # Providing both values starts the Telegram gateway automatically.
+#   TELEGRAM_BOT_TOKEN: "replace-inside-ansible-vault"
+#   TELEGRAM_ALLOWED_USERS: "123456789"
+#   # Preferred name for the bundled Hermes GitHub skills and gh. Use a
+#   # fine-grained PAT limited to the repositories and permissions you need.
+#   GITHUB_TOKEN: "replace-inside-ansible-vault"
+
+# Optional authoritative OpenRouter overlay for /home/hermes/.hermes/config.yaml.
+# Top-level keys present here replace their existing values; unrelated Hermes
+# configuration is preserved. Keep the API key in hermes_secret_env, never as
+# inline api_key in config.yaml. Replace {} with the model you want to manage:
+hermes_llm_config: {}
+# OpenRouter model selection. `openrouter/free` only selects free compatible
+# models. Replace it only when you intentionally enable paid OpenRouter usage.
+# hermes_llm_config:
+#   model:
+#     provider: "openrouter"
+#     default: "openrouter/free"
+#     # Safe default for accounts with limited OpenRouter credit. Increase only
+#     # when the model and account quota support it.
+#     max_tokens: 2048
+#   # Optional OpenRouter settings:
+#   openrouter:
+#     response_cache: true
+#   # Reasoning effort: "xhigh" (max), "high", "medium" (upstream default),
+#   # "low", "minimal", "none" (disable). Higher effort costs more tokens and
+#   # latency. Per-model overrides go in agent.reasoning_overrides (see
+#   # hermes-agent's cli-config.yaml.example) and require editing config.yaml
+#   # directly -- `hermes config set` does not support that key.
+#   agent:
+#     reasoning_effort: "high"
+#   # Show the model's reasoning/thinking box above each response. Off by
+#   # default upstream. Toggle per session with `/reasoning show|hide` without
+#   # touching this file.
+#   display:
+#     show_reasoning: true
+#   # Free built-in Russian TTS. The playbook also adds up to two retries only
+#   # for Edge's transient NoAudioReceived response.
+#   tts:
+#     provider: "edge"
+#     edge:
+#       voice: "ru-RU-SvetlanaNeural"
+#   # Recommended web routing: Brave searches; Firecrawl reads page content.
+#   web:
+#     search_backend: "brave-free"
+#     extract_backend: "firecrawl"
+
+# Required when hermes_enable_ops=true. Ansible writes this to the root-only
+# /etc/hermes-grafana.env before Grafana can start. Never use the local Docker
+# grafana.env file on a VPS.
+hermes_grafana_admin_password: "replace-inside-ansible-vault"
+
+# Optional one-use, ephemeral, tagged Tailscale auth key. Leave empty to run
+# `sudo tailscale up --ssh` interactively.
+tailscale_auth_key: ""

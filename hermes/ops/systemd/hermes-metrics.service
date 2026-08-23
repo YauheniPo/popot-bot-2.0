@@ -1,0 +1,23 @@
+[Unit]
+Description=Export Hermes model, tool, cost, and VPS metrics
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=@HERMES_USER@
+Group=@HERMES_GROUP@
+Environment=HOME=@USER_HOME@
+Environment=HERMES_HOME=@HERMES_HOME@
+Environment=PATH=@USER_HOME@/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-/etc/hermes-ops.conf
+ExecStart=/usr/local/lib/hermes-ops/export-metrics.py
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=@HERMES_HOME@/ops
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+

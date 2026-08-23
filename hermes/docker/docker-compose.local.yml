@@ -1,0 +1,218 @@
+name: hermes-local-test
+
+services:
+  hermes:
+    build:
+      context: ../..
+      dockerfile: hermes/docker/Dockerfile
+    image: hermes-local-test:dev
+    pull_policy: build
+    container_name: hermes-local-test
+    # start-local.sh starts the gateway only with a complete Telegram setup;
+    # otherwise it keeps the local GUI available in dashboard-only mode.
+    command: ["/opt/hermes-local/start-local.sh"]
+    restart: "no"
+    env_file:
+      - path: ./local.env
+        required: true
+    environment:
+      HERMES_HOME: /opt/data
+      HERMES_WRITE_SAFE_ROOT: /opt/data
+      HERMES_DASHBOARD: "true"
+      HERMES_DASHBOARD_HOST: 0.0.0.0
+      HERMES_DASHBOARD_PORT: "9119"
+      # Read-only metrics tool can query only the private Prometheus service.
+      HERMES_PROMETHEUS_URL: http://prometheus:9090
+      # Keep Git and gh configuration in the isolated persistent volume too.
+      HOME: /opt/data/home
+      XDG_CONFIG_HOME: /opt/data/home/.config
+    volumes:
+      - hermes_local_test_data:/opt/data
+    ports:
+      - "127.0.0.1:9119:9119"
+    # Hermes may use passwordless sudo inside this container to install tools.
+    # Keep Docker socket, host mounts, devices and privileged mode absent.
+    pids_limit: 256
+    mem_limit: 4g
+    cpus: "2.0"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=512m
+      - /var/tmp:rw,noexec,nosuid,nodev,size=256m
+      # s6-overlay copies its short-lived init binary here before dropping to
+      # the `hermes` user; this is the sole executable temporary filesystem.
+      - /run:rw,exec,nosuid,nodev,size=64m
+    networks:
+      - hermes_local_test
+      - hermes_observability
+
+  # This sidecar only reads the Hermes state volume and writes aggregated
+  # Prometheus text metrics. It has no network access and cannot call Hermes.
+  metrics-storage-init:
+    image: hermes-local-test:dev
+    pull_policy: never
+    container_name: hermes-local-metrics-storage-init
+    entrypoint: []
+    command:
+      - /bin/sh
+      - -ec
+      - chown 10000:10000 /metrics && chmod 0755 /metrics
+    volumes:
+      - hermes_local_test_metrics:/metrics
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 16
+    mem_limit: 64m
+    cpus: "0.10"
+    restart: "no"
+    network_mode: none
+
+  # Collects aggregate Hermes metrics into a Prometheus textfile; no network.
+  metrics-collector:
+    image: hermes-local-test:dev
+    pull_policy: never
+    container_name: hermes-local-metrics-collector
+    entrypoint: []
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        while true; do
+          /opt/hermes/.venv/bin/python /opt/hermes-local/export-metrics.py || true
+          sleep 60
+        done
+    environment:
+      HOME: /opt/data/home
+      HERMES_HOME: /opt/data
+      HERMES_METRICS_FILE: /metrics/hermes.prom
+      HERMES_METRICS_MODE: "0644"
+      # The sidecar cannot inspect another container's process namespace. Do
+      # not export a false down state; the metric is explicitly unavailable.
+      HERMES_GATEWAY_STATE: unavailable
+    user: "10000:10000"
+    volumes:
+      - hermes_local_test_data:/opt/data:ro
+      - hermes_local_test_metrics:/metrics
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    mem_limit: 256m
+    cpus: "0.25"
+    restart: "no"
+    network_mode: none
+    depends_on:
+      hermes:
+        condition: service_started
+      metrics-storage-init:
+        condition: service_completed_successfully
+
+  # The node-exporter image is used only as a Prometheus metrics provider.
+  # It deliberately has no macOS host mounts or host-level metrics access.
+  metrics-provider:
+    image: quay.io/prometheus/node-exporter:v1.11.1
+    container_name: hermes-local-metrics-provider
+    command:
+      - --collector.textfile.directory=/metrics
+      - --web.listen-address=:9100
+    volumes:
+      - hermes_local_test_metrics:/metrics:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: "0.25"
+    restart: unless-stopped
+    networks:
+      - hermes_observability
+
+  prometheus:
+    image: prom/prometheus:v3.13.1
+    container_name: hermes-local-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.listen-address=:9090
+    volumes:
+      - ../observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - hermes_local_test_prometheus:/prometheus
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: "0.5"
+    restart: unless-stopped
+    networks:
+      - hermes_observability
+    depends_on:
+      - metrics-provider
+
+  grafana:
+    image: grafana/grafana:13.1.0
+    container_name: hermes-local-grafana
+    env_file:
+      - path: ./grafana.env
+        required: true
+    environment:
+      GF_SERVER_HTTP_ADDR: 0.0.0.0
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - hermes_local_test_grafana:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: "0.5"
+    restart: unless-stopped
+    networks:
+      - hermes_observability
+    depends_on:
+      - prometheus
+
+volumes:
+  hermes_local_test_data:
+    name: hermes_local_test_data
+  hermes_local_test_metrics:
+    name: hermes_local_test_metrics
+  hermes_local_test_prometheus:
+    name: hermes_local_test_prometheus
+  hermes_local_test_grafana:
+    name: hermes_local_test_grafana
+networks:
+  hermes_local_test:
+    name: hermes_local_test
+    driver: bridge
+  hermes_observability:
+    name: hermes_observability
+    driver: bridge

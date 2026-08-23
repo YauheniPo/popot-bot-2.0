@@ -1,0 +1,320 @@
+# shellcheck shell=bash
+
+resolve_user_paths() {
+  local passwd_entry
+  passwd_entry="$(getent passwd "$HERMES_USER")" ||
+    die "cannot read the passwd entry for $HERMES_USER"
+
+  HERMES_USER_HOME="$(cut -d: -f6 <<<"$passwd_entry")"
+  [[ "$HERMES_USER_HOME" == /* && "$HERMES_USER_HOME" != "/" ]] ||
+    die "unsafe home directory for $HERMES_USER: $HERMES_USER_HOME"
+  [[ -d "$HERMES_USER_HOME" ]] || die "home directory does not exist: $HERMES_USER_HOME"
+
+  HERMES_HOME="$HERMES_USER_HOME/.hermes"
+  HERMES_INSTALL_DIR="$HERMES_HOME/hermes-agent"
+  HERMES_BIN="$HERMES_USER_HOME/.local/bin/hermes"
+  HERMES_NODE_BIN="$HERMES_HOME/node/bin"
+  HERMES_WORKSPACE="$HERMES_USER_HOME/workspace"
+  HERMES_BACKUP_DIR="$HERMES_USER_HOME/hermes-backups"
+  HERMES_GROUP="$(id -gn "$HERMES_USER")"
+
+  readonly HERMES_USER_HOME HERMES_HOME HERMES_INSTALL_DIR HERMES_BIN HERMES_NODE_BIN
+  readonly HERMES_WORKSPACE HERMES_BACKUP_DIR HERMES_GROUP
+
+  local home_owner_id
+  home_owner_id="$(stat -c '%u' "$HERMES_USER_HOME")"
+  [[ "$home_owner_id" == "$(id -u "$HERMES_USER")" ]] ||
+    die "$HERMES_USER_HOME must be owned by $HERMES_USER"
+
+  install -d -o "$HERMES_USER" -g "$HERMES_GROUP" -m 0750 "$HERMES_WORKSPACE"
+  install -d -o "$HERMES_USER" -g "$HERMES_GROUP" -m 0700 "$HERMES_BACKUP_DIR"
+}
+
+run_as_hermes_impl() {
+  local allow_stdin="$1"
+  shift
+
+  local -a runuser_args=(
+    --user "$HERMES_USER" -- env -i
+    "HOME=$HERMES_USER_HOME"
+    "HERMES_HOME=$HERMES_HOME"
+    "LANG=${LANG:-C.UTF-8}"
+    "LOGNAME=$HERMES_USER"
+    "PATH=$HERMES_USER_HOME/.local/bin:$HERMES_NODE_BIN:/usr/local/bin:/usr/bin:/bin"
+    SHELL=/bin/bash
+    "TERM=${TERM:-xterm-256color}"
+    "USER=$HERMES_USER"
+    /bin/bash -c 'cd -- "$1"; shift; exec "$@"' bash "$HERMES_USER_HOME" "$@"
+  )
+
+  if [[ "$allow_stdin" == true ]]; then
+    runuser "${runuser_args[@]}"
+  else
+    # setsid detaches from any controlling terminal, not just fd 0. Some
+    # bundled installers open /dev/tty directly to prompt even when stdin is
+    # redirected; without a controlling terminal that open fails immediately
+    # instead of hanging forever waiting for input nobody can supply here.
+    setsid runuser "${runuser_args[@]}" </dev/null
+  fi
+}
+
+run_as_hermes() {
+  run_as_hermes_impl false "$@"
+}
+
+run_as_hermes_interactive() {
+  run_as_hermes_impl true "$@"
+}
+
+quiesce_existing_gateway_for_update() {
+  [[ -x "$HERMES_BIN" ]] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl is-active --quiet hermes-gateway.service || return 0
+
+  log "Stopping the managed gateway for a consistent update snapshot"
+  systemctl stop hermes-gateway.service
+  if systemctl is-active --quiet hermes-gateway.service; then
+    die "hermes-gateway.service remained active after stop"
+  fi
+  GATEWAY_WAS_QUIESCED=true
+}
+
+download_installer() {
+  local installer_url="$HERMES_RAW_BASE_URL/$HERMES_COMMIT/scripts/install.sh"
+  INSTALLER_FILE="$(mktemp /tmp/hermes-installer.XXXXXX)"
+  chmod 0755 "$INSTALLER_FILE"
+
+  log "Downloading the Hermes installer pinned to $HERMES_COMMIT"
+  curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+    "$installer_url" --output "$INSTALLER_FILE"
+
+  local actual_sha256
+  actual_sha256="$(sha256sum "$INSTALLER_FILE" | cut -d' ' -f1)"
+  [[ "$actual_sha256" == "$INSTALLER_SHA256" ]] ||
+    die "installer checksum mismatch (got $actual_sha256)"
+  log "Installer checksum verified"
+}
+
+backup_existing_installation() {
+  [[ -x "$HERMES_BIN" ]] || return 0
+  if [[ ! -x "$HERMES_INSTALL_DIR/venv/bin/python" ]]; then
+    warn "existing Hermes venv interpreter is missing; skipping backup of an unusable installation"
+    return 0
+  fi
+  [[ -f "$UPDATE_STATE_VERIFIER" ]] ||
+    die "update-state verifier is missing: $UPDATE_STATE_VERIFIER"
+
+  local timestamp backup_file backup_output
+  timestamp="$(date -u +%Y%m%d-%H%M%S)"
+  backup_file="$HERMES_BACKUP_DIR/pre-deploy-$timestamp.zip"
+  KANBAN_BEFORE_SNAPSHOT="$HERMES_BACKUP_DIR/pre-deploy-$timestamp-kanban-before.json"
+  KANBAN_AFTER_SNAPSHOT="$HERMES_BACKUP_DIR/pre-deploy-$timestamp-kanban-after.json"
+  UPDATE_GUARD_ACTIVE=true
+
+  log "Checking every Kanban database before the update"
+  python3 "$UPDATE_STATE_VERIFIER" snapshot \
+    --hermes-home "$HERMES_HOME" \
+    --output "$KANBAN_BEFORE_SNAPSHOT"
+  chown "$HERMES_USER:$HERMES_GROUP" "$KANBAN_BEFORE_SNAPSHOT"
+  chmod 0600 "$KANBAN_BEFORE_SNAPSHOT"
+
+  log "Backing up the existing Hermes data to $backup_file"
+  if ! backup_output="$(run_as_hermes "$HERMES_BIN" backup --output "$backup_file" 2>&1)"; then
+    printf '%s\n' "$backup_output" >&2
+    die "Hermes full backup command failed; update aborted"
+  fi
+  printf '%s\n' "$backup_output"
+  [[ "$backup_output" == *"Backup complete:"* ]] ||
+    die "Hermes did not report a complete full backup; update aborted"
+  [[ -s "$backup_file" ]] || die "Hermes full backup is missing or empty; update aborted"
+  chmod 0600 "$backup_file"
+
+  log "Validating the full backup archive and its Kanban snapshots"
+  python3 "$UPDATE_STATE_VERIFIER" verify-backup \
+    --backup "$backup_file" \
+    --snapshot "$KANBAN_BEFORE_SNAPSHOT"
+  log "Mandatory pre-update backup verified"
+}
+
+install_hermes() {
+  local installer_args=(
+    --skip-setup
+    --branch "$HERMES_BRANCH"
+    --commit "$HERMES_COMMIT"
+    --force-commit
+    --hermes-home "$HERMES_HOME"
+  )
+
+  if [[ "$WITH_BROWSER" == false ]]; then
+    installer_args=(--skip-browser "${installer_args[@]}")
+  fi
+
+  if [[ "$UPDATE_GUARD_ACTIVE" == true ]]; then
+    UPDATE_MUTATION_STARTED=true
+  fi
+  log "Installing Hermes $HERMES_RELEASE ($HERMES_VERSION, $HERMES_COMMIT) as $HERMES_USER"
+  run_as_hermes bash "$INSTALLER_FILE" "${installer_args[@]}"
+  [[ -x "$HERMES_BIN" ]] || die "Hermes launcher was not created at $HERMES_BIN"
+
+  local actual_commit actual_version
+  actual_commit="$(run_as_hermes git -C "$HERMES_INSTALL_DIR" rev-parse HEAD)"
+  [[ "$actual_commit" == "$HERMES_COMMIT" ]] ||
+    die "installed Hermes commit mismatch (got $actual_commit)"
+  actual_version="$(
+    run_as_hermes "$HERMES_INSTALL_DIR/venv/bin/python" -c \
+      'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["project"]["version"])' \
+      "$HERMES_INSTALL_DIR/pyproject.toml"
+  )"
+  [[ "$actual_version" == "$HERMES_VERSION" ]] ||
+    die "installed Hermes version mismatch (got $actual_version)"
+  log "Hermes source identity verified"
+}
+
+verify_updated_kanban_state() {
+  [[ "$UPDATE_GUARD_ACTIVE" == true ]] || return 0
+
+  log "Checking every Kanban database after the update"
+  python3 "$UPDATE_STATE_VERIFIER" snapshot \
+    --hermes-home "$HERMES_HOME" \
+    --output "$KANBAN_AFTER_SNAPSHOT"
+  chown "$HERMES_USER:$HERMES_GROUP" "$KANBAN_AFTER_SNAPSHOT"
+  chmod 0600 "$KANBAN_AFTER_SNAPSHOT"
+  python3 "$UPDATE_STATE_VERIFIER" compare \
+    --before "$KANBAN_BEFORE_SNAPSHOT" \
+    --after "$KANBAN_AFTER_SNAPSHOT"
+  log "Post-update Kanban integrity and task counts verified"
+
+  if [[ "$GATEWAY_WAS_QUIESCED" == true && "$ENABLE_GATEWAY" != false ]]; then
+    log "Restarting the gateway after successful update verification"
+    systemctl start hermes-gateway.service
+    systemctl is-active --quiet hermes-gateway.service ||
+      die "hermes-gateway.service did not restart after the verified update"
+    GATEWAY_WAS_QUIESCED=false
+  fi
+}
+
+install_local_browser_automation() {
+  [[ "$WITH_BROWSER" == true ]] || return 0
+  local browser_installer="$SCRIPT_DIR/ops/install-browser-automation.sh"
+  [[ -x "$browser_installer" ]] || {
+    warn "local browser automation installer is unavailable: $browser_installer"
+    return 0
+  }
+
+  log "Installing and verifying local browser automation"
+  "$browser_installer" \
+    --user "$HERMES_USER" \
+    --user-home "$HERMES_USER_HOME" \
+    --hermes-home "$HERMES_HOME"
+}
+
+configure_development_clis() {
+  [[ "$INSTALL_DEV_CLIS" == true ]] || return 0
+
+  local github_wrapper="$SCRIPT_DIR/runtime/github-cli-wrapper.py"
+
+  log "Configuring safe Git defaults for the Hermes user"
+  run_as_hermes git config --global init.defaultBranch main
+  run_as_hermes git config --global fetch.prune true
+  run_as_hermes git config --global push.autoSetupRemote true
+
+  if command -v git-lfs >/dev/null 2>&1; then
+    run_as_hermes git lfs install --skip-repo
+  fi
+
+  if [[ -x /usr/bin/gh && -f "$github_wrapper" ]]; then
+    install -o "$HERMES_USER" -g "$HERMES_GROUP" -m 0750 \
+      "$github_wrapper" "$HERMES_USER_HOME/.local/bin/gh"
+    run_as_hermes git config --global --replace-all credential.https://github.com.helper ""
+    run_as_hermes git config --global --add credential.https://github.com.helper \
+      "!$HERMES_USER_HOME/.local/bin/gh auth git-credential"
+  elif ! command -v gh >/dev/null 2>&1; then
+    warn "GitHub CLI (gh) was not available; regular git clone/pull/push still work"
+  else
+    warn "managed GitHub CLI wrapper was not found: $github_wrapper"
+  fi
+}
+
+install_google_workspace_cli() {
+  [[ "$INSTALL_GOOGLE_CLI" == true ]] || return 0
+
+  local npm_bin="$HERMES_NODE_BIN/npm"
+  local setup_script="$HERMES_INSTALL_DIR/skills/productivity/google-workspace/scripts/setup.py"
+  local python_bin="$HERMES_INSTALL_DIR/venv/bin/python"
+
+  [[ -x "$npm_bin" ]] || die "Hermes-managed npm was not found at $npm_bin"
+
+  log "Installing Google Workspace CLI (gws) for Gmail, Calendar, Drive, Docs, and Sheets"
+  run_as_hermes "$npm_bin" install --global --omit=dev \
+    --prefix "$HERMES_HOME/node" \
+    @googleworkspace/cli
+
+  if ! run_as_hermes bash -c 'command -v gws >/dev/null 2>&1'; then
+    die "gws was installed but is not available in the Hermes user PATH"
+  fi
+
+  # The bundled skill prefers gws. Its official Python client is prepared as a
+  # fallback when the installed Hermes version supports dependency bootstrap.
+  if [[ -x "$python_bin" && -f "$setup_script" ]]; then
+    log "Preparing the bundled Google Workspace Python fallback"
+    if ! run_as_hermes "$python_bin" "$setup_script" --install-deps; then
+      warn "Google Python fallback setup failed; the preferred gws CLI remains installed"
+    fi
+  else
+    warn "bundled Google Workspace fallback setup was not found"
+  fi
+}
+
+run_setup() {
+  if [[ "$ENABLE_GATEWAY" == true ]]; then
+    log "If asked about a gateway service, choose 'System service' or skip it; this script will install it"
+  fi
+
+  if [[ "$SETUP_PORTAL" == true ]]; then
+    log "Starting Nous Portal setup (model plus managed web, image, TTS, and browser tools)"
+    run_as_hermes_interactive "$HERMES_BIN" setup --portal
+  else
+    log "Starting the interactive Hermes setup wizard"
+    run_as_hermes_interactive "$HERMES_BIN" setup --quick
+  fi
+}
+
+run_mcp_picker() {
+  log "Opening the Nous-approved MCP catalog"
+  log "Install only integrations you actually need"
+  log "Built-in web, files, terminal, and Google do not need duplicate MCPs"
+  if ! run_as_hermes_interactive "$HERMES_BIN" mcp; then
+    warn "MCP picker was cancelled or did not complete; run 'hermes mcp' later"
+  fi
+}
+
+initialize_skills_hub() {
+  log "Initializing the Hermes Skills Hub"
+  if ! run_as_hermes "$HERMES_BIN" skills list >/dev/null; then
+    warn "Skills Hub initialization did not complete; run 'hermes skills list' as ${HERMES_USER}"
+  fi
+}
+
+apply_recommended_defaults() {
+  local hermes_python="$HERMES_HOME/hermes-agent/venv/bin/python"
+  local -a args=(
+    apply
+    --settings "$VPS_SETTINGS_FILE"
+    --hermes-home "$HERMES_HOME"
+    --hermes-bin "$HERMES_BIN"
+    --workspace "$HERMES_WORKSPACE"
+  )
+
+  [[ -f "$VPS_SETTINGS_FILE" ]] || die "VPS settings are missing: $VPS_SETTINGS_FILE"
+  [[ -f "$VPS_CONFIG_APPLIER" ]] || die "VPS config applier is missing: $VPS_CONFIG_APPLIER"
+  [[ -x "$hermes_python" ]] || die "Hermes Python is missing: $hermes_python"
+
+  # Direct installs can opt into capability-specific routing by exporting only
+  # the relevant credential before deployment. Ansible passes these capability
+  # names from Vault without exposing credential values.
+  [[ -n "${BRAVE_SEARCH_API_KEY:-}" ]] && args+=(--capability brave_search)
+  [[ -n "${FIRECRAWL_API_KEY:-}" ]] && args+=(--capability firecrawl_extract)
+
+  log "Applying shared VPS runtime settings"
+  run_as_hermes "$hermes_python" "$VPS_CONFIG_APPLIER" "${args[@]}"
+}

@@ -1,0 +1,13 @@
+[Unit]
+Description=Create a Hermes snapshot every day
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=1d
+AccuracySec=5min
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target
+

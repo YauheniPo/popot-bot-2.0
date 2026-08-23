@@ -1,0 +1,87 @@
+---
+# Single source of truth for important non-secret Hermes VPS settings.
+# Secrets and provider credentials remain in Ansible Vault / Hermes .env.
+vps_deploy:
+  identity:
+    user: hermes
+    user_home: /home/hermes
+    hermes_home: /home/hermes/.hermes
+    hermes_bin: /home/hermes/.local/bin/hermes
+  source:
+    branch: main
+    version: "0.20.5"
+    release: v2026.8.19
+    commit: fcbd1076a93841fa88855acce810e342a5b78101
+    installer_sha256: 0582d9b1562efcb6e0ac62f4451021667830b830a72ce7d91eaea9fee8b6c09b
+    bundle_dir: /opt/hermes-bootstrap
+  features:
+    force_gateway: false
+    auto_enable_gateway: true
+    observability: true
+    tailscale: true
+    host_admin: true
+    lock_public_ssh: false
+
+vps_runtime:
+  set:
+    terminal.cwd: "${HERMES_WORKSPACE}"
+    checkpoints.enabled: true
+    updates.pre_update_backup: full
+    updates.non_interactive_local_changes: stash
+    gateway.systemd_watchdog_seconds: 120
+    agent.verify_on_stop: auto
+    browser.backend: "off"
+    tool_loop_guardrails.hard_stop_enabled: true
+    tool_loop_guardrails.hard_stop_after.exact_failure: 3
+    tool_loop_guardrails.hard_stop_after.same_tool_failure: 3
+    tool_loop_guardrails.hard_stop_after.idempotent_no_progress: 3
+    tool_loop_guardrails.loop_caps.max_web_searches: 20
+    tool_loop_guardrails.loop_caps.max_subagents: 10
+    display.tool_progress: "off"
+    display.background_process_notifications: result
+    session_reset.mode: idle
+    session_reset.idle_minutes: 2880
+  set_if_missing:
+    model.max_tokens: 4096
+  unset:
+    - agent.max_turns
+    - goals.max_turns
+  capabilities:
+    brave_search:
+      set:
+        web.search_backend: brave-free
+    firecrawl_extract:
+      set:
+        web.extract_backend: firecrawl
+
+# Managed GitHub access for terminal + bundled Hermes GitHub skills. The token
+# itself belongs in Ansible Vault as GITHUB_TOKEN; this section is non-secret.
+vps_github:
+  enabled: true
+  require_auth: true
+  host: github.com
+  expected_login: YauheniPo
+  default_owner: YauheniPo
+  access_probe_repository: YauheniPo/popot-bot-2.0
+  repositories_dir: /home/hermes/workspace/repositories
+  write_owners:
+    - YauheniPo
+  write_repositories: []
+  git_identity:
+    name: YauheniPo
+    email: ip.popovich@mail.ru
+
+# Only these application-owned services are restarted by deployment. Network,
+# SSH, Docker, and unrelated host services are intentionally excluded.
+vps_services:
+  gateway:
+    - hermes-gateway.service
+  observability:
+    - hermes-node-exporter.service
+    - hermes-prometheus.service
+    - grafana-server.service
+    - hermes-dashboard.service
+  timers:
+    - hermes-backup.timer
+    - hermes-health.timer
+    - hermes-metrics.timer

@@ -1,0 +1,145 @@
+---
+- name: Install and verify local browser automation
+  ansible.builtin.command:
+    argv:
+      - "{{ hermes_bundle_dir }}/ops/install-browser-automation.sh"
+      - --user
+      - "{{ hermes_user }}"
+      - --user-home
+      - "{{ hermes_user_home }}"
+      - --hermes-home
+      - "{{ hermes_home }}"
+  changed_when: true
+
+- name: Locate the installed Hermes Edge TTS implementation
+  ansible.builtin.find:
+    paths:
+      - "{{ hermes_user_home }}/.local"
+      - "{{ hermes_home }}"
+    patterns: tts_tool.py
+    file_type: file
+    recurse: true
+  register: hermes_tts_tool_files
+  changed_when: false
+
+- name: Install transient Edge TTS retry when the upstream tool is found
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ hermes_bundle_dir }}/ops/apply-edge-tts-retry.py"
+      - "{{ (hermes_tts_tool_files.files | map(attribute='path') | list | first) }}"
+  register: hermes_tts_retry
+  changed_when: "'installed Edge TTS transient retry' in hermes_tts_retry.stdout"
+  when: hermes_tts_tool_files.matched | int > 0
+
+- name: Report when the upstream Edge TTS implementation cannot be located
+  ansible.builtin.debug:
+    msg: >-
+      Edge TTS retry was skipped because no installed tts_tool.py was found.
+      Hermes itself remains installed; check its upstream layout before a retry is added.
+  when: hermes_tts_tool_files.matched | int == 0
+
+- name: Materialize Grafana administrator credentials from Vault
+  ansible.builtin.template:
+    src: templates/hermes-grafana.env.j2
+    dest: /etc/hermes-grafana.env
+    owner: root
+    group: root
+    mode: "0600"
+  when: hermes_enable_ops | bool
+  no_log: true
+  diff: false
+
+- name: Install audit, metrics, reporting, and health checks
+  ansible.builtin.command:
+    argv: "{{ [hermes_bundle_dir + '/ops/install-ops.sh', '--user', hermes_user, '--user-home', hermes_user_home, '--hermes-home', hermes_home, '--hermes-bin', hermes_bin, '--no-restart'] + ([] if hermes_gateway_enabled | bool else ['--defer-timers']) }}"
+  when: hermes_enable_ops | bool
+  changed_when: true
+
+- name: Install and start the Hermes system gateway
+  ansible.builtin.command:
+    argv:
+      - "{{ hermes_bin }}"
+      - gateway
+      - install
+      - --system
+      - --run-as-user
+      - "{{ hermes_user }}"
+      - --force
+      - --start-now
+      - --start-on-login
+  environment:
+    HOME: "{{ hermes_user_home }}"
+    HERMES_HOME: "{{ hermes_home }}"
+    PATH: "{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  when: hermes_gateway_enabled | bool
+  changed_when: true
+
+- name: Reload systemd after installing managed Hermes units
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: (hermes_gateway_enabled | bool) or (hermes_enable_ops | bool)
+
+- name: Restart managed Hermes observability services after deployment
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: restarted
+    enabled: true
+  loop: "{{ vps_services.observability }}"
+  when: hermes_enable_ops | bool
+
+- name: Restart monitoring timers after gateway configuration
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: restarted
+    enabled: true
+  loop: "{{ vps_services.timers }}"
+  when:
+    - hermes_enable_ops | bool
+    - hermes_gateway_enabled | bool
+
+- name: Restart the Hermes gateway as the final deployment mutation
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: restarted
+    enabled: true
+  loop: "{{ vps_services.gateway }}"
+  when: hermes_gateway_enabled | bool
+
+- name: Verify the loopback-only dashboard is active
+  ansible.builtin.command:
+    argv: [systemctl, is-active, --quiet, hermes-dashboard.service]
+  changed_when: false
+  when: hermes_enable_ops | bool
+
+- name: Verify the loopback-only observability services are active
+  ansible.builtin.command:
+    argv: [systemctl, is-active, --quiet, "{{ item }}"]
+  loop: "{{ vps_services.observability | reject('equalto', 'hermes-dashboard.service') | list }}"
+  changed_when: false
+  when: hermes_enable_ops | bool
+
+- name: Verify the gateway is active
+  ansible.builtin.command:
+    argv: [systemctl, is-active, --quiet, "{{ item }}"]
+  loop: "{{ vps_services.gateway }}"
+  changed_when: false
+  when: hermes_gateway_enabled | bool
+
+- name: Verify gateway startup notification is enabled
+  ansible.builtin.command:
+    argv: [systemctl, is-enabled, --quiet, hermes-startup-notify.service]
+  changed_when: false
+  when:
+    - hermes_enable_ops | bool
+    - hermes_gateway_enabled | bool
+
+- name: Read Hermes deploy completion time
+  ansible.builtin.command:
+    argv: [date, --iso-8601=seconds]
+  register: hermes_deploy_completed_at
+  changed_when: false
+
+- name: Report Hermes deploy completion time
+  ansible.builtin.debug:
+    msg: "Hermes deploy completed at {{ hermes_deploy_completed_at.stdout }} (VPS time)."

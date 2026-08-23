@@ -1,0 +1,378 @@
+---
+- name: Provision or restore a Hermes VPS
+  hosts: hermes_vps
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../config/vps-defaults.yml
+
+  pre_tasks:
+    - name: Validate supported operating system
+      ansible.builtin.assert:
+        that:
+          - ansible_system == "Linux"
+          - ansible_distribution in ["Debian", "Ubuntu"]
+          - hermes_user != "root"
+          - hermes_user_home.startswith("/")
+          - hermes_home.startswith(hermes_user_home + "/")
+          - hermes_bin.startswith(hermes_user_home + "/")
+          - hermes_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+          - hermes_release is match('^v[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}$')
+          - hermes_commit is match('^[0-9a-f]{40}$')
+          - hermes_installer_sha256 is match('^[0-9a-f]{64}$')
+          - not (hermes_lock_public_ssh | bool) or (hermes_enable_tailscale | bool)
+        fail_msg: This playbook supports Debian/Ubuntu and a non-root Hermes user.
+
+  tasks:
+    - name: Create the remote Hermes infrastructure bundle directory
+      ansible.builtin.file:
+        path: "{{ hermes_bundle_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Copy the versioned Hermes deployment script
+      ansible.builtin.copy:
+        src: ../deploy-hermes.sh
+        dest: "{{ hermes_bundle_dir }}/deploy-hermes.sh"
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Copy the versioned deployment domain modules
+      ansible.builtin.copy:
+        src: ../deploy/
+        dest: "{{ hermes_bundle_dir }}/deploy/"
+        owner: root
+        group: root
+        mode: preserve
+        directory_mode: "0755"
+
+    - name: Copy the versioned operations layer without controller secrets
+      ansible.builtin.copy:
+        src: ../ops/
+        dest: "{{ hermes_bundle_dir }}/ops/"
+        owner: root
+        group: root
+        mode: preserve
+        directory_mode: "0755"
+
+    - name: Copy versioned Grafana and Prometheus provisioning files
+      ansible.builtin.copy:
+        src: ../observability/
+        dest: "{{ hermes_bundle_dir }}/observability/"
+        owner: root
+        group: root
+        mode: preserve
+        directory_mode: "0755"
+
+    - name: Copy shared VPS runtime configuration
+      ansible.builtin.copy:
+        src: ../config/
+        dest: "{{ hermes_bundle_dir }}/config/"
+        owner: root
+        group: root
+        mode: preserve
+        directory_mode: "0755"
+
+    - name: Copy shared VPS runtime helpers
+      ansible.builtin.copy:
+        src: ../runtime/
+        dest: "{{ hermes_bundle_dir }}/runtime/"
+        owner: root
+        group: root
+        mode: preserve
+        directory_mode: "0755"
+
+    - name: Check whether Hermes is already installed
+      ansible.builtin.stat:
+        path: "{{ hermes_bin }}"
+      register: hermes_binary
+
+    - name: Read the installed Hermes commit
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - "{{ hermes_home }}/hermes-agent"
+          - rev-parse
+          - HEAD
+      become_user: "{{ hermes_user }}"
+      environment:
+        HOME: "{{ hermes_user_home }}"
+      register: hermes_installed_commit
+      changed_when: false
+      when: hermes_binary.stat.exists
+
+    # follow: true so a dangling symlink (broken venv interpreter) reports as
+    # missing, not present -- lstat on the link itself would say "exists" even
+    # though exec-ing it fails with ENOENT.
+    - name: Stat the installed Hermes Python interpreter path
+      ansible.builtin.stat:
+        path: "{{ hermes_home }}/hermes-agent/venv/bin/python"
+        follow: true
+      register: hermes_venv_python
+
+    # The bundled installer recreates this venv on every update. If any file
+    # under it ended up owned by a different UID (e.g. a prior run before
+    # become_user was consistently hermes), `rm` during recreation fails with
+    # Permission denied and aborts the whole install. This is metadata-only
+    # (owner/group), never deletes anything, so it is safe to run every time.
+    - name: Ensure the Hermes virtual environment directory exists
+      ansible.builtin.file:
+        path: "{{ hermes_home }}/hermes-agent/venv"
+        state: directory
+        owner: "{{ hermes_user }}"
+        group: "{{ hermes_user }}"
+        recurse: true
+      when: hermes_binary.stat.exists
+
+    - name: Install or update Hermes to the pinned commit
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [
+              hermes_bundle_dir ~ '/deploy-hermes.sh',
+              '--user', hermes_user,
+              '--branch', hermes_branch,
+              '--expected-version', hermes_version,
+              '--release', hermes_release,
+              '--commit', hermes_commit,
+              '--installer-sha256', hermes_installer_sha256,
+              '--skip-setup',
+              '--skip-mcp',
+              '--no-gateway',
+              '--without-ops',
+              '--without-tailscale'
+            ] +
+            ([] if (hermes_host_admin_enabled | bool) else ['--without-host-admin'])
+          }}
+      when: >-
+        (not hermes_binary.stat.exists) or
+        (hermes_installed_commit.stdout | default('') != hermes_commit) or
+        (not hermes_venv_python.stat.exists)
+
+    - name: Configure private networking and firewall
+      ansible.builtin.import_tasks: tasks/network.yml
+
+    - name: Stop the gateway before restoring a backup
+      ansible.builtin.systemd_service:
+        name: hermes-gateway.service
+        state: stopped
+      failed_when: false
+      when: hermes_backup_archive | length > 0
+
+    - name: Restore Hermes state from the encrypted-at-rest backup archive
+      block:
+        - name: Copy the encrypted-at-rest Hermes restore archive temporarily
+          ansible.builtin.copy:
+            src: "{{ hermes_backup_archive }}"
+            dest: /var/tmp/hermes-restore.zip
+            owner: "{{ hermes_user }}"
+            mode: "0600"
+          no_log: true
+
+        - name: Restore Hermes state, credentials, sessions, skills, and profiles
+          ansible.builtin.command:
+            argv:
+              - runuser
+              - --user
+              - "{{ hermes_user }}"
+              - --
+              - env
+              - "HOME={{ hermes_user_home }}"
+              - "HERMES_HOME={{ hermes_home }}"
+              - "LANG=C.UTF-8"
+              - "LOGNAME={{ hermes_user }}"
+              - "PATH={{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/bin:/usr/bin:/bin"
+              - "USER={{ hermes_user }}"
+              - "{{ hermes_bin }}"
+              - import
+              - /var/tmp/hermes-restore.zip
+              - --force
+          no_log: true
+      always:
+        - name: Remove the temporary restore archive
+          ansible.builtin.file:
+            path: /var/tmp/hermes-restore.zip
+            state: absent
+      when: hermes_backup_archive | length > 0
+
+    - name: Validate the encrypted Hermes environment map
+      ansible.builtin.assert:
+        that:
+          - hermes_secret_env is mapping
+        fail_msg: hermes_secret_env must be a YAML mapping of ENV_NAME to secret string.
+      when: hermes_manage_secret_env | bool
+      no_log: true
+
+    - name: Validate encrypted Hermes environment entries
+      ansible.builtin.assert:
+        that:
+          - item.key is match('^[A-Z][A-Z0-9_]*$')
+          - item.value is string
+          - item.value | length > 0
+          - item.value != 'replace-inside-ansible-vault'
+        fail_msg: Secret names must be uppercase environment names and values must be non-empty strings.
+      loop: "{{ hermes_secret_env | dict2items }}"
+      when: hermes_manage_secret_env | bool
+      no_log: true
+
+    - name: Decide whether Telegram credentials enable the gateway
+      ansible.builtin.set_fact:
+        hermes_gateway_enabled: >-
+          {{ (hermes_enable_gateway | bool) or
+             ((hermes_auto_enable_gateway | bool) and
+              (hermes_manage_secret_env | bool) and
+              ((hermes_secret_env.TELEGRAM_BOT_TOKEN | default('', true) | string | length) > 0) and
+              ((hermes_secret_env.TELEGRAM_ALLOWED_USERS | default('', true) | string | length) > 0)) }}
+      no_log: true
+
+    - name: Validate encrypted Hermes LLM configuration
+      ansible.builtin.assert:
+        that:
+          - hermes_llm_config is mapping
+        fail_msg: hermes_llm_config must be a YAML mapping of config.yaml top-level keys.
+      no_log: true
+
+    - name: Install sudo for an explicitly administrator-enabled Hermes
+      ansible.builtin.apt:
+        name: sudo
+        state: present
+        update_cache: true
+      when: hermes_host_admin_enabled | bool
+
+    - name: Install Docker Engine for an administrator-enabled Hermes
+      ansible.builtin.apt:
+        name: docker.io
+        state: present
+        update_cache: true
+      when: hermes_host_admin_enabled | bool
+
+    - name: Start Docker Engine
+      ansible.builtin.systemd_service:
+        name: docker.service
+        state: started
+        enabled: true
+      when: hermes_host_admin_enabled | bool
+
+    - name: Grant Hermes Docker administration access
+      ansible.builtin.user:
+        name: "{{ hermes_user }}"
+        groups: docker
+        append: true
+      when: hermes_host_admin_enabled | bool
+
+    - name: Read Hermes group membership when host administration is disabled
+      ansible.builtin.command:
+        argv: [id, -nG, "{{ hermes_user }}"]
+      register: hermes_groups
+      changed_when: false
+      when: not (hermes_host_admin_enabled | bool)
+
+    - name: Remove Hermes Docker administration access when disabled
+      ansible.builtin.command:
+        argv: [gpasswd, --delete, "{{ hermes_user }}", docker]
+      when:
+        - not (hermes_host_admin_enabled | bool)
+        - "'docker' in hermes_groups.stdout.split()"
+      changed_when: true
+
+    - name: Verify Hermes can access Docker Engine
+      ansible.builtin.command:
+        argv: [runuser, --user, "{{ hermes_user }}", --, docker, version]
+      changed_when: false
+      when: hermes_host_admin_enabled | bool
+
+    - name: Authorize Hermes for full VPS administration
+      ansible.builtin.copy:
+        content: |
+          # Explicit owner opt-in: Hermes can administer this host via sudo.
+          {{ hermes_user }} ALL=(ALL:ALL) NOPASSWD: ALL
+        dest: /etc/sudoers.d/hermes-host-admin
+        owner: root
+        group: root
+        mode: "0440"
+        validate: /usr/sbin/visudo -cf %s
+      when: hermes_host_admin_enabled | bool
+
+    - name: Remove Hermes VPS administration authorization when disabled
+      ansible.builtin.file:
+        path: /etc/sudoers.d/hermes-host-admin
+        state: absent
+      when: not (hermes_host_admin_enabled | bool)
+
+    - name: Install host-administration instructions in the Hermes workspace
+      ansible.builtin.copy:
+        src: AGENTS.md
+        dest: "{{ hermes_user_home }}/workspace/AGENTS.md"
+        owner: "{{ hermes_user }}"
+        group: "{{ hermes_user }}"
+        mode: "0644"
+      when: hermes_host_admin_enabled | bool
+
+    - name: Publish Vault environment variable names to Hermes without values
+      ansible.builtin.blockinfile:
+        path: "{{ hermes_user_home }}/workspace/AGENTS.md"
+        marker: "<!-- {mark} MANAGED VAULT ENVIRONMENT NAMES -->"
+        insertafter: EOF
+        block: |
+          # Vault-managed environment variable names
+
+          These names are available to guide tool selection. Their values are
+          not included in this document and must never be read or requested in
+          chat.
+
+          {% if (hermes_manage_secret_env | bool) and (hermes_secret_env | length > 0) %}
+          {{ hermes_secret_env.keys() | list | sort | join(', ') }}
+          {% else %}
+          No Vault-managed environment variables are configured.
+          {% endif %}
+        owner: "{{ hermes_user }}"
+        group: "{{ hermes_user }}"
+        mode: "0644"
+      when: hermes_host_admin_enabled | bool
+      no_log: true
+
+    - name: Validate Grafana administrator credentials from Vault
+      ansible.builtin.assert:
+        that:
+          - hermes_grafana_admin_user is match('^[A-Za-z0-9._-]{1,64}$')
+          - hermes_grafana_admin_password is string
+          - hermes_grafana_admin_password | length >= 4
+          - hermes_grafana_admin_password != 'replace-inside-ansible-vault'
+        fail_msg: Set a real Grafana password of at least 4 characters in encrypted vault.yml.
+      when: hermes_enable_ops | bool
+      no_log: true
+
+    # Re-stat after the install task above, which reinstalls the full venv
+    # (interpreter + Hermes package + dependencies) via deploy-hermes.sh
+    # whenever the earlier stat found it missing or broken. A bare
+    # `python3 -m venv` here would only recreate an empty interpreter with no
+    # Hermes package installed into it, breaking the next task differently.
+    - name: Re-stat the Hermes venv Python interpreter
+      ansible.builtin.stat:
+        path: "{{ hermes_home }}/hermes-agent/venv/bin/python"
+        follow: true
+      register: hermes_venv_python
+
+    - name: Fail loudly if the Hermes venv is still broken after installation
+      ansible.builtin.assert:
+        that: hermes_venv_python.stat.exists
+        fail_msg: >-
+          {{ hermes_home }}/hermes-agent/venv/bin/python is still missing or
+          broken after running deploy-hermes.sh. Investigate the installer
+          output on the VPS manually; Hermes runtime configuration and
+          dependent services cannot proceed.
+      when: hermes_binary.stat.exists
+
+    - name: Configure Hermes runtime
+      ansible.builtin.import_tasks: tasks/runtime.yml
+      when: hermes_venv_python.stat.exists
+
+    - name: Configure managed GitHub tooling and access
+      ansible.builtin.import_tasks: tasks/github.yml
+
+    - name: Install and reconcile Hermes services
+      ansible.builtin.import_tasks: tasks/services.yml

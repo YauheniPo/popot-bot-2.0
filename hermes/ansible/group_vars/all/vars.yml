@@ -1,0 +1,55 @@
+---
+# Non-secret defaults come from ../../config/vps-defaults.yml. Override these
+# aliases in host_vars or with --extra-vars only for a host-specific exception.
+hermes_user: "{{ vps_deploy.identity.user }}"
+hermes_user_home: "{{ vps_deploy.identity.user_home }}"
+hermes_home: "{{ vps_deploy.identity.hermes_home }}"
+hermes_bin: "{{ vps_deploy.identity.hermes_bin }}"
+hermes_branch: "{{ vps_deploy.source.branch }}"
+hermes_version: "{{ vps_deploy.source.version }}"
+hermes_release: "{{ vps_deploy.source.release }}"
+hermes_commit: "{{ vps_deploy.source.commit }}"
+hermes_installer_sha256: "{{ vps_deploy.source.installer_sha256 }}"
+hermes_bundle_dir: "{{ vps_deploy.source.bundle_dir }}"
+
+# A full `hermes backup` zip on the Ansible controller. Keep it encrypted at
+# rest and never commit it. Empty means "install infrastructure only".
+hermes_backup_archive: ""
+
+# Ansible auto-starts the gateway only when Vault provides both Telegram
+# credentials. Set this to true only to force a gateway start deliberately.
+hermes_enable_gateway: "{{ vps_deploy.features.force_gateway }}"
+hermes_auto_enable_gateway: "{{ vps_deploy.features.auto_enable_gateway }}"
+hermes_enable_ops: "{{ vps_deploy.features.observability }}"
+hermes_enable_tailscale: "{{ vps_deploy.features.tailscale }}"
+# The VPS is dedicated to Hermes, so it administers its own server by default.
+# When true, Ansible also installs Docker Engine and adds Hermes to the `docker`
+# group. That group is root-equivalent; set false only for a restricted VPS.
+hermes_host_admin_enabled: "{{ vps_deploy.features.host_admin }}"
+
+# Git/GitHub non-secret policy comes from the shared VPS settings file.
+hermes_github_enabled: "{{ vps_github.enabled }}"
+hermes_github_require_auth: "{{ vps_github.require_auth }}"
+hermes_github_host: "{{ vps_github.host }}"
+hermes_github_expected_login: "{{ vps_github.expected_login }}"
+hermes_github_default_owner: "{{ vps_github.default_owner }}"
+hermes_github_access_probe_repository: "{{ vps_github.access_probe_repository }}"
+hermes_github_repositories_dir: "{{ vps_github.repositories_dir }}"
+hermes_github_write_owners: "{{ vps_github.write_owners }}"
+hermes_github_write_repositories: "{{ vps_github.write_repositories }}"
+hermes_git_identity: "{{ vps_github.git_identity }}"
+
+# Set true only after a successful SSH login through Tailscale. It enables UFW
+# and blocks public TCP/22 while allowing SSH on tailscale0.
+hermes_lock_public_ssh: "{{ vps_deploy.features.lock_public_ssh }}"
+
+# Secret values belong in the ignored and encrypted vault.yml, not here.
+hermes_manage_secret_env: false
+hermes_secret_env: {}
+hermes_llm_config: {}
+
+# The password itself must be set in encrypted vault.yml. The account name is
+# non-secret and remains versioned here.
+hermes_grafana_admin_user: hermes
+hermes_grafana_admin_password: ""
+tailscale_auth_key: ""

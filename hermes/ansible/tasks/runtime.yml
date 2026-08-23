@@ -1,0 +1,188 @@
+---
+- name: Materialize encrypted API keys and tokens for Hermes
+  ansible.builtin.template:
+    src: templates/hermes.env.j2
+    dest: "{{ hermes_home }}/.env"
+    owner: "{{ hermes_user }}"
+    group: "{{ hermes_user }}"
+    mode: "0600"
+  when: hermes_manage_secret_env | bool
+  no_log: true
+  diff: false
+
+- name: Inspect the existing Hermes configuration
+  ansible.builtin.stat:
+    path: "{{ hermes_home }}/config.yaml"
+  register: hermes_config_file
+  when: hermes_llm_config | length > 0
+
+- name: Read the existing Hermes configuration
+  ansible.builtin.slurp:
+    path: "{{ hermes_home }}/config.yaml"
+  register: hermes_config_contents
+  when:
+    - hermes_llm_config | length > 0
+    - hermes_config_file.stat.exists
+  no_log: true
+
+- name: Start the managed Hermes configuration from an empty mapping
+  ansible.builtin.set_fact:
+    hermes_existing_config: {}
+  when: hermes_llm_config | length > 0
+  no_log: true
+
+- name: Decode the existing Hermes configuration
+  ansible.builtin.set_fact:
+    hermes_existing_config: "{{ (hermes_config_contents.content | b64decode | from_yaml) | default({}, true) }}"
+  when:
+    - hermes_llm_config | length > 0
+    - hermes_config_file.stat.exists
+  no_log: true
+
+- name: Validate the existing Hermes configuration shape
+  ansible.builtin.assert:
+    that:
+      - hermes_existing_config is mapping
+    fail_msg: Existing Hermes config.yaml must contain a YAML mapping.
+  when: hermes_llm_config | length > 0
+  no_log: true
+
+- name: Apply the managed Hermes model and voice configuration
+  ansible.builtin.copy:
+    content: "{{ hermes_existing_config | combine(hermes_llm_config) | to_nice_yaml(indent=2, sort_keys=false) }}"
+    dest: "{{ hermes_home }}/config.yaml"
+    owner: "{{ hermes_user }}"
+    group: "{{ hermes_user }}"
+    mode: "0600"
+  when: hermes_llm_config | length > 0
+  no_log: true
+  diff: false
+
+- name: Apply shared Hermes VPS runtime configuration
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          hermes_home ~ '/hermes-agent/venv/bin/python',
+          hermes_bundle_dir ~ '/runtime/apply-config.py',
+          'apply',
+          '--settings', hermes_bundle_dir ~ '/config/vps-defaults.yml',
+          '--hermes-home', hermes_home,
+          '--hermes-bin', hermes_bin,
+          '--workspace', hermes_user_home ~ '/workspace'
+        ] +
+        (
+          ['--capability', 'brave_search']
+          if (hermes_manage_secret_env | bool) and
+             ((hermes_secret_env.BRAVE_SEARCH_API_KEY | default('', true) | string | length) > 0)
+          else []
+        ) +
+        (
+          ['--capability', 'firecrawl_extract']
+          if (hermes_manage_secret_env | bool) and
+             ((hermes_secret_env.FIRECRAWL_API_KEY | default('', true) | string | length) > 0)
+          else []
+        )
+      }}
+  become_user: "{{ hermes_user }}"
+  environment:
+    HOME: "{{ hermes_user_home }}"
+    HERMES_HOME: "{{ hermes_home }}"
+    PATH: "{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  register: hermes_runtime_configuration
+  changed_when: "'0 change(s)' not in hermes_runtime_configuration.stdout"
+  no_log: true
+  when: hermes_venv_python.stat.exists
+
+- name: Check for a bundled npm workspace to audit
+  ansible.builtin.stat:
+    path: "{{ hermes_home }}/hermes-agent/package.json"
+  register: hermes_npm_workspace
+
+# Force-patches upstream advisories (e.g. electron/extract-zip) in the vendored
+# apps/desktop workspace, which this headless VPS never runs. Re-applied on
+# every playbook run so the fix survives `hermes update`'s
+# updates.non_interactive_local_changes: stash, which would otherwise discard
+# a one-off manual patch. --force can move a workspace dependency outside the
+# range upstream tested; acceptable here only because the component is unused.
+- name: Force-fix upstream npm audit advisories in the bundled workspace
+  ansible.builtin.command:
+    argv: [npm, audit, fix, --force]
+    chdir: "{{ hermes_home }}/hermes-agent"
+  become_user: "{{ hermes_user }}"
+  environment:
+    HOME: "{{ hermes_user_home }}"
+  register: hermes_npm_audit_fix
+  changed_when: "'up to date' not in hermes_npm_audit_fix.stdout"
+  failed_when: false
+  when: hermes_npm_workspace.stat.exists
+
+- name: Locate the unused Browser Use CLI
+  ansible.builtin.shell:
+    cmd: command -v browser-use
+    executable: /bin/bash
+  become_user: "{{ hermes_user }}"
+  environment:
+    HOME: "{{ hermes_user_home }}"
+    HERMES_HOME: "{{ hermes_home }}"
+    PATH: "{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/bin:{{ hermes_home }}/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  register: hermes_browser_use_cli
+  changed_when: false
+  failed_when: false
+
+- name: Locate the Browser Use CLI manager
+  ansible.builtin.shell:
+    cmd: command -v uv
+    executable: /bin/bash
+  become_user: "{{ hermes_user }}"
+  environment:
+    HOME: "{{ hermes_user_home }}"
+    HERMES_HOME: "{{ hermes_home }}"
+    PATH: "{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/bin:{{ hermes_home }}/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  register: hermes_uv_cli
+  changed_when: false
+  failed_when: false
+  when: hermes_browser_use_cli.rc == 0
+
+- name: Require the Browser Use CLI manager for managed removal
+  ansible.builtin.assert:
+    that: hermes_uv_cli.rc == 0
+    fail_msg: Browser Use CLI is installed but its uv manager was not found; refusing to delete files manually.
+  when: hermes_browser_use_cli.rc == 0
+
+- name: Remove the unused Browser Use CLI
+  ansible.builtin.command:
+    argv: ["{{ hermes_uv_cli.stdout }}", tool, uninstall, browser-use]
+  become_user: "{{ hermes_user }}"
+  environment:
+    HOME: "{{ hermes_user_home }}"
+    HERMES_HOME: "{{ hermes_home }}"
+    PATH: "{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/bin:{{ hermes_home }}/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  when: hermes_browser_use_cli.rc == 0
+  changed_when: true
+
+- name: Verify that Browser Use CLI is removed
+  ansible.builtin.shell:
+    cmd: command -v browser-use
+    executable: /bin/bash
+  become_user: "{{ hermes_user }}"
+  environment:
+    HOME: "{{ hermes_user_home }}"
+    HERMES_HOME: "{{ hermes_home }}"
+    PATH: "{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/bin:{{ hermes_home }}/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  register: hermes_browser_use_after_removal
+  changed_when: false
+  failed_when: hermes_browser_use_after_removal.rc == 0
+  when: hermes_browser_use_cli.rc == 0
+
+- name: Initialize the Hermes Skills Hub
+  ansible.builtin.command:
+    argv: ["{{ hermes_bin }}", skills, list]
+  become_user: "{{ hermes_user }}"
+  environment:
+    HOME: "{{ hermes_user_home }}"
+    HERMES_HOME: "{{ hermes_home }}"
+    PATH: "{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  changed_when: false
+
+
