@@ -304,6 +304,17 @@ resolve_source_pin() {
   command -v python3 >/dev/null 2>&1 ||
     die "python3 is required to read the deploy source pin"
 
+  # The script runs as root and the parsed values drive a checksum-verified
+  # download, so refuse a settings file that a non-owner could have tampered
+  # with (symlink swap or world/group-writable edit).
+  local settings_owner settings_perms
+  settings_owner="$(stat -c '%U' "$VPS_SETTINGS_FILE")"
+  settings_perms="$(stat -c '%a' "$VPS_SETTINGS_FILE")"
+  [[ "$settings_owner" == "root" ]] ||
+    die "$VPS_SETTINGS_FILE must be owned by root (found: $settings_owner)"
+  [[ "$settings_perms" =~ ^[0-7]00$ ]] ||
+    die "$VPS_SETTINGS_FILE must not be group- or world-writable (mode: $settings_perms)"
+
   local parsed
   parsed="$(python3 - "$VPS_SETTINGS_FILE" <<'PY'
 import sys
@@ -313,8 +324,14 @@ try:
 except ImportError:
     sys.exit("PyYAML is required to read the deploy source pin")
 
-source = yaml.safe_load(open(sys.argv[1]))["vps_deploy"]["source"]
+data = yaml.safe_load(open(sys.argv[1]))
+try:
+    source = data["vps_deploy"]["source"]
+except (TypeError, KeyError):
+    sys.exit("vps-defaults.yml is missing the vps_deploy.source mapping")
 for key in ("branch", "version", "release", "commit", "installer_sha256"):
+    if key not in source:
+        sys.exit(f"vps_deploy.source is missing the {key!r} key")
     value = source[key]
     if not isinstance(value, str) or not value:
         sys.exit(f"deploy source pin {key!r} must be a non-empty string")
