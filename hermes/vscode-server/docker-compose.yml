@@ -1,0 +1,21 @@
+name: vscode-server
+services:
+  code-server:
+    build: .
+    ports:
+      - "3000:3000" # Bind port for SSH tunnel
+    volumes:
+      - ${VPS_USER_HOME:-/home/hermes}/workspace/repositories:/home/coder/repositories
+      - ${VPS_USER_HOME:-/home/hermes}/.hermes:/home/coder/.hermes:ro
+      # SSH tunnel setup
+      - ./config.json:/etc/code-server/config.json:ro
+    environment:
+      - PASSWORD=${CODE_SERVER_PASSWORD:-""}
+      - TZ=UTC
+    restart: unless-stopped
+    # Security: bind to loopback behind nginx if exposed publicly
+    networks:
+      - code-server-net
+networks:
+  code-server-net:
+    driver: bridge

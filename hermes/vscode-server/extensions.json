@@ -1,0 +1,18 @@
+{
+  "recommendations": [
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "github.copilot",
+    "github.copilot-chat",
+    "ms-devops-terraform",
+    "redhat.ansible",
+    "hadolint.hadolint",
+    "davidanson.vscode-github-actions",
+    "timonwong.shellcheck",
+    "redhat.yaml",
+    "yzhang.markdown-all-in-one",
+    "grafana.grafana-vscode",
+    "prometheus.prometheus-vscode"
+  ],
+  "unwantedRecommendations": []
+}

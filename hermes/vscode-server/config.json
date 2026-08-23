@@ -1,0 +1,21 @@
+{
+  "bind-addr": "0.0.0.0",
+  "port": 3000,
+  "auth": "password",
+  "password": "",
+  "cert": false,
+  "hash": false,
+  "file-mounts": {
+    "/home/hermes/workspace/repositories": "/home/coder/repositories",
+    "/home/hermes/.hermes": "/home/coder/.hermes",
+    "/opt/hermes-bootstrap": "/home/coder/bootstrap"
+  },
+  "max-http-sessions": 1,
+  "cert-dir": "/home/coder/.local/share/code-server/Certs",
+  "extensions-dir": "/home/coder/.local/share/code-server/extensions",
+  "user-data-dir": "/home/coder/.local/share/code-server",
+  "proxy-url": "",
+  "headers": {
+    "x-hermes-vscode": "1.0"
+  }
+}
