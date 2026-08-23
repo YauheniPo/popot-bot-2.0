@@ -37,10 +37,10 @@ def configure(data: dict[str, Any]) -> bool:
 
     # superpowers ships skills and a bootstrap hook only; it must never
     # override built-in tools.
-    entries = plugins.setdefault("entries", {})
+    entries = plugins.get("entries", {})
     if not isinstance(entries, dict):
-        entries = {}
-        plugins["entries"] = entries
+        raise ValueError("Hermes config.yaml plugins.entries must be a YAML mapping")
+    plugins["entries"] = entries
     entry = entries.setdefault("superpowers", {})
     if not isinstance(entry, dict):
         raise ValueError("Hermes config.yaml plugins.entries.superpowers must be a mapping")

@@ -26,13 +26,15 @@ install_superpowers_plugin() {
         "${tmp}/repo/.hermes-plugin/plugin.yaml" \
         "${tmp}/repo/.hermes-plugin/__init__.py" \
         "${HERMES_HOME}/plugins/superpowers/"
-    cp -r "${tmp}/repo/skills" "${HERMES_HOME}/plugins/superpowers/skills.tmp"
+    local skills_stage
+    skills_stage="$(mktemp -d "${HERMES_HOME}/plugins/superpowers/.skills-stage.XXXXXX")"
+    cp -r "${tmp}/repo/skills" "${skills_stage}/skills"
     rm -rf -- "${HERMES_HOME}/plugins/superpowers/skills"
-    mv "${HERMES_HOME}/plugins/superpowers/skills.tmp" \
-        "${HERMES_HOME}/plugins/superpowers/skills"
+    mv "${skills_stage}/skills" "${HERMES_HOME}/plugins/superpowers/skills"
     chown -R "${HERMES_USER}:${HERMES_GROUP}" \
         "${HERMES_HOME}/plugins/superpowers/skills"
     chmod -R go-rwx "${HERMES_HOME}/plugins/superpowers/skills"
+    rm -rf -- "${skills_stage}"
     rm -rf -- "${tmp}"
 
     if [[ -x "${HERMES_BIN}" ]]; then
