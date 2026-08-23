@@ -324,7 +324,8 @@ try:
 except ImportError:
     sys.exit("PyYAML is required to read the deploy source pin")
 
-data = yaml.safe_load(open(sys.argv[1]))
+with open(sys.argv[1]) as handle:
+    data = yaml.safe_load(handle)
 try:
     source = data["vps_deploy"]["source"]
 except (TypeError, KeyError):
