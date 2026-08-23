@@ -46,6 +46,13 @@
   changed_when: "'applied' in hermes_local_patches.stdout"
   failed_when: hermes_local_patches.rc != 0
 
+- name: Keep Russian reasoning rule in the global SOUL identity
+  ansible.builtin.lineinfile:
+    path: "{{ hermes_home }}/SOUL.md"
+    line: "Always think and write your reasoning/thinking trace in Russian, regardless of the language of the user's query. Final answers are written in the language of the user's latest message."
+    state: present
+  become_user: "{{ hermes_user }}"
+
 - name: Report when the upstream Edge TTS implementation cannot be located
   ansible.builtin.debug:
     msg: >-
