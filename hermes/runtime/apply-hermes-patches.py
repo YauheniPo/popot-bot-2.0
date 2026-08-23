@@ -10,7 +10,7 @@ code matches exactly.
 Covered customizations (not yet upstream):
  * gateway commands: /gw-restart (canonical, with /restart and /gw_restart
    aliases so the Telegram menu entry resolves) and /model-global
- * /status shows reasoning effort and visibility
+ * /status shows reasoning effort, visibility, global + topic model
  * busy-session dispatch handles /gw-restart like /restart
 The existing Edge TTS retry lives in ops/apply-edge-tts-retry.py and is not
 touched here.
@@ -75,12 +75,11 @@ _PATCHES: list[tuple[str, str, str, str]] = [
         stay in one place (hermes_cli.model_switch.switch_model).
         """
         raw_args = event.get_command_args().strip()
+        # No args: open the interactive model picker with --global flag so the
+        # chosen model persists to config.yaml for all topics/sessions.
         if not raw_args:
-            return (
-                "Usage: /model-global <model> [--provider <provider>]\\n"
-                "Sets the global default model in config.yaml — applies to every "
-                "topic/session, not just this one."
-            )
+            event.text = "/model --global"
+            return await self._handle_model_command(event)
         # Keep the leading "/" on the rewritten text: get_command_args()
         # only splits arguments when is_command() sees a leading "/", so a
         # bare "model ..." text makes _handle_model_command read the whole
@@ -95,29 +94,6 @@ _PATCHES: list[tuple[str, str, str, str]] = [
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model.
         # Local Hermes: model-global handler
-''',
-    ),
-    (
-        "gateway/slash_commands.py",
-        _PREFIX + " model-global rewrite slash fix",
-        '''        # Rewrite the event text to go through the shared /model handler with
-        # the --global flag appended, so persistence and provider logic are
-        # identical to /model <name> --global.
-        if "--global" in raw_args:
-            event.text = f"model {raw_args}"
-        else:
-            event.text = f"model {raw_args} --global"
-''',
-        '''        # Rewrite the event text to go through the shared /model handler with
-        # the --global flag appended, so persistence and provider logic are
-        # identical to /model <name> --global.
-        # Keep the leading "/" on the rewritten text (Local Hermes): without it
-        # get_command_args() returns the whole "model ..." line and the command
-        # word leaks into the model name ("Model names cannot contain spaces.").
-        if "--global" in raw_args:
-            event.text = f"/model {raw_args}"
-        else:
-            event.text = f"/model {raw_args} --global"
 ''',
     ),
     (
