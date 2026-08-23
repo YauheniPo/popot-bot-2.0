@@ -1,0 +1,57 @@
+---
+# code-server (VS Code in the browser) runs in Docker and opens the same
+# repositories directory Hermes uses. Enabled by default; set
+# vps_deploy.features.vscode_server to false to skip installation.
+
+- name: Install Docker Compose v2 plugin
+  ansible.builtin.apt:
+    name: docker-compose-v2
+    state: present
+    update_cache: true
+
+- name: Create the code-server configuration directory
+  ansible.builtin.file:
+    path: /etc/code-server
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Materialize the code-server password from Vault
+  ansible.builtin.template:
+    src: templates/code-server.env.j2
+    dest: /etc/code-server.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  diff: false
+
+- name: Start the managed code-server container
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --project-name
+      - hermes-vscode
+      - up
+      - -d
+      - --build
+    chdir: "{{ hermes_bundle_dir }}/vscode-server"
+    environment:
+      CODE_SERVER_PASSWORD: "{{ hermes_code_server_password }}"
+  changed_when: true
+
+- name: Verify the code-server container is running
+  ansible.builtin.command:
+    argv: [docker, inspect, --format, "{{ '{{' }}.State.Running{{ '}}' }}", hermes-vscode-code-server-1]
+  register: hermes_vscode_state
+  changed_when: false
+  failed_when: hermes_vscode_state.stdout != "true"
+
+- name: Report code-server access instructions
+  ansible.builtin.debug:
+    msg: >-
+      code-server is up on VPS port 3000. Connect with
+      ssh -L 8080:localhost:3000 {{ hermes_user }}@<VPS_IP> and open
+      http://localhost:8080 (password from encrypted vault.yml).

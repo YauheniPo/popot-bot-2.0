@@ -10,15 +10,17 @@ services:
     volumes:
       # Repositories: full read-write — edits land directly on the host.
       - ${VPS_USER_HOME:-/home/hermes}/workspace/repositories:/home/coder/workspace/repositories
-      # Hermes home: read-only by design — the IDE can browse configs and
-      # skills, but cannot mutate gateway state or secrets from a browser tab.
-      - ${VPS_USER_HOME:-/home/hermes}/.hermes:/home/coder/hermes-home:ro
+      # Hermes home: full read-write per owner choice — the IDE can edit
+      # configs and skills directly from the browser.
+      - ${VPS_USER_HOME:-/home/hermes}/.hermes:/home/coder/hermes-home:rw
       # Reuse the host Git identity (user name/email, defaults).
       - ${VPS_USER_HOME:-/home/hermes}/.gitconfig:/home/coder/.gitconfig:ro
       # GitHub CLI auth state so push/pull works inside the container without
       # copying any token value into the image or compose file.
       - ${VPS_USER_HOME:-/home/hermes}/.config/gh:/home/coder/.config/gh:rw
       - ./code-server-config.json:/etc/code-server/config.json:ro
+    env_file:
+      - /etc/code-server.env
     environment:
       # Point the credential helper baked into the host ~/.gitconfig at the
       # container's gh path (the host wrapper path does not exist here).

@@ -9,7 +9,7 @@ happen directly on the host files — no copies, no sync.
 | Host path | Container path | Mode | Purpose |
 | --- | --- | --- | --- |
 | `~/workspace/repositories` | `/home/coder/workspace/repositories` | read-write | all managed repos; edit + git here |
-| `~/.hermes` | `/home/coder/hermes-home` | **read-only** | browse configs/skills; cannot mutate gateway state |
+| `~/.hermes` | `/home/coder/hermes-home` | **read-write** | full access to configs and skills from the IDE |
 | `~/.gitconfig` | `/home/coder/.gitconfig` | read-only | host Git identity and defaults |
 | `~/.config/gh` | `/home/coder/.config/gh` | read-write | GitHub CLI auth for push/pull |
 
@@ -22,35 +22,41 @@ browser IDE is owned by `hermes` on the host.
 
 ## Deploy
 
+The Ansible playbook installs and starts code-server automatically
+(`vps_deploy.features.vscode_server: true` in `hermes/config/vps-defaults.yml`).
+Set the password once in encrypted `vault.yml`:
+
+```yaml
+hermes_code_server_password: "your-strong-password"
+```
+
+Manual deploy (without Ansible):
+
 ```bash
 cd hermes/vscode-server
+echo "CODE_SERVER_PASSWORD=your-strong-password" > /etc/code-server.env  # root-only
 sudo docker compose up -d --build
 ```
 
-code-server binds to port 3000 on the VPS loopback network namespace of the
-host but is not published beyond it; access is SSH-tunnel-only:
+code-server binds to port 3000 on the VPS and is not published beyond it;
+access is SSH-tunnel-only:
 
 ```bash
 ssh -L 8080:localhost:3000 hermes@VPS_IP
 # then open http://localhost:8080
 ```
 
-Get the one-time password from the container logs:
-
-```bash
-sudo docker compose logs code-server | grep -A1 "Password"
-```
-
-Or set a fixed password before starting:
-
-```bash
-echo "DOCKER_PASSWORD=your-strong-password" > .env   # not committed
-```
-
 ## Security model
 
 - Nothing is exposed publicly: port 3000 is reachable only through the SSH tunnel.
-- Browser access = SSH key + code-server password.
-- `.hermes` is mounted read-only so a browser tab cannot alter gateway state,
-  sessions, or secrets.
+- Browser access = SSH key + code-server password (from encrypted vault.yml).
+- `.hermes` is mounted read-write per owner choice: the IDE can edit gateway
+  configs directly. Treat browser edits with the same care as SSH edits.
 - `no-new-privileges` is enabled on the container.
+
+## Caveat: restarting Hermes after config edits
+
+The container shares files but not the host systemd session. After editing
+`config.yaml` or other runtime state from the IDE, apply changes on the VPS as
+usual (for example, restart `hermes-gateway.service`) — editing a file in the
+browser does not reload the running gateway by itself.

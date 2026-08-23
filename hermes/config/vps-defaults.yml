@@ -21,6 +21,7 @@ vps_deploy:
     tailscale: true
     host_admin: true
     lock_public_ssh: false
+    vscode_server: true
 
 vps_runtime:
   set:
