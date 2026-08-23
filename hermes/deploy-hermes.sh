@@ -5,11 +5,6 @@ set -Eeuo pipefail
 umask 027
 
 readonly DEFAULT_HERMES_USER="hermes"
-readonly DEFAULT_HERMES_BRANCH="main"
-readonly DEFAULT_HERMES_VERSION="0.20.5"
-readonly DEFAULT_HERMES_RELEASE="v2026.8.19"
-readonly DEFAULT_HERMES_COMMIT="f293e7206b4ddd66042329442c6afebc19a8808d"
-readonly DEFAULT_INSTALLER_SHA256="d5558cd419c8d46bdc958064cb97f963d1ea793866414c025906ec15033512ed"
 readonly HERMES_RAW_BASE_URL="https://raw.githubusercontent.com/NousResearch/hermes-agent"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
@@ -18,11 +13,13 @@ readonly VPS_CONFIG_APPLIER="$SCRIPT_DIR/runtime/apply-config.py"
 readonly UPDATE_STATE_VERIFIER="$SCRIPT_DIR/runtime/verify-update-state.py"
 
 HERMES_USER="$DEFAULT_HERMES_USER"
-HERMES_BRANCH="$DEFAULT_HERMES_BRANCH"
-HERMES_VERSION="$DEFAULT_HERMES_VERSION"
-HERMES_RELEASE="$DEFAULT_HERMES_RELEASE"
-HERMES_COMMIT="$DEFAULT_HERMES_COMMIT"
-INSTALLER_SHA256="$DEFAULT_INSTALLER_SHA256"
+# The deploy source pin (branch/version/release/commit/installer SHA-256) is
+# read from VPS_SETTINGS_FILE by resolve_source_pin; CLI flags override it.
+HERMES_BRANCH=""
+HERMES_VERSION=""
+HERMES_RELEASE=""
+HERMES_COMMIT=""
+INSTALLER_SHA256=""
 WITH_BROWSER=true
 RUN_SETUP=true
 # Auto-start only after setup has created both Telegram credentials. Use
@@ -297,6 +294,37 @@ validate_inputs() {
 # Domain modules share the validated deployment context defined above.
 # shellcheck source=deploy/host.sh
 source "$SCRIPT_DIR/deploy/host.sh"
+
+resolve_source_pin() {
+  # The deploy source pin lives in vps-defaults.yml (single source of truth,
+  # shared with Ansible and apply-config.py). System python3 with PyYAML is
+  # available on every supported host before provisioning installs anything.
+  [[ -r "$VPS_SETTINGS_FILE" ]] ||
+    die "VPS settings file is missing or unreadable: $VPS_SETTINGS_FILE"
+  command -v python3 >/dev/null 2>&1 ||
+    die "python3 is required to read the deploy source pin"
+
+  local parsed
+  parsed="$(python3 - "$VPS_SETTINGS_FILE" <<'PY'
+import sys
+
+try:
+    import yaml
+except ImportError:
+    sys.exit("PyYAML is required to read the deploy source pin")
+
+source = yaml.safe_load(open(sys.argv[1]))["vps_deploy"]["source"]
+for key in ("branch", "version", "release", "commit", "installer_sha256"):
+    value = source[key]
+    if not isinstance(value, str) or not value:
+        sys.exit(f"deploy source pin {key!r} must be a non-empty string")
+print(" ".join(source[key] for key in ("branch", "version", "release", "commit", "installer_sha256")))
+PY
+)" || die "could not read the deploy source pin from $VPS_SETTINGS_FILE"
+
+  read -r HERMES_BRANCH HERMES_VERSION HERMES_RELEASE HERMES_COMMIT INSTALLER_SHA256 <<<"$parsed"
+}
+
 # shellcheck source=deploy/runtime.sh
 source "$SCRIPT_DIR/deploy/runtime.sh"
 # shellcheck source=deploy/services.sh
@@ -305,6 +333,7 @@ source "$SCRIPT_DIR/deploy/services.sh"
 source "$SCRIPT_DIR/deploy/reporting.sh"
 
 main() {
+  resolve_source_pin
   validate_inputs
   install_host_dependencies
   install_tailscale

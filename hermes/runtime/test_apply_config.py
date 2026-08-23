@@ -47,21 +47,15 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertEqual(settings["vps_github"]["write_owners"], ["YauheniPo"])
         self.assertIn("hermes-gateway.service", settings["vps_services"]["gateway"])
 
-    def test_manual_deploy_defaults_match_global_source_pin(self) -> None:
+    def test_manual_deploy_reads_pin_from_settings(self) -> None:
         hermes_dir = MODULE_PATH.parent.parent
-        settings = apply_config.load_settings(hermes_dir / "config" / "vps-defaults.yml")
-        source = settings["vps_deploy"]["source"]
         deploy_script = (hermes_dir / "deploy-hermes.sh").read_text(encoding="utf-8")
 
-        expected_defaults = {
-            "DEFAULT_HERMES_BRANCH": source["branch"],
-            "DEFAULT_HERMES_VERSION": source["version"],
-            "DEFAULT_HERMES_RELEASE": source["release"],
-            "DEFAULT_HERMES_COMMIT": source["commit"],
-            "DEFAULT_INSTALLER_SHA256": source["installer_sha256"],
-        }
-        for variable, value in expected_defaults.items():
-            self.assertIn(f'readonly {variable}="{value}"', deploy_script)
+        # The manual deploy script must not carry its own copy of the source
+        # pin: resolve_source_pin reads it from vps-defaults.yml at runtime.
+        self.assertIn("resolve_source_pin", deploy_script)
+        self.assertNotIn("DEFAULT_HERMES_COMMIT", deploy_script)
+        self.assertNotIn("DEFAULT_INSTALLER_SHA256", deploy_script)
 
     def test_build_operations_applies_defaults_capabilities_and_unsets_overrides(self) -> None:
         settings = {
