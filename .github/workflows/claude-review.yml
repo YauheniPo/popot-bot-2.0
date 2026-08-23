@@ -13,8 +13,13 @@ permissions:
 
 env:
   # Set OPENROUTER_REVIEW_MODEL under GitHub Actions repository variables to
-  # pin another model. An absent or empty variable keeps PR reviews free.
-  OPENROUTER_REVIEW_MODEL: ${{ vars.OPENROUTER_REVIEW_MODEL || 'openrouter/free' }}
+  # pin another model. An absent or empty variable keeps PR reviews on the
+  # stealth/ox-alpha free preview tier.
+  OPENROUTER_REVIEW_MODEL: ${{ vars.OPENROUTER_REVIEW_MODEL || 'stealth/ox-alpha' }}
+  # When the primary model exhausts retries, the reviewer falls back to this
+  # model (e.g. poolside/laguna-s-2.1:free). Override with a repository
+  # variable when the free model rotates.
+  OPENROUTER_REVIEW_FALLBACK_MODEL: ${{ vars.OPENROUTER_REVIEW_FALLBACK_MODEL || 'poolside/laguna-s-2.1:free' }}
   # New OpenRouter accounts may allow only ten requests per minute. Keep a
   # safety margin by default; override with a repository variable when the
   # account has a different documented limit.
