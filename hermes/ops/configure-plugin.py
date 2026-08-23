@@ -46,6 +46,18 @@ def configure(data: dict[str, Any], hermes_home: Path) -> bool:
     if quick_commands.get("status") != status_command:
         quick_commands["status"] = status_command
         changed = True
+
+    docker_restart_command = {
+        "type": "exec",
+        "command": (
+            f"sudo docker compose -f {hermes_home.parent}/"
+            "workspace/repositories/YauheniPo/popot-bot-2.0/hermes/vscode-server/"
+            "docker-compose.yml up -d --force-recreate"
+        ),
+    }
+    if quick_commands.get("docker_restart") != docker_restart_command:
+        quick_commands["docker_restart"] = docker_restart_command
+        changed = True
     return changed
 
 

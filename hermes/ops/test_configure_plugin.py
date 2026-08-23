@@ -31,7 +31,15 @@ class ConfigurePluginTests(unittest.TestCase):
                         "HERMES_HOME=/home/hermes/.hermes "
                         "/usr/local/lib/hermes-ops/status-report.py"
                     ),
-                }
+                },
+                "docker_restart": {
+                    "type": "exec",
+                    "command": (
+                        "sudo docker compose -f /home/hermes/workspace/"
+                        "repositories/YauheniPo/popot-bot-2.0/hermes/vscode-server/"
+                        "docker-compose.yml up -d --force-recreate"
+                    ),
+                },
             },
         )
 
@@ -45,7 +53,15 @@ class ConfigurePluginTests(unittest.TestCase):
                         "HERMES_HOME=/home/hermes/.hermes "
                         "/usr/local/lib/hermes-ops/status-report.py"
                     ),
-                }
+                },
+                "docker_restart": {
+                    "type": "exec",
+                    "command": (
+                        "sudo docker compose -f /home/hermes/workspace/"
+                        "repositories/YauheniPo/popot-bot-2.0/hermes/vscode-server/"
+                        "docker-compose.yml up -d --force-recreate"
+                    ),
+                },
             },
         }
 
