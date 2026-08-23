@@ -27,11 +27,11 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertEqual(source["release"], "v2026.8.19")
         self.assertEqual(
             source["commit"],
-            "fcbd1076a93841fa88855acce810e342a5b78101",
+            "f293e7206b4ddd66042329442c6afebc19a8808d",
         )
         self.assertEqual(
             source["installer_sha256"],
-            "0582d9b1562efcb6e0ac62f4451021667830b830a72ce7d91eaea9fee8b6c09b",
+            "d5558cd419c8d46bdc958064cb97f963d1ea793866414c025906ec15033512ed",
         )
         self.assertTrue(settings["vps_deploy"]["features"]["observability"])
         self.assertEqual(settings["vps_runtime"]["set"]["browser.backend"], "off")
