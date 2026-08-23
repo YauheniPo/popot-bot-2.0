@@ -199,7 +199,10 @@ jobs:
             --max-turns 32
             --model "${{ env.OPENROUTER_REVIEW_MODEL }}"
             --allowedTools "Read,Glob,Grep,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*),Bash(git rev-parse:*)"
-            --json-schema '{"type":"object","additionalProperties":false,"required":["summary","findings"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","maxItems":5,"items":{"type":"object","additionalProperties":false,"required":["severity","path","side","line","title","impact","fix"],"properties":{"severity":{"type":"string","enum":["P1","P2"]},"path":{"type":"string"},"side":{"type":"string","enum":["RIGHT","LEFT"]},"line":{"type":"integer","minimum":1},"title":{"type":"string"},"impact":{"type":"string"},"fix":{"type":"string"}}}}}}'
+            --json-schema '{"type":"object","additionalProperties":false,"required":["summary","findings"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","path","side","line","title","impact","fix"],"properties":{"severity":{"type":"string","enum":["P1","P2"]},"path":{"type":"string"},"side":{"type":"string","enum":["RIGHT","LEFT"]},"line":{"type":"integer"},"title":{"type":"string"},"impact":{"type":"string"},"fix":{"type":"string"}}}}}}'
+          # Schema note: maxItems/minimum are intentionally omitted because
+          # Anthropic Structured Outputs rejects numeric and array-size
+          # constraints; the five-finding cap stays in the prompt above.
           # Full tool traces remain off unless a repository owner explicitly
           # enables the debug variable; they can contain sensitive output.
           show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
