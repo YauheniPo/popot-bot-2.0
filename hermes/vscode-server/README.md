@@ -1,32 +1,56 @@
-# Code-server Installation Guide for hermes
+# code-server on the Hermes VPS (Docker)
 
-This directory contains scripts to install and run Code-server as a local web IDE on your vps-hosted Hermes agent.
+VS Code in your browser, running in Docker on the VPS. It opens the same
+repositories directory that Hermes uses, so edits, git commits, and pushes
+happen directly on the host files — no copies, no sync.
 
-## Prerequisites
+## What the container sees
 
-1. SSH access to vps
-2. Code-server installed
+| Host path | Container path | Mode | Purpose |
+| --- | --- | --- | --- |
+| `~/workspace/repositories` | `/home/coder/workspace/repositories` | read-write | all managed repos; edit + git here |
+| `~/.hermes` | `/home/coder/hermes-home` | **read-only** | browse configs/skills; cannot mutate gateway state |
+| `~/.gitconfig` | `/home/coder/.gitconfig` | read-only | host Git identity and defaults |
+| `~/.config/gh` | `/home/coder/.config/gh` | read-write | GitHub CLI auth for push/pull |
 
-## Installation Steps
+Git identity comes from the shared `~/.gitconfig` (user YauheniPo). The
+compose file overrides only the credential helper to use the container's own
+`gh`, which reads the mounted auth state — no token is copied into the image.
+
+The container runs as UID/GID 1000 (`hermes`), so every file created from the
+browser IDE is owned by `hermes` on the host.
+
+## Deploy
 
 ```bash
-cd /home/hermes/workspace/repositories/YauheniPo/popot-bot-2.0/hermes/vscode-server
-./deploy.sh
+cd hermes/vscode-server
+sudo docker compose up -d --build
 ```
 
-The script will:
-- Create systemd service for Code-server
-- Set up SSH tunneling (default port: localhost:8080 -> 3000)
-- Configure max connections
-- Set file sharing paths to repositories
+code-server binds to port 3000 on the VPS loopback network namespace of the
+host but is not published beyond it; access is SSH-tunnel-only:
 
-## SSH Tunneling Setup
 ```bash
 ssh -L 8080:localhost:3000 hermes@VPS_IP
+# then open http://localhost:8080
 ```
 
-## Configuration
+Get the one-time password from the container logs:
 
-- [Dockerfile](Dockerfile) - Container setup
-- [systemd](Code-server.service) - Service management
-- [config](config.json) - Advanced settings
+```bash
+sudo docker compose logs code-server | grep -A1 "Password"
+```
+
+Or set a fixed password before starting:
+
+```bash
+echo "DOCKER_PASSWORD=your-strong-password" > .env   # not committed
+```
+
+## Security model
+
+- Nothing is exposed publicly: port 3000 is reachable only through the SSH tunnel.
+- Browser access = SSH key + code-server password.
+- `.hermes` is mounted read-only so a browser tab cannot alter gateway state,
+  sessions, or secrets.
+- `no-new-privileges` is enabled on the container.

@@ -2,20 +2,30 @@ name: vscode-server
 services:
   code-server:
     build: .
+    # Run as the host 'hermes' user (UID/GID 1000) so files created in the IDE
+    # are owned by hermes on the host, not by root or an unknown UID.
+    user: "1000:1000"
     ports:
-      - "3000:3000" # Bind port for SSH tunnel
+      - "3000:3000" # Bind port for SSH tunnel only; never publish publicly
     volumes:
-      - ${VPS_USER_HOME:-/home/hermes}/workspace/repositories:/home/coder/repositories
-      - ${VPS_USER_HOME:-/home/hermes}/.hermes:/home/coder/.hermes:ro
-      # SSH tunnel setup
-      - ./config.json:/etc/code-server/config.json:ro
+      # Repositories: full read-write — edits land directly on the host.
+      - ${VPS_USER_HOME:-/home/hermes}/workspace/repositories:/home/coder/workspace/repositories
+      # Hermes home: read-only by design — the IDE can browse configs and
+      # skills, but cannot mutate gateway state or secrets from a browser tab.
+      - ${VPS_USER_HOME:-/home/hermes}/.hermes:/home/coder/hermes-home:ro
+      # Reuse the host Git identity (user name/email, defaults).
+      - ${VPS_USER_HOME:-/home/hermes}/.gitconfig:/home/coder/.gitconfig:ro
+      # GitHub CLI auth state so push/pull works inside the container without
+      # copying any token value into the image or compose file.
+      - ${VPS_USER_HOME:-/home/hermes}/.config/gh:/home/coder/.config/gh:rw
+      - ./code-server-config.json:/etc/code-server/config.json:ro
     environment:
-      - PASSWORD=${CODE_SERVER_PASSWORD:-""}
+      # Point the credential helper baked into the host ~/.gitconfig at the
+      # container's gh path (the host wrapper path does not exist here).
+      - GIT_CONFIG_COUNT=1
+      - GIT_CONFIG_KEY_0=credential.https://github.com.helper
+      - GIT_CONFIG_VALUE_0=!/usr/bin/gh auth git-credential
       - TZ=UTC
     restart: unless-stopped
-    # Security: bind to loopback behind nginx if exposed publicly
-    networks:
-      - code-server-net
-networks:
-  code-server-net:
-    driver: bridge
+    security_opt:
+      - no-new-privileges:true

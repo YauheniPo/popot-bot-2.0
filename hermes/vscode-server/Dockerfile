@@ -1,19 +1,16 @@
 FROM codercom/code-server:latest
 
-# Install additional useful packages
 USER root
-RUN apt-get update && apt-get install -y \
-    openssh-client \
-    git \
-    curl \
+
+# git and gh are needed for repository work inside the IDE; gh doubles as the
+# Git credential helper via GIT_CONFIG_* env vars from docker-compose.yml.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git gh python3 python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-# Switch back to coder user
 USER coder
 
-# Copy configuration
-COPY config.json /etc/code-server/config.json
+# Open straight into the shared repositories workspace.
+WORKDIR /home/coder/workspace/repositories
 
-EXPOSE 8080
-
-CMD ["code-server", "--bind-address", "0.0.0.0", "--auth", "password", "/home/coder/project"]
+EXPOSE 3000
