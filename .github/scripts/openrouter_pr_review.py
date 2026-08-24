@@ -512,6 +512,17 @@ UNRESOLVED_REVIEW_THREADS:
         except RequestError as error:
             retryable = error.status is None or error.status in RETRYABLE_HTTP_STATUSES
             if not retryable or attempt == MAX_REQUEST_ATTEMPTS:
+                # Exhausted retries on the primary model. Try fallback once.
+                fallback_model = os.environ.get("OPENROUTER_REVIEW_FALLBACK_MODEL")
+                if fallback_model and body["model"] != fallback_model:
+                    body["model"] = fallback_model
+                    print(
+                        f"  primary exhausted; retrying with fallback: {fallback_model}",
+                        file=sys.stderr,
+                    )
+                    # Give the fallback a single clean attempt (no more retries).
+                    response = request_json(OPENROUTER_URL, "POST", headers, body)
+                    break
                 raise
             fallback_delay = float(2 ** (attempt - 1))
             if error.status == 429:

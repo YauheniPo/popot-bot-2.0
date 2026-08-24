@@ -45,7 +45,11 @@
       - tailscale
       - up
       - --ssh
-      - "--auth-key={{ tailscale_auth_key }}"
+      # env:NAME keeps the one-time key out of the process argument list,
+      # where any /proc reader on the host could observe it despite no_log.
+      - --auth-key=env:TAILSCALE_AUTH_KEY
+  environment:
+    TAILSCALE_AUTH_KEY: "{{ tailscale_auth_key }}"
   when:
     - hermes_enable_tailscale | bool
     - tailscale_auth_key | length > 0

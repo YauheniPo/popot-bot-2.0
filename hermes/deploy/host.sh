@@ -59,6 +59,11 @@ install_tailscale() {
     "${repository_base}.noarmor.gpg" --output "${temporary_dir}/tailscale-archive-keyring.gpg"
   curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
     "${repository_base}.tailscale-keyring.list" --output "${temporary_dir}/tailscale.list"
+  # The .list file is not signed; refuse a substituted or truncated repository
+  # definition before it can change what apt-get installs as root.
+  grep -Eq '^deb[[:space:]]+.*https://pkgs\.tailscale\.com/stable/' \
+    "${temporary_dir}/tailscale.list" ||
+    die "the Tailscale repository list has an unexpected format"
   install -o root -g root -m 0644 \
     "${temporary_dir}/tailscale-archive-keyring.gpg" /usr/share/keyrings/tailscale-archive-keyring.gpg
   install -o root -g root -m 0644 \
@@ -85,6 +90,7 @@ run_tailscale_login() {
 install_development_clis() {
   local package
   local -a requested_packages=(
+    ansible-core
     build-essential
     dnsutils
     file
@@ -95,6 +101,8 @@ install_development_clis() {
     netcat-openbsd
     openssh-client
     pkg-config
+    python3-pytest
+    python3-yaml
     rsync
     shellcheck
     sqlite3

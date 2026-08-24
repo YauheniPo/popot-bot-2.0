@@ -215,6 +215,7 @@ terminal и не создают отдельные MCP schemas в model context.
 | Поиск и данные | `ripgrep`, `jq`, `sqlite3` | Быстрый поиск, JSON и локальная аналитика |
 | Сборка | `build-essential`, `pkg-config` | Компиляция C/C++ dependencies и многих language packages |
 | Shell quality | `shellcheck` | Проверка Bash-скриптов |
+| Проверка качества | `ansible-core`, `python3-pytest`, `python3-yaml` | Локальный запуск полного `hermes/check.sh` (синтаксис Ansible, pytest, YAML-скрипты) |
 | Файлы и архивы | `file`, `tree`, `rsync`, `zip`, `unzip`, `xz-utils` | Диагностика, копирование и архивирование |
 | Сеть и процессы | `dnsutils`, `lsof`, `netcat-openbsd`, `util-linux` | DNS, порты, процессы, locks и VPS diagnostics |
 | Медиа | `ffmpeg` | Audio/video conversion и подготовка voice/media |
@@ -316,6 +317,7 @@ GitHub permissions и messenger tokens подключаются отдельно
 | [`ansible/group_vars/all/vault.yml.example`](ansible/group_vars/all/vault.yml.example) | Шаблон private API keys и tokens; рабочий файл — `ansible/group_vars/all/vault.yml`, он шифруется и игнорируется Git; команды находятся в [`VAULT.md`](ansible/group_vars/all/VAULT.md) |
 | [`ansible/templates/hermes.env.j2`](ansible/templates/hermes.env.j2) | Безопасно формирует Hermes `.env` из расшифрованных только на время deploy значений и нормализует GitHub token alias |
 | [`runtime/github-cli-wrapper.py`](runtime/github-cli-wrapper.py) | Передаёт `gh` только managed GitHub token из Hermes environment без отдельного plaintext credential store |
+| [`runtime/apply-hermes-patches.py`](runtime/apply-hermes-patches.py) | Идемпотентно применяет локальные патчи gateway (`.gw-restart`, `model-global`, reasoning в `status`) после каждого install/update Hermes |
 | [`check.sh`](check.sh) | Одна локальная и CI-команда для Bash, Python tests, Ansible syntax и whitespace |
 
 ### Единый файл критических настроек VPS

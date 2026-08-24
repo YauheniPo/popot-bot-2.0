@@ -316,6 +316,7 @@ main() {
   backup_existing_installation
   install_hermes
   verify_updated_kanban_state
+  apply_local_hermes_patches
   install_local_browser_automation
   configure_development_clis
   install_google_workspace_cli

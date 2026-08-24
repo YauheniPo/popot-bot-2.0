@@ -80,6 +80,13 @@ PYTHONPYCACHEPREFIX="$CHECK_TEMP/pycache" python3 -m unittest discover \
   -s "$REPOSITORY_ROOT/.github/scripts" \
   -p 'test_*.py'
 
+if optional_tool pytest; then
+  log "running pytest suite"
+  PYTHONPYCACHEPREFIX="$CHECK_TEMP/pycache" python3 -m pytest -q \
+    --no-header --disable-warnings \
+    "$REPOSITORY_ROOT/hermes" "$REPOSITORY_ROOT/.github/scripts"
+fi
+
 if optional_tool ansible-playbook; then
   log "checking Ansible syntax"
   mkdir -p "$CHECK_TEMP/ansible-local" "$CHECK_TEMP/ansible-remote"
