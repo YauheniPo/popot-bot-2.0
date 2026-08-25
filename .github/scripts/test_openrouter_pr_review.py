@@ -195,6 +195,14 @@ class OpenRouterRequestTest(unittest.TestCase):
         self.assertEqual(relaxed_fallback_body["model"], "fallback-model")
         self.assertFalse(relaxed_fallback_body["provider"]["require_parameters"])
         self.assertEqual(relaxed_fallback_body["response_format"]["type"], "json_schema")
+        self.assertEqual(
+            relaxed_fallback_body["max_tokens"],
+            reviewer.RELAXED_FALLBACK_MAX_OUTPUT_TOKENS,
+        )
+        self.assertEqual(
+            relaxed_fallback_body["reasoning"],
+            {"effort": "minimal", "exclude": True},
+        )
 
     def test_does_not_relax_unrelated_fallback_404(self) -> None:
         chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))

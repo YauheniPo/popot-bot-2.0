@@ -32,6 +32,10 @@ DEFAULT_RATE_LIMIT_RETRY_SECONDS = 15.0
 MAX_REQUEST_ATTEMPTS = 5
 MAX_RETRY_DELAY_SECONDS = 90.0
 MAX_OUTPUT_TOKENS = 1_400
+# Reasoning-capable fallback models share max_tokens between hidden reasoning
+# and visible output. Give the compatibility request enough room for both and
+# explicitly keep reasoning at the smallest portable effort level.
+RELAXED_FALLBACK_MAX_OUTPUT_TOKENS = 4_000
 MAX_FINDINGS = 5
 MAX_RENDERED_LINE_CHARACTERS = 4_000
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -488,11 +492,16 @@ def request_fallback_review(
             raise
         relaxed_body = {
             **strict_body,
+            "max_tokens": max(
+                MAX_OUTPUT_TOKENS,
+                RELAXED_FALLBACK_MAX_OUTPUT_TOKENS,
+            ),
             "provider": {"require_parameters": False},
+            "reasoning": {"effort": "minimal", "exclude": True},
         }
         print(
             "  fallback has no structured-output endpoint; "
-            "retrying with locally validated JSON",
+            "retrying with locally validated JSON and bounded reasoning",
             file=sys.stderr,
         )
         return request_json(OPENROUTER_URL, "POST", headers, relaxed_body)
