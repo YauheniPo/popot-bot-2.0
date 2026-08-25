@@ -26,6 +26,9 @@ vps_deploy:
 vps_runtime:
   set:
     terminal.cwd: "${HERMES_WORKSPACE}"
+    # Restarts and other dangerous terminal commands remain available to the
+    # agent, but execute only after the owner explicitly approves them.
+    approvals.mode: manual
     checkpoints.enabled: true
     updates.pre_update_backup: full
     updates.non_interactive_local_changes: stash

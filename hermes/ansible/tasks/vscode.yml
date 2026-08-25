@@ -3,11 +3,54 @@
 # repositories directory Hermes uses. Enabled by default; set
 # vps_deploy.features.vscode_server to false to skip installation.
 
+- name: Validate the code-server password from Vault
+  ansible.builtin.assert:
+    that:
+      - hermes_code_server_password is string
+      - hermes_code_server_password | length >= 16
+      - hermes_code_server_password | length <= 128
+      - hermes_code_server_password != 'replace-inside-ansible-vault'
+      - hermes_code_server_password is match('^[A-Za-z0-9._~!@%^+=:,-]{16,128}$')
+    fail_msg: >-
+      Set a unique code-server password of 16-128 characters in encrypted
+      vault.yml. Allowed characters: letters, digits, . _ ~ ! @ % ^ + = : , -
+  no_log: true
+
 - name: Install Docker Compose v2 plugin
   ansible.builtin.apt:
     name: docker-compose-v2
     state: present
     update_cache: true
+
+- name: Read the Hermes host UID
+  ansible.builtin.command:
+    argv: [id, -u, "{{ hermes_user }}"]
+  register: hermes_vscode_uid
+  changed_when: false
+
+- name: Read the Hermes host GID
+  ansible.builtin.command:
+    argv: [id, -g, "{{ hermes_user }}"]
+  register: hermes_vscode_gid
+  changed_when: false
+
+- name: Create the shared code-server repositories directory
+  ansible.builtin.file:
+    path: "{{ hermes_user_home }}/workspace/repositories"
+    state: directory
+    owner: "{{ hermes_user }}"
+    group: "{{ hermes_user }}"
+    mode: "0750"
+
+- name: Ensure the code-server Git configuration mount is a file
+  ansible.builtin.file:
+    path: "{{ hermes_user_home }}/.gitconfig"
+    state: touch
+    owner: "{{ hermes_user }}"
+    group: "{{ hermes_user }}"
+    mode: "0600"
+    access_time: preserve
+    modification_time: preserve
 
 - name: Create the code-server configuration directory
   ansible.builtin.file:
@@ -34,12 +77,16 @@
       - compose
       - --project-name
       - hermes-vscode
+      - --env-file
+      - /etc/code-server.env
       - up
       - -d
       - --build
     chdir: "{{ hermes_bundle_dir }}/vscode-server"
     environment:
-      CODE_SERVER_PASSWORD: "{{ hermes_code_server_password }}"
+      VPS_USER_HOME: "{{ hermes_user_home }}"
+      HERMES_UID: "{{ hermes_vscode_uid.stdout }}"
+      HERMES_GID: "{{ hermes_vscode_gid.stdout }}"
   changed_when: true
 
 - name: Verify the code-server container is running
@@ -48,6 +95,57 @@
   register: hermes_vscode_state
   changed_when: false
   failed_when: hermes_vscode_state.stdout != "true"
+
+- name: Verify the managed Git author name inside code-server
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - hermes-vscode-code-server-1
+      - git
+      - config
+      - --global
+      - --get
+      - user.name
+  register: hermes_vscode_git_name
+  changed_when: false
+  failed_when: hermes_vscode_git_name.stdout != hermes_git_identity.name
+  when: hermes_github_enabled | bool
+
+- name: Verify the managed Git author email inside code-server
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - hermes-vscode-code-server-1
+      - git
+      - config
+      - --global
+      - --get
+      - user.email
+  register: hermes_vscode_git_email
+  changed_when: false
+  failed_when: hermes_vscode_git_email.stdout != hermes_git_identity.email
+  when: hermes_github_enabled | bool
+
+- name: Verify the managed GitHub account inside code-server
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - hermes-vscode-code-server-1
+      - gh
+      - api
+      - user
+      - --jq
+      - .login
+  register: hermes_vscode_github_user
+  changed_when: false
+  failed_when: hermes_vscode_github_user.stdout != hermes_github_expected_login
+  no_log: true
+  when:
+    - hermes_github_enabled | bool
+    - hermes_github_token_configured | default(false) | bool
 
 - name: Report code-server access instructions
   ansible.builtin.debug:

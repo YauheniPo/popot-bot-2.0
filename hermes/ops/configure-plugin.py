@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,13 @@ def load_config(path: Path) -> dict[str, Any]:
     return loaded
 
 
-def configure(data: dict[str, Any], hermes_home: Path) -> bool:
+def configure(
+    data: dict[str, Any],
+    hermes_home: Path,
+    *,
+    vscode_compose_file: Path | None = None,
+    vscode_env_file: Path = Path("/etc/code-server.env"),
+) -> bool:
     plugins = data.setdefault("plugins", {})
     if not isinstance(plugins, dict):
         raise ValueError("Hermes config.yaml plugins must be a YAML mapping")
@@ -47,16 +54,30 @@ def configure(data: dict[str, Any], hermes_home: Path) -> bool:
         quick_commands["status"] = status_command
         changed = True
 
-    docker_restart_command = {
-        "type": "exec",
-        "command": (
-            f"sudo docker compose -f {hermes_home.parent}/"
-            "workspace/repositories/YauheniPo/popot-bot-2.0/hermes/vscode-server/"
-            "docker-compose.yml up -d --force-recreate"
-        ),
-    }
-    if quick_commands.get("docker_restart") != docker_restart_command:
-        quick_commands["docker_restart"] = docker_restart_command
+    if vscode_compose_file is not None:
+        docker_restart_command = {
+            "type": "exec",
+            "command": shlex.join(
+                [
+                    "sudo",
+                    "docker",
+                    "compose",
+                    "--project-name",
+                    "hermes-vscode",
+                    "--env-file",
+                    str(vscode_env_file),
+                    "-f",
+                    str(vscode_compose_file),
+                    "restart",
+                    "code-server",
+                ]
+            ),
+        }
+        if quick_commands.get("docker_restart") != docker_restart_command:
+            quick_commands["docker_restart"] = docker_restart_command
+            changed = True
+    elif "docker_restart" in quick_commands:
+        del quick_commands["docker_restart"]
         changed = True
     return changed
 
@@ -76,14 +97,28 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--config", required=True, type=Path)
     result.add_argument("--hermes-home", required=True, type=Path)
+    result.add_argument("--vscode-enabled", action="store_true")
+    result.add_argument("--vscode-compose-file", type=Path)
+    result.add_argument(
+        "--vscode-env-file", type=Path, default=Path("/etc/code-server.env")
+    )
     return result
 
 
 def main() -> int:
     args = parser().parse_args()
     try:
+        if args.vscode_enabled and args.vscode_compose_file is None:
+            raise ValueError("--vscode-enabled requires --vscode-compose-file")
         data = load_config(args.config)
-        changed = configure(data, args.hermes_home)
+        changed = configure(
+            data,
+            args.hermes_home,
+            vscode_compose_file=(
+                args.vscode_compose_file if args.vscode_enabled else None
+            ),
+            vscode_env_file=args.vscode_env_file,
+        )
         if changed:
             write_config(args.config, data)
         print("changed" if changed else "unchanged")

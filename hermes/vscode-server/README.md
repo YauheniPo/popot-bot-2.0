@@ -11,14 +11,28 @@ happen directly on the host files — no copies, no sync.
 | `~/workspace/repositories` | `/home/coder/workspace/repositories` | read-write | all managed repos; edit + git here |
 | `~/.hermes` | `/home/coder/hermes-home` | **read-write** | full access to configs and skills from the IDE |
 | `~/.gitconfig` | `/home/coder/.gitconfig` | read-only | host Git identity and defaults |
-| `~/.config/gh` | `/home/coder/gh-config` | read-write | GitHub CLI auth for push/pull (`GH_CONFIG_DIR`) |
+| `../runtime/github-cli-wrapper.py` | `/home/coder/.local/bin/gh` | read-only | managed GitHub credential helper |
 
-Git identity comes from the shared `~/.gitconfig` (user YauheniPo). The
-compose file overrides only the credential helper to use the container's own
-`gh`, which reads the mounted auth state — no token is copied into the image.
+Git identity comes from the shared `~/.gitconfig`. The Compose environment
+resets its host-only helper path and uses the mounted managed `gh` wrapper,
+which reads the token from the mounted Hermes home without copying it into the
+image, Compose file, or GitHub CLI config.
 
-The container runs as UID/GID 1000 (`hermes`), so every file created from the
-browser IDE is owned by `hermes` on the host.
+Therefore the integrated terminal and Source Control view operate on the same
+working trees as Hermes: manual `git diff`, commits, pulls, and pushes use the
+configured author identity and the same managed GitHub account as the agent.
+Ansible verifies both the Git identity and authenticated GitHub login after
+starting the container.
+
+When code-server is enabled, Hermes also registers `/docker_restart` against
+the managed `/opt/hermes-bootstrap` Compose project. Typing that slash command
+is an explicit owner action. If the agent itself needs to restart code-server
+or another system service from the terminal, the managed
+`approvals.mode: manual` policy requests owner approval first.
+
+The image builds its `coder` account with the actual host UID/GID of `hermes`,
+so files created from the browser IDE keep the correct host ownership even
+when that account is not UID/GID 1000.
 
 ## Deploy
 
@@ -34,8 +48,22 @@ Manual deploy (without Ansible):
 
 ```bash
 cd hermes/vscode-server
-echo "PASSWORD=your-strong-password" > /etc/code-server.env  # root-only
-sudo docker compose up -d --build
+read -rsp 'code-server password: ' CODE_SERVER_PASSWORD
+printf '\n'
+if [[ ! "$CODE_SERVER_PASSWORD" =~ ^[A-Za-z0-9._~!@%^+=:,-]{16,128}$ ]]; then
+  echo 'Use 16-128 characters: letters, digits, . _ ~ ! @ % ^ + = : , -' >&2
+  exit 1
+fi
+mkdir -p "$HOME/workspace/repositories"
+touch "$HOME/.gitconfig"
+HERMES_UID="$(id -u)"
+HERMES_GID="$(id -g)"
+printf 'PASSWORD=%s\nVPS_USER_HOME=%s\nHERMES_UID=%s\nHERMES_GID=%s\n' \
+  "$CODE_SERVER_PASSWORD" "$HOME" "$HERMES_UID" "$HERMES_GID" | \
+  sudo install -o root -g root -m 0600 /dev/stdin /etc/code-server.env
+unset CODE_SERVER_PASSWORD
+sudo docker compose --project-name hermes-vscode \
+  --env-file /etc/code-server.env up -d --build
 ```
 
 The codercom image reads the password from the `PASSWORD` variable
@@ -55,6 +83,7 @@ ssh -L 8080:localhost:3001 hermes@VPS_IP
 - Browser access = SSH key + code-server password (from encrypted vault.yml).
 - `.hermes` is mounted read-write per owner choice: the IDE can edit gateway
   configs directly. Treat browser edits with the same care as SSH edits.
+- The password is validated before deployment and stored root-only with mode `0600`.
 - `no-new-privileges` is enabled on the container.
 
 ## Caveat: restarting Hermes after config edits

@@ -9,7 +9,7 @@ code matches exactly.
 
 Covered customizations (not yet upstream):
  * gateway commands: /gw-restart (canonical, with /restart and /gw_restart
-   aliases so the Telegram menu entry resolves) and /model-global
+   aliases so the Telegram menu entry resolves) and /model_global
  * /status shows reasoning effort, visibility, global + topic model
  * busy-session dispatch handles /gw-restart like /restart
 The existing Edge TTS retry lives in ops/apply-edge-tts-retry.py and is not
@@ -28,13 +28,122 @@ HERMES_AGENT_DIR = Path(
 )
 
 _PREFIX = "# Local Hermes:"
+# Construct the retired spelling without advertising it as a supported slash
+# command. It is needed only to migrate files patched by earlier deployments.
+_RETIRED_MODEL_GLOBAL = "model" + chr(45) + "global"
+
+
+class PatchMigrationError(RuntimeError):
+    """Raised when an installed local patch has an unknown legacy shape."""
+
+
+def _replace_required(source: str, old: str, new: str, label: str) -> str:
+    if old not in source:
+        raise PatchMigrationError(f"cannot migrate {label}: expected code is missing")
+    return source.replace(old, new, 1)
+
+
+def _migrate_model_global_source(relative_path: str, source: str) -> tuple[str, bool]:
+    """Migrate earlier local command patches to the underscore-only command."""
+    retired = _RETIRED_MODEL_GLOBAL
+    retired_marker = f"{_PREFIX} {retired}"
+    if retired_marker not in source:
+        return source, False
+
+    if relative_path == "hermes_cli/commands.py":
+        old = f'''    # Local Hermes: {retired} CommandDef
+    CommandDef("{retired}", "Set the global default model for all topics/sessions", "Configuration",
+               aliases=("model_global",),
+               args_hint="[model] [--provider name]",
+               busy_policy="reject", busy_handler="{retired}"),
+'''
+        new = '''    # Local Hermes: model_global CommandDef
+    CommandDef("model_global", "Set the global default model for all topics/sessions", "Configuration",
+               args_hint="[model] [--provider name]",
+               busy_policy="reject", busy_handler="model"),
+'''
+        migrated = _replace_required(source, old, new, "model_global CommandDef")
+    elif relative_path == "gateway/slash_commands.py":
+        legacy_usage = f'''        if not raw_args:
+            return (
+                "Usage: /{retired} <model> [--provider <provider>]\\n"
+                "Sets the global default model in config.yaml — applies to every "
+                "topic/session, not just this one."
+            )
+'''
+        picker_behavior = '''        # No args: open the interactive model picker with --global flag so the
+        # chosen model persists to config.yaml for all topics/sessions.
+        if not raw_args:
+            event.text = "/model --global"
+            return await self._handle_model_command(event)
+'''
+        if legacy_usage in source:
+            migrated = source.replace(legacy_usage, picker_behavior, 1)
+        elif picker_behavior in source:
+            migrated = source
+        else:
+            raise PatchMigrationError(
+                "cannot migrate model_global handler: unknown no-argument behavior"
+            )
+        migrated = _replace_required(
+            migrated,
+            f'"""Handle /{retired} —',
+            '"""Handle /model_global —',
+            "model_global handler docstring",
+        )
+        migrated = _replace_required(
+            migrated,
+            f"# Local Hermes: {retired} handler",
+            "# Local Hermes: model_global handler",
+            "model_global handler marker",
+        )
+    elif relative_path == "gateway/run.py":
+        old = f'''        if canonical in ("{retired}", "model_global"):
+            # Local Hermes: {retired} route
+            return await self._handle_model_global_command(event)
+'''
+        new = '''        if canonical == "model_global":
+            # Local Hermes: model_global route
+            return await self._handle_model_global_command(event)
+'''
+        migrated = _replace_required(source, old, new, "model_global route")
+    else:
+        return source, False
+
+    if retired in migrated:
+        raise PatchMigrationError(
+            f"cannot migrate {relative_path}: retired command spelling remains"
+        )
+    return migrated, True
+
+
+def _migrate_installed_model_global() -> int:
+    planned_writes: list[tuple[Path, str]] = []
+    for relative_path in (
+        "hermes_cli/commands.py",
+        "gateway/slash_commands.py",
+        "gateway/run.py",
+    ):
+        target = HERMES_AGENT_DIR / relative_path
+        if not target.is_file():
+            continue
+        source = target.read_text(encoding="utf-8")
+        migrated, changed = _migrate_model_global_source(relative_path, source)
+        if changed:
+            planned_writes.append((target, migrated))
+
+    for target, migrated in planned_writes:
+        target.write_text(migrated, encoding="utf-8")
+        print(f"[hermes-patch] migrated {target.relative_to(HERMES_AGENT_DIR)}")
+    return len(planned_writes)
+
 
 _PATCHES: list[tuple[str, str, str, str]] = [
     # NOTE: every ``new`` block MUST include its marker as a comment line so
     # the idempotency check (marker already present -> skip) works on re-run.
     (
         "hermes_cli/commands.py",
-        _PREFIX + " model-global CommandDef",
+        _PREFIX + " model_global CommandDef",
         '''    CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
                args_hint="[model] [--provider name] [--global|--session] [--refresh]",
                busy_policy="reject", busy_handler="model"),
@@ -42,11 +151,10 @@ _PATCHES: list[tuple[str, str, str, str]] = [
         '''    CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
                args_hint="[model] [--provider name] [--global|--session] [--refresh]",
                busy_policy="reject", busy_handler="model"),
-    # Local Hermes: model-global CommandDef
-    CommandDef("model-global", "Set the global default model for all topics/sessions", "Configuration",
-               aliases=("model_global",),
+    # Local Hermes: model_global CommandDef
+    CommandDef("model_global", "Set the global default model for all topics/sessions", "Configuration",
                args_hint="[model] [--provider name]",
-               busy_policy="reject", busy_handler="model-global"),
+               busy_policy="reject", busy_handler="model"),
 ''',
     ),
     (
@@ -62,12 +170,12 @@ _PATCHES: list[tuple[str, str, str, str]] = [
     ),
     (
         "gateway/slash_commands.py",
-        _PREFIX + " model-global handler",
+        _PREFIX + " model_global handler",
         '''    async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model.
 ''',
         '''    async def _handle_model_global_command(self, event: MessageEvent) -> Optional[str]:
-        """Handle /model-global — switch model persistently for ALL topics/sessions.
+        """Handle /model_global — switch model persistently for ALL topics/sessions.
 
         Thin wrapper: rewrites the incoming command text to
         ``/model <args> --global`` and delegates to the standard /model
@@ -93,20 +201,20 @@ _PATCHES: list[tuple[str, str, str, str]] = [
 
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model.
-        # Local Hermes: model-global handler
+        # Local Hermes: model_global handler
 ''',
     ),
     (
         "gateway/run.py",
-        _PREFIX + " model-global route",
+        _PREFIX + " model_global route",
         '''        if canonical == "model":
             return await self._handle_model_command(event)
 ''',
         '''        if canonical == "model":
             return await self._handle_model_command(event)
 
-        if canonical in ("model-global", "model_global"):
-            # Local Hermes: model-global route
+        if canonical == "model_global":
+            # Local Hermes: model_global route
             return await self._handle_model_global_command(event)
 ''',
     ),
@@ -182,6 +290,11 @@ def main() -> int:
             file=sys.stderr,
         )
         return 0
+    try:
+        migrated = _migrate_installed_model_global()
+    except PatchMigrationError as exc:
+        print(f"[hermes-patch] ERROR: {exc}", file=sys.stderr)
+        return 1
     applied = 0
     for relative_path, marker, old, new in _PATCHES:
         target = HERMES_AGENT_DIR / relative_path
@@ -196,14 +309,19 @@ def main() -> int:
             print(
                 f"[hermes-patch] WARNING: {relative_path} does not match the expected "
                 "code; skipping. Hermes may have changed — re-verify the patch "
-                "before relying on /model-global, /gw-restart, or /status reasoning.",
+                "before relying on /model_global, /gw-restart, or /status reasoning.",
                 file=sys.stderr,
             )
             continue
         target.write_text(source.replace(old, new, 1), encoding="utf-8")
         print(f"[hermes-patch] applied {relative_path}")
         applied += 1
-    print(f"[hermes-patch] done: {applied} patch(es) applied")
+    if applied or migrated:
+        print("[hermes-patch] changed")
+    print(
+        f"[hermes-patch] done: {applied} patch(es) applied, "
+        f"{migrated} legacy patch file(s) migrated"
+    )
     return 0
 
 

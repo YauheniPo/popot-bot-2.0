@@ -34,6 +34,7 @@ class ApplyConfigTests(unittest.TestCase):
             "0582d9b1562efcb6e0ac62f4451021667830b830a72ce7d91eaea9fee8b6c09b",
         )
         self.assertTrue(settings["vps_deploy"]["features"]["observability"])
+        self.assertEqual(settings["vps_runtime"]["set"]["approvals.mode"], "manual")
         self.assertEqual(settings["vps_runtime"]["set"]["browser.backend"], "off")
         self.assertEqual(settings["vps_runtime"]["set"]["display.tool_progress"], "off")
         self.assertIn("agent.max_turns", settings["vps_runtime"]["unset"])

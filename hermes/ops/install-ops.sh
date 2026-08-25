@@ -10,6 +10,9 @@ START_TIMERS=true
 RESTART_SERVICES=true
 PLUGIN_CONTENT_CHANGED=false
 PLUGIN_CONFIGURATION_CHANGED=false
+VSCODE_ENABLED=false
+VSCODE_COMPOSE_FILE=""
+VSCODE_ENV_FILE="/etc/code-server.env"
 
 log() {
     printf '[hermes-ops] %s\n' "$*"
@@ -29,6 +32,11 @@ Options:
   --user-home PATH     User home (default: /home/hermes)
   --hermes-home PATH   Hermes state directory (default: USER_HOME/.hermes)
   --hermes-bin PATH    Hermes CLI path (default: USER_HOME/.local/bin/hermes)
+  --vscode-enabled     Register the managed code-server restart command
+  --vscode-compose-file PATH
+                       Managed code-server Compose file
+  --vscode-env-file PATH
+                       Root-only Compose environment (default: /etc/code-server.env)
   --defer-timers       Install but do not start the monitoring timers yet
   --no-restart         Let the parent deploy restart managed runtime services
   -h, --help           Show this help
@@ -57,6 +65,20 @@ while (($#)); do
             HERMES_BIN="$2"
             shift 2
             ;;
+        --vscode-enabled)
+            VSCODE_ENABLED=true
+            shift
+            ;;
+        --vscode-compose-file)
+            (($# >= 2)) || die "--vscode-compose-file requires a value"
+            VSCODE_COMPOSE_FILE="$2"
+            shift 2
+            ;;
+        --vscode-env-file)
+            (($# >= 2)) || die "--vscode-env-file requires a value"
+            VSCODE_ENV_FILE="$2"
+            shift 2
+            ;;
         --defer-timers)
             START_TIMERS=false
             shift
@@ -81,6 +103,14 @@ id "${HERMES_USER}" >/dev/null 2>&1 || die "user does not exist: ${HERMES_USER}"
 for path in "${USER_HOME}" "${HERMES_HOME}" "${HERMES_BIN}"; do
     [[ "${path}" =~ ^/[A-Za-z0-9._/@+-]+$ ]] || die "unsafe or unsupported path: ${path}"
 done
+if [[ "${VSCODE_ENABLED}" == true ]]; then
+    [[ -n "${VSCODE_COMPOSE_FILE}" ]] ||
+        die "--vscode-enabled requires --vscode-compose-file"
+    for path in "${VSCODE_COMPOSE_FILE}" "${VSCODE_ENV_FILE}"; do
+        [[ "${path}" =~ ^/[A-Za-z0-9._/@+-]+$ ]] ||
+            die "unsafe or unsupported code-server path: ${path}"
+    done
+fi
 # The CLI path is later executed in a privileged context. An attacker with
 # write access to any parent directory could plant a symlink that redirects
 # that execution, so reject a link both at the CLI path itself and at every
