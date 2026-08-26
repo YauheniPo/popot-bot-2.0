@@ -43,7 +43,7 @@
     HERMES_INSTALL_DIR: "{{ hermes_home }}/hermes-agent"
     HOME: "{{ hermes_user_home }}"
   register: hermes_local_patches
-  changed_when: "'applied' in hermes_local_patches.stdout"
+  changed_when: "'[hermes-patch] changed' in hermes_local_patches.stdout"
   failed_when: hermes_local_patches.rc != 0
 
 - name: Keep Russian reasoning rule in the global SOUL identity
@@ -74,7 +74,30 @@
 
 - name: Install audit, metrics, reporting, and health checks
   ansible.builtin.command:
-    argv: "{{ [hermes_bundle_dir + '/ops/install-ops.sh', '--user', hermes_user, '--user-home', hermes_user_home, '--hermes-home', hermes_home, '--hermes-bin', hermes_bin, '--no-restart'] + ([] if hermes_gateway_enabled | bool else ['--defer-timers']) }}"
+    argv: >-
+      {{
+        [
+          hermes_bundle_dir + '/ops/install-ops.sh',
+          '--user', hermes_user,
+          '--user-home', hermes_user_home,
+          '--hermes-home', hermes_home,
+          '--hermes-bin', hermes_bin,
+          '--no-restart'
+        ] +
+        ([] if hermes_gateway_enabled | bool else ['--defer-timers']) +
+        (
+          [
+            '--vscode-enabled',
+            '--vscode-compose-file', hermes_bundle_dir + '/vscode-server/docker-compose.yml',
+            '--vscode-env-file', '/etc/code-server.env'
+          ]
+          if (
+            (hermes_host_admin_enabled | bool) and
+            (vps_deploy.features.vscode_server | default(false) | bool)
+          )
+          else []
+        )
+      }}
   when: hermes_enable_ops | bool
   changed_when: true
 

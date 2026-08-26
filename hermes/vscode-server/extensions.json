@@ -1,0 +1,11 @@
+{
+  "recommendations": [
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "redhat.ansible",
+    "timonwong.shellcheck",
+    "redhat.yaml",
+    "yzhang.markdown-all-in-one"
+  ],
+  "unwantedRecommendations": []
+}

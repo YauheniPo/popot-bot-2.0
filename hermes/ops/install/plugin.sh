@@ -3,6 +3,10 @@
 enable_observability_plugin() {
     local hermes_python="${HERMES_HOME}/hermes-agent/venv/bin/python"
     local result
+    local -a configure_args=(
+        --config "${HERMES_HOME}/config.yaml"
+        --hermes-home "${HERMES_HOME}"
+    )
     [[ -x "${hermes_python}" ]] || {
         log "WARNING: Hermes Python environment is unavailable; the observability plugin was not enabled"
         return 0
@@ -10,13 +14,20 @@ enable_observability_plugin() {
 
     # The regular plugin command can block in a non-interactive provisioner.
     # Keep the small deterministic config mutation in a testable helper.
+    if [[ "${VSCODE_ENABLED}" == true ]]; then
+        configure_args+=(
+            --vscode-enabled
+            --vscode-compose-file "${VSCODE_COMPOSE_FILE}"
+            --vscode-env-file "${VSCODE_ENV_FILE}"
+        )
+    fi
+
     result="$(runuser -u "${HERMES_USER}" -- env -i \
         HOME="${USER_HOME}" \
         HERMES_HOME="${HERMES_HOME}" \
         PATH="${USER_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin" \
         "${hermes_python}" "${SCRIPT_DIR}/configure-plugin.py" \
-        --config "${HERMES_HOME}/config.yaml" \
-        --hermes-home "${HERMES_HOME}")"
+        "${configure_args[@]}")"
     if [[ "${result}" == "changed" ]]; then
         PLUGIN_CONFIGURATION_CHANGED=true
     fi

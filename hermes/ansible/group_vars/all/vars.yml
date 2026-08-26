@@ -52,4 +52,5 @@ hermes_llm_config: {}
 # non-secret and remains versioned here.
 hermes_grafana_admin_user: hermes
 hermes_grafana_admin_password: ""
+hermes_code_server_password: ""
 tailscale_auth_key: ""

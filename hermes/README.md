@@ -317,7 +317,7 @@ GitHub permissions и messenger tokens подключаются отдельно
 | [`ansible/group_vars/all/vault.yml.example`](ansible/group_vars/all/vault.yml.example) | Шаблон private API keys и tokens; рабочий файл — `ansible/group_vars/all/vault.yml`, он шифруется и игнорируется Git; команды находятся в [`VAULT.md`](ansible/group_vars/all/VAULT.md) |
 | [`ansible/templates/hermes.env.j2`](ansible/templates/hermes.env.j2) | Безопасно формирует Hermes `.env` из расшифрованных только на время deploy значений и нормализует GitHub token alias |
 | [`runtime/github-cli-wrapper.py`](runtime/github-cli-wrapper.py) | Передаёт `gh` только managed GitHub token из Hermes environment без отдельного plaintext credential store |
-| [`runtime/apply-hermes-patches.py`](runtime/apply-hermes-patches.py) | Идемпотентно применяет локальные патчи gateway (`.gw-restart`, `model-global`, reasoning в `status`) после каждого install/update Hermes |
+| [`runtime/apply-hermes-patches.py`](runtime/apply-hermes-patches.py) | Идемпотентно применяет локальные патчи gateway (`.gw-restart`, `model_global`, reasoning в `status`) после каждого install/update Hermes |
 | [`check.sh`](check.sh) | Одна локальная и CI-команда для Bash, Python tests, Ansible syntax и whitespace |
 
 ### Единый файл критических настроек VPS

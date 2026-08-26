@@ -85,6 +85,15 @@
         mode: preserve
         directory_mode: "0755"
 
+    - name: Copy the versioned code-server deployment files
+      ansible.builtin.copy:
+        src: ../vscode-server/
+        dest: "{{ hermes_bundle_dir }}/vscode-server/"
+        owner: root
+        group: root
+        mode: preserve
+        directory_mode: "0755"
+
     - name: Check whether Hermes is already installed
       ansible.builtin.stat:
         path: "{{ hermes_bin }}"
@@ -376,3 +385,9 @@
 
     - name: Install and reconcile Hermes services
       ansible.builtin.import_tasks: tasks/services.yml
+
+    - name: Install and start the code-server container
+      ansible.builtin.import_tasks: tasks/vscode.yml
+      when:
+        - hermes_host_admin_enabled | bool
+        - vps_deploy.features.vscode_server | default(false) | bool

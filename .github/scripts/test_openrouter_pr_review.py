@@ -156,6 +156,77 @@ class OpenRouterRequestTest(unittest.TestCase):
         self.assertEqual(request.call_count, 2)
         sleep.assert_called_once_with(15.0)
 
+    def test_relaxes_parameter_filter_for_incompatible_fallback(self) -> None:
+        response = {
+            "choices": [
+                {"message": {"content": json.dumps({"summary": "Reviewed.", "findings": []})}}
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        routing_error = reviewer.RequestError(
+            "POST failed with HTTP 404: No endpoints found that can handle the requested parameters",
+            status=404,
+        )
+        with (
+            mock.patch.dict(
+                reviewer.os.environ,
+                {"OPENROUTER_REVIEW_FALLBACK_MODEL": "fallback-model"},
+            ),
+            mock.patch.object(
+                reviewer,
+                "request_json",
+                side_effect=[
+                    reviewer.RequestError("primary rejected request", status=400),
+                    routing_error,
+                    response,
+                ],
+            ) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch("builtins.print"),
+        ):
+            result = reviewer.review_chunk("api-key", "primary-model", (), chunk, 1, 1)
+
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(request.call_count, 3)
+        strict_fallback_body = request.call_args_list[1].args[3]
+        relaxed_fallback_body = request.call_args_list[2].args[3]
+        self.assertEqual(strict_fallback_body["model"], "fallback-model")
+        self.assertTrue(strict_fallback_body["provider"]["require_parameters"])
+        self.assertEqual(relaxed_fallback_body["model"], "fallback-model")
+        self.assertFalse(relaxed_fallback_body["provider"]["require_parameters"])
+        self.assertEqual(relaxed_fallback_body["response_format"]["type"], "json_schema")
+        self.assertEqual(
+            relaxed_fallback_body["max_tokens"],
+            reviewer.RELAXED_FALLBACK_MAX_OUTPUT_TOKENS,
+        )
+        self.assertEqual(
+            relaxed_fallback_body["reasoning"],
+            {"effort": "minimal", "exclude": True},
+        )
+
+    def test_does_not_relax_unrelated_fallback_404(self) -> None:
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        with (
+            mock.patch.dict(
+                reviewer.os.environ,
+                {"OPENROUTER_REVIEW_FALLBACK_MODEL": "missing-model"},
+            ),
+            mock.patch.object(
+                reviewer,
+                "request_json",
+                side_effect=[
+                    reviewer.RequestError("primary rejected request", status=400),
+                    reviewer.RequestError("model not found", status=404),
+                ],
+            ) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch("builtins.print"),
+        ):
+            with self.assertRaisesRegex(reviewer.RequestError, "model not found"):
+                reviewer.review_chunk("api-key", "primary-model", (), chunk, 1, 1)
+
+        self.assertEqual(request.call_count, 2)
+
     def test_uses_provider_reset_header_for_rate_limit_retry(self) -> None:
         response = {
             "choices": [

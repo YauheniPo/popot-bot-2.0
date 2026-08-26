@@ -1,0 +1,46 @@
+name: hermes-vscode
+services:
+  code-server:
+    build:
+      context: .
+      args:
+        HERMES_UID: ${HERMES_UID:?set HERMES_UID in /etc/code-server.env}
+        HERMES_GID: ${HERMES_GID:?set HERMES_GID in /etc/code-server.env}
+    # The image's coder account is built with the host Hermes UID/GID. Do not
+    # set an explicit user: the image entrypoint (fixuid) breaks under
+    # no-new-privileges when overridden.
+    ports:
+      # Loopback only: reachable through the SSH tunnel, never from the network.
+      # Host port 3001 -> container port 8080 (the image's default listen
+      # port); host 3000 is taken by the loopback-only Grafana service.
+      - "127.0.0.1:3001:8080"
+    volumes:
+      # Repositories: full read-write — edits land directly on the host.
+      - ${VPS_USER_HOME:-/home/hermes}/workspace/repositories:/home/coder/workspace/repositories
+      # Hermes home: full read-write per owner choice — the IDE can edit
+      # configs and skills directly from the browser.
+      - ${VPS_USER_HOME:-/home/hermes}/.hermes:/home/coder/hermes-home:rw
+      # Reuse the host Git identity (user name/email, defaults).
+      - ${VPS_USER_HOME:-/home/hermes}/.gitconfig:/home/coder/.gitconfig:ro
+      # Use the same managed gh wrapper as the host. It reads only supported
+      # token names from the already-mounted Hermes .env at runtime.
+      - ../runtime/github-cli-wrapper.py:/home/coder/.local/bin/gh:ro
+      - ./code-server-config.json:/etc/code-server/config.json:ro
+    # Note: the image entrypoint overrides bind-addr with its own
+    # `--bind-addr 0.0.0.0:8080` default; config.json is mounted for
+    # documentation/parity but the effective listen port is 8080.
+    env_file:
+      - /etc/code-server.env
+    environment:
+      HERMES_HOME: /home/coder/hermes-home
+      PATH: /home/coder/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      # Reset the host-only absolute helper, then use the mounted wrapper.
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: credential.https://github.com.helper
+      GIT_CONFIG_VALUE_0: ""
+      GIT_CONFIG_KEY_1: credential.https://github.com.helper
+      GIT_CONFIG_VALUE_1: "!/home/coder/.local/bin/gh auth git-credential"
+      TZ: UTC
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true

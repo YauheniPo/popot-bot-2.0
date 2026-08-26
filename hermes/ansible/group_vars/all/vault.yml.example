@@ -81,6 +81,12 @@ hermes_llm_config: {}
 # grafana.env file on a VPS.
 hermes_grafana_admin_password: "replace-inside-ansible-vault"
 
+# Required when vps_deploy.features.vscode_server=true (enabled by default in
+# vps-defaults.yml). Ansible writes this to the root-only /etc/code-server.env.
+# This protects the browser IDE behind the SSH tunnel; it is not a substitute
+# for keeping port 3000 unpublished.
+hermes_code_server_password: "replace-inside-ansible-vault"
+
 # Optional one-use, ephemeral, tagged Tailscale auth key. Leave empty to run
 # `sudo tailscale up --ssh` interactively.
 tailscale_auth_key: ""

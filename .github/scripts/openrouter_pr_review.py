@@ -32,6 +32,10 @@ DEFAULT_RATE_LIMIT_RETRY_SECONDS = 15.0
 MAX_REQUEST_ATTEMPTS = 5
 MAX_RETRY_DELAY_SECONDS = 90.0
 MAX_OUTPUT_TOKENS = 1_400
+# Reasoning-capable fallback models share max_tokens between hidden reasoning
+# and visible output. Give the compatibility request enough room for both and
+# explicitly keep reasoning at the smallest portable effort level.
+RELAXED_FALLBACK_MAX_OUTPUT_TOKENS = 4_000
 MAX_FINDINGS = 5
 MAX_RENDERED_LINE_CHARACTERS = 4_000
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -39,13 +43,14 @@ GITHUB_API_URL = "https://api.github.com"
 REVIEW_RULES_PATH = Path(".github/REVIEWER.md")
 EXCLUDED_REVIEW_PATHS = frozenset(
     {
-        ".github/workflows/claude-review.yml",
+        ".github/workflows/pr-ai-review.yml",
         ".github/scripts/openrouter_pr_review.py",
         str(REVIEW_RULES_PATH),
     }
 )
 HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 RETRYABLE_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+PARAMETER_ROUTING_ERROR = "no endpoints found that can handle the requested parameters"
 REVIEW_RESPONSE_SCHEMA = {
     "name": "pull_request_review_chunk",
     "strict": True,
@@ -463,6 +468,45 @@ def parse_review_response(response: object) -> dict[str, object]:
     return parsed
 
 
+def request_fallback_review(
+    fallback_model: str,
+    headers: dict[str, str],
+    primary_body: dict[str, object],
+) -> object:
+    strict_body = {**primary_body, "model": fallback_model}
+    print(
+        f"  primary exhausted; retrying with fallback: {fallback_model}",
+        file=sys.stderr,
+    )
+    try:
+        return request_json(OPENROUTER_URL, "POST", headers, strict_body)
+    except RequestError as error:
+        # Some fallback models accept ordinary text generation but do not expose
+        # response_format. OpenRouter returns this routing-specific 404 when
+        # require_parameters filters out every endpoint. Retry only that case;
+        # unknown models and unrelated 404 responses must remain hard failures.
+        if (
+            error.status != 404
+            or PARAMETER_ROUTING_ERROR not in str(error).lower()
+        ):
+            raise
+        relaxed_body = {
+            **strict_body,
+            "max_tokens": max(
+                MAX_OUTPUT_TOKENS,
+                RELAXED_FALLBACK_MAX_OUTPUT_TOKENS,
+            ),
+            "provider": {"require_parameters": False},
+            "reasoning": {"effort": "minimal", "exclude": True},
+        }
+        print(
+            "  fallback has no structured-output endpoint; "
+            "retrying with locally validated JSON and bounded reasoning",
+            file=sys.stderr,
+        )
+        return request_json(OPENROUTER_URL, "POST", headers, relaxed_body)
+
+
 def review_chunk(
     api_key: str,
     model: str,
@@ -515,13 +559,10 @@ UNRESOLVED_REVIEW_THREADS:
                 # Exhausted retries on the primary model. Try fallback once.
                 fallback_model = os.environ.get("OPENROUTER_REVIEW_FALLBACK_MODEL")
                 if fallback_model and body["model"] != fallback_model:
-                    body["model"] = fallback_model
-                    print(
-                        f"  primary exhausted; retrying with fallback: {fallback_model}",
-                        file=sys.stderr,
-                    )
-                    # Give the fallback a single clean attempt (no more retries).
-                    response = request_json(OPENROUTER_URL, "POST", headers, body)
+                    # Give the fallback one strict attempt. If OpenRouter reports
+                    # that no endpoint accepts every parameter, the helper makes
+                    # one compatibility attempt without the routing filter.
+                    response = request_fallback_review(fallback_model, headers, body)
                     break
                 raise
             fallback_delay = float(2 ** (attempt - 1))
