@@ -468,6 +468,28 @@ def parse_review_response(response: object) -> dict[str, object]:
     return parsed
 
 
+def request_with_transient_retries(
+    headers: dict[str, str],
+    body: dict[str, object],
+) -> object:
+    """Retry a single model request without changing models or parameters."""
+    for attempt in range(1, MAX_REQUEST_ATTEMPTS + 1):
+        try:
+            return request_json(OPENROUTER_URL, "POST", headers, body)
+        except RequestError as error:
+            retryable = error.status is None or error.status in RETRYABLE_HTTP_STATUSES
+            if not retryable or attempt == MAX_REQUEST_ATTEMPTS:
+                raise
+            fallback_delay = float(2 ** (attempt - 1))
+            if error.status == 429:
+                fallback_delay = max(
+                    fallback_delay,
+                    DEFAULT_RATE_LIMIT_RETRY_SECONDS,
+                )
+            time.sleep(error.retry_after_seconds or fallback_delay)
+    raise AssertionError("unreachable")
+
+
 def request_fallback_review(
     fallback_model: str,
     headers: dict[str, str],
@@ -479,7 +501,7 @@ def request_fallback_review(
         file=sys.stderr,
     )
     try:
-        return request_json(OPENROUTER_URL, "POST", headers, strict_body)
+        return request_with_transient_retries(headers, strict_body)
     except RequestError as error:
         # Some fallback models accept ordinary text generation but do not expose
         # response_format. OpenRouter returns this routing-specific 404 when
@@ -504,7 +526,7 @@ def request_fallback_review(
             "retrying with locally validated JSON and bounded reasoning",
             file=sys.stderr,
         )
-        return request_json(OPENROUTER_URL, "POST", headers, relaxed_body)
+        return request_with_transient_retries(headers, relaxed_body)
 
 
 def review_chunk(

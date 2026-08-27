@@ -1,13 +1,12 @@
 [Unit]
-Description=Create a Hermes snapshot every day
+Description=Create scheduled Hermes snapshots
 
 [Timer]
-OnBootSec=3min
-OnUnitActiveSec=1d
-AccuracySec=5min
+OnBootSec=@BACKUP_ON_BOOT_SEC@
+OnUnitActiveSec=@BACKUP_INTERVAL@
+AccuracySec=@BACKUP_ACCURACY_SEC@
 Persistent=true
-RandomizedDelaySec=10min
+RandomizedDelaySec=@BACKUP_RANDOMIZED_DELAY_SEC@
 
 [Install]
 WantedBy=timers.target
-

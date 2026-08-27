@@ -10,7 +10,7 @@ readonly DEFAULT_HERMES_VERSION="0.20.5"
 readonly DEFAULT_HERMES_RELEASE="v2026.8.19"
 readonly DEFAULT_HERMES_COMMIT="fcbd1076a93841fa88855acce810e342a5b78101"
 readonly DEFAULT_INSTALLER_SHA256="0582d9b1562efcb6e0ac62f4451021667830b830a72ce7d91eaea9fee8b6c09b"
-readonly HERMES_RAW_BASE_URL="https://raw.githubusercontent.com/NousResearch/hermes-agent"
+readonly DEFAULT_HERMES_RAW_BASE_URL="https://raw.githubusercontent.com/NousResearch/hermes-agent"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 readonly VPS_SETTINGS_FILE="$SCRIPT_DIR/config/vps-defaults.yml"
@@ -23,6 +23,11 @@ HERMES_VERSION="$DEFAULT_HERMES_VERSION"
 HERMES_RELEASE="$DEFAULT_HERMES_RELEASE"
 HERMES_COMMIT="$DEFAULT_HERMES_COMMIT"
 INSTALLER_SHA256="$DEFAULT_INSTALLER_SHA256"
+HERMES_RAW_BASE_URL="$DEFAULT_HERMES_RAW_BASE_URL"
+REQUESTED_USER_HOME=""
+REQUESTED_HERMES_HOME=""
+REQUESTED_HERMES_WORKSPACE=""
+REQUESTED_HERMES_BACKUP_DIR=""
 WITH_BROWSER=true
 RUN_SETUP=true
 # Auto-start only after setup has created both Telegram credentials. Use
@@ -37,6 +42,7 @@ INSTALL_TAILSCALE=true
 RUN_TAILSCALE_LOGIN=true
 ALLOW_HOST_ADMIN=true
 INSTALLER_FILE=""
+HERMES_GATEWAY_SERVICE="hermes-gateway.service"
 GATEWAY_WAS_QUIESCED=false
 UPDATE_MUTATION_STARTED=false
 UPDATE_GUARD_ACTIVE=false
@@ -65,6 +71,10 @@ Usage:
 
 Options:
   --user NAME              Service user to create/use (default: hermes)
+  --user-home PATH         Required home for the service user
+  --hermes-home PATH       Hermes state directory (default: USER_HOME/.hermes)
+  --workspace PATH         Agent workspace (default: USER_HOME/workspace)
+  --backup-dir PATH        Full-backup directory (default: USER_HOME/hermes-backups)
   --branch NAME            Hermes Git branch to install (default: main)
   --expected-version VER   Expected Hermes package version after install
   --release TAG            Human-readable Hermes release tag
@@ -115,6 +125,26 @@ while (($# > 0)); do
     --user)
       require_option_value "$1" "${2:-}"
       HERMES_USER="$2"
+      shift 2
+      ;;
+    --user-home)
+      require_option_value "$1" "${2:-}"
+      REQUESTED_USER_HOME="$2"
+      shift 2
+      ;;
+    --hermes-home)
+      require_option_value "$1" "${2:-}"
+      REQUESTED_HERMES_HOME="$2"
+      shift 2
+      ;;
+    --workspace)
+      require_option_value "$1" "${2:-}"
+      REQUESTED_HERMES_WORKSPACE="$2"
+      shift 2
+      ;;
+    --backup-dir)
+      require_option_value "$1" "${2:-}"
+      REQUESTED_HERMES_BACKUP_DIR="$2"
       shift 2
       ;;
     --branch)
@@ -258,8 +288,8 @@ cleanup() {
   if [[ "$GATEWAY_WAS_QUIESCED" == true && "$UPDATE_MUTATION_STARTED" == false ]] && \
       command -v systemctl >/dev/null 2>&1; then
     warn "Update stopped before code changes; restarting the previously active gateway"
-    systemctl start hermes-gateway.service ||
-      warn "Could not restart hermes-gateway.service after the aborted update"
+    systemctl start "$HERMES_GATEWAY_SERVICE" ||
+      warn "Could not restart $HERMES_GATEWAY_SERVICE after the aborted update"
   fi
   if [[ -n "$INSTALLER_FILE" && -f "$INSTALLER_FILE" ]]; then
     rm -f -- "$INSTALLER_FILE"
@@ -276,6 +306,16 @@ validate_inputs() {
   [[ "$HERMES_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] ||
     die "invalid service user: $HERMES_USER"
   [[ "$HERMES_USER" != "root" ]] || die "refusing to run Hermes as root"
+  local configured_path
+  for configured_path in \
+      "$REQUESTED_USER_HOME" "$REQUESTED_HERMES_HOME" \
+      "$REQUESTED_HERMES_WORKSPACE" "$REQUESTED_HERMES_BACKUP_DIR"; do
+    [[ -z "$configured_path" || "$configured_path" =~ ^/[A-Za-z0-9._/@+-]+$ ]] ||
+      die "unsafe or unsupported configured path: $configured_path"
+    [[ "$configured_path" != "/" ]] || die "refusing to use / as a configured path"
+    [[ "$configured_path" != *"/../"* && "$configured_path" != */.. ]] ||
+      die "configured path must not contain parent traversal: $configured_path"
+  done
   [[ "$HERMES_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] ||
     die "invalid branch name: $HERMES_BRANCH"
   [[ "$HERMES_VERSION" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]] ||
@@ -310,6 +350,7 @@ main() {
   install_tailscale
   ensure_service_user
   resolve_user_paths
+  resolve_managed_runtime
   enable_host_administration
   quiesce_existing_gateway_for_update
   download_installer

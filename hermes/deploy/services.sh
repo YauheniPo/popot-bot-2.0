@@ -37,11 +37,11 @@ enable_gateway() {
       --start-now \
       --start-on-login
 
-  systemctl is-enabled --quiet hermes-gateway.service ||
-    die "hermes-gateway.service was not enabled"
-  systemctl is-active --quiet hermes-gateway.service || {
-    systemctl status --no-pager hermes-gateway.service >&2 || true
-    die "hermes-gateway.service did not start"
+  systemctl is-enabled --quiet "$HERMES_GATEWAY_SERVICE" ||
+    die "$HERMES_GATEWAY_SERVICE was not enabled"
+  systemctl is-active --quiet "$HERMES_GATEWAY_SERVICE" || {
+    systemctl status --no-pager "$HERMES_GATEWAY_SERVICE" >&2 || true
+    die "$HERMES_GATEWAY_SERVICE did not start"
   }
 }
 
@@ -55,6 +55,8 @@ install_operations_layer() {
     --user-home "$HERMES_USER_HOME"
     --hermes-home "$HERMES_HOME"
     --hermes-bin "$HERMES_BIN"
+    --workspace "$HERMES_WORKSPACE"
+    --backup-dir "$HERMES_BACKUP_DIR"
     --no-restart
   )
   if [[ "$ENABLE_GATEWAY" == false ]]; then
@@ -99,5 +101,3 @@ restart_managed_runtime() {
       die "managed Hermes service did not become active after restart: $service"
   done
 }
-
-

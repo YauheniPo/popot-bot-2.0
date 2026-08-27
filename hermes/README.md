@@ -25,7 +25,7 @@ Debian/Ubuntu VPS. Hermes работает от отдельного непри�
 | [FAL.ai](https://fal.ai/) | Генерация и редактирование изображений. | Опционально: нужен `FAL_KEY`, если не используется image tool Nous Portal. |
 | [Grafana](https://grafana.com/docs/) | Локальные dashboards model/token/cost/VPS metrics. | Устанавливается при включённом ops-слое; не требует внешнего аккаунта. |
 | [Prometheus](https://prometheus.io/docs/) | Локально собирает и хранит metrics для Grafana и Hermes. | Устанавливается при включённом ops-слое; не требует внешнего аккаунта. |
-| [Docker Engine](https://docs.docker.com/engine/) | Сборка, запуск и администрирование контейнеров на VPS. | Устанавливается Ansible при `hermes_host_admin_enabled: true`; доступ Hermes через root-equivalent группу `docker`. |
+| [Docker Engine](https://docs.docker.com/engine/) | Сборка, запуск и администрирование контейнеров на VPS. | Устанавливается Ansible при `vps_deploy.features.host_admin: true`; доступ Hermes через root-equivalent группу `docker`. |
 | [Ansible Vault](https://docs.ansible.com/projects/ansible/latest/vault_guide/index.html) | Шифрует API keys и конфигурацию на Ansible controller. | Рекомендуется для повторяемого Ansible deploy. |
 
 ## Быстрый запуск
@@ -175,7 +175,7 @@ sudo ./deploy-hermes.sh --portal
   запросу владельца он может менять `/etc`, firewall и systemd. Ansible также
   устанавливает Docker Engine и добавляет `hermes` в группу `docker`; это тоже
   root-equivalent доступ. Для ограниченного VPS задайте
-  `hermes_host_admin_enabled: false` в Ansible или используйте
+  `vps_deploy.features.host_admin: false` в Ansible или используйте
   `--without-host-admin` при прямой установке.
 
 ### Статус функций после запуска deploy
@@ -183,7 +183,7 @@ sudo ./deploy-hermes.sh --portal
 | Функция | Статус | Что ещё требуется |
 |---|---|---|
 | Файлы, terminal, Git, coding | Готово сразу | Права Unix на нужный workspace/repository |
-| OpenRouter LLM | Готово после Vault deploy | Задать `OPENROUTER_API_KEY`, model и разумный `model.max_tokens` в `hermes_llm_config` |
+| OpenRouter LLM | Готово после Vault deploy | Задать `OPENROUTER_API_KEY` в Vault; non-secret policy — в `vps_hermes.config`, live model — через `/model_global` |
 | API keys через Ansible Vault | Готово | Создать и зашифровать локальный `group_vars/all/vault.yml` |
 | Public GitHub clone | Готово сразу | Ничего |
 | Private clone, push, PR, reviews, issues, Actions | Управляется Ansible | `GITHUB_TOKEN` с минимальными repo permissions в Vault; identity и access probe находятся в `vps_github` |
@@ -226,8 +226,8 @@ terminal и не создают отдельные MCP schemas в model context.
 | Hermes | `hermes`, managed Python venv, managed Node/npm | Agent runtime, skills, plugins, MCP, gateway и update |
 
 Docker Engine устанавливается только Ansible deploy при
-`hermes_host_admin_enabled: true`; прямой `deploy-hermes.sh` его не ставит.
-При следующем Ansible deploy с `hermes_host_admin_enabled: false` playbook
+`vps_deploy.features.host_admin: true`; прямой `deploy-hermes.sh` его не ставит.
+При следующем Ansible deploy с `vps_deploy.features.host_admin: false` playbook
 убирает `hermes` из группы `docker`; сам Docker Engine не удаляется.
 Kubernetes, Terraform, cloud SDK, database servers и все существующие MCP не
 устанавливаются заранее: они занимают диск, требуют обновлений и расширяют
@@ -259,12 +259,13 @@ GitHub permissions и messenger tokens подключаются отдельно
     `playbook.yml` только задаёт порядок.
   - `group_vars/all/` — настройки для всех VPS. `vars.yml` содержит обычные
     aliases к общим defaults; только рабочий `vault.yml` содержит credentials
-    и model config в зашифрованном виде. `vault.yml.example` — безопасный шаблон.
+    в зашифрованном виде. `vault.yml.example` — безопасный шаблон.
   - `templates/` — заготовки файлов, которые Ansible заполняет значениями при
     deploy, например закрытый `.env`.
 - `config/vps-defaults.yml` — единый видимый файл важных non-secret настроек
-  VPS: identity/paths, feature switches, Hermes runtime guardrails и группы
-  systemd services для обязательного рестарта.
+  VPS: identity/paths, feature switches, Hermes runtime guardrails, backup и
+  health policy, observability topology, pinned browser tooling, VS Code и
+  группы systemd services для обязательного рестарта.
 - `deploy/` — домены прямого deploy: host, runtime, services и reporting.
 - `runtime/` — testable helpers, которые применяют общие настройки через
   официальный Hermes CLI.
@@ -292,8 +293,8 @@ GitHub permissions и messenger tokens подключаются отдельно
 |---|---|
 | [`config/vps-defaults.yml`](config/vps-defaults.yml) | Единый источник важных non-secret deploy/runtime настроек и групп перезапускаемых services |
 | [`deploy-hermes.sh`](deploy-hermes.sh) | Тонкий оркестратор прямой установки; реализация доменов находится в [`deploy/`](deploy) |
-| [`runtime/apply-config.py`](runtime/apply-config.py) | Идемпотентно применяет общие runtime settings через Hermes CLI и выдаёт service groups |
-| [`runtime/verify-update-state.py`](runtime/verify-update-state.py) | Fail-closed проверяет full backup, SQLite integrity и Kanban counts до/после managed update |
+| [`runtime/apply-config.py`](runtime/apply-config.py) | Применяет runtime settings через Hermes CLI, валидирует/рендерит ops assets и выдаёт service groups/отдельные scalar settings |
+| [`runtime/verify-update-state.py`](runtime/verify-update-state.py) | Fail-closed проверяет полноту full backup, сохранность личных файлов, SQLite integrity и Kanban counts до/после managed update |
 | [`SECRETS-CHECKLIST.md`](SECRETS-CHECKLIST.md) | Единый checklist обязательных и optional tokens, OAuth, SSH и backup-данных без настоящих значений |
 | [`ops/install-ops.sh`](ops/install-ops.sh) | Тонкий оркестратор ops installation; packages, plugin, assets и services разделены в [`ops/install/`](ops/install) |
 | [`ops/plugin/ops-observability`](ops/plugin/ops-observability) | Hermes plugin hooks, audit, SQLite accounting и `/ops` |
@@ -305,7 +306,7 @@ GitHub permissions и messenger tokens подключаются отдельно
 | [`ops/status-report.py`](ops/status-report.py) | Компактный `/status` без LLM: gateway, токены активной сессии и общий учтённый расход |
 | [`ops/startup-notify.sh`](ops/startup-notify.sh) | Нефатальное сообщение в alert target после запуска gateway: VPS, default model и время |
 | [`ops/systemd`](ops/systemd) | Hardened services и timers для backup, health, metrics и startup notification |
-| [`ops/templates/hermes-ops.conf`](ops/templates/hermes-ops.conf) | Пороги, paths, retention и alert target по умолчанию |
+| [`ops/templates/hermes-ops.conf`](ops/templates/hermes-ops.conf) | Шаблон root-owned ops config, который каждый deploy рендерит из `vps-defaults.yml` |
 | [`ops/templates/model-prices.json`](ops/templates/model-prices.json) | Fallback-цены моделей за 1M tokens |
 | [`docker/`](docker) | Локальный Docker image c GitHub CLI, Compose, bootstrap и ignored `local.env` для provider, Telegram и GitHub credentials |
 | [`docker/AGENTS.md`](docker/AGENTS.md) | Поведение Hermes в local container: `sudo` только внутри container, без доступа к Docker host или macOS |
@@ -325,15 +326,28 @@ GitHub permissions и messenger tokens подключаются отдельно
 Меняйте [`config/vps-defaults.yml`](config/vps-defaults.yml), когда настройка
 должна одинаково применяться повторными Ansible deploy:
 
-- `vps_deploy` — пользователь, paths, зафиксированные version/release/commit
-  Hermes, SHA-256 installer и критические feature switches;
+- `vps_deploy.identity` — пользователь и постоянные Hermes paths;
+- `vps_deploy.hermes_source` — зафиксированные branch/version/release/commit
+  именно upstream Hermes Agent и SHA-256 его installer;
+- `vps_deploy.bundle.dir` — путь к локальной копии deployment-файлов этого
+  репозитория, не к исходникам Hermes Agent;
+- `vps_deploy.features` — критические feature switches;
 - `vps_runtime.set` — обязательные Hermes runtime defaults;
-- `vps_runtime.set_if_missing` — безопасные fallback-значения, не
-  перезаписывающие явный выбор;
 - `vps_runtime.unset` — опасные или устаревшие overrides, которые deploy
   удаляет;
 - `vps_runtime.capabilities` — backend, включаемый только при наличии
   соответствующего Vault credential;
+- `vps_ops` — backup retention, health thresholds и интервалы timers;
+- `vps_observability` — loopback addresses/ports, scrape intervals, SQLite и audit retention;
+- `vps_network`/`vps_packages`/`vps_tools` — SSH/Tailscale/UFW policy,
+  package channels/retries и pinned auxiliary CLI versions;
+- `vps_hermes.config.managed_overlay` — authoritative non-secret config.yaml
+  policy без `model.default`, если `/model_global` должен сохраняться;
+- `vps_vscode`/`vps_browser` — pinned image/package и безопасная локальная
+  browser/IDE topology;
+- `vps_agent_policy` — только repository-owned блоки поведения, без замены
+  личного `SOUL.md`;
+- `vps_github` — identity, write boundaries и Git defaults;
 - `vps_services` — application-owned units, которые верхний deploy
   перезапускает после установки всех файлов и config.
 
@@ -350,7 +364,8 @@ Secrets в этот файл добавлять нельзя: они остаю�
 | `/home/hermes/.hermes/.env` | `hermes`, mode `0600` | API keys и messenger tokens, доставленные из Ansible Vault либо мастером Hermes |
 | `/home/hermes/.local/bin/hermes` | `hermes` | Hermes CLI launcher, вызываемый systemd и из SSH |
 | `/home/hermes/workspace` | `hermes` | Репозитории и рабочие файлы агента |
-| `/home/hermes/workspace/AGENTS.md` | `hermes` | Скопированная инструкция из `ansible/AGENTS.md` для VPS-администрирования |
+| `/home/hermes/workspace/AGENTS.md` | `hermes` | Личные инструкции Hermes плюс отдельные Ansible-managed блоки host administration и имён Vault variables |
+| `/home/hermes/.hermes/operator-state/workspace-AGENTS.md` | `hermes`, mode `0600` | Restorable mirror workspace-инструкций, включаемый в full backup |
 | `/home/hermes/hermes-backups` | `hermes` | Local quick/full zip archives |
 | `/opt/hermes-bootstrap` | `root` | Временный versioned bundle, который Ansible копирует на VPS для deploy и ops installation |
 | `/home/hermes/.hermes/logs/ops-audit.jsonl` | `hermes`, mode `0600` | Privacy-aware local audit |
@@ -358,7 +373,7 @@ Secrets в этот файл добавлять нельзя: они остаю�
 | `/home/hermes/.hermes/ops/metrics/hermes.prom` | `hermes`, mode `0600` | Prometheus textfile, читается loopback-only Hermes node exporter от имени `hermes` |
 | `/var/lib/hermes-prometheus` | `prometheus` | 30-day локальная time-series база |
 | `/etc/hermes-grafana.env` | `root`, mode `0600` | Grafana admin credentials: Ansible materializes from Vault; direct installer generates them once without printing |
-| `/etc/hermes-ops.conf` | `root` | Monitoring thresholds и paths, без secrets |
+| `/etc/hermes-ops.conf` | `root` | Сгенерированные из `vps-defaults.yml` monitoring thresholds, paths и retention, без secrets; ручные изменения заменяются deploy |
 | `/usr/local/lib/hermes-ops` | `root` | Установленные immutable ops scripts |
 | `/etc/systemd/system/hermes-*.service` | `root` | Backup, metrics и health services |
 
@@ -437,7 +452,7 @@ Hermes работает как отдельный пользователь `herm
 стандартная установка выдаёт ему passwordless `sudo`, то есть root-equivalent
 доступ для администрирования хоста по явному запросу владельца. Чтобы оставить
 его без системных привилегий, используйте `--without-host-admin` либо задайте
-`hermes_host_admin_enabled: false` в Ansible; тогда он не сможет напрямую
+`vps_deploy.features.host_admin: false` в Ansible; тогда он не сможет напрямую
 изменять системные файлы VPS.
 
 ### Production-контур: мониторинг, audit и метрики
@@ -452,9 +467,10 @@ Hermes работает как отдельный пользователь `herm
 | `hermes-prometheus.service` | Собирает локальные metrics, хранит 30 дней, слушает `127.0.0.1:9090` | постоянно |
 | `grafana-server.service` | Versioned Hermes dashboard на `127.0.0.1:3000` | постоянно |
 | `hermes-backup.timer` | Делает daily quick и первый/еженедельный full backup | 1 день |
+| `hermes-observability-prune.timer` | Удаляет строки локальной SQLite старше 90 дней | 1 день |
 | `hermes-startup-notify.service` | После каждого запуска gateway отправляет VPS, default model и время в alert target; ошибка доставки не влияет на gateway | на каждый старт gateway |
 | `ops-observability` | Считает вызовы моделей/tools/команд, токены, ошибки, latency и стоимость | по событиям |
-| logrotate | Сжимает и хранит 30 ротаций audit log | ежедневно |
+| audit rotation | Ограничивает основной log и 2 ротации размером 5 MiB каждая | при записи и ежедневно |
 
 Health check отправляет сообщения через `hermes send`, без запуска LLM. Поэтому
 проверка каждые пять минут не расходует токены. Alert отправляется только при
@@ -471,8 +487,10 @@ sudo systemctl start hermes-health.service
 sudo journalctl -u hermes-health.service -n 50 --no-pager
 ```
 
-Пороги находятся в `/etc/hermes-ops.conf`. Их можно менять без редактирования
-скриптов. После изменения достаточно дождаться следующего запуска timer.
+Пороги задаются в `vps_ops` файла
+[`config/vps-defaults.yml`](config/vps-defaults.yml). Повторный deploy
+перегенерирует `/etc/hermes-ops.conf` и systemd timers; ручные изменения этого
+root-owned файла намеренно не сохраняются.
 
 В Telegram доступны отчёты, которые читают SQLite напрямую и тоже не вызывают
 модель:
@@ -601,16 +619,23 @@ tailnet policy или auth key может отрезать администра�
 ### Управляемое обновление и автоподъём
 
 Production VPS обновляется повторным запуском Ansible playbook. Playbook
-сравнивает установленный commit с `vps_deploy.source.commit` и запускает
+сравнивает установленный commit с `vps_deploy.hermes_source.commit` и запускает
 обновление только при расхождении. Перед изменением кода deploy обязательно:
 
-1. останавливает managed gateway;
-2. запускает `PRAGMA integrity_check` для `kanban.db` и всех
+1. синхронизирует restorable mirror личного workspace `AGENTS.md` и
+   останавливает managed gateway;
+2. инвентаризирует сохраняемые файлы и запускает `PRAGMA integrity_check` для `kanban.db` и всех
    `kanban/boards/**/kanban.db`;
 3. записывает counts задач по статусам;
-4. создаёт полный backup и проверяет ZIP CRC, полноту Kanban DB и counts внутри
-   архива;
-5. после обновления повторяет integrity/counts и требует точного совпадения.
+4. создаёт полный backup и проверяет ZIP CRC, наличие каждого файла, полноту
+   Kanban DB и counts внутри архива;
+5. после обновления повторяет inventory/integrity/counts и требует, чтобы
+   личные файлы не исчезли, а Kanban точно совпал.
+
+Если commit уже совпадает, source installation пропускается, но перед
+изменением config/ops всё равно создаётся такой же обязательный full backup.
+При ошибке backup ранее активный gateway возвращается в работу, а managed
+configuration не меняется.
 
 Любая ошибка до установки прекращает обновление и возвращает прежний gateway в
 работу. Ошибка после начала установки прекращает дальнейший deploy и оставляет
@@ -650,9 +675,8 @@ sudo systemctl status hermes-gateway.service
 
 В папке `ansible` лежит idempotent playbook. Он может при первом создании VPS
 автоматически доставить credentials любого LLM provider, Telegram, web-search и
-других integrations. Тем же Vault можно управлять LLM-разделами
-`config.yaml`: built-in и named custom providers, основной моделью,
-fallback-цепочками и provider-specific options. Секреты расшифровываются на
+других integrations. Non-secret LLM-разделами `config.yaml` управляет
+`config/vps-defaults.yml`; Vault содержит только credentials. Секреты расшифровываются на
 управляющем компьютере только во время запуска. `.env` и `config.yaml`
 записываются с владельцем `hermes` и mode `0600`; чувствительные Ansible tasks
 используют `no_log: true` и отключённый diff.
@@ -674,12 +698,27 @@ ansible-playbook -i ansible/inventory.ini \
 Флаг `--ask-pass` нужен при SSH-входе по паролю. При настроенном
 `ansible_ssh_private_key_file` запускайте ту же команду без него.
 
-`hermes_llm_config` — shallow authoritative overlay: каждый присутствующий в
-нём верхнеуровневый раздел полностью заменяет такой же раздел в существующем
-`config.yaml`, а неуказанные разделы сохраняются. API key храните только в
-`hermes_secret_env`; не используйте inline `api_key` в `config.yaml`.
+`vps_hermes.config.managed_overlay` — selective authoritative overlay: каждый явно указанный
+вложенный ключ заменяет соответствующее значение в существующем `config.yaml`,
+а остальные ключи, в том числе в том же разделе, сохраняются. Списки
+заменяются целиком. API key храните только в `hermes_secret_env`; не используйте
+inline `api_key` в `config.yaml`.
 
-По умолчанию `hermes_host_admin_enabled: true`, поэтому playbook создаёт
+State разделён по владельцам. Vault полностью управляет `.env`, repository —
+только указанными config-ключами, отдельными marked blocks в workspace
+`AGENTS.md`/`SOUL.md` и обязательными локальными source patches. Hermes сохраняет
+остальную часть `AGENTS.md`, `SOUL.md`, memory, sessions, profiles и custom
+skills. Поэтому новый deploy применяет исправленные настройки из кода, но не
+стирает накопленную персонализацию агента.
+
+Устаревшие ключи удаляются только через явный `vps_runtime.unset`; deploy не
+угадывает, что неизвестный ключ можно безопасно стереть. После всех изменений
+обязательный `hermes config check` выполняется до запуска gateway. Если остался
+невалидный ключ, deploy остановится: сначала классифицируйте его как managed
+значение или добавьте точный путь в `unset`. Memory, skills и identity при этом
+не меняются.
+
+По умолчанию `vps_deploy.features.host_admin: true`, поэтому playbook создаёт
 `/etc/sudoers.d/hermes-host-admin`, устанавливает Docker Engine и добавляет
 Hermes в группу `docker`. Поэтому Hermes сможет устанавливать пакеты, запускать
 контейнеры и системные services по вашему запросу без отдельного SSH-вмешательства.
@@ -687,7 +726,7 @@ Hermes в группу `docker`. Поэтому Hermes сможет устана
 `AGENTS.md` запрещает удаление данных, но не может технически ограничить root.
 Задайте `false`, если нужен ограниченный VPS.
 
-При `hermes_manage_secret_env: true` Vault становится источником истины для
+При `vps_deploy.secret_environment.managed: true` Vault становится источником истины для
 всего Hermes `.env`: ручные изменения на VPS будут заменены следующим запуском
 playbook. Добавление и ротация ключей описаны в
 [`ansible/group_vars/all/VAULT.md`](ansible/group_vars/all/VAULT.md).
@@ -695,8 +734,7 @@ playbook. Добавление и ротация ключей описаны в
 Если Vault содержит оба значения `TELEGRAM_BOT_TOKEN` и
 `TELEGRAM_ALLOWED_USERS`, playbook автоматически поднимет gateway уже с
 обновлёнными ключами. Если хотите продолжать вводить credentials вручную через
-`hermes model`, оставьте `hermes_manage_secret_env: false` и не создавайте
-`vault.yml`.
+`hermes model`, оставьте `vps_deploy.secret_environment.managed: false`.
 
 SSH private key работает иначе: он всегда остаётся на управляющем компьютере.
 В cloud-init/VPS добавляется только соответствующий public key, а в
@@ -716,6 +754,12 @@ generate ephemeral и/или tag-scoped ключ, а не reusable-навсег�
 пустым, playbook пропустит этот шаг — тогда `tailscale up --ssh` нужно будет
 один раз выполнить на VPS руками и авторизовать по ссылке, как делает
 `deploy-hermes.sh` при обычном (не-Ansible) запуске.
+
+Перед изменением уже установленного Hermes playbook останавливает gateway,
+создаёт полный backup и проверяет ZIP CRC, наличие каждого живого файла,
+целостность всех Kanban SQLite DB и количество задач по статусам. Это выполняется
+и при смене commit, и при config-only deploy того же commit; неуспешный backup
+останавливает deploy до изменения runtime state.
 
 Playbook устанавливает Hermes, Tailscale, operations-слой и systemd units. Для
 полного восстановления с конфигурацией, OAuth/API credentials, memory,
@@ -771,10 +815,10 @@ terminal без отдельного MCP:
 | `dig`, `lsof`, `nc`, `file`, `tree` | Диагностировать сеть, процессы, порты и структуру файлов |
 | `ffmpeg`, `ripgrep` | Обрабатывать аудио/видео и быстро искать по исходному коду |
 
-Для Git автоматически включаются безопасные настройки: ветка `main` по
-умолчанию, prune веток/tags, fast-forward-only pull и автоматическая привязка
-новой ветки при первом push. Ansible берёт commit identity, GitHub owner,
-workspace и write boundaries из `vps_github` в едином файле
+Для Git автоматически включаются настройки из `vps_github.git_defaults`:
+ветка `main` по умолчанию, prune веток/tags, fast-forward-only pull и
+автоматическая привязка новой ветки при первом push. Ansible берёт commit
+identity, GitHub owner, workspace и write boundaries из `vps_github` в едином файле
 [`config/vps-defaults.yml`](config/vps-defaults.yml).
 
 ### Web search и работа с интернетом
@@ -807,6 +851,8 @@ Hermes использует его для навигации, кликов, фо
 обходит CAPTCHA, paywall или авторизацию. При каждом deploy запускается
 реальный цикл `open → snapshot → close` с фактическими launch-параметрами;
 ошибка проверки останавливает playbook вместо неявно работающего браузера.
+Версия пакета закреплена в `vps_browser.agent_browser_version`, поэтому новый
+deploy не получает другой browser runtime при неизменном commit проекта.
 
 Для этого VPS playbook задаёт `browser.backend: off`: это отключает Browser Use
 CLI и оставляет встроенные `browser_*` инструменты Hermes поверх проверенного
@@ -815,8 +861,9 @@ CLI и оставляет встроенные `browser_*` инструмент�
 появится успешная live-проверка именно `browser_exec`.
 
 На Ubuntu 23.10+ некоторые VPS-образы блокируют sandbox Chromium через
-AppArmor. Поэтому deploy задаёт для отдельного непривилегированного пользователя
-`hermes` параметры `--no-sandbox,--disable-dev-shm-usage`. Они позволяют
+AppArmor. Поэтому `vps_browser.launch_args` задаёт для отдельного
+непривилегированного пользователя `hermes` параметры
+`--no-sandbox,--disable-dev-shm-usage`. Они позволяют
 запустить Chrome for Testing, но уменьшают изоляцию процессов браузера: не
 используйте этот браузер для ввода личных паролей и не открывайте неизвестные
 файлы как доверенные.
@@ -966,22 +1013,30 @@ sudo -u hermes -H /home/hermes/.local/bin/hermes checkpoints prune
 
 ### Резервное копирование
 
-Перед управляемым обновлением полный backup и Kanban-проверка обязательны, а
-systemd дополнительно создаёт scheduled backup:
+Перед любым deploy уже установленного Hermes полный backup обязателен. Проверка
+требует ZIP CRC, присутствия всех файлов, которые штатный full backup обязан
+сохранить (включая `SOUL.md`, custom skills, sessions, profiles и зеркальную
+копию workspace `AGENTS.md`), а для всех Kanban DB — SQLite integrity и
+неизменные counts по статусам. При source update дополнительно сравниваются
+личные файлы и Kanban до/после установки. Systemd создаёт ещё и scheduled backup:
 
 ```text
 /home/hermes/hermes-backups
 ```
 
-Первый scheduled backup полный. Затем создаётся quick snapshot каждый день и
-full snapshot раз в неделю. Quick snapshots хранятся 14 дней, full — 35 дней.
+Первый scheduled backup полный. Затем ежедневный запуск создаёт quick snapshot
+в обычные дни и full snapshot раз в неделю. Quick snapshots хранятся 14 дней,
+из full сохраняются последние 5, а из обязательных `pre-deploy` и
+`pre-config-deploy` архивов — последние 10 групп вместе с их state manifests.
 Health check отдельно сообщает, если любой backup старше 26 часов или полный
-старше 8 дней. Пороги, день недели и retention меняются в
-`/etc/hermes-ops.conf`.
+старше 8 дней. Пороги, день недели и retention меняются в `vps_ops` файла
+[`config/vps-defaults.yml`](config/vps-defaults.yml) и применяются deploy.
 
 Также включается `updates.pre_update_backup: full`: перед будущими обновлениями
 Hermes создаёт полный архив `HERMES_HOME` с настройками, авторизацией, сессиями,
-памятью и skills. На маленьком диске режим можно заменить на `quick`:
+памятью и skills. Для постоянного перехода на `quick` измените это значение в
+`vps_runtime.set` файла `config/vps-defaults.yml`. Ручная команда ниже действует
+только до следующего managed deploy:
 
 ```bash
 sudo -u hermes -H /home/hermes/.local/bin/hermes \
@@ -989,16 +1044,18 @@ sudo -u hermes -H /home/hermes/.local/bin/hermes \
 ```
 
 Важно: local backup на том же VPS не спасает при удалении VPS или отказе диска.
-Сейчас система хранит только локальные архивы; следите за доступным местом и
-периодически проверяйте, что архив восстанавливается.
+Сейчас система хранит только локальные архивы; шифрованный offsite backup остаётся
+отдельной задачей и требует выбранного вами хранилища/credentials. До этого
+периодически переносите полный архив на Ansible controller и проверяйте restore.
 
 [Обновления и backups](https://hermes-agent.nousresearch.com/docs/getting-started/updating)
 
 ### Автоматическая диагностика
 
-В конце установки запускаются `hermes config check` и `hermes doctor`. Ошибки
-диагностики выводятся как предупреждения, потому что некоторые функции могут
-ожидать ключ или интеграцию, которую пользователь ещё не настроил.
+Прямой installer в конце запускает `hermes config check` и `hermes doctor` и
+показывает их замечания как warnings, потому что часть функций может ожидать
+ещё не настроенную интеграцию. Ansible deploy строже: финальный
+`hermes config check` обязан пройти до запуска gateway.
 
 ## Режимы установки
 
@@ -1042,8 +1099,9 @@ cd /root/hermes # замените путь, если repository находит�
 Deploy не фиксирует inference provider или model. Hermes поддерживает built-in
 providers с API key/OAuth, named custom providers и локальные
 OpenAI-compatible endpoints. Для Ansible укажите любые нужные ENV keys в
-`hermes_secret_env`, а non-secret provider/model/fallback config — в
-`hermes_llm_config`. Добавление нового custom endpoint не требует изменения
+`hermes_secret_env`, а non-secret provider/fallback policy — в
+`vps_hermes.config.managed_overlay`. Не фиксируйте там `model.default`, если
+выбор `/model_global` должен переживать deploy. Добавление нового custom endpoint не требует изменения
 playbook.
 
 Без Ansible либо для OAuth provider запустите официальный мастер один раз для
@@ -1054,8 +1112,8 @@ sudo -u hermes -H /home/hermes/.local/bin/hermes model
 ```
 
 При Vault workflow API keys уже находятся в закрытом `.env`, а named custom
-providers и выбранная модель могут быть полностью описаны в
-`hermes_llm_config`. Мастер автоматически увидит built-in credentials; повторно
+providers могут быть описаны в `vps_hermes.config.managed_overlay`; выбранная
+модель остаётся live-state. Мастер автоматически увидит built-in credentials; повторно
 вставлять их не нужно. OAuth flows по-прежнему выполняются через `hermes model`,
 поскольку их нельзя безопасно заменить статическим API key в Vault.
 
@@ -1083,7 +1141,7 @@ sudo -u hermes -H /home/hermes/.local/bin/hermes status
 `provider_routing` имеет смысл только для aggregators, которые его поддерживают
 (сейчас OpenRouter и Nous Portal), поэтому deploy больше не включает его
 глобально. Если выбран такой provider, нужные `sort`, allow/deny lists,
-`require_parameters` и `data_collection` задайте в `hermes_llm_config`.
+`require_parameters` и `data_collection` задайте в `vps_hermes.config.managed_overlay`.
 Provider-specific cache также включается только явно.
 
 Задайте API keys отдельные spending limits и следите за расходом через
@@ -1159,7 +1217,7 @@ workspace, реализуй задачу, запусти тесты и созд�
 есть root-equivalent права на VPS. Поэтому запускайте опасные действия только
 по явному запросу владельца и оставляйте подтверждения для удаления данных,
 изменений сети и production-сервисов. Для ограниченного VPS задайте
-`hermes_host_admin_enabled: false`.
+`vps_deploy.features.host_admin: false`.
 
 [Безопасность gateway](https://hermes-agent.nousresearch.com/docs/user-guide/security/)
 
@@ -1178,7 +1236,7 @@ sudo -u hermes -H /home/hermes/.local/bin/hermes setup terminal
 
 В ограниченном VPS не добавляйте `hermes` к обычному rootful Docker socket:
 членство в группе `docker` фактически даёт root-доступ. На выделенном VPS с
-`hermes_host_admin_enabled: true` Ansible делает это намеренно, потому что
+`vps_deploy.features.host_admin: true` Ansible делает это намеренно, потому что
 владелец разрешил Hermes администрировать хост. Для обработки недоверенного
 кода всё равно предпочтителен rootless Podman.
 
@@ -1262,7 +1320,7 @@ dependency через уже доступные `npm`, `pip`, `go` и други
 На выделенном VPS по умолчанию у `hermes` есть passwordless `sudo`, поэтому по
 явному запросу владельца он может устанавливать системные пакеты через `apt`,
 менять firewall/systemd и писать в `/etc`. В ограниченном режиме
-(`--without-host-admin` или `hermes_host_admin_enabled: false`) этого `sudo`
+(`--without-host-admin` или `vps_deploy.features.host_admin: false`) этого `sudo`
 нет: такие изменения добавляйте в deploy/Ansible bundle и применяйте
 администратором после review. Не выдавайте агенту общий root token, если
 ограниченный режим достаточен для задачи.

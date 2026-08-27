@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed Kanban state checks for managed Hermes updates."""
+"""Fail-closed state and backup checks for managed Hermes deployments."""
 
 from __future__ import annotations
 
@@ -17,12 +17,61 @@ from typing import Any
 import zipfile
 
 
-SNAPSHOT_SCHEMA_VERSION = 1
+SNAPSHOT_SCHEMA_VERSION = 2
 BACKUP_MARKERS = {".env", "config.yaml", "state.db"}
+EXCLUDED_DIRECTORIES = {
+    "hermes-agent",
+    "__pycache__",
+    ".git",
+    "node_modules",
+    "backups",
+    "checkpoints",
+    ".venv",
+    "venv",
+    "site-packages",
+    ".cache",
+    ".tox",
+    ".nox",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+}
+EXCLUDED_FILE_NAMES = {".backup.lock", "gateway.pid", "cron.pid"}
+EXCLUDED_FILE_SUFFIXES = (".pyc", ".pyo", ".db-wal", ".db-shm", ".db-journal")
 
 
 class VerificationError(RuntimeError):
     """Raised when an update safety invariant is not satisfied."""
+
+
+def discover_backup_files(hermes_home: Path) -> list[Path]:
+    """Return every live file the pinned Hermes full-backup walker must archive."""
+    root = hermes_home.expanduser().resolve()
+    files: list[Path] = []
+    try:
+        for directory, directory_names, file_names in os.walk(root, followlinks=False):
+            current = Path(directory)
+            directory_names[:] = [
+                name
+                for name in directory_names
+                if name not in EXCLUDED_DIRECTORIES and not (current / name).is_symlink()
+            ]
+            for name in file_names:
+                path = current / name
+                if path.is_symlink():
+                    continue
+                if name in EXCLUDED_FILE_NAMES or name.endswith(EXCLUDED_FILE_SUFFIXES):
+                    continue
+                if not path.is_file():
+                    continue
+                try:
+                    path.resolve().relative_to(root)
+                except ValueError as exc:
+                    raise VerificationError(f"backup file escapes HERMES_HOME: {path}") from exc
+                files.append(path)
+    except OSError as exc:
+        raise VerificationError(f"cannot inventory HERMES_HOME for backup: {exc}") from exc
+    return sorted(set(files), key=lambda item: item.relative_to(root).as_posix())
 
 
 def discover_kanban_databases(hermes_home: Path) -> list[Path]:
@@ -100,10 +149,13 @@ def create_snapshot(hermes_home: Path) -> dict[str, Any]:
         relative_path = path.relative_to(root).as_posix()
         databases[relative_path] = inspect_kanban_database(path)
 
+    files = [path.relative_to(root).as_posix() for path in discover_backup_files(root)]
+
     return {
         "schema_version": SNAPSHOT_SCHEMA_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "databases": databases,
+        "files": files,
     }
 
 
@@ -134,11 +186,18 @@ def load_snapshot(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise VerificationError(f"cannot read Kanban snapshot {path}: {exc}") from exc
+        raise VerificationError(f"cannot read Hermes state snapshot {path}: {exc}") from exc
     if not isinstance(value, dict) or value.get("schema_version") != SNAPSHOT_SCHEMA_VERSION:
-        raise VerificationError(f"unsupported Kanban snapshot format: {path}")
+        raise VerificationError(f"unsupported Hermes state snapshot format: {path}")
     if not isinstance(value.get("databases"), dict):
-        raise VerificationError(f"Kanban snapshot has no database mapping: {path}")
+        raise VerificationError(f"Hermes state snapshot has no database mapping: {path}")
+    files = value.get("files")
+    if (
+        not isinstance(files, list)
+        or any(not isinstance(item, str) or not item for item in files)
+        or len(files) != len(set(files))
+    ):
+        raise VerificationError(f"Hermes state snapshot has an invalid file inventory: {path}")
     return value
 
 
@@ -200,6 +259,14 @@ def verify_backup(backup_path: Path, before_snapshot: dict[str, Any]) -> None:
             if not any(Path(name).name in BACKUP_MARKERS for name in file_names):
                 raise VerificationError("backup has no Hermes config, environment, or state marker")
 
+            expected_files = set(before_snapshot["files"])
+            missing_files = sorted(expected_files - set(file_names))
+            if missing_files:
+                raise VerificationError(
+                    "backup is missing live Hermes files; "
+                    f"missing={missing_files}"
+                )
+
             archived_kanban_paths = {name for name in file_names if _is_kanban_archive_path(name)}
             expected_paths = set(expected_databases)
             if archived_kanban_paths != expected_paths:
@@ -233,6 +300,12 @@ def compare_snapshots(before: dict[str, Any], after: dict[str, Any]) -> None:
         after["databases"],
         actual_label="post-update state",
     )
+    missing_files = sorted(set(before["files"]) - set(after["files"]))
+    if missing_files:
+        raise VerificationError(
+            "live Hermes files disappeared during the update; "
+            f"missing={missing_files}"
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -259,10 +332,14 @@ def main() -> int:
         if args.command == "snapshot":
             snapshot = create_snapshot(args.hermes_home)
             write_snapshot(snapshot, args.output)
-            print(f"Kanban snapshot verified: {len(snapshot['databases'])} database(s)")
+            print(
+                "Hermes state snapshot verified: "
+                f"{len(snapshot['files'])} file(s), "
+                f"{len(snapshot['databases'])} Kanban database(s)"
+            )
         elif args.command == "verify-backup":
             verify_backup(args.backup, load_snapshot(args.snapshot))
-            print("Backup archive and Kanban snapshots verified")
+            print("Backup archive, live file inventory, and Kanban snapshots verified")
         else:
             compare_snapshots(load_snapshot(args.before), load_snapshot(args.after))
             print("Post-update Kanban state matches the pre-update snapshot")

@@ -1,7 +1,7 @@
 ---
 - name: Install the official Tailscale repository key
   ansible.builtin.get_url:
-    url: "https://pkgs.tailscale.com/stable/{{ ansible_distribution | lower }}/{{ ansible_distribution_release }}.noarmor.gpg"
+    url: "https://pkgs.tailscale.com/{{ vps_network.tailscale.package_channel }}/{{ ansible_distribution | lower }}/{{ ansible_distribution_release }}.noarmor.gpg"
     dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
     owner: root
     group: root
@@ -10,7 +10,7 @@
 
 - name: Install the official Tailscale apt source
   ansible.builtin.get_url:
-    url: "https://pkgs.tailscale.com/stable/{{ ansible_distribution | lower }}/{{ ansible_distribution_release }}.tailscale-keyring.list"
+    url: "https://pkgs.tailscale.com/{{ vps_network.tailscale.package_channel }}/{{ ansible_distribution | lower }}/{{ ansible_distribution_release }}.tailscale-keyring.list"
     dest: /etc/apt/sources.list.d/tailscale.list
     owner: root
     group: root
@@ -101,8 +101,8 @@
           sed -n '/Hermes private SSH\|Hermes deny public SSH/s/^\[[[:space:]]*\([0-9][0-9]*\)\].*/\1/p' |
           sort -rn
       )
-      ufw insert 1 allow in on tailscale0 to any port 22 proto tcp comment 'Hermes private SSH'
-      ufw insert 2 deny in to any port 22 proto tcp comment 'Hermes deny public SSH'
+      ufw insert 1 allow in on {{ vps_network.tailscale.interface }} to any port {{ vps_network.ssh_port }} proto tcp comment 'Hermes private SSH'
+      ufw insert 2 deny in to any port {{ vps_network.ssh_port }} proto tcp comment 'Hermes deny public SSH'
     executable: /bin/bash
   when: hermes_lock_public_ssh | bool
   changed_when: true
@@ -111,8 +111,8 @@
   ansible.builtin.command:
     argv: "{{ ['ufw', 'default', item.policy, item.direction] }}"
   loop:
-    - {policy: deny, direction: incoming}
-    - {policy: allow, direction: outgoing}
+    - {policy: "{{ vps_network.firewall.default_incoming }}", direction: incoming}
+    - {policy: "{{ vps_network.firewall.default_outgoing }}", direction: outgoing}
   when: hermes_lock_public_ssh | bool
   changed_when: true
 
@@ -121,5 +121,4 @@
     argv: [ufw, --force, enable]
   when: hermes_lock_public_ssh | bool
   changed_when: true
-
 

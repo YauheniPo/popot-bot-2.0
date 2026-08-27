@@ -1,12 +1,12 @@
 [Unit]
-Description=Run Hermes VPS health checks every five minutes
+Description=Run scheduled Hermes VPS health checks
 
 [Timer]
-OnBootSec=10min
-OnUnitActiveSec=5min
-AccuracySec=30s
+OnBootSec=@HEALTH_ON_BOOT_SEC@
+OnUnitActiveSec=@HEALTH_INTERVAL@
+AccuracySec=@HEALTH_ACCURACY_SEC@
 Persistent=true
-RandomizedDelaySec=20s
+RandomizedDelaySec=@HEALTH_RANDOMIZED_DELAY_SEC@
 
 [Install]
 WantedBy=timers.target

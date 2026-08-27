@@ -2,10 +2,10 @@
 """Apply small, version-checked local patches to the installed Hermes code.
 
 Each patch is a marker plus an exact old/new source pair. The script is safe
-to run on every deploy: when the marker is already present it is a no-op; when
-the expected old code is missing (upstream changed) the patch is skipped with
-a warning instead of breaking the deploy. Nothing is written unless the old
-code matches exactly.
+to run on every deploy: when the marker is already present it is a no-op. A
+missing target or changed upstream source fails the deployment so a required
+command cannot silently disappear. Nothing is written unless the old code
+matches exactly.
 
 Covered customizations (not yet upstream):
  * gateway commands: /gw-restart (canonical, with /restart and /gw_restart
@@ -286,20 +286,22 @@ _PATCHES: list[tuple[str, str, str, str]] = [
 def main() -> int:
     if not HERMES_AGENT_DIR.is_dir():
         print(
-            f"[hermes-patch] skipped: Hermes install directory is missing: {HERMES_AGENT_DIR}",
+            f"[hermes-patch] ERROR: Hermes install directory is missing: {HERMES_AGENT_DIR}",
             file=sys.stderr,
         )
-        return 0
+        return 1
     try:
         migrated = _migrate_installed_model_global()
     except PatchMigrationError as exc:
         print(f"[hermes-patch] ERROR: {exc}", file=sys.stderr)
         return 1
     applied = 0
+    failures: list[str] = []
     for relative_path, marker, old, new in _PATCHES:
         target = HERMES_AGENT_DIR / relative_path
         if not target.is_file():
-            print(f"[hermes-patch] skipped {relative_path}: file missing")
+            print(f"[hermes-patch] ERROR: {relative_path}: file missing", file=sys.stderr)
+            failures.append(relative_path)
             continue
         source = target.read_text(encoding="utf-8")
         if marker in source:
@@ -307,17 +309,25 @@ def main() -> int:
             continue
         if old not in source:
             print(
-                f"[hermes-patch] WARNING: {relative_path} does not match the expected "
-                "code; skipping. Hermes may have changed — re-verify the patch "
+                f"[hermes-patch] ERROR: {relative_path} does not match the expected "
+                "code. Hermes may have changed — re-verify the patch "
                 "before relying on /model_global, /gw-restart, or /status reasoning.",
                 file=sys.stderr,
             )
+            failures.append(relative_path)
             continue
         target.write_text(source.replace(old, new, 1), encoding="utf-8")
         print(f"[hermes-patch] applied {relative_path}")
         applied += 1
     if applied or migrated:
         print("[hermes-patch] changed")
+    if failures:
+        print(
+            "[hermes-patch] ERROR: required patches were not applied to: "
+            + ", ".join(sorted(set(failures))),
+            file=sys.stderr,
+        )
+        return 1
     print(
         f"[hermes-patch] done: {applied} patch(es) applied, "
         f"{migrated} legacy patch file(s) migrated"

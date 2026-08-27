@@ -7,14 +7,30 @@ vps_deploy:
     user_home: /home/hermes
     hermes_home: /home/hermes/.hermes
     hermes_bin: /home/hermes/.local/bin/hermes
-  source:
+    workspace: /home/hermes/workspace
+    backup_dir: /home/hermes/hermes-backups
+  # Exact upstream Hermes Agent source installed on the VPS.
+  hermes_source:
+    # Base URL used to download install.sh from the exact commit below.
+    raw_base_url: https://raw.githubusercontent.com/NousResearch/hermes-agent
+    # Upstream branch passed to the installer; commit remains the exact pin.
     branch: main
+    # Expected pyproject.toml version verified after installation.
     version: "0.20.5"
+    # Human-readable upstream release label shown in deployment logs.
     release: v2026.8.19
+    # Exact source revision; Ansible updates Hermes only when this differs.
     commit: fcbd1076a93841fa88855acce810e342a5b78101
+    # Expected checksum of install.sh downloaded from that exact commit.
     installer_sha256: 0582d9b1562efcb6e0ac62f4451021667830b830a72ce7d91eaea9fee8b6c09b
-    bundle_dir: /opt/hermes-bootstrap
+  # Local directory for this repository's managed deployment files. It is not
+  # part of the upstream Hermes Agent checkout.
+  bundle:
+    dir: /opt/hermes-bootstrap
   features:
+    browser_automation: true
+    development_clis: true
+    google_workspace_cli: true
     force_gateway: false
     auto_enable_gateway: true
     observability: true
@@ -22,6 +38,35 @@ vps_deploy:
     host_admin: true
     lock_public_ssh: false
     vscode_server: true
+  # Enabling this makes encrypted hermes_secret_env authoritative for .env.
+  # It remains false by default so a missing Vault cannot erase live secrets.
+  secret_environment:
+    managed: false
+
+# Non-secret nested Hermes config.yaml values can be managed here. Repository
+# policy wins over the deprecated hermes_llm_config Vault variable. Keep
+# model.default/provider out of this block when /model_global must persist.
+vps_hermes:
+  config:
+    managed_overlay: {}
+
+vps_tools:
+  google_workspace_cli:
+    version: "0.22.5"
+
+vps_packages:
+  grafana_channel: stable
+  apt_retry_attempts: 6
+  apt_retry_delay_seconds: 20
+
+vps_network:
+  ssh_port: 22
+  tailscale:
+    interface: tailscale0
+    package_channel: stable
+  firewall:
+    default_incoming: deny
+    default_outgoing: allow
 
 vps_runtime:
   set:
@@ -50,7 +95,6 @@ vps_runtime:
     platforms.telegram.extra.command_menu.priority: [gw_restart, model_global]
     session_reset.mode: idle
     session_reset.idle_minutes: 2880
-  set_if_missing:
     model.max_tokens: 4096
   unset:
     - agent.max_turns
@@ -79,6 +123,96 @@ vps_github:
   git_identity:
     name: YauheniPo
     email: ip.popovich@mail.ru
+  git_defaults:
+    default_branch: main
+    fetch_prune: true
+    fetch_prune_tags: true
+    push_auto_setup_remote: true
+    pull_ff: only
+
+# Root-owned operations policy. Ansible/direct deploy renders these values into
+# /etc/hermes-ops.conf and the managed systemd units on every deployment.
+vps_ops:
+  alert_target: telegram
+  service_restart_sec: 5s
+  backup:
+    required: true
+    retention_days: 14
+    full_day: 7 # ISO weekday: Sunday
+    full_keep: 5
+    deployment_keep: 10
+    max_age_hours: 26
+    full_max_age_hours: 192
+  health:
+    disk_warn_percent: 85
+    inode_warn_percent: 85
+    memory_available_warn_percent: 10
+    load_warn_per_cpu: 2
+    metrics_max_age_minutes: 5
+  timers:
+    backup:
+      on_boot_sec: 3min
+      interval: 1d
+      accuracy_sec: 5min
+      randomized_delay_sec: 10min
+    health:
+      on_boot_sec: 10min
+      interval: 5min
+      accuracy_sec: 30s
+      randomized_delay_sec: 20s
+    metrics:
+      on_boot_sec: 1min
+      interval: 1min
+      accuracy_sec: 15s
+      randomized_delay_sec: 10s
+    observability_cleanup:
+      on_boot_sec: 15min
+      interval: 1d
+      accuracy_sec: 15min
+      randomized_delay_sec: 30min
+
+vps_observability:
+  local_storage:
+    database_retention_days: 90
+    audit_max_bytes: 5242880
+    audit_rotated_files: 2
+  dashboard:
+    bind_address: 127.0.0.1
+    port: 9119
+  grafana:
+    bind_address: 127.0.0.1
+    port: 3000
+    admin_user: hermes
+  prometheus:
+    bind_address: 127.0.0.1
+    port: 9090
+    storage_retention: 30d
+    scrape_interval: 15s
+    evaluation_interval: 15s
+  node_exporter:
+    bind_address: 127.0.0.1
+    port: 9100
+
+# Browser IDE is loopback-only and reached through an SSH tunnel.
+vps_vscode:
+  project_name: hermes-vscode
+  image: codercom/code-server:4.133.0-noble@sha256:c8ae938c488efc7f346deb93c04c11320b803251aa181263a8482f3aeddf1b27
+  bind_address: 127.0.0.1
+  host_port: 3001
+  tunnel_port: 8080
+  timezone: UTC
+
+vps_browser:
+  agent_browser_version: "0.35.0"
+  launch_args: --no-sandbox,--disable-dev-shm-usage
+
+# Only this marked block is repository-owned; personal SOUL.md text remains
+# untouched across deployments.
+vps_agent_policy:
+  response_language_instruction: >-
+    Always think and write your reasoning/thinking trace in Russian, regardless
+    of the language of the user's query. Final answers are written in the
+    language of the user's latest message.
 
 # Only these application-owned services are restarted by deployment. Network,
 # SSH, Docker, and unrelated host services are intentionally excluded.
@@ -94,3 +228,4 @@ vps_services:
     - hermes-backup.timer
     - hermes-health.timer
     - hermes-metrics.timer
+    - hermes-observability-prune.timer

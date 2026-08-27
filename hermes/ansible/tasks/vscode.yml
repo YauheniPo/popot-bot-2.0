@@ -36,7 +36,7 @@
 
 - name: Create the shared code-server repositories directory
   ansible.builtin.file:
-    path: "{{ hermes_user_home }}/workspace/repositories"
+    path: "{{ hermes_github_repositories_dir }}"
     state: directory
     owner: "{{ hermes_user }}"
     group: "{{ hermes_user }}"
@@ -76,7 +76,7 @@
       - docker
       - compose
       - --project-name
-      - hermes-vscode
+      - "{{ vps_vscode.project_name }}"
       - --env-file
       - /etc/code-server.env
       - up
@@ -91,7 +91,12 @@
 
 - name: Verify the code-server container is running
   ansible.builtin.command:
-    argv: [docker, inspect, --format, "{{ '{{' }}.State.Running{{ '}}' }}", hermes-vscode-code-server-1]
+    argv:
+      - docker
+      - inspect
+      - --format
+      - "{{ '{{' }}.State.Running{{ '}}' }}"
+      - "{{ vps_vscode.project_name }}-code-server-1"
   register: hermes_vscode_state
   changed_when: false
   failed_when: hermes_vscode_state.stdout != "true"
@@ -101,7 +106,7 @@
     argv:
       - docker
       - exec
-      - hermes-vscode-code-server-1
+      - "{{ vps_vscode.project_name }}-code-server-1"
       - git
       - config
       - --global
@@ -117,7 +122,7 @@
     argv:
       - docker
       - exec
-      - hermes-vscode-code-server-1
+      - "{{ vps_vscode.project_name }}-code-server-1"
       - git
       - config
       - --global
@@ -133,7 +138,7 @@
     argv:
       - docker
       - exec
-      - hermes-vscode-code-server-1
+      - "{{ vps_vscode.project_name }}-code-server-1"
       - gh
       - api
       - user
@@ -150,6 +155,7 @@
 - name: Report code-server access instructions
   ansible.builtin.debug:
     msg: >-
-      code-server is up on VPS port 3001. Connect with
-      ssh -L 8080:localhost:3001 {{ hermes_user }}@<VPS_IP> and open
-      http://localhost:8080 (password from encrypted vault.yml).
+      code-server is up on VPS port {{ vps_vscode.host_port }}. Connect with
+      ssh -L {{ vps_vscode.tunnel_port }}:localhost:{{ vps_vscode.host_port }}
+      {{ hermes_user }}@<VPS_IP> and open
+      http://localhost:{{ vps_vscode.tunnel_port }} (password from encrypted vault.yml).

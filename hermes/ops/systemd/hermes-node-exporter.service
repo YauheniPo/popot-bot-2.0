@@ -6,9 +6,9 @@ After=local-fs.target
 Type=simple
 User=@HERMES_USER@
 Group=@HERMES_GROUP@
-ExecStart=/usr/bin/prometheus-node-exporter --web.listen-address=127.0.0.1:9100 --collector.textfile.directory=@HERMES_HOME@/ops/metrics
+ExecStart=/usr/bin/prometheus-node-exporter --web.listen-address=@NODE_EXPORTER_BIND_ADDRESS@:@NODE_EXPORTER_PORT@ --collector.textfile.directory=@HERMES_HOME@/ops/metrics
 Restart=on-failure
-RestartSec=5
+RestartSec=@SERVICE_RESTART_SEC@
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

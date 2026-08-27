@@ -9,14 +9,29 @@ resolve_user_paths() {
   [[ "$HERMES_USER_HOME" == /* && "$HERMES_USER_HOME" != "/" ]] ||
     die "unsafe home directory for $HERMES_USER: $HERMES_USER_HOME"
   [[ -d "$HERMES_USER_HOME" ]] || die "home directory does not exist: $HERMES_USER_HOME"
+  if [[ -n "$REQUESTED_USER_HOME" && "$HERMES_USER_HOME" != "$REQUESTED_USER_HOME" ]]; then
+    die "configured user home $REQUESTED_USER_HOME does not match passwd home $HERMES_USER_HOME"
+  fi
 
-  HERMES_HOME="$HERMES_USER_HOME/.hermes"
+  HERMES_HOME="${REQUESTED_HERMES_HOME:-$HERMES_USER_HOME/.hermes}"
   HERMES_INSTALL_DIR="$HERMES_HOME/hermes-agent"
   HERMES_BIN="$HERMES_USER_HOME/.local/bin/hermes"
   HERMES_NODE_BIN="$HERMES_HOME/node/bin"
-  HERMES_WORKSPACE="$HERMES_USER_HOME/workspace"
-  HERMES_BACKUP_DIR="$HERMES_USER_HOME/hermes-backups"
+  HERMES_WORKSPACE="${REQUESTED_HERMES_WORKSPACE:-$HERMES_USER_HOME/workspace}"
+  HERMES_BACKUP_DIR="${REQUESTED_HERMES_BACKUP_DIR:-$HERMES_USER_HOME/hermes-backups}"
   HERMES_GROUP="$(id -gn "$HERMES_USER")"
+
+  local managed_path real_home real_managed
+  real_home="$(realpath -e "$HERMES_USER_HOME")"
+  for managed_path in "$HERMES_HOME" "$HERMES_WORKSPACE" "$HERMES_BACKUP_DIR"; do
+    [[ "$managed_path" == "$HERMES_USER_HOME/"* ]] ||
+      die "managed path must stay below $HERMES_USER_HOME: $managed_path"
+    real_managed="$(realpath -m "$managed_path")"
+    [[ "$real_managed" == "$real_home/"* ]] ||
+      die "managed path resolves outside $HERMES_USER_HOME: $managed_path"
+  done
+  [[ "$HERMES_WORKSPACE" != "$HERMES_BACKUP_DIR" ]] ||
+    die "workspace and backup directory must be different"
 
   readonly HERMES_USER_HOME HERMES_HOME HERMES_INSTALL_DIR HERMES_BIN HERMES_NODE_BIN
   readonly HERMES_WORKSPACE HERMES_BACKUP_DIR HERMES_GROUP
@@ -66,15 +81,33 @@ run_as_hermes_interactive() {
   run_as_hermes_impl true "$@"
 }
 
+resolve_managed_runtime() {
+  local services_output
+  local -a gateway_services=()
+  services_output="$(python3 "$VPS_CONFIG_APPLIER" services \
+    --settings "$VPS_SETTINGS_FILE" gateway)" ||
+    die "could not resolve the managed gateway service"
+  mapfile -t gateway_services <<<"$services_output"
+  ((${#gateway_services[@]} == 1)) ||
+    die "vps_services.gateway must contain exactly one service"
+  [[ "${gateway_services[0]}" =~ ^[A-Za-z0-9_.@:-]+[.]service$ ]] ||
+    die "invalid managed gateway service: ${gateway_services[0]}"
+  HERMES_GATEWAY_SERVICE="${gateway_services[0]}"
+  HERMES_RAW_BASE_URL="$(python3 "$VPS_CONFIG_APPLIER" value \
+    --settings "$VPS_SETTINGS_FILE" vps_deploy.hermes_source.raw_base_url)"
+  [[ "$HERMES_RAW_BASE_URL" == "https://raw.githubusercontent.com/NousResearch/hermes-agent" ]] ||
+    die "unsupported Hermes source base URL: $HERMES_RAW_BASE_URL"
+}
+
 quiesce_existing_gateway_for_update() {
   [[ -x "$HERMES_BIN" ]] || return 0
   command -v systemctl >/dev/null 2>&1 || return 0
-  systemctl is-active --quiet hermes-gateway.service || return 0
+  systemctl is-active --quiet "$HERMES_GATEWAY_SERVICE" || return 0
 
   log "Stopping the managed gateway for a consistent update snapshot"
-  systemctl stop hermes-gateway.service
-  if systemctl is-active --quiet hermes-gateway.service; then
-    die "hermes-gateway.service remained active after stop"
+  systemctl stop "$HERMES_GATEWAY_SERVICE"
+  if systemctl is-active --quiet "$HERMES_GATEWAY_SERVICE"; then
+    die "$HERMES_GATEWAY_SERVICE remained active after stop"
   fi
   GATEWAY_WAS_QUIESCED=true
 }
@@ -96,10 +129,17 @@ download_installer() {
 }
 
 backup_existing_installation() {
-  [[ -x "$HERMES_BIN" ]] || return 0
-  if [[ ! -x "$HERMES_INSTALL_DIR/venv/bin/python" ]]; then
-    warn "existing Hermes venv interpreter is missing; skipping backup of an unusable installation"
+  if [[ ! -e "$HERMES_BIN" && ! -d "$HERMES_INSTALL_DIR" ]]; then
+    if [[ -d "$HERMES_HOME" ]] &&
+        find "$HERMES_HOME" -mindepth 1 -print -quit | grep -q .; then
+      die "Hermes state exists but its CLI is missing; refusing to install without a verified backup"
+    fi
     return 0
+  fi
+  [[ -x "$HERMES_BIN" ]] ||
+    die "existing Hermes CLI is unusable; refusing to update without a verified backup"
+  if [[ ! -x "$HERMES_INSTALL_DIR/venv/bin/python" ]]; then
+    die "existing Hermes venv interpreter is missing; refusing to update without a verified backup"
   fi
   [[ -f "$UPDATE_STATE_VERIFIER" ]] ||
     die "update-state verifier is missing: $UPDATE_STATE_VERIFIER"
@@ -111,7 +151,15 @@ backup_existing_installation() {
   KANBAN_AFTER_SNAPSHOT="$HERMES_BACKUP_DIR/pre-deploy-$timestamp-kanban-after.json"
   UPDATE_GUARD_ACTIVE=true
 
-  log "Checking every Kanban database before the update"
+  if [[ -f "$HERMES_WORKSPACE/AGENTS.md" ]]; then
+    install -d -o "$HERMES_USER" -g "$HERMES_GROUP" -m 0700 \
+      "$HERMES_HOME/operator-state"
+    install -o "$HERMES_USER" -g "$HERMES_GROUP" -m 0600 \
+      "$HERMES_WORKSPACE/AGENTS.md" \
+      "$HERMES_HOME/operator-state/workspace-AGENTS.md"
+  fi
+
+  log "Inventorying Hermes state and checking every Kanban database before the update"
   python3 "$UPDATE_STATE_VERIFIER" snapshot \
     --hermes-home "$HERMES_HOME" \
     --output "$KANBAN_BEFORE_SNAPSHOT"
@@ -173,7 +221,7 @@ install_hermes() {
 verify_updated_kanban_state() {
   [[ "$UPDATE_GUARD_ACTIVE" == true ]] || return 0
 
-  log "Checking every Kanban database after the update"
+  log "Inventorying Hermes state and checking every Kanban database after the update"
   python3 "$UPDATE_STATE_VERIFIER" snapshot \
     --hermes-home "$HERMES_HOME" \
     --output "$KANBAN_AFTER_SNAPSHOT"
@@ -182,14 +230,30 @@ verify_updated_kanban_state() {
   python3 "$UPDATE_STATE_VERIFIER" compare \
     --before "$KANBAN_BEFORE_SNAPSHOT" \
     --after "$KANBAN_AFTER_SNAPSHOT"
-  log "Post-update Kanban integrity and task counts verified"
+  log "Post-update personal files, Kanban integrity, and task counts verified"
 
   if [[ "$GATEWAY_WAS_QUIESCED" == true && "$ENABLE_GATEWAY" != false ]]; then
     log "Restarting the gateway after successful update verification"
-    systemctl start hermes-gateway.service
-    systemctl is-active --quiet hermes-gateway.service ||
-      die "hermes-gateway.service did not restart after the verified update"
+    systemctl start "$HERMES_GATEWAY_SERVICE"
+    systemctl is-active --quiet "$HERMES_GATEWAY_SERVICE" ||
+      die "$HERMES_GATEWAY_SERVICE did not restart after the verified update"
     GATEWAY_WAS_QUIESCED=false
+  fi
+
+  local quick_keep_days full_keep deployment_keep
+  quick_keep_days="$(python3 "$VPS_CONFIG_APPLIER" value \
+    --settings "$VPS_SETTINGS_FILE" vps_ops.backup.retention_days)"
+  full_keep="$(python3 "$VPS_CONFIG_APPLIER" value \
+    --settings "$VPS_SETTINGS_FILE" vps_ops.backup.full_keep)"
+  deployment_keep="$(python3 "$VPS_CONFIG_APPLIER" value \
+    --settings "$VPS_SETTINGS_FILE" vps_ops.backup.deployment_keep)"
+  if ! python3 "$SCRIPT_DIR/ops/prune-backups.py" \
+      --backup-dir "$HERMES_BACKUP_DIR" \
+      --snapshots-dir "$HERMES_HOME/state-snapshots" \
+      --quick-retention-days "$quick_keep_days" \
+      --full-keep "$full_keep" \
+      --deployment-keep "$deployment_keep"; then
+    warn "backup retention failed after the verified update"
   fi
 }
 
@@ -202,10 +266,18 @@ install_local_browser_automation() {
   }
 
   log "Installing and verifying local browser automation"
+  local agent_browser_version
+  local agent_browser_args
+  agent_browser_version="$(python3 "$VPS_CONFIG_APPLIER" value \
+    --settings "$VPS_SETTINGS_FILE" vps_browser.agent_browser_version)"
+  agent_browser_args="$(python3 "$VPS_CONFIG_APPLIER" value \
+    --settings "$VPS_SETTINGS_FILE" vps_browser.launch_args)"
   "$browser_installer" \
     --user "$HERMES_USER" \
     --user-home "$HERMES_USER_HOME" \
-    --hermes-home "$HERMES_HOME"
+    --hermes-home "$HERMES_HOME" \
+    --version "$agent_browser_version" \
+    --launch-args "$agent_browser_args"
 }
 
 apply_local_hermes_patches() {
@@ -224,11 +296,23 @@ configure_development_clis() {
   [[ "$INSTALL_DEV_CLIS" == true ]] || return 0
 
   local github_wrapper="$SCRIPT_DIR/runtime/github-cli-wrapper.py"
+  local default_branch
+  local fetch_prune
+  local fetch_prune_tags
+  local push_auto_setup_remote
+  local pull_ff
+  default_branch="$(python3 "$VPS_CONFIG_APPLIER" value --settings "$VPS_SETTINGS_FILE" vps_github.git_defaults.default_branch)"
+  fetch_prune="$(python3 "$VPS_CONFIG_APPLIER" value --settings "$VPS_SETTINGS_FILE" vps_github.git_defaults.fetch_prune)"
+  fetch_prune_tags="$(python3 "$VPS_CONFIG_APPLIER" value --settings "$VPS_SETTINGS_FILE" vps_github.git_defaults.fetch_prune_tags)"
+  push_auto_setup_remote="$(python3 "$VPS_CONFIG_APPLIER" value --settings "$VPS_SETTINGS_FILE" vps_github.git_defaults.push_auto_setup_remote)"
+  pull_ff="$(python3 "$VPS_CONFIG_APPLIER" value --settings "$VPS_SETTINGS_FILE" vps_github.git_defaults.pull_ff)"
 
   log "Configuring safe Git defaults for the Hermes user"
-  run_as_hermes git config --global init.defaultBranch main
-  run_as_hermes git config --global fetch.prune true
-  run_as_hermes git config --global push.autoSetupRemote true
+  run_as_hermes git config --global init.defaultBranch "$default_branch"
+  run_as_hermes git config --global fetch.prune "$fetch_prune"
+  run_as_hermes git config --global fetch.pruneTags "$fetch_prune_tags"
+  run_as_hermes git config --global push.autoSetupRemote "$push_auto_setup_remote"
+  run_as_hermes git config --global pull.ff "$pull_ff"
 
   if command -v git-lfs >/dev/null 2>&1; then
     run_as_hermes git lfs install --skip-repo
@@ -253,13 +337,29 @@ install_google_workspace_cli() {
   local npm_bin="$HERMES_NODE_BIN/npm"
   local setup_script="$HERMES_INSTALL_DIR/skills/productivity/google-workspace/scripts/setup.py"
   local python_bin="$HERMES_INSTALL_DIR/venv/bin/python"
+  local google_cli_version
+  local package_json="$HERMES_HOME/node/lib/node_modules/@googleworkspace/cli/package.json"
+  local installed_version=""
 
   [[ -x "$npm_bin" ]] || die "Hermes-managed npm was not found at $npm_bin"
+  google_cli_version="$(python3 "$VPS_CONFIG_APPLIER" value \
+    --settings "$VPS_SETTINGS_FILE" vps_tools.google_workspace_cli.version)"
+  [[ "$google_cli_version" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]] ||
+    die "invalid pinned Google Workspace CLI version: $google_cli_version"
+  if [[ -f "$package_json" ]]; then
+    installed_version="$(python3 -c \
+      'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])' \
+      "$package_json")"
+  fi
 
-  log "Installing Google Workspace CLI (gws) for Gmail, Calendar, Drive, Docs, and Sheets"
-  run_as_hermes "$npm_bin" install --global --omit=dev \
-    --prefix "$HERMES_HOME/node" \
-    @googleworkspace/cli
+  if [[ "$installed_version" != "$google_cli_version" ]]; then
+    log "Installing pinned Google Workspace CLI $google_cli_version"
+    run_as_hermes "$npm_bin" install --global --omit=dev \
+      --prefix "$HERMES_HOME/node" \
+      "@googleworkspace/cli@$google_cli_version"
+  else
+    log "Pinned Google Workspace CLI $google_cli_version is already installed"
+  fi
 
   if ! run_as_hermes bash -c 'command -v gws >/dev/null 2>&1'; then
     die "gws was installed but is not available in the Hermes user PATH"

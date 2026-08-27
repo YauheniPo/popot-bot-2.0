@@ -227,6 +227,42 @@ class OpenRouterRequestTest(unittest.TestCase):
 
         self.assertEqual(request.call_count, 2)
 
+    def test_retries_transient_relaxed_fallback_failure(self) -> None:
+        response = {
+            "choices": [
+                {"message": {"content": json.dumps({"summary": "Reviewed.", "findings": []})}}
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        routing_error = reviewer.RequestError(
+            "POST failed with HTTP 404: No endpoints found that can handle the requested parameters",
+            status=404,
+        )
+        with (
+            mock.patch.dict(
+                reviewer.os.environ,
+                {"OPENROUTER_REVIEW_FALLBACK_MODEL": "fallback-model"},
+            ),
+            mock.patch.object(
+                reviewer,
+                "request_json",
+                side_effect=[
+                    reviewer.RequestError("primary rejected request", status=400),
+                    routing_error,
+                    reviewer.RequestError("upstream rate limited", status=429),
+                    response,
+                ],
+            ) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch.object(reviewer.time, "sleep") as sleep,
+            mock.patch("builtins.print"),
+        ):
+            result = reviewer.review_chunk("api-key", "primary-model", (), chunk, 1, 1)
+
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(request.call_count, 4)
+        sleep.assert_called_once_with(reviewer.DEFAULT_RATE_LIMIT_RETRY_SECONDS)
+
     def test_uses_provider_reset_header_for_rate_limit_retry(self) -> None:
         response = {
             "choices": [

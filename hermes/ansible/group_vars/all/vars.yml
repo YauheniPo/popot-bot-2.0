@@ -5,12 +5,15 @@ hermes_user: "{{ vps_deploy.identity.user }}"
 hermes_user_home: "{{ vps_deploy.identity.user_home }}"
 hermes_home: "{{ vps_deploy.identity.hermes_home }}"
 hermes_bin: "{{ vps_deploy.identity.hermes_bin }}"
-hermes_branch: "{{ vps_deploy.source.branch }}"
-hermes_version: "{{ vps_deploy.source.version }}"
-hermes_release: "{{ vps_deploy.source.release }}"
-hermes_commit: "{{ vps_deploy.source.commit }}"
-hermes_installer_sha256: "{{ vps_deploy.source.installer_sha256 }}"
-hermes_bundle_dir: "{{ vps_deploy.source.bundle_dir }}"
+hermes_workspace: "{{ vps_deploy.identity.workspace }}"
+hermes_backup_dir: "{{ vps_deploy.identity.backup_dir }}"
+hermes_branch: "{{ vps_deploy.hermes_source.branch }}"
+hermes_version: "{{ vps_deploy.hermes_source.version }}"
+hermes_release: "{{ vps_deploy.hermes_source.release }}"
+hermes_commit: "{{ vps_deploy.hermes_source.commit }}"
+hermes_installer_sha256: "{{ vps_deploy.hermes_source.installer_sha256 }}"
+hermes_bundle_dir: "{{ vps_deploy.bundle.dir }}"
+hermes_gateway_service: "{{ vps_services.gateway | first }}"
 
 # A full `hermes backup` zip on the Ansible controller. Keep it encrypted at
 # rest and never commit it. Empty means "install infrastructure only".
@@ -40,17 +43,22 @@ hermes_github_write_repositories: "{{ vps_github.write_repositories }}"
 hermes_git_identity: "{{ vps_github.git_identity }}"
 
 # Set true only after a successful SSH login through Tailscale. It enables UFW
-# and blocks public TCP/22 while allowing SSH on tailscale0.
+# and blocks the configured public SSH port while allowing it on Tailscale.
 hermes_lock_public_ssh: "{{ vps_deploy.features.lock_public_ssh }}"
 
 # Secret values belong in the ignored and encrypted vault.yml, not here.
-hermes_manage_secret_env: false
+hermes_manage_secret_env: "{{ vps_deploy.secret_environment.managed }}"
 hermes_secret_env: {}
+# Deprecated compatibility input. Put non-secret repository policy in
+# vps_hermes.config.managed_overlay instead of encrypted Vault.
 hermes_llm_config: {}
+hermes_managed_config: >-
+  {{ hermes_llm_config |
+     combine(vps_hermes.config.managed_overlay, recursive=true, list_merge='replace') }}
 
 # The password itself must be set in encrypted vault.yml. The account name is
 # non-secret and remains versioned here.
-hermes_grafana_admin_user: hermes
+hermes_grafana_admin_user: "{{ vps_observability.grafana.admin_user }}"
 hermes_grafana_admin_password: ""
 hermes_code_server_password: ""
 tailscale_auth_key: ""

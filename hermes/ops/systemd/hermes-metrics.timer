@@ -1,13 +1,12 @@
 [Unit]
-Description=Refresh Hermes Prometheus metrics every minute
+Description=Refresh scheduled Hermes Prometheus metrics
 
 [Timer]
-OnBootSec=1min
-OnUnitActiveSec=1min
-AccuracySec=15s
+OnBootSec=@METRICS_ON_BOOT_SEC@
+OnUnitActiveSec=@METRICS_INTERVAL@
+AccuracySec=@METRICS_ACCURACY_SEC@
 Persistent=true
-RandomizedDelaySec=10s
+RandomizedDelaySec=@METRICS_RANDOMIZED_DELAY_SEC@
 
 [Install]
 WantedBy=timers.target
-

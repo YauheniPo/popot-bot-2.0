@@ -3,10 +3,13 @@
 enable_observability_plugin() {
     local hermes_python="${HERMES_HOME}/hermes-agent/venv/bin/python"
     local result
+    local gateway_service
     local -a configure_args=(
         --config "${HERMES_HOME}/config.yaml"
         --hermes-home "${HERMES_HOME}"
     )
+    gateway_service="$(managed_services gateway)"
+    configure_args+=(--gateway-service "${gateway_service}")
     [[ -x "${hermes_python}" ]] || {
         log "WARNING: Hermes Python environment is unavailable; the observability plugin was not enabled"
         return 0
@@ -19,6 +22,7 @@ enable_observability_plugin() {
             --vscode-enabled
             --vscode-compose-file "${VSCODE_COMPOSE_FILE}"
             --vscode-env-file "${VSCODE_ENV_FILE}"
+            --vscode-project-name "${VSCODE_PROJECT_NAME}"
         )
     fi
 
@@ -41,7 +45,7 @@ install_observability_plugin() {
         "${HERMES_HOME}/ops/metrics" \
         "${HERMES_HOME}/logs" \
         "${HERMES_HOME}/state-snapshots" \
-        "${USER_HOME}/hermes-backups"
+        "${BACKUP_DIR}"
     # `install -d` does not reliably correct ownership of an already-existing
     # parent directory.  These paths must remain private to the Hermes service
     # account, including after a previous root-run maintenance command.
@@ -50,13 +54,13 @@ install_observability_plugin() {
         "${HERMES_HOME}/ops/metrics" \
         "${HERMES_HOME}/logs" \
         "${HERMES_HOME}/state-snapshots" \
-        "${USER_HOME}/hermes-backups"
+        "${BACKUP_DIR}"
     chmod 0700 \
         "${HERMES_HOME}/ops" \
         "${HERMES_HOME}/ops/metrics" \
         "${HERMES_HOME}/logs" \
         "${HERMES_HOME}/state-snapshots" \
-        "${USER_HOME}/hermes-backups"
+        "${BACKUP_DIR}"
     # Hermes itself, the dashboard, and the exporters all run as this unprivileged
     # account.  A previous root-run command can leave the SQLite database behind
     # as root-owned, which prevents the dashboard's read-only API from opening it.

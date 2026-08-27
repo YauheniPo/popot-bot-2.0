@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import tempfile
 import unittest
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).with_name("apply-hermes-patches.py")
@@ -90,6 +92,45 @@ class ApplyHermesPatchesTests(unittest.TestCase):
 
         self.assertIn("model_global", patch_payload)
         self.assertNotIn(retired, patch_payload)
+
+    def test_missing_required_target_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            with (
+                mock.patch.object(
+                    apply_hermes_patches,
+                    "HERMES_AGENT_DIR",
+                    Path(temp_directory),
+                ),
+                mock.patch.object(
+                    apply_hermes_patches,
+                    "_PATCHES",
+                    [("missing.py", "marker", "old", "new")],
+                ),
+            ):
+                self.assertEqual(apply_hermes_patches.main(), 1)
+
+    def test_missing_install_directory_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            missing = Path(temp_directory) / "missing"
+            with mock.patch.object(apply_hermes_patches, "HERMES_AGENT_DIR", missing):
+                self.assertEqual(apply_hermes_patches.main(), 1)
+
+    def test_changed_upstream_source_fails_closed_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            install_dir = Path(temp_directory)
+            target = install_dir / "gateway" / "run.py"
+            target.parent.mkdir(parents=True)
+            target.write_text("upstream changed\n", encoding="utf-8")
+            with (
+                mock.patch.object(apply_hermes_patches, "HERMES_AGENT_DIR", install_dir),
+                mock.patch.object(
+                    apply_hermes_patches,
+                    "_PATCHES",
+                    [("gateway/run.py", "marker", "old", "new")],
+                ),
+            ):
+                self.assertEqual(apply_hermes_patches.main(), 1)
+            self.assertEqual(target.read_text(encoding="utf-8"), "upstream changed\n")
 
 
 if __name__ == "__main__":

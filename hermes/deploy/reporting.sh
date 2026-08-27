@@ -67,13 +67,21 @@ print_summary() {
   fi
 
   if [[ "$INSTALL_OPS" == true ]]; then
+    local dashboard_address
+    local dashboard_port
+    local grafana_address
+    local grafana_port
+    dashboard_address="$(python3 "$VPS_CONFIG_APPLIER" value --settings "$VPS_SETTINGS_FILE" vps_observability.dashboard.bind_address)"
+    dashboard_port="$(python3 "$VPS_CONFIG_APPLIER" value --settings "$VPS_SETTINGS_FILE" vps_observability.dashboard.port)"
+    grafana_address="$(python3 "$VPS_CONFIG_APPLIER" value --settings "$VPS_SETTINGS_FILE" vps_observability.grafana.bind_address)"
+    grafana_port="$(python3 "$VPS_CONFIG_APPLIER" value --settings "$VPS_SETTINGS_FILE" vps_observability.grafana.port)"
     printf '\nMonitoring and audit:\n'
     printf '  Telegram: /ops summary 24h  (also: models, tools, costs, commands, health)\n'
     printf '  Report:   sudo -u %q HERMES_HOME=%q hermes-ops-report --period 7d\n' "$HERMES_USER" "$HERMES_HOME"
     printf '  Audit:    %s/logs/ops-audit.jsonl\n' "$HERMES_HOME"
     printf '  Metrics:  %s/ops/metrics/hermes.prom\n' "$HERMES_HOME"
-    printf '  Hermes Dashboard: http://127.0.0.1:9119 (via SSH or Tailscale tunnel)\n'
-    printf '  Grafana:          http://127.0.0.1:3000 (via SSH or Tailscale tunnel)\n'
+    printf '  Hermes Dashboard: http://%s:%s (via SSH or Tailscale tunnel)\n' "$dashboard_address" "$dashboard_port"
+    printf '  Grafana:          http://%s:%s (via SSH or Tailscale tunnel)\n' "$grafana_address" "$grafana_port"
     printf '  Grafana password: stored root-only in /etc/hermes-grafana.env\n'
     if [[ "$ENABLE_GATEWAY" == false ]]; then
       printf '  Start:    sudo systemctl enable --now hermes-backup.timer hermes-health.timer hermes-metrics.timer\n'
@@ -96,4 +104,3 @@ print_summary() {
   printf '\nRun diagnostics:\n'
   printf '  sudo -u %q -H %q doctor\n' "$HERMES_USER" "$HERMES_BIN"
 }
-

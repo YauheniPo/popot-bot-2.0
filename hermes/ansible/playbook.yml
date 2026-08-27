@@ -16,12 +16,156 @@
           - hermes_user_home.startswith("/")
           - hermes_home.startswith(hermes_user_home + "/")
           - hermes_bin.startswith(hermes_user_home + "/")
+          - hermes_bin == hermes_user_home + "/.local/bin/hermes"
+          - hermes_workspace.startswith(hermes_user_home + "/")
+          - hermes_backup_dir.startswith(hermes_user_home + "/")
+          - hermes_workspace != hermes_backup_dir
+          - "'/../' not in hermes_user_home"
+          - "'/../' not in hermes_home"
+          - "'/../' not in hermes_workspace"
+          - "'/../' not in hermes_backup_dir"
+          - not hermes_user_home.endswith('/..')
+          - not hermes_home.endswith('/..')
+          - not hermes_workspace.endswith('/..')
+          - not hermes_backup_dir.endswith('/..')
           - hermes_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
           - hermes_release is match('^v[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}$')
           - hermes_commit is match('^[0-9a-f]{40}$')
           - hermes_installer_sha256 is match('^[0-9a-f]{64}$')
+          - vps_deploy.hermes_source.raw_base_url == 'https://raw.githubusercontent.com/NousResearch/hermes-agent'
           - not (hermes_lock_public_ssh | bool) or (hermes_enable_tailscale | bool)
+          - vps_ops is mapping
+          - vps_observability is mapping
+          - vps_vscode is mapping
+          - vps_browser is mapping
+          - vps_network is mapping
+          - vps_packages is mapping
+          - vps_agent_policy is mapping
+          - vps_deploy.hermes_source is mapping
+          - vps_deploy.bundle is mapping
+          - vps_hermes is mapping
+          - vps_hermes.config is mapping
+          - vps_hermes.config.managed_overlay is mapping
+          - vps_tools is mapping
+          - vps_ops.backup is mapping
+          - vps_ops.health is mapping
+          - vps_ops.timers is mapping
+          - vps_observability.dashboard is mapping
+          - vps_observability.grafana is mapping
+          - vps_observability.prometheus is mapping
+          - vps_observability.node_exporter is mapping
+          - vps_vscode.project_name is match('^[a-z0-9][a-z0-9_-]{0,62}$')
+          - vps_vscode.image is match('^[A-Za-z0-9._/-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$')
+          - vps_vscode.bind_address == '127.0.0.1'
+          - vps_vscode.host_port | int >= 1
+          - vps_vscode.host_port | int <= 65535
+          - vps_vscode.tunnel_port | int >= 1
+          - vps_vscode.tunnel_port | int <= 65535
+          - vps_vscode.timezone is match('^[A-Za-z0-9_+/-]+$')
+          - vps_browser.agent_browser_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+          - vps_browser.launch_args is match('^--[A-Za-z0-9=,_-]+$')
+          - vps_agent_policy.response_language_instruction | length > 0
+          - vps_deploy.features.browser_automation is boolean
+          - vps_deploy.features.development_clis is boolean
+          - vps_deploy.features.google_workspace_cli is boolean
+          - vps_deploy.secret_environment.managed is boolean
+          - vps_tools.google_workspace_cli.version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+          - vps_network.ssh_port | int >= 1
+          - vps_network.ssh_port | int <= 65535
+          - vps_network.tailscale.interface is match('^[A-Za-z0-9_.:-]+$')
+          - vps_network.tailscale.package_channel in ['stable', 'unstable']
+          - vps_network.firewall.default_incoming in ['allow', 'deny', 'reject']
+          - vps_network.firewall.default_outgoing in ['allow', 'deny', 'reject']
+          - vps_packages.grafana_channel in ['stable', 'beta']
+          - vps_packages.apt_retry_attempts | int >= 1
+          - vps_packages.apt_retry_attempts | int <= 99
+          - vps_packages.apt_retry_delay_seconds | int >= 1
+          - vps_packages.apt_retry_delay_seconds | int <= 999
+          - vps_ops.service_restart_sec is match('^[1-9][0-9]*(ms|s|min|h|d|w)$')
+          - vps_ops.backup.required is boolean
+          - vps_ops.backup.retention_days | int >= 1
+          - vps_ops.backup.full_day | int >= 1
+          - vps_ops.backup.full_day | int <= 7
+          - vps_ops.backup.full_keep | int >= 1
+          - vps_ops.backup.deployment_keep | int >= 1
+          - vps_ops.backup.max_age_hours | int >= 1
+          - vps_ops.backup.full_max_age_hours | int >= 1
+          - vps_ops.health.disk_warn_percent | int >= 1
+          - vps_ops.health.disk_warn_percent | int <= 100
+          - vps_ops.health.inode_warn_percent | int >= 1
+          - vps_ops.health.inode_warn_percent | int <= 100
+          - vps_ops.health.memory_available_warn_percent | int >= 1
+          - vps_ops.health.memory_available_warn_percent | int <= 100
+          - vps_ops.health.load_warn_per_cpu | int >= 1
+          - vps_ops.health.metrics_max_age_minutes | int >= 1
+          - vps_observability.dashboard.bind_address == '127.0.0.1'
+          - vps_observability.grafana.bind_address == '127.0.0.1'
+          - vps_observability.prometheus.bind_address == '127.0.0.1'
+          - vps_observability.node_exporter.bind_address == '127.0.0.1'
+          - vps_observability.local_storage is mapping
+          - vps_observability.local_storage.database_retention_days | int >= 1
+          - vps_observability.local_storage.database_retention_days | int <= 3650
+          - vps_observability.local_storage.audit_max_bytes | int >= 65536
+          - vps_observability.local_storage.audit_max_bytes | int <= 104857600
+          - vps_observability.local_storage.audit_rotated_files | int >= 1
+          - vps_observability.local_storage.audit_rotated_files | int <= 10
+          - vps_observability.dashboard.port | int >= 1
+          - vps_observability.dashboard.port | int <= 65535
+          - vps_observability.grafana.port | int >= 1
+          - vps_observability.grafana.port | int <= 65535
+          - vps_observability.prometheus.port | int >= 1
+          - vps_observability.prometheus.port | int <= 65535
+          - vps_observability.node_exporter.port | int >= 1
+          - vps_observability.node_exporter.port | int <= 65535
+          - (vps_vscode.host_port | int) != (vps_observability.dashboard.port | int)
+          - (vps_vscode.host_port | int) != (vps_observability.grafana.port | int)
+          - (vps_vscode.host_port | int) != (vps_observability.prometheus.port | int)
+          - (vps_vscode.host_port | int) != (vps_observability.node_exporter.port | int)
+          - (vps_observability.dashboard.port | int) != (vps_observability.grafana.port | int)
+          - (vps_observability.dashboard.port | int) != (vps_observability.prometheus.port | int)
+          - (vps_observability.dashboard.port | int) != (vps_observability.node_exporter.port | int)
+          - (vps_observability.grafana.port | int) != (vps_observability.prometheus.port | int)
+          - (vps_observability.grafana.port | int) != (vps_observability.node_exporter.port | int)
+          - (vps_observability.prometheus.port | int) != (vps_observability.node_exporter.port | int)
         fail_msg: This playbook supports Debian/Ubuntu and a non-root Hermes user.
+
+    - name: Validate managed operations timer settings
+      ansible.builtin.assert:
+        that:
+          - item.value is mapping
+          - item.value.on_boot_sec is match('^[1-9][0-9]*(ms|s|min|h|d|w)$')
+          - item.value.interval is match('^[1-9][0-9]*(ms|s|min|h|d|w)$')
+          - item.value.accuracy_sec is match('^[1-9][0-9]*(ms|s|min|h|d|w)$')
+          - item.value.randomized_delay_sec is match('^[1-9][0-9]*(ms|s|min|h|d|w)$')
+        fail_msg: Invalid timer policy in config/vps-defaults.yml.
+      loop: "{{ vps_ops.timers | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Validate Prometheus duration settings
+      ansible.builtin.assert:
+        that:
+          - vps_observability.prometheus.storage_retention is match('^[1-9][0-9]*(ms|s|min|h|d|w)$')
+          - vps_observability.prometheus.scrape_interval is match('^[1-9][0-9]*(ms|s|min|h|d|w)$')
+          - vps_observability.prometheus.evaluation_interval is match('^[1-9][0-9]*(ms|s|min|h|d|w)$')
+        fail_msg: Invalid Prometheus duration in config/vps-defaults.yml.
+
+    - name: Inspect an existing Hermes service account home
+      ansible.builtin.command:
+        argv: [getent, passwd, "{{ hermes_user }}"]
+      register: hermes_existing_passwd
+      changed_when: false
+      failed_when: false
+
+    - name: Require the configured home to match the existing service account
+      ansible.builtin.assert:
+        that:
+          - hermes_existing_passwd.stdout.split(':') | length >= 6
+          - hermes_existing_passwd.stdout.split(':')[5] == hermes_user_home
+        fail_msg: >-
+          vps_deploy.identity.user_home does not match the existing service
+          account home; refusing to split Hermes state across two paths.
+      when: hermes_existing_passwd.rc == 0
 
   tasks:
     - name: Create the remote Hermes infrastructure bundle directory
@@ -85,6 +229,14 @@
         mode: preserve
         directory_mode: "0755"
 
+    - name: Copy repository-owned Hermes workspace instructions
+      ansible.builtin.copy:
+        src: AGENTS.md
+        dest: "{{ hermes_bundle_dir }}/AGENTS.md"
+        owner: root
+        group: root
+        mode: "0644"
+
     - name: Copy the versioned code-server deployment files
       ansible.builtin.copy:
         src: ../vscode-server/
@@ -98,6 +250,35 @@
       ansible.builtin.stat:
         path: "{{ hermes_bin }}"
       register: hermes_binary
+
+    - name: Inspect the live Hermes workspace instructions before backup
+      ansible.builtin.stat:
+        path: "{{ hermes_workspace }}/AGENTS.md"
+      register: hermes_live_workspace_agents
+      when: hermes_binary.stat.exists
+
+    - name: Prepare the restorable operator-state directory
+      ansible.builtin.file:
+        path: "{{ hermes_home }}/operator-state"
+        state: directory
+        owner: "{{ hermes_user }}"
+        group: "{{ hermes_user }}"
+        mode: "0700"
+      when:
+        - hermes_binary.stat.exists
+        - hermes_live_workspace_agents.stat.exists
+
+    - name: Mirror live workspace instructions into Hermes backup state
+      ansible.builtin.copy:
+        src: "{{ hermes_workspace }}/AGENTS.md"
+        remote_src: true
+        dest: "{{ hermes_home }}/operator-state/workspace-AGENTS.md"
+        owner: "{{ hermes_user }}"
+        group: "{{ hermes_user }}"
+        mode: "0600"
+      when:
+        - hermes_binary.stat.exists
+        - hermes_live_workspace_agents.stat.exists
 
     - name: Read the installed Hermes commit
       ansible.builtin.command:
@@ -137,6 +318,128 @@
         recurse: true
       when: hermes_binary.stat.exists
 
+    - name: Decide whether the pinned Hermes source needs installation
+      ansible.builtin.set_fact:
+        hermes_source_update_required: >-
+          {{ (not hermes_binary.stat.exists) or
+             (hermes_installed_commit.stdout | default('') != hermes_commit) or
+             (not hermes_venv_python.stat.exists) }}
+
+    - name: Prepare the mandatory config-only deployment backup location
+      ansible.builtin.file:
+        path: "{{ hermes_backup_dir }}"
+        state: directory
+        owner: "{{ hermes_user }}"
+        group: "{{ hermes_user }}"
+        mode: "0700"
+      when:
+        - hermes_binary.stat.exists
+        - not (hermes_source_update_required | bool)
+
+    - name: Define the mandatory config-only deployment backup paths
+      ansible.builtin.set_fact:
+        hermes_config_backup_archive: >-
+          {{ hermes_backup_dir }}/pre-config-deploy-{{ ansible_date_time.iso8601_basic_short }}.zip
+        hermes_config_backup_snapshot: >-
+          {{ hermes_backup_dir }}/pre-config-deploy-{{ ansible_date_time.iso8601_basic_short }}-state.json
+      when:
+        - hermes_binary.stat.exists
+        - not (hermes_source_update_required | bool)
+
+    - name: Check whether the gateway is active before a config-only deployment
+      ansible.builtin.command:
+        argv: [systemctl, is-active, --quiet, "{{ hermes_gateway_service }}"]
+      register: hermes_config_backup_gateway
+      changed_when: false
+      failed_when: false
+      when:
+        - hermes_binary.stat.exists
+        - not (hermes_source_update_required | bool)
+
+    - name: Create and verify the mandatory config-only deployment backup
+      block:
+        - name: Stop the active gateway for a consistent config-only backup
+          ansible.builtin.systemd_service:
+            name: "{{ hermes_gateway_service }}"
+            state: stopped
+          when: hermes_config_backup_gateway.rc == 0
+
+        - name: Snapshot Hermes state before a config-only deployment
+          ansible.builtin.command:
+            argv:
+              - python3
+              - "{{ hermes_bundle_dir }}/runtime/verify-update-state.py"
+              - snapshot
+              - --hermes-home
+              - "{{ hermes_home }}"
+              - --output
+              - "{{ hermes_config_backup_snapshot }}"
+          changed_when: true
+
+        - name: Create the mandatory full config-only deployment backup
+          ansible.builtin.command:
+            argv:
+              - "{{ hermes_bin }}"
+              - backup
+              - --output
+              - "{{ hermes_config_backup_archive }}"
+          become_user: "{{ hermes_user }}"
+          environment:
+            HOME: "{{ hermes_user_home }}"
+            HERMES_HOME: "{{ hermes_home }}"
+            PATH: "{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/bin:/usr/bin:/bin"
+          register: hermes_config_backup_result
+          changed_when: true
+
+        - name: Inspect the config-only deployment backup archive
+          ansible.builtin.stat:
+            path: "{{ hermes_config_backup_archive }}"
+          register: hermes_config_backup_file
+
+        - name: Require Hermes to report a complete config-only deployment backup
+          ansible.builtin.assert:
+            that:
+              - "'Backup complete:' in hermes_config_backup_result.stdout"
+              - hermes_config_backup_file.stat.exists
+              - hermes_config_backup_file.stat.size | int > 0
+            fail_msg: Hermes did not create a complete full backup; deployment aborted.
+
+        - name: Verify the config-only deployment backup contents
+          ansible.builtin.command:
+            argv:
+              - python3
+              - "{{ hermes_bundle_dir }}/runtime/verify-update-state.py"
+              - verify-backup
+              - --backup
+              - "{{ hermes_config_backup_archive }}"
+              - --snapshot
+              - "{{ hermes_config_backup_snapshot }}"
+          changed_when: false
+
+        - name: Protect config-only deployment backup artifacts
+          ansible.builtin.file:
+            path: "{{ item }}"
+            owner: "{{ hermes_user }}"
+            group: "{{ hermes_user }}"
+            mode: "0600"
+          loop:
+            - "{{ hermes_config_backup_archive }}"
+            - "{{ hermes_config_backup_snapshot }}"
+      rescue:
+        - name: Restart the previously active gateway after backup failure
+          ansible.builtin.systemd_service:
+            name: "{{ hermes_gateway_service }}"
+            state: started
+          failed_when: false
+          when: hermes_config_backup_gateway.rc == 0
+
+        - name: Abort a config-only deployment without a verified backup
+          ansible.builtin.fail:
+            msg: Mandatory config-only deployment backup failed; no managed configuration was changed.
+      when:
+        - hermes_binary.stat.exists
+        - not (hermes_source_update_required | bool)
+
     - name: Install or update Hermes to the pinned commit
       ansible.builtin.command:
         argv: >-
@@ -144,6 +447,10 @@
             [
               hermes_bundle_dir ~ '/deploy-hermes.sh',
               '--user', hermes_user,
+              '--user-home', hermes_user_home,
+              '--hermes-home', hermes_home,
+              '--workspace', hermes_workspace,
+              '--backup-dir', hermes_backup_dir,
               '--branch', hermes_branch,
               '--expected-version', hermes_version,
               '--release', hermes_release,
@@ -155,19 +462,31 @@
               '--without-ops',
               '--without-tailscale'
             ] +
+            (
+              ['--with-browser']
+              if (vps_deploy.features.browser_automation | bool)
+              else ['--without-browser']
+            ) +
+            (
+              ['--with-dev-cli']
+              if (vps_deploy.features.development_clis | bool)
+              else ['--without-dev-cli']
+            ) +
+            (
+              ['--with-google-cli']
+              if (vps_deploy.features.google_workspace_cli | bool)
+              else ['--without-google-cli']
+            ) +
             ([] if (hermes_host_admin_enabled | bool) else ['--without-host-admin'])
           }}
-      when: >-
-        (not hermes_binary.stat.exists) or
-        (hermes_installed_commit.stdout | default('') != hermes_commit) or
-        (not hermes_venv_python.stat.exists)
+      when: hermes_source_update_required | bool
 
     - name: Configure private networking and firewall
       ansible.builtin.import_tasks: tasks/network.yml
 
     - name: Stop the gateway before restoring a backup
       ansible.builtin.systemd_service:
-        name: hermes-gateway.service
+        name: "{{ hermes_gateway_service }}"
         state: stopped
       failed_when: false
       when: hermes_backup_archive | length > 0
@@ -228,6 +547,17 @@
       when: hermes_manage_secret_env | bool
       no_log: true
 
+    - name: Keep non-secret browser policy out of encrypted Vault
+      ansible.builtin.assert:
+        that:
+          - "'AGENT_BROWSER_ARGS' not in hermes_secret_env"
+          - "'AGENT_BROWSER_CONFIG' not in hermes_secret_env"
+        fail_msg: >-
+          AGENT_BROWSER_ARGS and AGENT_BROWSER_CONFIG are managed from
+          config/vps-defaults.yml and must not be duplicated in Vault.
+      when: hermes_manage_secret_env | bool
+      no_log: true
+
     - name: Decide whether Telegram credentials enable the gateway
       ansible.builtin.set_fact:
         hermes_gateway_enabled: >-
@@ -238,11 +568,13 @@
               ((hermes_secret_env.TELEGRAM_ALLOWED_USERS | default('', true) | string | length) > 0)) }}
       no_log: true
 
-    - name: Validate encrypted Hermes LLM configuration
+    - name: Validate managed Hermes configuration overlays
       ansible.builtin.assert:
         that:
           - hermes_llm_config is mapping
-        fail_msg: hermes_llm_config must be a YAML mapping of config.yaml top-level keys.
+          - vps_hermes.config.managed_overlay is mapping
+          - hermes_managed_config is mapping
+        fail_msg: Managed Hermes config overlays must be YAML mappings.
       no_log: true
 
     - name: Install sudo for an explicitly administrator-enabled Hermes
@@ -312,18 +644,66 @@
         state: absent
       when: not (hermes_host_admin_enabled | bool)
 
-    - name: Install host-administration instructions in the Hermes workspace
+    - name: Inspect restorable workspace instructions after Hermes import
+      ansible.builtin.stat:
+        path: "{{ hermes_home }}/operator-state/workspace-AGENTS.md"
+      register: hermes_restorable_workspace_agents
+      when: hermes_backup_archive | length > 0
+
+    - name: Restore workspace instructions from the imported Hermes backup
       ansible.builtin.copy:
-        src: AGENTS.md
-        dest: "{{ hermes_user_home }}/workspace/AGENTS.md"
+        src: "{{ hermes_home }}/operator-state/workspace-AGENTS.md"
+        remote_src: true
+        dest: "{{ hermes_workspace }}/AGENTS.md"
         owner: "{{ hermes_user }}"
         group: "{{ hermes_user }}"
         mode: "0644"
-      when: hermes_host_admin_enabled | bool
+      when:
+        - hermes_backup_archive | length > 0
+        - hermes_restorable_workspace_agents.stat.exists
+
+    - name: Reconcile repository-owned host-administration instructions
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ hermes_bundle_dir }}/runtime/manage-workspace-agents.py"
+          - --target
+          - "{{ hermes_workspace }}/AGENTS.md"
+          - --managed-source
+          - "{{ hermes_bundle_dir }}/AGENTS.md"
+          - --backup-copy
+          - "{{ hermes_home }}/operator-state/workspace-AGENTS.md"
+          - --state
+          - "{{ 'present' if (hermes_host_admin_enabled | bool) else 'absent' }}"
+      register: hermes_workspace_agents
+      changed_when: "'updated' in hermes_workspace_agents.stdout"
+
+    - name: Inspect the reconciled Hermes workspace instructions
+      ansible.builtin.stat:
+        path: "{{ hermes_workspace }}/AGENTS.md"
+      register: hermes_workspace_agents_file
+
+    - name: Protect the Hermes workspace instructions
+      ansible.builtin.file:
+        path: "{{ hermes_workspace }}/AGENTS.md"
+        state: file
+        owner: "{{ hermes_user }}"
+        group: "{{ hermes_user }}"
+        mode: "0644"
+      when: hermes_workspace_agents_file.stat.exists
+
+    - name: Protect the restorable operator-state directory
+      ansible.builtin.file:
+        path: "{{ hermes_home }}/operator-state"
+        state: directory
+        owner: "{{ hermes_user }}"
+        group: "{{ hermes_user }}"
+        mode: "0700"
 
     - name: Publish Vault environment variable names to Hermes without values
       ansible.builtin.blockinfile:
-        path: "{{ hermes_user_home }}/workspace/AGENTS.md"
+        path: "{{ hermes_workspace }}/AGENTS.md"
+        create: true
         marker: "<!-- {mark} MANAGED VAULT ENVIRONMENT NAMES -->"
         insertafter: EOF
         block: |
@@ -341,8 +721,16 @@
         owner: "{{ hermes_user }}"
         group: "{{ hermes_user }}"
         mode: "0644"
-      when: hermes_host_admin_enabled | bool
       no_log: true
+
+    - name: Mirror the final workspace instructions into Hermes backup state
+      ansible.builtin.copy:
+        src: "{{ hermes_workspace }}/AGENTS.md"
+        remote_src: true
+        dest: "{{ hermes_home }}/operator-state/workspace-AGENTS.md"
+        owner: "{{ hermes_user }}"
+        group: "{{ hermes_user }}"
+        mode: "0600"
 
     - name: Validate Grafana administrator credentials from Vault
       ansible.builtin.assert:

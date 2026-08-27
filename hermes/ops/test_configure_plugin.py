@@ -41,6 +41,7 @@ class ConfigurePluginTests(unittest.TestCase):
                     "type": "exec",
                     "command": (
                         "HERMES_HOME=/home/hermes/.hermes "
+                        "HERMES_GATEWAY_SERVICE=hermes-gateway.service "
                         "/usr/local/lib/hermes-ops/status-report.py"
                     ),
                 },
@@ -59,6 +60,7 @@ class ConfigurePluginTests(unittest.TestCase):
                     "type": "exec",
                     "command": (
                         "HERMES_HOME=/home/hermes/.hermes "
+                        "HERMES_GATEWAY_SERVICE=hermes-gateway.service "
                         "/usr/local/lib/hermes-ops/status-report.py"
                     ),
                 },
@@ -77,6 +79,19 @@ class ConfigurePluginTests(unittest.TestCase):
             )
         )
 
+    def test_configure_uses_the_managed_compose_project_name(self) -> None:
+        config: dict[str, object] = {}
+
+        configure_plugin.configure(
+            config,
+            Path("/home/hermes/.hermes"),
+            vscode_compose_file=MANAGED_COMPOSE,
+            vscode_project_name="owner-vscode",
+        )
+
+        command = config["quick_commands"]["docker_restart"]["command"]
+        self.assertIn("--project-name owner-vscode", command)
+
     def test_configure_removes_vscode_restart_when_feature_is_disabled(self) -> None:
         config = {
             "plugins": {"enabled": ["ops-observability"]},
@@ -85,6 +100,7 @@ class ConfigurePluginTests(unittest.TestCase):
                     "type": "exec",
                     "command": (
                         "HERMES_HOME=/home/hermes/.hermes "
+                        "HERMES_GATEWAY_SERVICE=hermes-gateway.service "
                         "/usr/local/lib/hermes-ops/status-report.py"
                     ),
                 },

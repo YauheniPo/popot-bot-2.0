@@ -58,8 +58,18 @@ mkdir -p "$HOME/workspace/repositories"
 touch "$HOME/.gitconfig"
 HERMES_UID="$(id -u)"
 HERMES_GID="$(id -g)"
-printf 'PASSWORD=%s\nVPS_USER_HOME=%s\nHERMES_UID=%s\nHERMES_GID=%s\n' \
-  "$CODE_SERVER_PASSWORD" "$HOME" "$HERMES_UID" "$HERMES_GID" | \
+printf '%s\n' \
+  "PASSWORD=$CODE_SERVER_PASSWORD" \
+  "VPS_USER_HOME=$HOME" \
+  "VPS_HERMES_HOME=$HOME/.hermes" \
+  "HERMES_UID=$HERMES_UID" \
+  "HERMES_GID=$HERMES_GID" \
+  "CODE_SERVER_REPOSITORIES_DIR=$HOME/workspace/repositories" \
+  "CODE_SERVER_PROJECT_NAME=hermes-vscode" \
+  "CODE_SERVER_IMAGE=codercom/code-server:4.133.0-noble@sha256:c8ae938c488efc7f346deb93c04c11320b803251aa181263a8482f3aeddf1b27" \
+  "CODE_SERVER_BIND_ADDRESS=127.0.0.1" \
+  "CODE_SERVER_HOST_PORT=3001" \
+  "CODE_SERVER_TIMEZONE=UTC" | \
   sudo install -o root -g root -m 0600 /dev/stdin /etc/code-server.env
 unset CODE_SERVER_PASSWORD
 sudo docker compose --project-name hermes-vscode \
@@ -67,7 +77,8 @@ sudo docker compose --project-name hermes-vscode \
 ```
 
 The codercom image reads the password from the `PASSWORD` variable
-(`CODE_SERVER_PASSWORD` is ignored by code-server).
+(`CODE_SERVER_PASSWORD` is ignored by code-server). Ansible takes the pinned
+image, bind address, port and project name from `hermes/config/vps-defaults.yml`.
 
 code-server binds to port **3001** on the VPS (loopback only; host 3000
 is taken by Grafana) and is not published beyond it; access is SSH-tunnel-only:
