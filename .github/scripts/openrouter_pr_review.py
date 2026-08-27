@@ -31,11 +31,8 @@ DEFAULT_REQUESTS_PER_MINUTE = 8
 DEFAULT_RATE_LIMIT_RETRY_SECONDS = 15.0
 MAX_REQUEST_ATTEMPTS = 5
 MAX_RETRY_DELAY_SECONDS = 90.0
-MAX_OUTPUT_TOKENS = 1_400
-# Reasoning-capable fallback models share max_tokens between hidden reasoning
-# and visible output. Give the compatibility request enough room for both and
-# explicitly keep reasoning at the smallest portable effort level.
-RELAXED_FALLBACK_MAX_OUTPUT_TOKENS = 4_000
+MAX_OUTPUT_TOKENS = 6_000
+MAX_INVALID_RESPONSE_ATTEMPTS = 2
 MAX_FINDINGS = 5
 MAX_RENDERED_LINE_CHARACTERS = 4_000
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -160,6 +157,10 @@ class RequestError(RuntimeError):
         super().__init__(message)
         self.status = status
         self.retry_after_seconds = retry_after_seconds
+
+
+class ReviewResponseError(RuntimeError):
+    """The provider returned a completion that is not a usable review object."""
 
 
 def _seconds_until_reset(value: object) -> float | None:
@@ -433,7 +434,9 @@ OpenRouter adapter instructions:
 Perform static analysis only on the supplied authoritative diff chunk. Return
 only the structured object required by the supplied JSON schema, with a
 one-sentence chunk summary and at most three independent findings. If no valid
-finding exists in this chunk, return an empty `findings` array.
+finding exists in this chunk, return an empty `findings` array. Keep each title
+under 120 characters and each impact/fix value under 400 characters so the
+complete JSON envelope fits the bounded response budget.
 
 The annotated diff supplies exact GitHub anchors. Only `RIGHT n|+` and
 `LEFT n|-` labels are eligible; never anchor to CONTEXT or META. Treat
@@ -447,25 +450,69 @@ def _response_content(response: object) -> str:
     try:
         content = response["choices"][0]["message"]["content"]  # type: ignore[index]
     except (KeyError, IndexError, TypeError) as error:
-        raise RuntimeError("OpenRouter response did not contain a review message") from error
+        raise ReviewResponseError(
+            "OpenRouter response did not contain a review message"
+        ) from error
     if isinstance(content, list):
         content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
     if not isinstance(content, str) or not content.strip():
-        raise RuntimeError("OpenRouter returned an empty review message")
+        raise ReviewResponseError("OpenRouter returned an empty review message")
     return content.strip()
+
+
+def _has_review_shape(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("summary"), str)
+        and isinstance(value.get("findings"), list)
+    )
+
+
+def _response_diagnostic(response: object, content: str) -> str:
+    try:
+        finish_reason = response["choices"][0].get("finish_reason")  # type: ignore[index,union-attr]
+    except (AttributeError, KeyError, IndexError, TypeError):
+        finish_reason = None
+    safe_finish_reason = re.sub(r"[^A-Za-z0-9_.:-]", "", str(finish_reason))[:40]
+    return (
+        f"finish_reason={safe_finish_reason or 'unknown'}, "
+        f"content_chars={len(content)}"
+    )
 
 
 def parse_review_response(response: object) -> dict[str, object]:
     content = _response_content(response)
+    candidates = [content]
     if content.startswith("```") and content.endswith("```"):
-        content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.IGNORECASE)
-    try:
-        parsed = json.loads(content)
-    except json.JSONDecodeError as error:
-        raise RuntimeError("OpenRouter returned malformed structured review JSON") from error
-    if not isinstance(parsed, dict) or not isinstance(parsed.get("findings"), list):
-        raise RuntimeError("OpenRouter structured review did not match the expected object shape")
-    return parsed
+        candidates.append(
+            re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.IGNORECASE)
+        )
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if _has_review_shape(parsed):
+            return parsed
+
+    # Some otherwise compatible providers prepend a short explanation or a
+    # reasoning marker despite response_format. Extract only a complete JSON
+    # object that independently matches the review envelope; never attempt to
+    # evaluate or heuristically reinterpret provider text.
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", content):
+        try:
+            parsed, _ = decoder.raw_decode(content[match.start() :])
+        except json.JSONDecodeError:
+            continue
+        if _has_review_shape(parsed):
+            return parsed
+
+    raise ReviewResponseError(
+        "OpenRouter returned malformed structured review JSON "
+        f"({_response_diagnostic(response, content)})"
+    )
 
 
 def request_with_transient_retries(
@@ -490,18 +537,39 @@ def request_with_transient_retries(
     raise AssertionError("unreachable")
 
 
+def request_valid_review(
+    headers: dict[str, str],
+    body: dict[str, object],
+    model_label: str,
+) -> dict[str, object]:
+    """Regenerate once when a successful HTTP response contains invalid JSON."""
+    for attempt in range(1, MAX_INVALID_RESPONSE_ATTEMPTS + 1):
+        response = request_with_transient_retries(headers, body)
+        try:
+            return parse_review_response(response)
+        except ReviewResponseError as error:
+            if attempt == MAX_INVALID_RESPONSE_ATTEMPTS:
+                raise
+            print(
+                f"  {model_label} returned invalid structured JSON; "
+                f"regenerating once ({error})",
+                file=sys.stderr,
+            )
+    raise AssertionError("unreachable")
+
+
 def request_fallback_review(
     fallback_model: str,
     headers: dict[str, str],
     primary_body: dict[str, object],
-) -> object:
+) -> dict[str, object]:
     strict_body = {**primary_body, "model": fallback_model}
     print(
         f"  primary exhausted; retrying with fallback: {fallback_model}",
         file=sys.stderr,
     )
     try:
-        return request_with_transient_retries(headers, strict_body)
+        return request_valid_review(headers, strict_body, "fallback")
     except RequestError as error:
         # Some fallback models accept ordinary text generation but do not expose
         # response_format. OpenRouter returns this routing-specific 404 when
@@ -514,19 +582,14 @@ def request_fallback_review(
             raise
         relaxed_body = {
             **strict_body,
-            "max_tokens": max(
-                MAX_OUTPUT_TOKENS,
-                RELAXED_FALLBACK_MAX_OUTPUT_TOKENS,
-            ),
             "provider": {"require_parameters": False},
-            "reasoning": {"effort": "minimal", "exclude": True},
         }
         print(
             "  fallback has no structured-output endpoint; "
             "retrying with locally validated JSON and bounded reasoning",
             file=sys.stderr,
         )
-        return request_with_transient_retries(headers, relaxed_body)
+        return request_valid_review(headers, relaxed_body, "fallback compatibility request")
 
 
 def review_chunk(
@@ -564,34 +627,27 @@ UNRESOLVED_REVIEW_THREADS:
         "model": model,
         "temperature": 0,
         "max_tokens": MAX_OUTPUT_TOKENS,
+        # Both default free reviewer models enable reasoning automatically.
+        # A low effort keeps code-review analysis while reserving enough of the
+        # shared output budget for the required JSON object.
+        "reasoning": {"effort": "low", "exclude": True},
         "provider": {"require_parameters": True},
         "response_format": {"type": "json_schema", "json_schema": REVIEW_RESPONSE_SCHEMA},
+        # OpenRouter's non-streaming response healer repairs common JSON syntax
+        # defects before the deterministic local schema/anchor validation.
+        "plugins": [{"id": "response-healing"}],
         "messages": [
             {"role": "system", "content": openrouter_system_prompt()},
             {"role": "user", "content": user_prompt},
         ],
     }
-    for attempt in range(1, MAX_REQUEST_ATTEMPTS + 1):
-        try:
-            response = request_json(OPENROUTER_URL, "POST", headers, body)
-            break
-        except RequestError as error:
-            retryable = error.status is None or error.status in RETRYABLE_HTTP_STATUSES
-            if not retryable or attempt == MAX_REQUEST_ATTEMPTS:
-                # Exhausted retries on the primary model. Try fallback once.
-                fallback_model = os.environ.get("OPENROUTER_REVIEW_FALLBACK_MODEL")
-                if fallback_model and body["model"] != fallback_model:
-                    # Give the fallback one strict attempt. If OpenRouter reports
-                    # that no endpoint accepts every parameter, the helper makes
-                    # one compatibility attempt without the routing filter.
-                    response = request_fallback_review(fallback_model, headers, body)
-                    break
-                raise
-            fallback_delay = float(2 ** (attempt - 1))
-            if error.status == 429:
-                fallback_delay = max(fallback_delay, DEFAULT_RATE_LIMIT_RETRY_SECONDS)
-            time.sleep(error.retry_after_seconds or fallback_delay)
-    return parse_review_response(response)
+    try:
+        return request_valid_review(headers, body, "primary")
+    except (RequestError, ReviewResponseError):
+        fallback_model = os.environ.get("OPENROUTER_REVIEW_FALLBACK_MODEL")
+        if fallback_model and body["model"] != fallback_model:
+            return request_fallback_review(fallback_model, headers, body)
+        raise
 
 
 def configured_requests_per_minute() -> int:

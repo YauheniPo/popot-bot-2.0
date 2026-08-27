@@ -78,6 +78,7 @@ jobs:
             --fallback "${FALLBACK_MODEL}" \
             --require max_tokens \
             --require temperature \
+            --require reasoning \
             --require response_format \
             --require structured_outputs
 

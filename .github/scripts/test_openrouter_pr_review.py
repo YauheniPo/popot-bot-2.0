@@ -107,6 +107,26 @@ class FindingValidationTest(unittest.TestCase):
 
 
 class OpenRouterRequestTest(unittest.TestCase):
+    def test_extracts_review_json_from_mixed_provider_text(self) -> None:
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            "Review complete.\n```json\n"
+                            '{"summary":"Reviewed.","findings":[]}'
+                            "\n```\nDone."
+                        )
+                    },
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+
+        result = reviewer.parse_review_response(response)
+
+        self.assertEqual(result, {"summary": "Reviewed.", "findings": []})
+
     def test_requests_strict_structured_output(self) -> None:
         response = {
             "choices": [
@@ -130,6 +150,12 @@ class OpenRouterRequestTest(unittest.TestCase):
         self.assertTrue(request_body["provider"]["require_parameters"])
         self.assertEqual(request_body["response_format"]["type"], "json_schema")
         self.assertTrue(request_body["response_format"]["json_schema"]["strict"])
+        self.assertEqual(request_body["max_tokens"], reviewer.MAX_OUTPUT_TOKENS)
+        self.assertEqual(
+            request_body["reasoning"],
+            {"effort": "low", "exclude": True},
+        )
+        self.assertEqual(request_body["plugins"], [{"id": "response-healing"}])
         self.assertIn("rules", request_body["messages"][0]["content"])
         self.assertIn("OpenRouter adapter instructions", request_body["messages"][0]["content"])
         self.assertIn("chunk 1 of 2", request_body["messages"][1]["content"])
@@ -155,6 +181,88 @@ class OpenRouterRequestTest(unittest.TestCase):
 
         self.assertEqual(request.call_count, 2)
         sleep.assert_called_once_with(15.0)
+
+    def test_regenerates_after_malformed_structured_json(self) -> None:
+        malformed = {
+            "choices": [
+                {
+                    "message": {"content": '{"summary":"Reviewed.","findings":['},
+                    "finish_reason": "length",
+                }
+            ]
+        }
+        valid = {
+            "choices": [
+                {"message": {"content": '{"summary":"Reviewed.","findings":[]}'}}
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        with (
+            mock.patch.object(reviewer, "request_json", side_effect=[malformed, valid]) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch("builtins.print") as output,
+        ):
+            result = reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
+
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(request.call_count, 2)
+        self.assertIn("finish_reason=length", output.call_args.args[0])
+
+    def test_regenerates_after_empty_review_message(self) -> None:
+        empty = {
+            "choices": [
+                {"message": {"content": ""}, "finish_reason": "length"}
+            ]
+        }
+        valid = {
+            "choices": [
+                {"message": {"content": '{"summary":"Reviewed.","findings":[]}'}}
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        with (
+            mock.patch.object(reviewer, "request_json", side_effect=[empty, valid]) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch("builtins.print"),
+        ):
+            result = reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
+
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(request.call_count, 2)
+
+    def test_uses_fallback_after_repeated_malformed_primary_json(self) -> None:
+        malformed = {
+            "choices": [
+                {
+                    "message": {"content": "not-json"},
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+        valid = {
+            "choices": [
+                {"message": {"content": '{"summary":"Reviewed.","findings":[]}'}}
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        with (
+            mock.patch.dict(
+                reviewer.os.environ,
+                {"OPENROUTER_REVIEW_FALLBACK_MODEL": "fallback-model"},
+            ),
+            mock.patch.object(
+                reviewer,
+                "request_json",
+                side_effect=[malformed, malformed, valid],
+            ) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch("builtins.print"),
+        ):
+            result = reviewer.review_chunk("api-key", "primary-model", (), chunk, 1, 1)
+
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(request.call_count, 3)
+        self.assertEqual(request.call_args.args[3]["model"], "fallback-model")
 
     def test_relaxes_parameter_filter_for_incompatible_fallback(self) -> None:
         response = {
@@ -197,11 +305,11 @@ class OpenRouterRequestTest(unittest.TestCase):
         self.assertEqual(relaxed_fallback_body["response_format"]["type"], "json_schema")
         self.assertEqual(
             relaxed_fallback_body["max_tokens"],
-            reviewer.RELAXED_FALLBACK_MAX_OUTPUT_TOKENS,
+            reviewer.MAX_OUTPUT_TOKENS,
         )
         self.assertEqual(
             relaxed_fallback_body["reasoning"],
-            {"effort": "minimal", "exclude": True},
+            {"effort": "low", "exclude": True},
         )
 
     def test_does_not_relax_unrelated_fallback_404(self) -> None:
