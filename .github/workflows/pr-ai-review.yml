@@ -68,6 +68,9 @@ jobs:
       - name: Select compatible direct-review models
         id: direct_models
         shell: bash
+        # `plugins` is intentionally not required here. Response Healing is an
+        # OpenRouter gateway plugin, not a model-endpoint supported parameter,
+        # so it never appears in the endpoint `supported_parameters` metadata.
         env:
           PRIMARY_MODEL: ${{ env.OPENROUTER_REVIEW_MODEL }}
           FALLBACK_MODEL: ${{ env.OPENROUTER_REVIEW_FALLBACK_MODEL }}

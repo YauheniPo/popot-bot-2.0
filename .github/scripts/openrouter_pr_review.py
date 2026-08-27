@@ -224,6 +224,11 @@ def required_env(name: str) -> str:
     return value
 
 
+def _safe_log_message(value: object) -> str:
+    """Keep untrusted provider diagnostics on one bounded log line."""
+    return " ".join(str(value).replace("\r", " ").replace("\n", " ").split())[:500]
+
+
 def request_json(url: str, method: str, headers: dict[str, str], body: object | None = None) -> object:
     encoded_body = None if body is None else json.dumps(body).encode("utf-8")
     request = urllib.request.Request(url, data=encoded_body, headers=headers, method=method)
@@ -627,10 +632,11 @@ UNRESOLVED_REVIEW_THREADS:
         "model": model,
         "temperature": 0,
         "max_tokens": MAX_OUTPUT_TOKENS,
-        # Both default free reviewer models enable reasoning automatically.
-        # A low effort keeps code-review analysis while reserving enough of the
-        # shared output budget for the required JSON object.
-        "reasoning": {"effort": "low", "exclude": True},
+        # Both default free reviewer models enable hidden reasoning by default,
+        # and it consumes the same max_tokens budget as the visible JSON. The
+        # direct reviewer must always reserve that budget for a complete schema;
+        # deeper agentic analysis remains available in reviewer 2 (Claude Code).
+        "reasoning": {"effort": "none", "exclude": True},
         "provider": {"require_parameters": True},
         "response_format": {"type": "json_schema", "json_schema": REVIEW_RESPONSE_SCHEMA},
         # OpenRouter's non-streaming response healer repairs common JSON syntax
@@ -643,7 +649,12 @@ UNRESOLVED_REVIEW_THREADS:
     }
     try:
         return request_valid_review(headers, body, "primary")
-    except (RequestError, ReviewResponseError):
+    except (RequestError, ReviewResponseError) as error:
+        print(
+            "  primary review failed after retries: "
+            f"{_safe_log_message(error)}",
+            file=sys.stderr,
+        )
         fallback_model = os.environ.get("OPENROUTER_REVIEW_FALLBACK_MODEL")
         if fallback_model and body["model"] != fallback_model:
             return request_fallback_review(fallback_model, headers, body)

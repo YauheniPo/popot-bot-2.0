@@ -153,7 +153,7 @@ class OpenRouterRequestTest(unittest.TestCase):
         self.assertEqual(request_body["max_tokens"], reviewer.MAX_OUTPUT_TOKENS)
         self.assertEqual(
             request_body["reasoning"],
-            {"effort": "low", "exclude": True},
+            {"effort": "none", "exclude": True},
         )
         self.assertEqual(request_body["plugins"], [{"id": "response-healing"}])
         self.assertIn("rules", request_body["messages"][0]["content"])
@@ -309,7 +309,7 @@ class OpenRouterRequestTest(unittest.TestCase):
         )
         self.assertEqual(
             relaxed_fallback_body["reasoning"],
-            {"effort": "low", "exclude": True},
+            {"effort": "none", "exclude": True},
         )
 
     def test_does_not_relax_unrelated_fallback_404(self) -> None:
