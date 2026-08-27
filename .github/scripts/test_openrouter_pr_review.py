@@ -505,6 +505,12 @@ class GitHubReviewTest(unittest.TestCase):
         self.assertEqual(payload["event"], "COMMENT")
         self.assertEqual(payload["comments"][0]["path"], "app.py")
         self.assertEqual(payload["comments"][0]["line"], 5)
+        self.assertIn(reviewer.REVIEWER_LABEL, payload["body"])
+        self.assertIn(reviewer.REVIEWER_LABEL, payload["comments"][0]["body"])
+        self.assertIn(
+            "<!-- direct-openrouter-inline:head-sha:app.py:RIGHT:5 -->",
+            payload["comments"][0]["body"],
+        )
 
     def test_skips_duplicate_review_for_the_same_commit(self) -> None:
         existing = [{"body": "<!-- openrouter-pr-review:head-sha -->\nAlready reviewed"}]
@@ -545,6 +551,7 @@ class GitHubReviewTest(unittest.TestCase):
         reply.assert_called_once()
         self.assertEqual(reply.call_args.args[:4], ("owner/repository", "2", "token", 101))
         self.assertIn("openrouter-thread-followup:head-sha:thread-1", reply.call_args.args[4])
+        self.assertIn(reviewer.REVIEWER_LABEL, reply.call_args.args[4])
         review_payload = request.call_args_list[1].args[3]
         self.assertEqual(review_payload["comments"], [])
 

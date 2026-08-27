@@ -169,6 +169,13 @@ class InlineCommentTest(unittest.TestCase):
     def test_validates_structured_findings_against_the_diff(self) -> None:
         result = {
             "summary": "Found one issue.",
+            "thread_verdicts": [
+                {
+                    "thread_id": "machine-thread",
+                    "verdict": "rejected",
+                    "reason": "The assertion immediately below validates the keys.",
+                }
+            ],
             "findings": [
                 {
                     "severity": "P2",
@@ -198,7 +205,7 @@ class InlineCommentTest(unittest.TestCase):
                 return_value={"LEFT": set(), "RIGHT": {12}},
             ),
         ):
-            summary, findings = context._validated_claude_result(
+            summary, findings, verdicts = context._validated_claude_result(
                 context.json.dumps(result),
                 "a" * 40,
                 "b" * 40,
@@ -207,10 +214,12 @@ class InlineCommentTest(unittest.TestCase):
         self.assertEqual(summary, "Found one issue.")
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0].line, 12)
+        self.assertEqual(verdicts[0].verdict, "rejected")
 
     def test_publisher_posts_validated_inline_and_summary_comments(self) -> None:
         result = {
             "summary": "Found one issue.",
+            "thread_verdicts": [],
             "findings": [
                 {
                     "severity": "P2",
@@ -249,9 +258,91 @@ class InlineCommentTest(unittest.TestCase):
             context._command_publish()
 
         self.assertEqual(create.call_count, 1)
+        self.assertIn(context.CLAUDE_REVIEWER_LABEL, create.call_args.args[7])
         summary_payload = request.call_args_list[1].args[3]
         self.assertIn("Found one issue.", summary_payload["body"])
+        self.assertIn(context.CLAUDE_REVIEWER_LABEL, summary_payload["body"])
         self.assertIn("<!-- claude-pr-review:" + "b" * 40 + ":123 -->", summary_payload["body"])
+
+    def test_publisher_rejects_and_resolves_only_a_current_machine_thread(self) -> None:
+        head_sha = "b" * 40
+        result = {
+            "summary": "The first reviewer has one false positive.",
+            "findings": [],
+            "thread_verdicts": [
+                {
+                    "thread_id": "direct-thread",
+                    "verdict": "rejected",
+                    "reason": "The validation appears later in the same assert task.",
+                }
+            ],
+        }
+        thread = context.ReviewThread(
+            node_id="direct-thread",
+            path="playbook.yml",
+            side="RIGHT",
+            line=42,
+            original_line=42,
+            outdated=False,
+            viewer_can_reply=True,
+            comments=(
+                context.ReviewComment(
+                    "comment-node",
+                    101,
+                    context.AUTOMATED_REVIEW_AUTHOR,
+                    f"{context.DIRECT_REVIEWER_INLINE_PREFIX}{head_sha}:playbook.yml:RIGHT:42 -->",
+                ),
+            ),
+        )
+        environment = {
+            "GITHUB_REPOSITORY": "owner/repo",
+            "PR_NUMBER": "2",
+            "GITHUB_TOKEN": "token",
+            "BASE_SHA": "a" * 40,
+            "HEAD_SHA": head_sha,
+            "CLAUDE_REVIEW_MODEL": "review-model",
+            "CLAUDE_REVIEW_RUN_ID": "123",
+            "CLAUDE_REVIEW_RESULT": context.json.dumps(result),
+        }
+        with (
+            mock.patch.dict(context.os.environ, environment, clear=True),
+            mock.patch.object(context, "_changed_paths", return_value={"playbook.yml"}),
+            mock.patch.object(context, "fetch_unresolved_review_threads", return_value=[thread]),
+            mock.patch.object(context, "reply_to_review_thread") as reply,
+            mock.patch.object(context, "resolve_review_thread") as resolve,
+            mock.patch.object(context, "_request_json", side_effect=[[], {}]) as request,
+            mock.patch("builtins.print"),
+        ):
+            context._command_publish()
+
+        reply.assert_called_once()
+        self.assertIn("Rejected Reviewer 1 finding", reply.call_args.args[4])
+        resolve.assert_called_once_with("token", "direct-thread")
+        summary_payload = request.call_args_list[1].args[3]
+        self.assertIn("rejected and auto-resolved: 1", summary_payload["body"])
+
+    def test_direct_machine_thread_never_auto_resolves_after_human_reply(self) -> None:
+        head_sha = "b" * 40
+        thread = context.ReviewThread(
+            node_id="direct-thread",
+            path="playbook.yml",
+            side="RIGHT",
+            line=42,
+            original_line=42,
+            outdated=False,
+            viewer_can_reply=True,
+            comments=(
+                context.ReviewComment(
+                    "machine-comment",
+                    101,
+                    context.AUTOMATED_REVIEW_AUTHOR,
+                    f"{context.DIRECT_REVIEWER_INLINE_PREFIX}{head_sha}:playbook.yml:RIGHT:42 -->",
+                ),
+                context.ReviewComment("human-reply", 102, "owner", "Please keep this open."),
+            ),
+        )
+
+        self.assertFalse(context._is_direct_machine_thread(thread, head_sha))
 
 
 if __name__ == "__main__":

@@ -85,7 +85,7 @@ jobs:
             --require response_format \
             --require structured_outputs
 
-      - name: Review changed files and publish formal review
+      - name: Reviewer 1 — direct OpenRouter API review and publication
         env:
           OPENROUTER_REVIEW_MODEL: ${{ steps.direct_models.outputs.selected_model }}
           OPENROUTER_REVIEW_FALLBACK_MODEL: ${{ steps.direct_models.outputs.secondary_model }}
@@ -207,7 +207,7 @@ jobs:
             exit 1
           fi
 
-      - name: Review with primary Claude Code model
+      - name: Reviewer 2 — Claude Code review with primary model
         id: claude_review_primary
         if: steps.claude_models.outputs.primary_ready == 'true'
         continue-on-error: true
@@ -254,6 +254,17 @@ jobs:
             ${{ steps.review_threads.outputs.context }}
             --- END UNRESOLVED REVIEW THREADS ---
 
+            The first reviewer marks its initial inline findings with
+            `<!-- direct-openrouter-inline:<head-sha>:... -->`. For every such
+            thread in the snapshot, return one `thread_verdicts` item:
+            `confirmed` only when its claim remains demonstrably valid;
+            `rejected` only when the exact diff and repository context prove it
+            false or obsolete; otherwise `needs_human`. Give a short evidence-
+            based reason. Do not assess human-authored or unmarked threads.
+            A deterministic publisher will auto-resolve only rejected, current-
+            head, untouched machine threads; uncertainty is deliberately left
+            open for the owner.
+
             Inspect all changed files systematically. Perform correctness/security,
             deployment/operations, and tests/API-contract passes, then validate every
             candidate against the exact diff. Report at most five findings for the
@@ -284,7 +295,7 @@ jobs:
             --tools "Read,Glob,Grep"
             --allowedTools "Read,Glob,Grep"
             --disallowedTools "mcp__github_comment__*,mcp__github_ci__*,mcp__github_inline_comment__*,mcp__github_file_ops__*"
-            --json-schema '{"type":"object","additionalProperties":false,"required":["summary","findings"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","path","side","line","title","impact","fix"],"properties":{"severity":{"type":"string","enum":["P1","P2"]},"path":{"type":"string"},"side":{"type":"string","enum":["RIGHT","LEFT"]},"line":{"type":"integer"},"title":{"type":"string"},"impact":{"type":"string"},"fix":{"type":"string"}}}}}}'
+            --json-schema '{"type":"object","additionalProperties":false,"required":["summary","findings","thread_verdicts"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","path","side","line","title","impact","fix"],"properties":{"severity":{"type":"string","enum":["P1","P2"]},"path":{"type":"string"},"side":{"type":"string","enum":["RIGHT","LEFT"]},"line":{"type":"integer"},"title":{"type":"string"},"impact":{"type":"string"},"fix":{"type":"string"}}}},"thread_verdicts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["thread_id","verdict","reason"],"properties":{"thread_id":{"type":"string"},"verdict":{"type":"string","enum":["confirmed","rejected","needs_human"]},"reason":{"type":"string"}}}}}}'
           # Schema note: maxItems/minimum are intentionally omitted because
           # Anthropic Structured Outputs rejects numeric and array-size
           # constraints; the five-finding cap stays in the prompt above.
@@ -308,7 +319,7 @@ jobs:
           ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ steps.claude_models.outputs.primary_model }}
           CLAUDE_CODE_SUBAGENT_MODEL: ${{ steps.claude_models.outputs.primary_model }}
 
-      - name: Retry review with fallback Claude Code model
+      - name: Reviewer 2 — retry Claude Code review with fallback model
         id: claude_review_fallback
         if: >-
           always() &&
@@ -327,7 +338,7 @@ jobs:
             --tools "Read,Glob,Grep"
             --allowedTools "Read,Glob,Grep"
             --disallowedTools "mcp__github_comment__*,mcp__github_ci__*,mcp__github_inline_comment__*,mcp__github_file_ops__*"
-            --json-schema '{"type":"object","additionalProperties":false,"required":["summary","findings"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","path","side","line","title","impact","fix"],"properties":{"severity":{"type":"string","enum":["P1","P2"]},"path":{"type":"string"},"side":{"type":"string","enum":["RIGHT","LEFT"]},"line":{"type":"integer"},"title":{"type":"string"},"impact":{"type":"string"},"fix":{"type":"string"}}}}}}'
+            --json-schema '{"type":"object","additionalProperties":false,"required":["summary","findings","thread_verdicts"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","path","side","line","title","impact","fix"],"properties":{"severity":{"type":"string","enum":["P1","P2"]},"path":{"type":"string"},"side":{"type":"string","enum":["RIGHT","LEFT"]},"line":{"type":"integer"},"title":{"type":"string"},"impact":{"type":"string"},"fix":{"type":"string"}}}},"thread_verdicts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["thread_id","verdict","reason"],"properties":{"thread_id":{"type":"string"},"verdict":{"type":"string","enum":["confirmed","rejected","needs_human"]},"reason":{"type":"string"}}}}}}'
           show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
         env:
           ANTHROPIC_BASE_URL: https://openrouter.ai/api
@@ -339,7 +350,7 @@ jobs:
           ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
           CLAUDE_CODE_SUBAGENT_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
 
-      - name: Validate and publish Claude review
+      - name: Reviewer 2 — validate and publish Claude Code review
         id: publish_claude_review
         if: >-
           always() &&

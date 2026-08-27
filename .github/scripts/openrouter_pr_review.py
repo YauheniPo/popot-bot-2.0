@@ -38,6 +38,7 @@ MAX_RENDERED_LINE_CHARACTERS = 4_000
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 GITHUB_API_URL = "https://api.github.com"
 REVIEW_RULES_PATH = Path(".github/REVIEWER.md")
+REVIEWER_LABEL = "Reviewer 1 — Direct OpenRouter API"
 EXCLUDED_REVIEW_PATHS = frozenset(
     {
         ".github/workflows/pr-ai-review.yml",
@@ -826,7 +827,7 @@ def _review_body(
     )
     lines = [
         marker,
-        "## OpenRouter API review",
+        f"## {REVIEWER_LABEL}",
         "",
         f"> Provider: OpenRouter · Model: `{model}`",
         f"> Coverage: {coverage}",
@@ -896,7 +897,8 @@ def publish_review(
             comment_id,
             (
                 f"{follow_up_marker}\n"
-                f"**Additional evidence — {finding.severity}: {finding.title}**\n\n"
+                f"**[{REVIEWER_LABEL}] Additional evidence — "
+                f"{finding.severity}: {finding.title}**\n\n"
                 f"Impact: {finding.impact}\n\nProposed fix: {finding.fix}"
             ),
         )
@@ -909,7 +911,9 @@ def publish_review(
             "line": finding.line,
             "side": finding.side,
             "body": (
-                f"**{finding.severity} — {finding.title}**\n\n"
+                "<!-- direct-openrouter-inline:"
+                f"{head_sha}:{finding.path}:{finding.side}:{finding.line} -->\n"
+                f"**[{REVIEWER_LABEL}] {finding.severity} — {finding.title}**\n\n"
                 f"Impact: {finding.impact}\n\nProposed fix: {finding.fix}"
             ),
         }

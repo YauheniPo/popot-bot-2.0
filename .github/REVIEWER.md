@@ -71,6 +71,18 @@ reply to its thread only when the review adds materially new evidence or a
 substantially better bounded fix. Resolved threads do not suppress a finding in
 the current review.
 
+Review existing threads and the rest of the diff as separate obligations. First,
+evaluate every relevant unresolved machine-review finding against the exact
+diff and repository context: do not assume it is correct merely because it is
+already a comment. Then inspect every eligible changed file systematically,
+including files and hunks that have no existing thread. Existing comments must
+never reduce coverage or cause the remainder of the diff to be skipped.
+
+When the adapter supports thread verdicts, classify an existing machine finding
+as confirmed only with direct evidence; classify it as rejected only when the
+exact diff proves it false or obsolete; otherwise leave it for human review.
+Never resolve, contradict, or silently supersede a human-authored thread.
+
 Prioritize authentication and authorization boundaries; secrets, credentials,
 personal data, and untrusted API errors; command execution and privilege
 escalation; deployment idempotence, configuration propagation, and service
