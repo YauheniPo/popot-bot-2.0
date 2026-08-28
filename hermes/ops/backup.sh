@@ -28,6 +28,10 @@ fi
     printf 'Hermes backup retention helper is missing: %s\n' "${HERMES_BACKUP_PRUNER}" >&2
     exit 2
 }
+[[ "${HERMES_WORKSPACE}" =~ ^/[A-Za-z0-9._/@+-]+$ ]] || {
+    printf 'Hermes workspace must be a non-empty absolute safe path: %s\n' "${HERMES_WORKSPACE}" >&2
+    exit 2
+}
 
 mkdir -p "${HERMES_BACKUP_DIR}" "${HERMES_HOME}/ops"
 chmod 700 "${HERMES_BACKUP_DIR}" "${HERMES_HOME}/ops"
