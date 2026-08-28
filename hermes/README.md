@@ -28,11 +28,9 @@ Debian/Ubuntu VPS. Hermes работает от отдельного непри�
 | [Docker Engine](https://docs.docker.com/engine/) | Сборка, запуск и администрирование контейнеров на VPS. | Устанавливается Ansible при `vps_deploy.features.host_admin: true`; доступ Hermes через root-equivalent группу `docker`. |
 | [Ansible Vault](https://docs.ansible.com/projects/ansible/latest/vault_guide/index.html) | Шифрует API keys и конфигурацию на Ansible controller. | Рекомендуется для повторяемого Ansible deploy. |
 
-При миграции старого inventory замените
-`hermes_host_admin_enabled: false` на
-`vps_deploy.features.host_admin: false`. Старое имя — внутренний derived
-compatibility variable playbook, не внешний интерфейс конфигурации и не должно
-переопределяться в inventory.
+Для новых inventory используйте `vps_deploy.features.host_admin`. Старый ключ
+`hermes_host_admin_enabled` остаётся совместимым с уже развёрнутыми inventory,
+но его следует перенести на новый ключ; не задавайте оба значения одновременно.
 
 ## Быстрый запуск
 
@@ -183,8 +181,6 @@ sudo ./deploy-hermes.sh --portal
   root-equivalent доступ. Для ограниченного VPS задайте
   `vps_deploy.features.host_admin: false` в Ansible или используйте
   `--without-host-admin` при прямой установке.
-  В старом inventory замените `hermes_host_admin_enabled: false` на этот ключ:
-  прежнее имя не является поддерживаемой внешней настройкой.
 
 ### Статус функций после запуска deploy
 
@@ -495,7 +491,7 @@ sudo systemctl start hermes-health.service
 sudo journalctl -u hermes-health.service -n 50 --no-pager
 ```
 
-Пороги задаются в `vps_ops` файла
+Пороги задаются в `vps_ops` файле
 [`config/vps-defaults.yml`](config/vps-defaults.yml). Повторный deploy
 перегенерирует `/etc/hermes-ops.conf` и systemd timers; ручные изменения этого
 root-owned файла намеренно не сохраняются.
