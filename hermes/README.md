@@ -28,6 +28,12 @@ Debian/Ubuntu VPS. Hermes работает от отдельного непри�
 | [Docker Engine](https://docs.docker.com/engine/) | Сборка, запуск и администрирование контейнеров на VPS. | Устанавливается Ansible при `vps_deploy.features.host_admin: true`; доступ Hermes через root-equivalent группу `docker`. |
 | [Ansible Vault](https://docs.ansible.com/projects/ansible/latest/vault_guide/index.html) | Шифрует API keys и конфигурацию на Ansible controller. | Рекомендуется для повторяемого Ansible deploy. |
 
+При миграции старого inventory замените
+`hermes_host_admin_enabled: false` на
+`vps_deploy.features.host_admin: false`. Старое имя — внутренний derived
+compatibility variable playbook, не внешний интерфейс конфигурации и не должно
+переопределяться в inventory.
+
 ## Быстрый запуск
 
 Путь от только что купленного VPS до работающего Hermes, шаг за шагом:
@@ -177,13 +183,15 @@ sudo ./deploy-hermes.sh --portal
   root-equivalent доступ. Для ограниченного VPS задайте
   `vps_deploy.features.host_admin: false` в Ansible или используйте
   `--without-host-admin` при прямой установке.
+  В старом inventory замените `hermes_host_admin_enabled: false` на этот ключ:
+  прежнее имя не является поддерживаемой внешней настройкой.
 
 ### Статус функций после запуска deploy
 
 | Функция | Статус | Что ещё требуется |
 |---|---|---|
 | Файлы, terminal, Git, coding | Готово сразу | Права Unix на нужный workspace/repository |
-| OpenRouter LLM | Готово после Vault deploy | Задать `OPENROUTER_API_KEY` в Vault; non-secret policy — в `vps_hermes.config`, live model — через `/model_global` |
+| OpenRouter LLM | Готово после Vault deploy | Задать `OPENROUTER_API_KEY` в Vault; provider/fallback policy — в `vps_hermes.config.managed_overlay`, `model.max_tokens` — в `vps_runtime.set`, live model — через `/model_global` |
 | API keys через Ansible Vault | Готово | Создать и зашифровать локальный `group_vars/all/vault.yml` |
 | Public GitHub clone | Готово сразу | Ничего |
 | Private clone, push, PR, reviews, issues, Actions | Управляется Ansible | `GITHUB_TOKEN` с минимальными repo permissions в Vault; identity и access probe находятся в `vps_github` |
