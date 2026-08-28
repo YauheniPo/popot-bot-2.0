@@ -11,6 +11,7 @@ import tempfile
 
 BEGIN_MARKER = "<!-- BEGIN ANSIBLE MANAGED HOST ADMINISTRATION -->"
 END_MARKER = "<!-- END ANSIBLE MANAGED HOST ADMINISTRATION -->"
+LEGACY_VAULT_BEGIN_MARKER = "<!-- BEGIN MANAGED VAULT ENVIRONMENT NAMES -->"
 
 
 class ManagedBlockError(RuntimeError):
@@ -38,7 +39,12 @@ def reconcile(existing: str, managed_source: str, *, present: bool) -> str:
         if personal.strip() == legacy:
             personal = ""
         elif personal.startswith(legacy):
-            personal = personal[len(legacy):].strip()
+            remainder = personal[len(legacy):]
+            # A prefix match is a legacy full-file layout only when the next
+            # block is the known Vault block that older deploys appended. Do
+            # not remove personal notes that merely begin like old policy.
+            if remainder.lstrip().startswith(LEGACY_VAULT_BEGIN_MARKER):
+                personal = remainder.strip()
 
     parts: list[str] = []
     if present:

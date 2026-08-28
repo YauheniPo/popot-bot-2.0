@@ -28,9 +28,10 @@ Debian/Ubuntu VPS. Hermes работает от отдельного непри�
 | [Docker Engine](https://docs.docker.com/engine/) | Сборка, запуск и администрирование контейнеров на VPS. | Устанавливается Ansible при `vps_deploy.features.host_admin: true`; доступ Hermes через root-equivalent группу `docker`. |
 | [Ansible Vault](https://docs.ansible.com/projects/ansible/latest/vault_guide/index.html) | Шифрует API keys и конфигурацию на Ansible controller. | Рекомендуется для повторяемого Ansible deploy. |
 
-Для новых inventory используйте `vps_deploy.features.host_admin`. Старый ключ
-`hermes_host_admin_enabled` остаётся совместимым с уже развёрнутыми inventory,
-но его следует перенести на новый ключ; не задавайте оба значения одновременно.
+Для новых inventory используйте `vps_deploy.features.host_admin`. Старый
+(deprecated) ключ `hermes_host_admin_enabled` остаётся совместимым с уже
+развёрнутыми inventory, но его следует перенести на новый ключ; не задавайте
+оба значения одновременно.
 
 ## Быстрый запуск
 

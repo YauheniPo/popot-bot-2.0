@@ -46,6 +46,15 @@ class ManageWorkspaceAgentsTests(unittest.TestCase):
         self.assertEqual(result.count("Use sudo carefully."), 1)
         self.assertIn("MANAGED VAULT ENVIRONMENT NAMES", result)
 
+    def test_legacy_prefix_in_personal_notes_is_not_stripped(self) -> None:
+        managed = "# Host administration\n\nUse sudo carefully."
+        existing = managed + "\n\nMy personal note: keep this wording.\n"
+
+        result = manage_workspace_agents.reconcile(existing, managed, present=True)
+
+        self.assertEqual(result.count("Use sudo carefully."), 2)
+        self.assertIn("My personal note: keep this wording.", result)
+
     def test_disabling_host_admin_removes_only_managed_block(self) -> None:
         existing = manage_workspace_agents.reconcile("Personal tail\n", "Managed\n", present=True)
 
