@@ -35,6 +35,7 @@ class DeploymentStatePolicyTests(unittest.TestCase):
         self.assertIn("operator-state", scheduled_backup)
         self.assertIn("workspace/AGENTS.md", scheduled_backup)
         self.assertIn("Hermes workspace must be a non-empty absolute safe path", scheduled_backup)
+        self.assertIn('rm -f -- "${operator_state_agents}"', scheduled_backup)
 
     def test_final_config_check_runs_before_gateway_install(self) -> None:
         services = (HERMES_ROOT / "ansible" / "tasks" / "services.yml").read_text()

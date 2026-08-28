@@ -56,6 +56,11 @@ if [[ -f "${workspace_agents}" ]]; then
         chmod 700 "${operator_state_dir}"
         install -m 0600 "${workspace_agents}" "${operator_state_agents}"
     fi
+elif [[ -e "${operator_state_agents}" ]]; then
+    # Do not let a full backup restore instructions that the operator has
+    # deliberately removed from the workspace since the previous run.
+    rm -f -- "${operator_state_agents}"
+    printf 'Removed stale workspace AGENTS.md mirror from backup state\n' >&2
 fi
 
 timestamp="$(date -u +%Y%m%d-%H%M%S)"
