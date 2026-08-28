@@ -35,6 +35,33 @@ wrong contract and a contract-correct change that violates a repository rule
 are different defects; neither must produce a finding when the evidence bar
 below is not met.
 
+Within that evidence bar, perform these focused passes over every relevant
+changed construct before deciding that it has no issue:
+
+1. **Behaviour and state:** trace normal, empty, missing, malformed, repeated,
+   interrupted, and restore/rollback paths when the construct supports them.
+   Check ownership, idempotence, cleanup, retry boundaries, and state
+   transitions—not merely the happy path.
+2. **Security and data:** trace untrusted inputs to their sinks. Check
+   validation at the actual trust boundary, quoting/encoding, authentication
+   and authorization, least privilege, secret exposure, file ownership/modes,
+   and whether failure or logging can leak personal or credential data.
+3. **Resources and operations:** examine only material regressions in
+   algorithmic work, storage, network calls, subprocesses, database access,
+   locks, timeouts, retries, resource cleanup, and service lifecycle. A generic
+   optimization opportunity is not a finding; name the introduced path and
+   concrete operational impact.
+4. **Tests and documentation:** trace changed public configuration, CLI/API,
+   migration, backup/restore, and user-facing behaviour to tests and docs.
+   Report a missing test only for a specific new failure path that the diff
+   leaves unprotected. Report documentation only when users could follow it
+   into a broken, unsafe, or incompatible outcome.
+
+For each candidate, read its definition, callers, validators, defaults,
+templates, and downstream sinks as needed. Never infer that a key is undefined,
+a validation is absent, a variable was renamed, or a symlink is safe from one
+hunk: verify the authoritative configuration and the full execution path first.
+
 Report only a demonstrable regression, security or privacy defect, data-loss or
 authorization issue, contract break, or a specific missing required test. A P1
 must have serious security, data, or core-function impact. Use P2 for other
