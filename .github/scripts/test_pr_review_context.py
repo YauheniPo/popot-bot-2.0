@@ -316,7 +316,7 @@ class InlineCommentTest(unittest.TestCase):
             context._command_publish()
 
         reply.assert_called_once()
-        self.assertIn("Rejected Reviewer 1 finding", reply.call_args.args[4])
+        self.assertIn("Rejected OpenRouterAPI finding", reply.call_args.args[4])
         resolve.assert_called_once_with("token", "direct-thread")
         summary_payload = request.call_args_list[1].args[3]
         self.assertIn("rejected and auto-resolved: 1", summary_payload["body"])

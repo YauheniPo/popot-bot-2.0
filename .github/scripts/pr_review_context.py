@@ -16,7 +16,7 @@ import urllib.request
 
 
 GITHUB_API_URL = "https://api.github.com"
-CLAUDE_REVIEWER_LABEL = "Reviewer 2 — Claude Code"
+CLAUDE_REVIEWER_LABEL = "ClaudeCodePlugin"
 DIRECT_REVIEWER_INLINE_PREFIX = "<!-- direct-openrouter-inline:"
 AUTOMATED_REVIEW_AUTHOR = "github-actions[bot]"
 MAX_THREADS = 200
@@ -706,7 +706,7 @@ def _command_publish() -> None:
     rejected_thread_ids: set[str] = set()
     for verdict in verdicts:
         thread = threads_by_id.get(verdict.thread_id)
-        # A model may only resolve a clearly marked Reviewer 1 thread for the
+        # A model may only resolve a clearly marked OpenRouterAPI thread for the
         # current revision. Human participation or a stale thread opts out.
         if thread is None or not _is_direct_machine_thread(thread, head_sha):
             continue
@@ -729,7 +729,7 @@ def _command_publish() -> None:
             comment_id,
             (
                 f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] Rejected "
-                f"Reviewer 1 finding**\n\nReason: {verdict.reason}"
+                f"OpenRouterAPI finding**\n\nReason: {verdict.reason}"
             ),
         )
         resolve_review_thread(token, thread.node_id)
@@ -810,9 +810,9 @@ def _command_publish() -> None:
         f"New inline findings: {len(new_findings)}.",
         f"Material thread follow-ups: {len(posted_follow_ups)}.",
         f"Existing unresolved findings not repeated: {len(duplicates)}.",
-        f"Reviewer 1 findings confirmed: {confirmed_direct_findings}.",
-        f"Reviewer 1 findings rejected and auto-resolved: {rejected_direct_findings}.",
-        f"Reviewer 1 findings left for human review: {direct_findings_needing_human}.",
+        f"OpenRouterAPI findings confirmed: {confirmed_direct_findings}.",
+        f"OpenRouterAPI findings rejected and auto-resolved: {rejected_direct_findings}.",
+        f"OpenRouterAPI findings left for human review: {direct_findings_needing_human}.",
     ]
     if not new_findings and not posted_follow_ups:
         lines.extend(["", "Findings: No new actionable findings."])

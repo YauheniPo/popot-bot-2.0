@@ -85,7 +85,7 @@ jobs:
             --require response_format \
             --require structured_outputs
 
-      - name: Reviewer 1 — direct OpenRouter API review and publication
+      - name: OpenRouterAPI — direct review and publication
         env:
           OPENROUTER_REVIEW_MODEL: ${{ steps.direct_models.outputs.selected_model }}
           OPENROUTER_REVIEW_FALLBACK_MODEL: ${{ steps.direct_models.outputs.secondary_model }}
@@ -207,7 +207,7 @@ jobs:
             exit 1
           fi
 
-      - name: Reviewer 2 — Claude Code review with primary model
+      - name: ClaudeCodePlugin — review with primary model
         id: claude_review_primary
         if: steps.claude_models.outputs.primary_ready == 'true'
         continue-on-error: true
@@ -254,7 +254,7 @@ jobs:
             ${{ steps.review_threads.outputs.context }}
             --- END UNRESOLVED REVIEW THREADS ---
 
-            The first reviewer marks its initial inline findings with
+            OpenRouterAPI marks its initial inline findings with
             `<!-- direct-openrouter-inline:<head-sha>:... -->`. For every such
             thread in the snapshot, return one `thread_verdicts` item:
             `confirmed` only when its claim remains demonstrably valid;
@@ -319,7 +319,7 @@ jobs:
           ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ steps.claude_models.outputs.primary_model }}
           CLAUDE_CODE_SUBAGENT_MODEL: ${{ steps.claude_models.outputs.primary_model }}
 
-      - name: Reviewer 2 — retry Claude Code review with fallback model
+      - name: ClaudeCodePlugin — retry with fallback model
         id: claude_review_fallback
         if: >-
           always() &&
@@ -350,7 +350,7 @@ jobs:
           ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
           CLAUDE_CODE_SUBAGENT_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
 
-      - name: Reviewer 2 — validate and publish Claude Code review
+      - name: ClaudeCodePlugin — validate and publish review
         id: publish_claude_review
         if: >-
           always() &&

@@ -38,7 +38,7 @@ MAX_RENDERED_LINE_CHARACTERS = 4_000
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 GITHUB_API_URL = "https://api.github.com"
 REVIEW_RULES_PATH = Path(".github/REVIEWER.md")
-REVIEWER_LABEL = "Reviewer 1 — Direct OpenRouter API"
+REVIEWER_LABEL = "OpenRouterAPI"
 EXCLUDED_REVIEW_PATHS = frozenset(
     {
         ".github/workflows/pr-ai-review.yml",
@@ -636,7 +636,7 @@ UNRESOLVED_REVIEW_THREADS:
         # Both default free reviewer models enable hidden reasoning by default,
         # and it consumes the same max_tokens budget as the visible JSON. The
         # direct reviewer must always reserve that budget for a complete schema;
-        # deeper agentic analysis remains available in reviewer 2 (Claude Code).
+        # deeper agentic analysis remains available in ClaudeCodePlugin.
         "reasoning": {"effort": "none", "exclude": True},
         "provider": {"require_parameters": True},
         "response_format": {"type": "json_schema", "json_schema": REVIEW_RESPONSE_SCHEMA},
