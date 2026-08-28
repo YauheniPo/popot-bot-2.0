@@ -319,13 +319,57 @@ jobs:
           ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ steps.claude_models.outputs.primary_model }}
           CLAUDE_CODE_SUBAGENT_MODEL: ${{ steps.claude_models.outputs.primary_model }}
 
+      # Free-provider structured output can fail transiently. Give the primary
+      # one fresh completion before spending a fallback-model attempt.
+      - name: Wait before retrying the primary Claude Code model
+        if: >-
+          always() &&
+          !cancelled() &&
+          steps.claude_models.outputs.primary_ready == 'true' &&
+          steps.claude_review_primary.outcome != 'success'
+        shell: bash
+        run: sleep 15
+
+      - name: ClaudeCodePlugin — retry primary model once
+        id: claude_review_primary_retry
+        if: >-
+          always() &&
+          !cancelled() &&
+          steps.claude_models.outputs.primary_ready == 'true' &&
+          steps.claude_review_primary.outcome != 'success'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@5ee796a55f92566ecd7e39d70dd613abcbea0d7c # v1
+        with:
+          anthropic_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: *claude_review_prompt
+          claude_args: |
+            --max-turns 48
+            --model "${{ steps.claude_models.outputs.primary_model }}"
+            --tools "Read,Glob,Grep"
+            --allowedTools "Read,Glob,Grep"
+            --disallowedTools "mcp__github_comment__*,mcp__github_ci__*,mcp__github_inline_comment__*,mcp__github_file_ops__*"
+            --json-schema '{"type":"object","additionalProperties":false,"required":["summary","findings","thread_verdicts"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","path","side","line","title","impact","fix"],"properties":{"severity":{"type":"string","enum":["P1","P2"]},"path":{"type":"string"},"side":{"type":"string","enum":["RIGHT","LEFT"]},"line":{"type":"integer"},"title":{"type":"string"},"impact":{"type":"string"},"fix":{"type":"string"}}}},"thread_verdicts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["thread_id","verdict","reason"],"properties":{"thread_id":{"type":"string"},"verdict":{"type":"string","enum":["confirmed","rejected","needs_human"]},"reason":{"type":"string"}}}}}}'
+          show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
+        env:
+          ANTHROPIC_BASE_URL: https://openrouter.ai/api
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_DEFAULT_FABLE_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+          CLAUDE_CODE_SUBAGENT_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+
       - name: ClaudeCodePlugin — retry with fallback model
         id: claude_review_fallback
         if: >-
           always() &&
+          !cancelled() &&
           steps.claude_models.outputs.fallback_ready == 'true' &&
           (steps.claude_models.outputs.primary_ready != 'true' ||
-           steps.claude_review_primary.outcome != 'success')
+           (steps.claude_review_primary.outcome != 'success' &&
+            steps.claude_review_primary_retry.outcome != 'success'))
         continue-on-error: true
         uses: anthropics/claude-code-action@5ee796a55f92566ecd7e39d70dd613abcbea0d7c # v1
         with:
@@ -354,7 +398,9 @@ jobs:
         id: publish_claude_review
         if: >-
           always() &&
+          !cancelled() &&
           (steps.claude_review_primary.outcome == 'success' ||
+           steps.claude_review_primary_retry.outcome == 'success' ||
            steps.claude_review_fallback.outcome == 'success')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -362,27 +408,30 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CLAUDE_REVIEW_MODEL: ${{ steps.claude_review_primary.outcome == 'success' && steps.claude_models.outputs.primary_model || steps.claude_models.outputs.fallback_model }}
+          CLAUDE_REVIEW_MODEL: ${{ (steps.claude_review_primary.outcome == 'success' || steps.claude_review_primary_retry.outcome == 'success') && steps.claude_models.outputs.primary_model || steps.claude_models.outputs.fallback_model }}
           CLAUDE_REVIEW_RUN_ID: ${{ github.run_id }}
-          CLAUDE_REVIEW_RESULT: ${{ steps.claude_review_primary.outcome == 'success' && steps.claude_review_primary.outputs.structured_output || steps.claude_review_fallback.outputs.structured_output }}
+          CLAUDE_REVIEW_RESULT: ${{ steps.claude_review_primary.outcome == 'success' && steps.claude_review_primary.outputs.structured_output || steps.claude_review_primary_retry.outcome == 'success' && steps.claude_review_primary_retry.outputs.structured_output || steps.claude_review_fallback.outputs.structured_output }}
         run: python3 .github/scripts/pr_review_context.py publish
 
-      - name: Fail when both Claude Code models fail
+      - name: Fail when all Claude Code attempts fail
         if: >-
           always() &&
+          !cancelled() &&
           steps.claude_review_primary.outcome != 'success' &&
+          steps.claude_review_primary_retry.outcome != 'success' &&
           steps.claude_review_fallback.outcome != 'success'
         shell: bash
         env:
           PRIMARY_MODEL: ${{ steps.claude_models.outputs.primary_model }}
           PRIMARY_READY: ${{ steps.claude_models.outputs.primary_ready }}
           PRIMARY_OUTCOME: ${{ steps.claude_review_primary.outcome }}
+          PRIMARY_RETRY_OUTCOME: ${{ steps.claude_review_primary_retry.outcome }}
           FALLBACK_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
           FALLBACK_READY: ${{ steps.claude_models.outputs.fallback_ready }}
           FALLBACK_OUTCOME: ${{ steps.claude_review_fallback.outcome }}
         run: |
-          echo "::error::Both Claude Code review attempts failed or were unavailable."
-          echo "Primary ${PRIMARY_MODEL}: ready=${PRIMARY_READY}, outcome=${PRIMARY_OUTCOME}"
+          echo "::error::All Claude Code review attempts failed or were unavailable."
+          echo "Primary ${PRIMARY_MODEL}: ready=${PRIMARY_READY}, first=${PRIMARY_OUTCOME}, retry=${PRIMARY_RETRY_OUTCOME}"
           echo "Fallback ${FALLBACK_MODEL}: ready=${FALLBACK_READY}, outcome=${FALLBACK_OUTCOME}"
           exit 1
 
