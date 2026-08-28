@@ -10,6 +10,8 @@ HERMES_BACKUP_DIR="${HERMES_BACKUP_DIR:-${HERMES_USER_HOME}/hermes-backups}"
 HERMES_BACKUP_RETENTION_DAYS="${HERMES_BACKUP_RETENTION_DAYS:-14}"
 HERMES_FULL_BACKUP_DAY="${HERMES_FULL_BACKUP_DAY:-7}"
 HERMES_FULL_BACKUP_KEEP="${HERMES_FULL_BACKUP_KEEP:-5}"
+# Keep this many verified pre-deploy/pre-config-deploy archives separately
+# from the weekly scheduled full-backup retention above.
 HERMES_DEPLOYMENT_BACKUP_KEEP="${HERMES_DEPLOYMENT_BACKUP_KEEP:-10}"
 HERMES_BACKUP_PRUNER="${HERMES_BACKUP_PRUNER:-$(dirname "${BASH_SOURCE[0]}")/prune-backups.py}"
 
