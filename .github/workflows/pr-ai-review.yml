@@ -104,6 +104,7 @@ jobs:
     needs: openrouter-api-review
     if: >-
       always() &&
+      !cancelled() &&
       (vars.PR_REVIEWER == '' || vars.PR_REVIEWER == '0' || vars.PR_REVIEWER == '2') &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
