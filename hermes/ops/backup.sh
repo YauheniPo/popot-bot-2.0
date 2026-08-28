@@ -32,6 +32,12 @@ fi
     printf 'Hermes workspace must be a non-empty absolute safe path: %s\n' "${HERMES_WORKSPACE}" >&2
     exit 2
 }
+if [[ "${EUID}" -eq 0 && -n "${HERMES_RUN_AS_USER}" ]]; then
+    id "${HERMES_RUN_AS_USER}" >/dev/null 2>&1 || {
+        printf 'Hermes backup run-as user does not exist: %s\n' "${HERMES_RUN_AS_USER}" >&2
+        exit 2
+    }
+fi
 
 mkdir -p "${HERMES_BACKUP_DIR}" "${HERMES_HOME}/ops"
 chmod 700 "${HERMES_BACKUP_DIR}" "${HERMES_HOME}/ops"
