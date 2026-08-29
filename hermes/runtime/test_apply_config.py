@@ -21,7 +21,7 @@ class ApplyConfigTests(unittest.TestCase):
         settings = apply_config.load_settings(settings_path)
 
         self.assertEqual(settings["vps_deploy"]["identity"]["user"], "hermes")
-        source = settings["vps_deploy"]["source"]
+        source = settings["vps_deploy"]["hermes_source"]
         self.assertEqual(source["branch"], "main")
         self.assertEqual(source["version"], "0.20.5")
         self.assertEqual(source["release"], "v2026.8.19")
@@ -56,6 +56,7 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertIn("resolve_source_pin", deploy_script)
         self.assertNotIn("DEFAULT_HERMES_COMMIT", deploy_script)
         self.assertNotIn("DEFAULT_INSTALLER_SHA256", deploy_script)
+        self.assertIn('data["vps_deploy"]["hermes_source"]', deploy_script)
 
     def test_build_operations_applies_defaults_capabilities_and_unsets_overrides(self) -> None:
         settings = {

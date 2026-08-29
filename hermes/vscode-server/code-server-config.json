@@ -1,0 +1,8 @@
+{
+  "bind-addr": "0.0.0.0:8080",
+  "auth": "password",
+  "cert": false,
+  "disable-telemetry": true,
+  "user-data-dir": "/home/coder/.local/share/code-server",
+  "extensions-dir": "/home/coder/.local/share/code-server/extensions"
+}

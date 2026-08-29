@@ -8,7 +8,7 @@
       - hermes_github_default_owner is match('^[A-Za-z0-9-]{1,39}$')
       - hermes_github_access_probe_repository is match('^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$')
       - hermes_github_repositories_dir is match('^/[A-Za-z0-9._/-]+$')
-      - hermes_github_repositories_dir.startswith(hermes_user_home + '/workspace/')
+      - hermes_github_repositories_dir.startswith(hermes_workspace + '/')
       - "'/../' not in hermes_github_repositories_dir"
       - not hermes_github_repositories_dir.endswith('/..')
       - hermes_github_write_owners is sequence
@@ -19,6 +19,12 @@
       - hermes_git_identity.name is string
       - hermes_git_identity.name is match('^[^\r\n]+$')
       - hermes_git_identity.email is match('^[^@\s]+@[^@\s]+$')
+      - vps_github.git_defaults is mapping
+      - vps_github.git_defaults.default_branch is match('^[A-Za-z0-9._/-]+$')
+      - vps_github.git_defaults.fetch_prune is boolean
+      - vps_github.git_defaults.fetch_prune_tags is boolean
+      - vps_github.git_defaults.push_auto_setup_remote is boolean
+      - vps_github.git_defaults.pull_ff in ['only', 'true', 'false']
     fail_msg: Invalid vps_github configuration in config/vps-defaults.yml.
   when: hermes_github_enabled | bool
 
@@ -86,14 +92,14 @@
           name = {{ hermes_git_identity.name }}
           email = {{ hermes_git_identity.email }}
       [init]
-          defaultBranch = main
+          defaultBranch = {{ vps_github.git_defaults.default_branch }}
       [fetch]
-          prune = true
-          pruneTags = true
+          prune = {{ vps_github.git_defaults.fetch_prune | ternary('true', 'false') }}
+          pruneTags = {{ vps_github.git_defaults.fetch_prune_tags | ternary('true', 'false') }}
       [push]
-          autoSetupRemote = true
+          autoSetupRemote = {{ vps_github.git_defaults.push_auto_setup_remote | ternary('true', 'false') }}
       [pull]
-          ff = only
+          ff = {{ vps_github.git_defaults.pull_ff }}
       [credential "https://{{ hermes_github_host }}"]
           helper =
           helper = !{{ hermes_user_home }}/.local/bin/gh auth git-credential
@@ -234,7 +240,7 @@
 
 - name: Publish managed GitHub workflow rules to Hermes
   ansible.builtin.blockinfile:
-    path: "{{ hermes_user_home }}/workspace/AGENTS.md"
+    path: "{{ hermes_workspace }}/AGENTS.md"
     create: true
     owner: "{{ hermes_user }}"
     group: "{{ hermes_user }}"

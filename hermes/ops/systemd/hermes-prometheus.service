@@ -7,9 +7,9 @@ Wants=network-online.target
 Type=simple
 User=prometheus
 Group=prometheus
-ExecStart=/usr/bin/prometheus --config.file=/etc/hermes-observability/prometheus.yml --storage.tsdb.path=/var/lib/hermes-prometheus --storage.tsdb.retention.time=30d --web.listen-address=127.0.0.1:9090
+ExecStart=/usr/bin/prometheus --config.file=/etc/hermes-observability/prometheus.yml --storage.tsdb.path=/var/lib/hermes-prometheus --storage.tsdb.retention.time=@PROMETHEUS_RETENTION@ --web.listen-address=@PROMETHEUS_BIND_ADDRESS@:@PROMETHEUS_PORT@
 Restart=on-failure
-RestartSec=5
+RestartSec=@SERVICE_RESTART_SEC@
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

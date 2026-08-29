@@ -16,6 +16,9 @@ import urllib.request
 
 
 GITHUB_API_URL = "https://api.github.com"
+CLAUDE_REVIEWER_LABEL = "ClaudeCodePlugin"
+DIRECT_REVIEWER_INLINE_PREFIX = "<!-- direct-openrouter-inline:"
+AUTOMATED_REVIEW_AUTHOR = "github-actions[bot]"
 MAX_THREADS = 200
 MAX_CONTEXT_CHARACTERS = 24_000
 MAX_RENDERED_COMMENTS_PER_THREAD = 3
@@ -99,6 +102,13 @@ class ReviewFinding:
     fix: str
 
 
+@dataclass(frozen=True)
+class ThreadVerdict:
+    thread_id: str
+    verdict: str
+    reason: str
+
+
 class GitHubRequestError(RuntimeError):
     pass
 
@@ -111,6 +121,10 @@ def _required_env(name: str) -> str:
 
 
 def _github_token() -> str:
+    # Precedence is deliberate. GitHub Actions exports GITHUB_TOKEN on every
+    # run; GH_TOKEN is the documented CLI-level override; OVERRIDE_GITHUB_TOKEN
+    # is the explicit escape hatch for the deterministic publish step and for
+    # local testing. Keep this order and the names in sync with the workflow env.
     for name in ("GITHUB_TOKEN", "GH_TOKEN", "OVERRIDE_GITHUB_TOKEN"):
         value = os.environ.get(name)
         if value:
@@ -402,6 +416,41 @@ def reply_to_review_thread(
     )
 
 
+def resolve_review_thread(token: str, thread_id: str) -> None:
+    """Resolve an already validated machine-authored review thread."""
+    response = _request_json(
+        f"{GITHUB_API_URL}/graphql",
+        "POST",
+        token,
+        {
+            "query": (
+                "mutation ResolveReviewThread($threadId: ID!) { "
+                "resolveReviewThread(input: {threadId: $threadId}) { "
+                "thread { isResolved } } }"
+            ),
+            "variables": {"threadId": thread_id},
+        },
+    )
+    try:
+        resolved = response["data"]["resolveReviewThread"]["thread"]["isResolved"]
+    except (KeyError, TypeError) as error:
+        raise GitHubRequestError("GitHub did not confirm review-thread resolution") from error
+    if resolved is not True:
+        raise GitHubRequestError("GitHub did not resolve the review thread")
+
+
+def _is_direct_machine_thread(thread: ReviewThread, head_sha: str) -> bool:
+    """Limit auto-resolution to the first reviewer's untouched current-head threads."""
+    if not thread.comments:
+        return False
+    first = thread.comments[0]
+    return (
+        first.author == AUTOMATED_REVIEW_AUTHOR
+        and f"{DIRECT_REVIEWER_INLINE_PREFIX}{head_sha}:" in first.body
+        and all(comment.author == AUTOMATED_REVIEW_AUTHOR for comment in thread.comments)
+    )
+
+
 def _required_commit_sha(name: str) -> str:
     value = _required_env(name)
     if not COMMIT_SHA_PATTERN.fullmatch(value):
@@ -543,7 +592,7 @@ def _validated_claude_result(
     raw_result: str,
     base_sha: str,
     head_sha: str,
-) -> tuple[str, list[ReviewFinding]]:
+) -> tuple[str, list[ReviewFinding], list[ThreadVerdict]]:
     try:
         result = json.loads(raw_result)
     except json.JSONDecodeError as error:
@@ -552,8 +601,9 @@ def _validated_claude_result(
         raise RuntimeError("Claude review output must be a JSON object")
     summary = _clean_result_text(result.get("summary"), 1_000)
     raw_findings = result.get("findings")
-    if not summary or not isinstance(raw_findings, list):
-        raise RuntimeError("Claude review output omitted summary or findings")
+    raw_verdicts = result.get("thread_verdicts")
+    if not summary or not isinstance(raw_findings, list) or not isinstance(raw_verdicts, list):
+        raise RuntimeError("Claude review output omitted summary, findings, or thread_verdicts")
 
     findings: list[ReviewFinding] = []
     seen_locations: set[tuple[str, str, int]] = set()
@@ -594,7 +644,26 @@ def _validated_claude_result(
         seen_locations.add(location)
         findings.append(ReviewFinding(severity, path, side, line, title, impact, fix))
     findings.sort(key=lambda item: (0 if item.severity == "P1" else 1, item.path, item.line))
-    return summary, findings
+    verdicts: list[ThreadVerdict] = []
+    seen_thread_ids: set[str] = set()
+    for raw in raw_verdicts[:20]:
+        if not isinstance(raw, dict):
+            continue
+        thread_id = raw.get("thread_id")
+        verdict = raw.get("verdict")
+        reason = _clean_result_text(raw.get("reason"), 800)
+        if (
+            not isinstance(thread_id, str)
+            or not thread_id
+            or len(thread_id) > 200
+            or thread_id in seen_thread_ids
+            or verdict not in {"confirmed", "rejected", "needs_human"}
+            or not reason
+        ):
+            continue
+        seen_thread_ids.add(thread_id)
+        verdicts.append(ThreadVerdict(thread_id, verdict, reason))
+    return summary, findings, verdicts
 
 
 def _finding_text(finding: ReviewFinding) -> str:
@@ -624,12 +693,48 @@ def _command_publish() -> None:
         print("The Claude review already exists for this run; skipping duplicate.")
         return
 
-    summary, findings = _validated_claude_result(
+    summary, findings, verdicts = _validated_claude_result(
         _required_env("CLAUDE_REVIEW_RESULT"),
         base_sha,
         head_sha,
     )
     threads = fetch_unresolved_review_threads(repository, pr_number, token)
+    threads_by_id = {thread.node_id: thread for thread in threads}
+    confirmed_direct_findings = 0
+    rejected_direct_findings = 0
+    direct_findings_needing_human = 0
+    rejected_thread_ids: set[str] = set()
+    for verdict in verdicts:
+        thread = threads_by_id.get(verdict.thread_id)
+        # A model may only resolve a clearly marked OpenRouterAPI thread for the
+        # current revision. Human participation or a stale thread opts out.
+        if thread is None or not _is_direct_machine_thread(thread, head_sha):
+            continue
+        if verdict.verdict == "confirmed":
+            confirmed_direct_findings += 1
+            continue
+        if verdict.verdict == "needs_human":
+            direct_findings_needing_human += 1
+            continue
+        verdict_marker = f"<!-- claude-thread-verdict:{head_sha}:{thread.node_id} -->"
+        if any(verdict_marker in comment.body for comment in thread.comments):
+            continue
+        comment_id = thread.reply_to_comment_id
+        if comment_id is None or not thread.viewer_can_reply:
+            continue
+        reply_to_review_thread(
+            repository,
+            pr_number,
+            token,
+            comment_id,
+            (
+                f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] Rejected "
+                f"OpenRouterAPI finding**\n\nReason: {verdict.reason}"
+            ),
+        )
+        resolve_review_thread(token, thread.node_id)
+        rejected_thread_ids.add(thread.node_id)
+        rejected_direct_findings += 1
     new_findings: list[ReviewFinding] = []
     follow_ups: list[tuple[ReviewFinding, ReviewThread]] = []
     duplicates: list[ReviewFinding] = []
@@ -639,7 +744,7 @@ def _command_publish() -> None:
             finding.side,
             finding.line,
             _finding_text(finding),
-            threads,
+            [thread for thread in threads if thread.node_id not in rejected_thread_ids],
         )
         if match is None:
             new_findings.append(finding)
@@ -666,7 +771,8 @@ def _command_publish() -> None:
             finding.side,
             finding.line,
             (
-                f"{inline_marker}\n**{finding.severity} — {finding.title}**\n\n"
+                f"{inline_marker}\n**[{CLAUDE_REVIEWER_LABEL}] "
+                f"{finding.severity} — {finding.title}**\n\n"
                 f"Impact: {finding.impact}\n\nProposed fix: {finding.fix}"
             ),
         )
@@ -684,7 +790,8 @@ def _command_publish() -> None:
             token,
             comment_id,
             (
-                f"{follow_up_marker}\n**Additional evidence — {finding.severity}: "
+                f"{follow_up_marker}\n**[{CLAUDE_REVIEWER_LABEL}] "
+                f"Additional evidence — {finding.severity}: "
                 f"{finding.title}**\n\nImpact: {finding.impact}\n\n"
                 f"Proposed fix: {finding.fix}"
             ),
@@ -692,9 +799,10 @@ def _command_publish() -> None:
         posted_follow_ups.append(finding)
 
     lines = [
-        "## Claude Code review",
+        f"## {CLAUDE_REVIEWER_LABEL}",
         "",
         f"> Provider: OpenRouter · Model: `{model}`",
+        "> Execution: Claude Code agent via SDK",
         f"> Reviewed Head SHA: `{head_sha}`",
         "",
         f"Summary: {summary}",
@@ -702,6 +810,9 @@ def _command_publish() -> None:
         f"New inline findings: {len(new_findings)}.",
         f"Material thread follow-ups: {len(posted_follow_ups)}.",
         f"Existing unresolved findings not repeated: {len(duplicates)}.",
+        f"OpenRouterAPI findings confirmed: {confirmed_direct_findings}.",
+        f"OpenRouterAPI findings rejected and auto-resolved: {rejected_direct_findings}.",
+        f"OpenRouterAPI findings left for human review: {direct_findings_needing_human}.",
     ]
     if not new_findings and not posted_follow_ups:
         lines.extend(["", "Findings: No new actionable findings."])

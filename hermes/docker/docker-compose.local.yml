@@ -121,7 +121,7 @@ services:
   # The node-exporter image is used only as a Prometheus metrics provider.
   # It deliberately has no macOS host mounts or host-level metrics access.
   metrics-provider:
-    image: quay.io/prometheus/node-exporter:v1.11.1
+    image: quay.io/prometheus/node-exporter:v1.11.1@sha256:0f422f62c15f154af8d8572b23d623aebfb10cec73a5c654d18f911f3f9df241
     container_name: hermes-local-metrics-provider
     command:
       - --collector.textfile.directory=/metrics
@@ -143,7 +143,7 @@ services:
       - hermes_observability
 
   prometheus:
-    image: prom/prometheus:v3.13.1
+    image: prom/prometheus:v3.13.1@sha256:3c42b892cf723fa54d2f262c37a0e1f80aa8c8ddb1da7b9b0df9455a35a7f893
     container_name: hermes-local-prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -170,7 +170,7 @@ services:
       - metrics-provider
 
   grafana:
-    image: grafana/grafana:13.1.0
+    image: grafana/grafana:13.1.0@sha256:121a7a9ece6dc10b969f1f96eed64b4f07dfac0d0b8abc070f7cb83bbde86f63
     container_name: hermes-local-grafana
     env_file:
       - path: ./grafana.env

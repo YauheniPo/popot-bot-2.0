@@ -5,7 +5,6 @@ set -Eeuo pipefail
 umask 027
 
 readonly DEFAULT_HERMES_USER="hermes"
-readonly HERMES_RAW_BASE_URL="https://raw.githubusercontent.com/NousResearch/hermes-agent"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 readonly VPS_SETTINGS_FILE="$SCRIPT_DIR/config/vps-defaults.yml"
@@ -20,6 +19,7 @@ HERMES_VERSION=""
 HERMES_RELEASE=""
 HERMES_COMMIT=""
 INSTALLER_SHA256=""
+HERMES_RAW_BASE_URL=""
 WITH_BROWSER=true
 RUN_SETUP=true
 # Auto-start only after setup has created both Telegram credentials. Use
@@ -327,20 +327,22 @@ except ImportError:
 with open(sys.argv[1]) as handle:
     data = yaml.safe_load(handle)
 try:
-    source = data["vps_deploy"]["source"]
+    source = data["vps_deploy"]["hermes_source"]
 except (TypeError, KeyError):
-    sys.exit("vps-defaults.yml is missing the vps_deploy.source mapping")
-for key in ("branch", "version", "release", "commit", "installer_sha256"):
+    sys.exit("vps-defaults.yml is missing the vps_deploy.hermes_source mapping")
+for key in ("raw_base_url", "branch", "version", "release", "commit", "installer_sha256"):
     if key not in source:
-        sys.exit(f"vps_deploy.source is missing the {key!r} key")
+        sys.exit(f"vps_deploy.hermes_source is missing the {key!r} key")
     value = source[key]
     if not isinstance(value, str) or not value:
         sys.exit(f"deploy source pin {key!r} must be a non-empty string")
-print(" ".join(source[key] for key in ("branch", "version", "release", "commit", "installer_sha256")))
+print(" ".join(source[key] for key in ("raw_base_url", "branch", "version", "release", "commit", "installer_sha256")))
 PY
 )" || die "could not read the deploy source pin from $VPS_SETTINGS_FILE"
 
-  read -r HERMES_BRANCH HERMES_VERSION HERMES_RELEASE HERMES_COMMIT INSTALLER_SHA256 <<<"$parsed"
+  read -r HERMES_RAW_BASE_URL HERMES_BRANCH HERMES_VERSION HERMES_RELEASE HERMES_COMMIT INSTALLER_SHA256 <<<"$parsed"
+  [[ "$HERMES_RAW_BASE_URL" == "https://raw.githubusercontent.com/NousResearch/hermes-agent" ]] ||
+    die "unsupported Hermes source base URL: $HERMES_RAW_BASE_URL"
 }
 
 # shellcheck source=deploy/runtime.sh

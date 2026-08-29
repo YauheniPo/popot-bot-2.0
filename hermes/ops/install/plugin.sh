@@ -3,6 +3,13 @@
 enable_observability_plugin() {
     local hermes_python="${HERMES_HOME}/hermes-agent/venv/bin/python"
     local result
+    local gateway_service
+    local -a configure_args=(
+        --config "${HERMES_HOME}/config.yaml"
+        --hermes-home "${HERMES_HOME}"
+    )
+    gateway_service="$(managed_services gateway)"
+    configure_args+=(--gateway-service "${gateway_service}")
     [[ -x "${hermes_python}" ]] || {
         log "WARNING: Hermes Python environment is unavailable; the observability plugin was not enabled"
         return 0
@@ -10,13 +17,21 @@ enable_observability_plugin() {
 
     # The regular plugin command can block in a non-interactive provisioner.
     # Keep the small deterministic config mutation in a testable helper.
+    if [[ "${VSCODE_ENABLED}" == true ]]; then
+        configure_args+=(
+            --vscode-enabled
+            --vscode-compose-file "${VSCODE_COMPOSE_FILE}"
+            --vscode-env-file "${VSCODE_ENV_FILE}"
+            --vscode-project-name "${VSCODE_PROJECT_NAME}"
+        )
+    fi
+
     result="$(runuser -u "${HERMES_USER}" -- env -i \
         HOME="${USER_HOME}" \
         HERMES_HOME="${HERMES_HOME}" \
         PATH="${USER_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin" \
         "${hermes_python}" "${SCRIPT_DIR}/configure-plugin.py" \
-        --config "${HERMES_HOME}/config.yaml" \
-        --hermes-home "${HERMES_HOME}")"
+        "${configure_args[@]}")"
     if [[ "${result}" == "changed" ]]; then
         PLUGIN_CONFIGURATION_CHANGED=true
     fi
@@ -30,7 +45,7 @@ install_observability_plugin() {
         "${HERMES_HOME}/ops/metrics" \
         "${HERMES_HOME}/logs" \
         "${HERMES_HOME}/state-snapshots" \
-        "${USER_HOME}/hermes-backups"
+        "${BACKUP_DIR}"
     # `install -d` does not reliably correct ownership of an already-existing
     # parent directory.  These paths must remain private to the Hermes service
     # account, including after a previous root-run maintenance command.
@@ -39,13 +54,13 @@ install_observability_plugin() {
         "${HERMES_HOME}/ops/metrics" \
         "${HERMES_HOME}/logs" \
         "${HERMES_HOME}/state-snapshots" \
-        "${USER_HOME}/hermes-backups"
+        "${BACKUP_DIR}"
     chmod 0700 \
         "${HERMES_HOME}/ops" \
         "${HERMES_HOME}/ops/metrics" \
         "${HERMES_HOME}/logs" \
         "${HERMES_HOME}/state-snapshots" \
-        "${USER_HOME}/hermes-backups"
+        "${BACKUP_DIR}"
     # Hermes itself, the dashboard, and the exporters all run as this unprivileged
     # account.  A previous root-run command can leave the SQLite database behind
     # as root-owned, which prevents the dashboard's read-only API from opening it.

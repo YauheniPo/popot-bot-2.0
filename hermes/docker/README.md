@@ -183,13 +183,12 @@ scripts) и `hermes/observability` (Prometheus/Grafana provisioning) — опи�
 )
 ```
 
-Проверьте файл, затем безопасно откройте рабочий зашифрованный
-`hermes/ansible/group_vars/all/vault.yml` по
-[Vault-инструкции](../ansible/group_vars/all/VAULT.md) и замените только его
-раздел `hermes_llm_config` экспортированным разделом. Не заменяйте весь Vault:
-`hermes_secret_env` должен оставаться там, а реальные VPS keys задаются
-отдельно. После этого обычный `ansible-playbook` применит настройки до старта
-VPS gateway.
+Проверьте файл и перенесите только `managed_overlay` в
+`hermes/config/vps-defaults.yml:vps_hermes.config`. Vault не меняйте:
+`hermes_secret_env` остаётся отдельным encrypted источником API keys. Поля
+`model.provider` и `model.default` намеренно не экспортируются, чтобы выбор
+через `/model_global` сохранялся между deploy. После этого обычный
+`ansible-playbook` применит repository-owned настройки до старта VPS gateway.
 
 `/voice on` остаётся настройкой конкретной TUI-сессии и в export не входит.
 STT configuration и списки включённых toolsets входят. OAuth Nous Portal,

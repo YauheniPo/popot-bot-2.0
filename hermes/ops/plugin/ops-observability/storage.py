@@ -103,13 +103,24 @@ def _write_audit(payload: bytes) -> None:
 
     _, _, path = _paths()
     max_bytes = _bounded_int("HERMES_OBSERVABILITY_AUDIT_MAX_BYTES", 5 * 1024 * 1024, 64 * 1024, 100 * 1024 * 1024)
+    rotated_files = _bounded_int("HERMES_OBSERVABILITY_AUDIT_ROTATED_FILES", 2, 1, 10)
     try:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if path.is_symlink():
+            return
         if path.exists() and path.stat().st_size + len(payload) > max_bytes:
-            # Keep one previous file only. Audit is diagnostic metadata, not a
-            # compliance archive, and bounded retention protects the VPS disk.
-            path.replace(path.with_name(path.name + ".1"))
-        descriptor = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
+            for index in range(rotated_files, 0, -1):
+                source = path if index == 1 else path.with_name(f"{path.name}.{index - 1}")
+                target = path.with_name(f"{path.name}.{index}")
+                if not source.exists() or source.is_symlink():
+                    continue
+                if target.exists() or target.is_symlink():
+                    target.unlink()
+                source.replace(target)
+        flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags, 0o600)
         try:
             os.write(descriptor, payload)
         finally:
@@ -201,6 +212,5 @@ def _audit(event: str, **metadata: Any) -> None:
         if sanitized is not None:
             record[key_text] = sanitized
     _enqueue("audit", (json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n").encode())
-
 
 

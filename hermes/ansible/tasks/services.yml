@@ -9,7 +9,12 @@
       - "{{ hermes_user_home }}"
       - --hermes-home
       - "{{ hermes_home }}"
+      - --version
+      - "{{ vps_browser.agent_browser_version }}"
+      - --launch-args
+      - "{{ vps_browser.launch_args }}"
   changed_when: true
+  when: vps_deploy.features.browser_automation | bool
 
 - name: Locate the installed Hermes Edge TTS implementation
   ansible.builtin.find:
@@ -32,6 +37,41 @@
   changed_when: "'installed Edge TTS transient retry' in hermes_tts_retry.stdout"
   when: hermes_tts_tool_files.matched | int > 0
 
+- name: Apply local Hermes gateway command patches
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ hermes_bundle_dir }}/runtime/apply-hermes-patches.py"
+  become_user: "{{ hermes_user }}"
+  environment:
+    HERMES_HOME: "{{ hermes_home }}"
+    HERMES_INSTALL_DIR: "{{ hermes_home }}/hermes-agent"
+    HOME: "{{ hermes_user_home }}"
+  register: hermes_local_patches
+  changed_when: "'[hermes-patch] changed' in hermes_local_patches.stdout"
+  failed_when: hermes_local_patches.rc != 0
+
+- name: Remove the legacy unmanaged response-language rule from SOUL
+  ansible.builtin.lineinfile:
+    path: "{{ hermes_home }}/SOUL.md"
+    line: "Always think and write your reasoning/thinking trace in Russian, regardless of the language of the user's query. Final answers are written in the language of the user's latest message."
+    state: absent
+    create: true
+  become_user: "{{ hermes_user }}"
+
+- name: Manage the repository-owned response-language rule in SOUL
+  ansible.builtin.blockinfile:
+    path: "{{ hermes_home }}/SOUL.md"
+    marker: "<!-- {mark} ANSIBLE MANAGED RESPONSE LANGUAGE -->"
+    insertafter: EOF
+    block: |
+      {{ vps_agent_policy.response_language_instruction }}
+    create: true
+    owner: "{{ hermes_user }}"
+    group: "{{ hermes_user }}"
+    mode: "0600"
+  become_user: "{{ hermes_user }}"
+
 - name: Report when the upstream Edge TTS implementation cannot be located
   ansible.builtin.debug:
     msg: >-
@@ -52,9 +92,48 @@
 
 - name: Install audit, metrics, reporting, and health checks
   ansible.builtin.command:
-    argv: "{{ [hermes_bundle_dir + '/ops/install-ops.sh', '--user', hermes_user, '--user-home', hermes_user_home, '--hermes-home', hermes_home, '--hermes-bin', hermes_bin, '--no-restart'] + ([] if hermes_gateway_enabled | bool else ['--defer-timers']) }}"
+    argv: >-
+      {{
+        [
+          hermes_bundle_dir + '/ops/install-ops.sh',
+          '--user', hermes_user,
+          '--user-home', hermes_user_home,
+          '--hermes-home', hermes_home,
+          '--hermes-bin', hermes_bin,
+          '--workspace', hermes_workspace,
+          '--backup-dir', hermes_backup_dir,
+          '--no-restart'
+        ] +
+        ([] if hermes_gateway_enabled | bool else ['--defer-timers']) +
+        (
+          [
+            '--vscode-enabled',
+            '--vscode-compose-file', hermes_bundle_dir + '/vscode-server/docker-compose.yml',
+            '--vscode-env-file', '/etc/code-server.env',
+            '--vscode-project-name', vps_vscode.project_name
+          ]
+          if (
+            (hermes_host_admin_enabled | bool) and
+            (vps_deploy.features.vscode_server | default(false) | bool)
+          )
+          else []
+        )
+      }}
   when: hermes_enable_ops | bool
   changed_when: true
+
+- name: Validate the final managed Hermes configuration
+  ansible.builtin.command:
+    argv:
+      - "{{ hermes_bin }}"
+      - config
+      - check
+  become_user: "{{ hermes_user }}"
+  environment:
+    HOME: "{{ hermes_user_home }}"
+    HERMES_HOME: "{{ hermes_home }}"
+    PATH: "{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  changed_when: false
 
 - name: Install and start the Hermes system gateway
   ansible.builtin.command:
@@ -133,6 +212,27 @@
   when:
     - hermes_enable_ops | bool
     - hermes_gateway_enabled | bool
+
+- name: Apply deployment backup retention after a config-only deployment
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ hermes_bundle_dir }}/ops/prune-backups.py"
+      - --backup-dir
+      - "{{ hermes_backup_dir }}"
+      - --snapshots-dir
+      - "{{ hermes_home }}/state-snapshots"
+      - --quick-retention-days
+      - "{{ vps_ops.backup.retention_days | string }}"
+      - --full-keep
+      - "{{ vps_ops.backup.full_keep | string }}"
+      - --deployment-keep
+      - "{{ vps_ops.backup.deployment_keep | string }}"
+  register: hermes_deployment_backup_prune
+  changed_when: "'deployment=0' not in hermes_deployment_backup_prune.stdout"
+  when:
+    - hermes_binary.stat.exists
+    - not (hermes_source_update_required | bool)
 
 - name: Read Hermes deploy completion time
   ansible.builtin.command:

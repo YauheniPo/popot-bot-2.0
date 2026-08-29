@@ -15,9 +15,10 @@ def hermes_home() -> Path:
 
 
 def gateway_state() -> str:
+    service = os.environ.get("HERMES_GATEWAY_SERVICE", "hermes-gateway.service")
     try:
         result = subprocess.run(
-            ["systemctl", "is-active", "hermes-gateway.service"],
+            ["systemctl", "is-active", service],
             check=False,
             capture_output=True,
             text=True,
