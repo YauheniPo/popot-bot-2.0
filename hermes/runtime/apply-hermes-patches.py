@@ -9,7 +9,7 @@ matches exactly.
 
 Covered customizations (not yet upstream):
  * gateway commands: /gw-restart (canonical, with /restart and /gw_restart
-   aliases so the Telegram menu entry resolves) and /model_global
+   aliases so the Telegram menu entry resolves), /model_global, and /doctor
  * /status shows reasoning effort, visibility, global + topic model
  * busy-session dispatch handles /gw-restart like /restart
 The existing Edge TTS retry lives in ops/apply-edge-tts-retry.py and is not
@@ -348,6 +348,86 @@ _PATCHES: list[tuple[str, str, str, str]] = [
             lines.append(f"**Topic model:** {topic_model}" + (" *(override)*" if session_model else ""))
         except Exception:
             pass
+''',
+    ),
+    (
+        "hermes_cli/commands.py",
+        _PREFIX + " doctor CommandDef",
+        '''    CommandDef("status", "Show session, model, token, and context info", "Session",
+               busy_policy="dispatch"),
+    CommandDef("egress", "Show Docker egress proxy status", "Session",
+''',
+        '''    CommandDef("status", "Show session, model, token, and context info", "Session",
+               busy_policy="dispatch"),
+    # Local Hermes: doctor CommandDef
+    CommandDef("doctor", "Run read-only Hermes diagnostics", "Info",
+               gateway_only=True, busy_policy="dispatch"),
+    CommandDef("egress", "Show Docker egress proxy status", "Session",
+''',
+    ),
+    (
+        "gateway/slash_commands.py",
+        _PREFIX + " doctor handler",
+        '''    async def _handle_version_command(self, event: MessageEvent) -> str:
+        """Handle /version — show the running Hermes Agent version."""
+        from hermes_cli.slash_exec import CommandContext, execute_command
+
+        return execute_command("version", CommandContext(surface="gateway")).text
+
+''',
+        '''    async def _handle_version_command(self, event: MessageEvent) -> str:
+        """Handle /version — show the running Hermes Agent version."""
+        from hermes_cli.slash_exec import CommandContext, execute_command
+
+        return execute_command("version", CommandContext(surface="gateway")).text
+
+    async def _handle_doctor_command(self, event: MessageEvent) -> str:
+        """Handle /doctor with the read-only Hermes diagnostic command."""
+        from gateway.run import _resolve_hermes_bin
+
+        process = None
+        try:
+            process = await asyncio.create_subprocess_exec(
+                str(_resolve_hermes_bin()),
+                "doctor",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            output_bytes, _ = await asyncio.wait_for(process.communicate(), timeout=30)
+        except asyncio.TimeoutError:
+            if process is not None:
+                process.kill()
+                await process.wait()
+            return "Doctor timed out after 30 seconds."
+        except OSError as exc:
+            return f"Doctor could not start: {exc}"
+
+        output = output_bytes.decode("utf-8", errors="replace").strip()
+        if len(output) > 3500:
+            output = output[:3500].rstrip() + "\\n\\n… Output truncated."
+        if process.returncode:
+            return f"Doctor failed (exit {process.returncode}):\\n{output}"
+        return output or "Doctor completed without diagnostic output."
+
+    # Local Hermes: doctor handler
+''',
+    ),
+    (
+        "gateway/run.py",
+        _PREFIX + " doctor route",
+        '''        if canonical == "version":
+            return await self._handle_version_command(event)
+
+        if canonical == "debug":
+''',
+        '''        if canonical == "version":
+            return await self._handle_version_command(event)
+
+        if canonical == "doctor":
+            # Local Hermes: doctor route
+            return await self._handle_doctor_command(event)
+
+        if canonical == "debug":
 ''',
     ),
 ]

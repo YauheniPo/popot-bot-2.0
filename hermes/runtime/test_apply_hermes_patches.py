@@ -205,7 +205,10 @@ class ApplyHermesPatchesTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with mock.patch.object(apply_hermes_patches, "HERMES_AGENT_DIR", install_dir):
+            with (
+                mock.patch.object(apply_hermes_patches, "HERMES_AGENT_DIR", install_dir),
+                mock.patch.object(apply_hermes_patches, "_PATCHES", apply_hermes_patches._PATCHES[:7]),
+            ):
                 self.assertEqual(apply_hermes_patches.main(), 0)
 
             self.assertIn(
@@ -227,6 +230,28 @@ class ApplyHermesPatchesTests(unittest.TestCase):
 
         self.assertIn("model_global", patch_payload)
         self.assertNotIn(retired, patch_payload)
+
+    def test_doctor_patch_is_a_gateway_only_fixed_argument_diagnostic(self) -> None:
+        patches = {
+            marker: new
+            for _path, marker, _old, new in apply_hermes_patches._PATCHES
+        }
+
+        self.assertIn(
+            'CommandDef("doctor", "Run read-only Hermes diagnostics", "Info"',
+            patches["# Local Hermes: doctor CommandDef"],
+        )
+        self.assertIn(
+            "gateway_only=True", patches["# Local Hermes: doctor CommandDef"]
+        )
+        self.assertIn('"doctor",', patches["# Local Hermes: doctor handler"])
+        self.assertIn(
+            "asyncio.create_subprocess_exec", patches["# Local Hermes: doctor handler"]
+        )
+        self.assertNotIn("shell=True", patches["# Local Hermes: doctor handler"])
+        self.assertIn(
+            'if canonical == "doctor":', patches["# Local Hermes: doctor route"]
+        )
 
     def test_missing_required_target_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
