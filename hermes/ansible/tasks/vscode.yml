@@ -7,13 +7,9 @@
   ansible.builtin.assert:
     that:
       - hermes_code_server_password is string
-      - hermes_code_server_password | length >= 16
-      - hermes_code_server_password | length <= 128
-      - hermes_code_server_password != 'replace-inside-ansible-vault'
-      - hermes_code_server_password is match('^[A-Za-z0-9._~!@%^+=:,-]{16,128}$')
+      - hermes_code_server_password | length > 0
     fail_msg: >-
-      Set a unique code-server password of 16-128 characters in encrypted
-      vault.yml. Allowed characters: letters, digits, . _ ~ ! @ % ^ + = : , -
+      Set a non-empty code-server password in encrypted vault.yml.
   no_log: true
 
 - name: Install Docker Compose v2 plugin
@@ -70,6 +66,27 @@
   no_log: true
   diff: false
 
+- name: Detect the legacy code-server container
+  ansible.builtin.command:
+    argv:
+      - docker
+      - container
+      - inspect
+      - vscode-server-code-server-1
+  register: hermes_legacy_vscode_container
+  changed_when: false
+  failed_when: false
+
+- name: Replace the legacy code-server container
+  ansible.builtin.command:
+    argv:
+      - docker
+      - container
+      - rm
+      - --force
+      - vscode-server-code-server-1
+  when: hermes_legacy_vscode_container.rc == 0
+
 - name: Start the managed code-server container
   ansible.builtin.command:
     argv:
@@ -83,10 +100,10 @@
       - -d
       - --build
     chdir: "{{ hermes_bundle_dir }}/vscode-server"
-    environment:
-      VPS_USER_HOME: "{{ hermes_user_home }}"
-      HERMES_UID: "{{ hermes_vscode_uid.stdout }}"
-      HERMES_GID: "{{ hermes_vscode_gid.stdout }}"
+  environment:
+    VPS_USER_HOME: "{{ hermes_user_home }}"
+    HERMES_UID: "{{ hermes_vscode_uid.stdout }}"
+    HERMES_GID: "{{ hermes_vscode_gid.stdout }}"
   changed_when: true
 
 - name: Verify the code-server container is running

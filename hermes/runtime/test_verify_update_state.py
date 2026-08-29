@@ -72,6 +72,9 @@ class VerifyUpdateStateTests(unittest.TestCase):
         session = self.home / "sessions" / "telegram" / "session.json"
         session.parent.mkdir(parents=True)
         session.write_text("{}\n", encoding="utf-8")
+        quick_snapshot = self.home / "state-snapshots" / "scheduled" / "state.db"
+        quick_snapshot.parent.mkdir(parents=True)
+        quick_snapshot.write_bytes(b"backup artifact\n")
         create_kanban_db(self.home / "kanban.db", ["todo", "done", "done"])
         create_kanban_db(
             self.home / "kanban" / "boards" / "project-a" / "kanban.db",
@@ -105,6 +108,7 @@ class VerifyUpdateStateTests(unittest.TestCase):
         self.assertIn("sessions/telegram/session.json", snapshot["files"])
         self.assertNotIn("skills/custom-review/venv/dependency.py", snapshot["files"])
         self.assertNotIn("hermes-agent/gateway/run.py", snapshot["files"])
+        self.assertNotIn("state-snapshots/scheduled/state.db", snapshot["files"])
 
     def test_verified_backup_matches_live_snapshot(self) -> None:
         snapshot = verify_update_state.create_snapshot(self.home)

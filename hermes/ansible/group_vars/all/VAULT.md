@@ -129,7 +129,7 @@ hermes_secret_env:
 После каждого изменения Vault вернитесь в каталог `hermes` и запустите:
 
 ```bash
-ansible-playbook -i ansible/inventory.ini \
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventory.ini \
   ansible/playbook.yml \
   --ask-vault-pass \
   --ask-pass

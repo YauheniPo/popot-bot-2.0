@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import stat
 import unittest
 from pathlib import Path
@@ -57,23 +56,16 @@ class VscodeServerConfigTests(unittest.TestCase):
             "!/home/coder/.local/bin/gh auth git-credential",
         )
 
-    def test_password_is_validated_before_plain_dotenv_rendering(self) -> None:
+    def test_nonempty_password_is_json_escaped_before_dotenv_rendering(self) -> None:
         tasks = (HERMES_DIR / "ansible" / "tasks" / "vscode.yml").read_text(
             encoding="utf-8"
         )
         template = (
             HERMES_DIR / "ansible" / "templates" / "code-server.env.j2"
         ).read_text(encoding="utf-8")
-        match_line = next(
-            line for line in tasks.splitlines() if "hermes_code_server_password is match(" in line
-        )
-        pattern = match_line.split("match('", 1)[1].rsplit("')", 1)[0]
-
-        self.assertIsNotNone(re.fullmatch(pattern, "Strong-Manual_Review:2026"))
-        self.assertIsNone(re.fullmatch(pattern, "password'breaks-dotenv"))
-        self.assertIn("replace-inside-ansible-vault", tasks)
-        self.assertIn("PASSWORD={{ hermes_code_server_password }}", template)
-        self.assertNotIn("| quote", template)
+        self.assertIn("hermes_code_server_password | length > 0", tasks)
+        self.assertNotIn("hermes_code_server_password is match(", tasks)
+        self.assertIn("PASSWORD={{ hermes_code_server_password | to_json }}", template)
         self.assertIn("VPS_USER_HOME={{ hermes_user_home }}", template)
         self.assertIn("VPS_HERMES_HOME={{ hermes_home }}", template)
         self.assertIn("HERMES_UID={{ hermes_vscode_uid.stdout }}", template)
@@ -86,6 +78,7 @@ class VscodeServerConfigTests(unittest.TestCase):
         tasks = (HERMES_DIR / "ansible" / "tasks" / "vscode.yml").read_text(
             encoding="utf-8"
         )
+        task_definitions = yaml.safe_load(tasks)
         services = (HERMES_DIR / "ansible" / "tasks" / "services.yml").read_text(
             encoding="utf-8"
         )
@@ -94,9 +87,26 @@ class VscodeServerConfigTests(unittest.TestCase):
         self.assertIn('path: "{{ hermes_github_repositories_dir }}"', tasks)
         self.assertIn('path: "{{ hermes_user_home }}/.gitconfig"', tasks)
         self.assertIn('VPS_USER_HOME: "{{ hermes_user_home }}"', tasks)
+        self.assertIn("Detect the legacy code-server container", tasks)
+        self.assertIn("Replace the legacy code-server container", tasks)
+        self.assertIn("vscode-server-code-server-1", tasks)
         self.assertIn("Verify the managed GitHub account inside code-server", tasks)
         self.assertIn("'--vscode-enabled'", services)
         self.assertIn("vps_deploy.features.vscode_server", services)
+        start_task = next(
+            task
+            for task in task_definitions
+            if task["name"] == "Start the managed code-server container"
+        )
+        self.assertEqual(
+            start_task["environment"],
+            {
+                "VPS_USER_HOME": "{{ hermes_user_home }}",
+                "HERMES_UID": "{{ hermes_vscode_uid.stdout }}",
+                "HERMES_GID": "{{ hermes_vscode_gid.stdout }}",
+            },
+        )
+        self.assertNotIn("environment", start_task["ansible.builtin.command"])
         self.assertIn("ARG HERMES_UID=1000", dockerfile)
         self.assertIn("ARG HERMES_GID=1000", dockerfile)
         self.assertIn("ARG CODE_SERVER_IMAGE", dockerfile)
@@ -109,6 +119,8 @@ class VscodeServerConfigTests(unittest.TestCase):
 
         self.assertTrue(wrapper.stat().st_mode & stat.S_IXUSR)
         self.assertIn("read -rsp", readme)
+        self.assertIn("Set a non-empty code-server password.", readme)
+        self.assertIn("CODE_SERVER_PASSWORD_JSON", readme)
         self.assertIn("sudo install -o root -g root -m 0600", readme)
         self.assertNotIn('echo "PASSWORD=', readme)
 

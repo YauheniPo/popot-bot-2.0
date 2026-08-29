@@ -25,6 +25,7 @@ EXCLUDED_DIRECTORIES = {
     ".git",
     "node_modules",
     "backups",
+    "state-snapshots",
     "checkpoints",
     ".venv",
     "venv",

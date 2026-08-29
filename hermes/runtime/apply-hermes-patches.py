@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import sys
 
 
@@ -31,6 +32,7 @@ _PREFIX = "# Local Hermes:"
 # Construct the retired spelling without advertising it as a supported slash
 # command. It is needed only to migrate files patched by earlier deployments.
 _RETIRED_MODEL_GLOBAL = "model" + chr(45) + "global"
+_GW_RESTART = "gw" + chr(45) + "restart"
 
 
 class PatchMigrationError(RuntimeError):
@@ -110,9 +112,9 @@ def _migrate_model_global_source(relative_path: str, source: str) -> tuple[str, 
     else:
         return source, False
 
-    if retired in migrated:
+    if retired_marker in migrated:
         raise PatchMigrationError(
-            f"cannot migrate {relative_path}: retired command spelling remains"
+            f"cannot migrate {relative_path}: retired local patch marker remains"
         )
     return migrated, True
 
@@ -129,6 +131,74 @@ def _migrate_installed_model_global() -> int:
             continue
         source = target.read_text(encoding="utf-8")
         migrated, changed = _migrate_model_global_source(relative_path, source)
+        if changed:
+            planned_writes.append((target, migrated))
+
+    for target, migrated in planned_writes:
+        target.write_text(migrated, encoding="utf-8")
+        print(f"[hermes-patch] migrated {target.relative_to(HERMES_AGENT_DIR)}")
+    return len(planned_writes)
+
+
+def _migrate_gw_restart_source(relative_path: str, source: str) -> tuple[str, bool]:
+    """Migrate the unmarked /gw-restart blocks produced by an earlier patch."""
+    if relative_path == "hermes_cli/commands.py":
+        legacy = re.compile(
+            r'^    CommandDef\("(?P<command>restart|gw-restart)", "Gracefully restart the gateway after draining active runs", "Session",\n'
+            r'               gateway_only=True, busy_policy="dispatch", aliases=\((?P<aliases>[^)]*)\)\),\n',
+            re.MULTILINE,
+        )
+        new = '''    # Local Hermes: gw-restart canonical
+    CommandDef("gw-restart", "Gracefully restart the gateway after draining active runs", "Session",
+               gateway_only=True, busy_policy="dispatch", aliases=("restart", "gw_restart")),
+'''
+        match = legacy.search(source)
+        if match is None:
+            return source, False
+        aliases = set(re.findall(r'"([A-Za-z_-]+)"', match.group("aliases")))
+        command = match.group("command")
+        if command == "restart":
+            known_legacy_shape = (
+                bool(aliases.intersection({_GW_RESTART, "gw_restart"}))
+                and aliases <= {_GW_RESTART, "gw_restart"}
+            )
+        else:
+            known_legacy_shape = "restart" in aliases and aliases <= {"restart", "gw_restart"}
+        if not known_legacy_shape:
+            return source, False
+        return source[:match.start()] + new + source[match.end():], True
+    elif relative_path == "gateway/run.py":
+        legacy = re.compile(
+            r'^        if canonical in \((?P<aliases>[^)]*)\):\n'
+            r'(?:            #[^\n]*\n)*'
+            r'            return await self\._handle_restart_command\(event\)\n',
+            re.MULTILINE,
+        )
+        new = '''        if canonical in ("restart", "gw-restart"):
+            # Local Hermes: gw-restart route
+            return await self._handle_restart_command(event)
+'''
+    else:
+        return source, False
+
+    match = legacy.search(source)
+    if match is None:
+        return source, False
+    aliases = set(re.findall(r'"([A-Za-z_-]+)"', match.group("aliases")))
+    if not ({"restart", _GW_RESTART} <= aliases <= {"restart", _GW_RESTART, "gw_restart"}):
+        return source, False
+    return source[:match.start()] + new + source[match.end():], True
+
+
+def _migrate_installed_gw_restart() -> int:
+    planned_writes: list[tuple[Path, str]] = []
+    for relative_path in ("hermes_cli/commands.py", "gateway/run.py"):
+        target = HERMES_AGENT_DIR / relative_path
+        if not target.is_file():
+            continue
+        migrated, changed = _migrate_gw_restart_source(
+            relative_path, target.read_text(encoding="utf-8")
+        )
         if changed:
             planned_writes.append((target, migrated))
 
@@ -291,7 +361,7 @@ def main() -> int:
         )
         return 1
     try:
-        migrated = _migrate_installed_model_global()
+        migrated = _migrate_installed_model_global() + _migrate_installed_gw_restart()
     except PatchMigrationError as exc:
         print(f"[hermes-patch] ERROR: {exc}", file=sys.stderr)
         return 1
