@@ -23,6 +23,14 @@ MANAGED_RESTART = (
 
 
 class ConfigurePluginTests(unittest.TestCase):
+    def test_gateway_drop_in_uses_the_native_self_restart_protocol(self) -> None:
+        drop_in = (
+            MODULE_PATH.parent / "systemd" / "hermes-gateway-observability.conf"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("HERMES_GATEWAY_EXTERNAL_SUPERVISOR=1", drop_in)
+        self.assertIn("RestartForceExitStatus=75", drop_in)
+
     def test_configure_adds_plugin_and_status_command(self) -> None:
         config: dict[str, object] = {}
 
