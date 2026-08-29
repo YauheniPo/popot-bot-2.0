@@ -1,5 +1,5 @@
 #!/bin/bash
-# api-retry-loop.sh — повторює запрос до моделі кожні 2 хвилини при rate-limit (429)
+# api-retry-loop.sh — повторює запит до моделі кожні 30 сек, максимум 3 хвилини (6 спроб) при rate-limit (429)
 # Використання: ./api-retry-loop.sh [MODEL_NAME] ["USER_MESSAGE"]
 # Приклад: ./api-retry-loop.sh "poolside/laguna-s-2.1:free" "напиши короткий опис"
 
@@ -9,8 +9,8 @@ API_URL="http://127.0.0.1:9119/api/execute"
 MODEL_NAME="${1:-poolside/laguna-s-2.1:free}"
 USER_MESSAGE="${2:-Hello}"
 
-MAX_ATTEMPTS=100
-WAIT_SECONDS=120  # 2 хвилини
+MAX_ATTEMPTS=6
+WAIT_SECONDS=30  # 30 секунд, максимум 3 хвилини (6 спроб)
 
 echo "🔄 Запуск retry-циклу для моделі: $MODEL_NAME"
 echo "📡 API endpoint: $API_URL"
