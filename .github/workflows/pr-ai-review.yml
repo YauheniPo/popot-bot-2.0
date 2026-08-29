@@ -15,15 +15,15 @@ env:
   # Select reviewers through the PR_REVIEWER repository variable:
   # 0/unset = both sequentially, 1 = direct API, 2 = Claude Code.
   PR_REVIEWER: ${{ vars.PR_REVIEWER || '0' }}
-  # Set OPENROUTER_REVIEW_MODEL under GitHub Actions repository variables to
-  # pin another model. An absent or empty variable keeps PR reviews on the
-  # stealth/ox-alpha free preview tier.
-  OPENROUTER_REVIEW_MODEL: ${{ vars.OPENROUTER_REVIEW_MODEL || 'stealth/ox-alpha' }}
-  # When the primary model exhausts retries, the reviewer falls back to this
-  # model. The adapter preserves strict structured output where supported and
-  # uses prompt-enforced, locally validated JSON when a free endpoint does not
-  # expose response_format. Override when the free model rotates.
-  OPENROUTER_REVIEW_FALLBACK_MODEL: ${{ vars.OPENROUTER_REVIEW_FALLBACK_MODEL || 'poolside/laguna-s-2.1:free' }}
+  # Direct API reviewer models. Keep the older variable names stable; both
+  # defaults have active free endpoints with tools and structured output.
+  OPENROUTER_REVIEW_MODEL: ${{ vars.OPENROUTER_REVIEW_MODEL || 'z-ai/glm-5.2:free' }}
+  OPENROUTER_REVIEW_FALLBACK_MODEL: ${{ vars.OPENROUTER_REVIEW_FALLBACK_MODEL || 'nvidia/nemotron-3-super-120b-a12b:free' }}
+  # Claude Code can be pinned independently because agent/tool compatibility
+  # and direct JSON-schema compatibility are separate contracts. When these
+  # variables are unset, preserve the shared-model behavior used previously.
+  OPENROUTER_CLAUDE_REVIEW_MODEL: ${{ vars.OPENROUTER_CLAUDE_REVIEW_MODEL || vars.OPENROUTER_REVIEW_MODEL || 'z-ai/glm-5.2:free' }}
+  OPENROUTER_CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.OPENROUTER_CLAUDE_REVIEW_FALLBACK_MODEL || vars.OPENROUTER_REVIEW_FALLBACK_MODEL || 'nvidia/nemotron-3-super-120b-a12b:free' }}
   # New OpenRouter accounts may allow only ten requests per minute. Keep a
   # safety margin by default; override with a repository variable when the
   # account has a different documented limit.
@@ -53,7 +53,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${PR_REVIEWER}" != "0" && "${PR_REVIEWER}" != "1" ]]; then
+          if [[ "${PR_REVIEWER}" != "0" && "${PR_REVIEWER}" != "1" && "${PR_REVIEWER}" != "2" ]]; then
             echo "::error::PR_REVIEWER must be 0 (both), 1 (direct OpenRouter), or 2 (Claude Code)."
             exit 1
           fi
@@ -65,8 +65,30 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Review changed files and publish formal review
+      - name: Select compatible direct-review models
+        id: direct_models
+        shell: bash
+        # `plugins` is intentionally not required here. Response Healing is an
+        # OpenRouter gateway plugin, not a model-endpoint supported parameter,
+        # so it never appears in the endpoint `supported_parameters` metadata.
         env:
+          PRIMARY_MODEL: ${{ env.OPENROUTER_REVIEW_MODEL }}
+          FALLBACK_MODEL: ${{ env.OPENROUTER_REVIEW_FALLBACK_MODEL }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/openrouter_model_preflight.py \
+            --primary "${PRIMARY_MODEL}" \
+            --fallback "${FALLBACK_MODEL}" \
+            --require max_tokens \
+            --require temperature \
+            --require reasoning \
+            --require response_format \
+            --require structured_outputs
+
+      - name: OpenRouterAPI — direct review and publication
+        env:
+          OPENROUTER_REVIEW_MODEL: ${{ steps.direct_models.outputs.selected_model }}
+          OPENROUTER_REVIEW_FALLBACK_MODEL: ${{ steps.direct_models.outputs.secondary_model }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -82,11 +104,12 @@ jobs:
     needs: openrouter-api-review
     if: >-
       always() &&
+      !cancelled() &&
       (vars.PR_REVIEWER == '' || vars.PR_REVIEWER == '0' || vars.PR_REVIEWER == '2') &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Check out pull request with history for review context
@@ -95,6 +118,23 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Select compatible Claude Code models
+        id: claude_models
+        shell: bash
+        env:
+          PRIMARY_MODEL: ${{ env.OPENROUTER_CLAUDE_REVIEW_MODEL }}
+          FALLBACK_MODEL: ${{ env.OPENROUTER_CLAUDE_REVIEW_FALLBACK_MODEL }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/openrouter_model_preflight.py \
+            --primary "${PRIMARY_MODEL}" \
+            --fallback "${FALLBACK_MODEL}" \
+            --require max_tokens \
+            --require response_format \
+            --require structured_outputs \
+            --require tools \
+            --require tool_choice
 
       - name: Load shared reviewer policy from the pull request
         id: reviewer_policy
@@ -168,8 +208,10 @@ jobs:
             exit 1
           fi
 
-      - name: Review with Claude Code via OpenRouter
-        id: claude_review
+      - name: ClaudeCodePlugin — review with primary model
+        id: claude_review_primary
+        if: steps.claude_models.outputs.primary_ready == 'true'
+        continue-on-error: true
         uses: anthropics/claude-code-action@5ee796a55f92566ecd7e39d70dd613abcbea0d7c # v1
         with:
           # OpenRouter receives the request through ANTHROPIC_BASE_URL and
@@ -181,14 +223,13 @@ jobs:
           # The stock code-review slash command can treat any earlier comment
           # from github-actions[bot] as its own review and silently skip a new
           # commit. Use an explicit, revision-scoped prompt instead.
-          prompt: |
+          prompt: &claude_review_prompt |
             Perform a fresh, read-only code review of this exact pull-request revision.
 
             Repository: ${{ github.repository }}
             Pull request: ${{ github.event.pull_request.number }}
             Base SHA: ${{ github.event.pull_request.base.sha }}
             Head SHA: ${{ github.event.pull_request.head.sha }}
-            Model: ${{ env.OPENROUTER_REVIEW_MODEL }}
 
             Follow this authoritative shared policy loaded from
             `.github/REVIEWER.md` in the current pull-request revision:
@@ -213,6 +254,17 @@ jobs:
             --- BEGIN UNRESOLVED REVIEW THREADS ---
             ${{ steps.review_threads.outputs.context }}
             --- END UNRESOLVED REVIEW THREADS ---
+
+            OpenRouterAPI marks its initial inline findings with
+            `<!-- direct-openrouter-inline:<head-sha>:... -->`. For every such
+            thread in the snapshot, return one `thread_verdicts` item:
+            `confirmed` only when its claim remains demonstrably valid;
+            `rejected` only when the exact diff and repository context prove it
+            false or obsolete; otherwise `needs_human`. Give a short evidence-
+            based reason. Do not assess human-authored or unmarked threads.
+            A deterministic publisher will auto-resolve only rejected, current-
+            head, untouched machine threads; uncertainty is deliberately left
+            open for the owner.
 
             Inspect all changed files systematically. Perform correctness/security,
             deployment/operations, and tests/API-contract passes, then validate every
@@ -240,11 +292,11 @@ jobs:
           # turns are bounded headroom for larger diffs, not the primary strategy.
           claude_args: |
             --max-turns 48
-            --model "${{ env.OPENROUTER_REVIEW_MODEL }}"
+            --model "${{ steps.claude_models.outputs.primary_model }}"
             --tools "Read,Glob,Grep"
             --allowedTools "Read,Glob,Grep"
             --disallowedTools "mcp__github_comment__*,mcp__github_ci__*,mcp__github_inline_comment__*,mcp__github_file_ops__*"
-            --json-schema '{"type":"object","additionalProperties":false,"required":["summary","findings"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","path","side","line","title","impact","fix"],"properties":{"severity":{"type":"string","enum":["P1","P2"]},"path":{"type":"string"},"side":{"type":"string","enum":["RIGHT","LEFT"]},"line":{"type":"integer"},"title":{"type":"string"},"impact":{"type":"string"},"fix":{"type":"string"}}}}}}'
+            --json-schema '{"type":"object","additionalProperties":false,"required":["summary","findings","thread_verdicts"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","path","side","line","title","impact","fix"],"properties":{"severity":{"type":"string","enum":["P1","P2"]},"path":{"type":"string"},"side":{"type":"string","enum":["RIGHT","LEFT"]},"line":{"type":"integer"},"title":{"type":"string"},"impact":{"type":"string"},"fix":{"type":"string"}}}},"thread_verdicts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["thread_id","verdict","reason"],"properties":{"thread_id":{"type":"string"},"verdict":{"type":"string","enum":["confirmed","rejected","needs_human"]},"reason":{"type":"string"}}}}}}'
           # Schema note: maxItems/minimum are intentionally omitted because
           # Anthropic Structured Outputs rejects numeric and array-size
           # constraints; the five-finding cap stays in the prompt above.
@@ -262,25 +314,127 @@ jobs:
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.OPENROUTER_API_KEY }}
           # Pin every Claude Code role so none can silently fall back to a paid
           # Anthropic default. Claude Code 2.1.x added Fable as a fourth role.
-          ANTHROPIC_DEFAULT_FABLE_MODEL: ${{ env.OPENROUTER_REVIEW_MODEL }}
-          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ env.OPENROUTER_REVIEW_MODEL }}
-          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ env.OPENROUTER_REVIEW_MODEL }}
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ env.OPENROUTER_REVIEW_MODEL }}
-          CLAUDE_CODE_SUBAGENT_MODEL: ${{ env.OPENROUTER_REVIEW_MODEL }}
+          ANTHROPIC_DEFAULT_FABLE_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+          CLAUDE_CODE_SUBAGENT_MODEL: ${{ steps.claude_models.outputs.primary_model }}
 
-      - name: Validate and publish Claude review
+      # Free-provider structured output can fail transiently. Give the primary
+      # one fresh completion before spending a fallback-model attempt.
+      - name: Wait before retrying the primary Claude Code model
+        if: >-
+          always() &&
+          !cancelled() &&
+          steps.claude_models.outputs.primary_ready == 'true' &&
+          steps.claude_review_primary.outcome != 'success'
+        shell: bash
+        run: sleep 15
+
+      - name: ClaudeCodePlugin — retry primary model once
+        id: claude_review_primary_retry
+        if: >-
+          always() &&
+          !cancelled() &&
+          steps.claude_models.outputs.primary_ready == 'true' &&
+          steps.claude_review_primary.outcome != 'success'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@5ee796a55f92566ecd7e39d70dd613abcbea0d7c # v1
+        with:
+          anthropic_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: *claude_review_prompt
+          claude_args: |
+            --max-turns 48
+            --model "${{ steps.claude_models.outputs.primary_model }}"
+            --tools "Read,Glob,Grep"
+            --allowedTools "Read,Glob,Grep"
+            --disallowedTools "mcp__github_comment__*,mcp__github_ci__*,mcp__github_inline_comment__*,mcp__github_file_ops__*"
+            --json-schema '{"type":"object","additionalProperties":false,"required":["summary","findings","thread_verdicts"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","path","side","line","title","impact","fix"],"properties":{"severity":{"type":"string","enum":["P1","P2"]},"path":{"type":"string"},"side":{"type":"string","enum":["RIGHT","LEFT"]},"line":{"type":"integer"},"title":{"type":"string"},"impact":{"type":"string"},"fix":{"type":"string"}}}},"thread_verdicts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["thread_id","verdict","reason"],"properties":{"thread_id":{"type":"string"},"verdict":{"type":"string","enum":["confirmed","rejected","needs_human"]},"reason":{"type":"string"}}}}}}'
+          show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
+        env:
+          ANTHROPIC_BASE_URL: https://openrouter.ai/api
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_DEFAULT_FABLE_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+          CLAUDE_CODE_SUBAGENT_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+
+      - name: ClaudeCodePlugin — retry with fallback model
+        id: claude_review_fallback
+        if: >-
+          always() &&
+          !cancelled() &&
+          steps.claude_models.outputs.fallback_ready == 'true' &&
+          (steps.claude_models.outputs.primary_ready != 'true' ||
+           (steps.claude_review_primary.outcome != 'success' &&
+            steps.claude_review_primary_retry.outcome != 'success'))
+        continue-on-error: true
+        uses: anthropics/claude-code-action@5ee796a55f92566ecd7e39d70dd613abcbea0d7c # v1
+        with:
+          anthropic_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: *claude_review_prompt
+          claude_args: |
+            --max-turns 48
+            --model "${{ steps.claude_models.outputs.fallback_model }}"
+            --tools "Read,Glob,Grep"
+            --allowedTools "Read,Glob,Grep"
+            --disallowedTools "mcp__github_comment__*,mcp__github_ci__*,mcp__github_inline_comment__*,mcp__github_file_ops__*"
+            --json-schema '{"type":"object","additionalProperties":false,"required":["summary","findings","thread_verdicts"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","path","side","line","title","impact","fix"],"properties":{"severity":{"type":"string","enum":["P1","P2"]},"path":{"type":"string"},"side":{"type":"string","enum":["RIGHT","LEFT"]},"line":{"type":"integer"},"title":{"type":"string"},"impact":{"type":"string"},"fix":{"type":"string"}}}},"thread_verdicts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["thread_id","verdict","reason"],"properties":{"thread_id":{"type":"string"},"verdict":{"type":"string","enum":["confirmed","rejected","needs_human"]},"reason":{"type":"string"}}}}}}'
+          show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
+        env:
+          ANTHROPIC_BASE_URL: https://openrouter.ai/api
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_DEFAULT_FABLE_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
+          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
+          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
+          CLAUDE_CODE_SUBAGENT_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
+
+      - name: ClaudeCodePlugin — validate and publish review
         id: publish_claude_review
-        if: steps.claude_review.outcome == 'success'
+        if: >-
+          always() &&
+          !cancelled() &&
+          (steps.claude_review_primary.outcome == 'success' ||
+           steps.claude_review_primary_retry.outcome == 'success' ||
+           steps.claude_review_fallback.outcome == 'success')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CLAUDE_REVIEW_MODEL: ${{ env.OPENROUTER_REVIEW_MODEL }}
+          CLAUDE_REVIEW_MODEL: ${{ (steps.claude_review_primary.outcome == 'success' || steps.claude_review_primary_retry.outcome == 'success') && steps.claude_models.outputs.primary_model || steps.claude_models.outputs.fallback_model }}
           CLAUDE_REVIEW_RUN_ID: ${{ github.run_id }}
-          CLAUDE_REVIEW_RESULT: ${{ steps.claude_review.outputs.structured_output }}
+          CLAUDE_REVIEW_RESULT: ${{ steps.claude_review_primary.outcome == 'success' && steps.claude_review_primary.outputs.structured_output || steps.claude_review_primary_retry.outcome == 'success' && steps.claude_review_primary_retry.outputs.structured_output || steps.claude_review_fallback.outputs.structured_output }}
         run: python3 .github/scripts/pr_review_context.py publish
+
+      - name: Fail when all Claude Code attempts fail
+        if: >-
+          always() &&
+          !cancelled() &&
+          steps.claude_review_primary.outcome != 'success' &&
+          steps.claude_review_primary_retry.outcome != 'success' &&
+          steps.claude_review_fallback.outcome != 'success'
+        shell: bash
+        env:
+          PRIMARY_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+          PRIMARY_READY: ${{ steps.claude_models.outputs.primary_ready }}
+          PRIMARY_OUTCOME: ${{ steps.claude_review_primary.outcome }}
+          PRIMARY_RETRY_OUTCOME: ${{ steps.claude_review_primary_retry.outcome }}
+          FALLBACK_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
+          FALLBACK_READY: ${{ steps.claude_models.outputs.fallback_ready }}
+          FALLBACK_OUTCOME: ${{ steps.claude_review_fallback.outcome }}
+        run: |
+          echo "::error::All Claude Code review attempts failed or were unavailable."
+          echo "Primary ${PRIMARY_MODEL}: ready=${PRIMARY_READY}, first=${PRIMARY_OUTCOME}, retry=${PRIMARY_RETRY_OUTCOME}"
+          echo "Fallback ${FALLBACK_MODEL}: ready=${FALLBACK_READY}, outcome=${FALLBACK_OUTCOME}"
+          exit 1
 
       - name: Verify Claude published a result for this revision
         if: always() && steps.publish_claude_review.outcome == 'success'

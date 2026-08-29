@@ -15,6 +15,8 @@ install_host_dependencies() {
     ffmpeg
     git
     passwd
+    python3
+    python3-yaml
     ripgrep
     util-linux
     xz-utils
@@ -50,7 +52,12 @@ install_tailscale() {
     die "the official Tailscale repository is only configured here for Debian/Ubuntu"
   [[ "$codename" =~ ^[a-z0-9-]+$ ]] || die "cannot determine a safe distribution codename"
 
-  local repository_base="https://pkgs.tailscale.com/stable/${distro}/${codename}"
+  local channel
+  channel="$(python3 "$VPS_CONFIG_APPLIER" value \
+    --settings "$VPS_SETTINGS_FILE" vps_network.tailscale.package_channel)"
+  [[ "$channel" == "stable" || "$channel" == "unstable" ]] ||
+    die "invalid Tailscale package channel: $channel"
+  local repository_base="https://pkgs.tailscale.com/${channel}/${distro}/${codename}"
   local temporary_dir
   temporary_dir="$(mktemp -d /tmp/hermes-tailscale.XXXXXX)"
 
@@ -61,7 +68,7 @@ install_tailscale() {
     "${repository_base}.tailscale-keyring.list" --output "${temporary_dir}/tailscale.list"
   # The .list file is not signed; refuse a substituted or truncated repository
   # definition before it can change what apt-get installs as root.
-  grep -Eq '^deb[[:space:]]+.*https://pkgs\.tailscale\.com/stable/' \
+  grep -Eq "^deb[[:space:]]+.*https://pkgs[.]tailscale[.]com/${channel}/" \
     "${temporary_dir}/tailscale.list" ||
     die "the Tailscale repository list has an unexpected format"
   install -o root -g root -m 0644 \
@@ -189,7 +196,11 @@ ensure_service_user() {
     log "Using existing user: $HERMES_USER"
   else
     log "Creating unprivileged user: $HERMES_USER"
-    useradd --create-home --shell /bin/bash "$HERMES_USER"
+    local -a useradd_args=(--create-home --shell /bin/bash)
+    if [[ -n "$REQUESTED_USER_HOME" ]]; then
+      useradd_args+=(--home-dir "$REQUESTED_USER_HOME")
+    fi
+    useradd "${useradd_args[@]}" "$HERMES_USER"
   fi
 
   local user_id
@@ -222,5 +233,3 @@ enable_host_administration() {
   rm -f -- "$temporary_file"
   log "Hermes host administration is enabled; this is equivalent to root access"
 }
-
-

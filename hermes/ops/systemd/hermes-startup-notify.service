@@ -1,9 +1,9 @@
 [Unit]
 Description=Hermes gateway startup notification
-After=network-online.target hermes-gateway.service
+After=network-online.target @GATEWAY_SERVICE@
 Wants=network-online.target
-Requisite=hermes-gateway.service
-PartOf=hermes-gateway.service
+Requisite=@GATEWAY_SERVICE@
+PartOf=@GATEWAY_SERVICE@
 
 [Service]
 Type=oneshot
@@ -27,4 +27,4 @@ LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
-WantedBy=hermes-gateway.service
+WantedBy=@GATEWAY_SERVICE@

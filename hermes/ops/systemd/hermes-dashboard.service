@@ -1,6 +1,6 @@
 [Unit]
 Description=Hermes web dashboard (loopback only)
-After=network-online.target hermes-gateway.service
+After=network-online.target @GATEWAY_SERVICE@
 Wants=network-online.target
 
 [Service]
@@ -11,9 +11,9 @@ WorkingDirectory=@HERMES_HOME@
 Environment=HOME=@USER_HOME@
 Environment=HERMES_HOME=@HERMES_HOME@
 Environment=PATH=@USER_HOME@/.local/bin:@HERMES_HOME@/node/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=@HERMES_BIN@ dashboard --host 127.0.0.1 --port 9119 --no-open
+ExecStart=@HERMES_BIN@ dashboard --host @DASHBOARD_BIND_ADDRESS@ --port @DASHBOARD_PORT@ --no-open
 Restart=on-failure
-RestartSec=5
+RestartSec=@SERVICE_RESTART_SEC@
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

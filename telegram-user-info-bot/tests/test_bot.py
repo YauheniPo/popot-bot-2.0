@@ -19,6 +19,7 @@ from bot import (  # noqa: E402
     handle_update,
     process_update,
     reverse_geocode_location,
+    run_bot,
 )
 
 
@@ -161,6 +162,53 @@ class CollectUserReportTest(unittest.TestCase):
         self.assertFalse(report["profile_audios"]["ok"])
         self.assertIn("unavailable", report["profile_audios"]["error"])
         self.assertTrue(report["chat_full_info"]["ok"])
+
+
+class RunBotTest(unittest.TestCase):
+    def test_deletes_webhook_after_polling_conflict(self) -> None:
+        class ConflictAPI(FakeAPI):
+            def __init__(self) -> None:
+                super().__init__()
+                self.poll_attempts = 0
+
+            def call(
+                self,
+                method: str,
+                payload: dict[str, Any] | None = None,
+                *,
+                timeout: int | None = None,
+            ) -> Any:
+                if method == "getMe":
+                    self.calls.append((method, payload or {}))
+                    return {"username": "test_bot"}
+                if method == "getUpdates":
+                    self.poll_attempts += 1
+                    self.calls.append((method, payload or {}))
+                    if self.poll_attempts == 1:
+                        raise BotAPIError(
+                            "getUpdates: Conflict: can't use getUpdates method "
+                            "while webhook is active"
+                        )
+                    raise KeyboardInterrupt
+                if method == "deleteWebhook":
+                    self.calls.append((method, payload or {}))
+                    return True
+                raise AssertionError(f"Unexpected method: {method}")
+
+        api = ConflictAPI()
+
+        with patch("bot.time.sleep"):
+            with self.assertRaises(KeyboardInterrupt):
+                run_bot(api, poll_timeout=1)
+
+        self.assertEqual(
+            ["getMe", "getUpdates", "deleteWebhook", "getUpdates"],
+            [method for method, _ in api.calls],
+        )
+        self.assertEqual(
+            {"drop_pending_updates": False},
+            api.calls[2][1],
+        )
 
 
 class HandleUpdateTest(unittest.TestCase):

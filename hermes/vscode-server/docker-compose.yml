@@ -1,9 +1,10 @@
-name: hermes-vscode
+name: ${CODE_SERVER_PROJECT_NAME:?set CODE_SERVER_PROJECT_NAME in /etc/code-server.env}
 services:
   code-server:
     build:
       context: .
       args:
+        CODE_SERVER_IMAGE: ${CODE_SERVER_IMAGE:?set CODE_SERVER_IMAGE in /etc/code-server.env}
         HERMES_UID: ${HERMES_UID:?set HERMES_UID in /etc/code-server.env}
         HERMES_GID: ${HERMES_GID:?set HERMES_GID in /etc/code-server.env}
     # The image's coder account is built with the host Hermes UID/GID. Do not
@@ -11,15 +12,15 @@ services:
     # no-new-privileges when overridden.
     ports:
       # Loopback only: reachable through the SSH tunnel, never from the network.
-      # Host port 3001 -> container port 8080 (the image's default listen
-      # port); host 3000 is taken by the loopback-only Grafana service.
-      - "127.0.0.1:3001:8080"
+      # The managed loopback address/host port come from vps-defaults.yml;
+      # container port 8080 is the pinned image's listen port.
+      - "${CODE_SERVER_BIND_ADDRESS:?set CODE_SERVER_BIND_ADDRESS in /etc/code-server.env}:${CODE_SERVER_HOST_PORT:?set CODE_SERVER_HOST_PORT in /etc/code-server.env}:8080"
     volumes:
       # Repositories: full read-write — edits land directly on the host.
-      - ${VPS_USER_HOME:-/home/hermes}/workspace/repositories:/home/coder/workspace/repositories
+      - ${CODE_SERVER_REPOSITORIES_DIR:?set CODE_SERVER_REPOSITORIES_DIR in /etc/code-server.env}:/home/coder/workspace/repositories
       # Hermes home: full read-write per owner choice — the IDE can edit
       # configs and skills directly from the browser.
-      - ${VPS_USER_HOME:-/home/hermes}/.hermes:/home/coder/hermes-home:rw
+      - ${VPS_HERMES_HOME:?set VPS_HERMES_HOME in /etc/code-server.env}:/home/coder/hermes-home:rw
       # Reuse the host Git identity (user name/email, defaults).
       - ${VPS_USER_HOME:-/home/hermes}/.gitconfig:/home/coder/.gitconfig:ro
       # Use the same managed gh wrapper as the host. It reads only supported
@@ -40,7 +41,7 @@ services:
       GIT_CONFIG_VALUE_0: ""
       GIT_CONFIG_KEY_1: credential.https://github.com.helper
       GIT_CONFIG_VALUE_1: "!/home/coder/.local/bin/gh auth git-credential"
-      TZ: UTC
+      TZ: ${CODE_SERVER_TIMEZONE:?set CODE_SERVER_TIMEZONE in /etc/code-server.env}
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

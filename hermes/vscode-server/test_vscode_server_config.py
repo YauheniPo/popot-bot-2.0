@@ -19,22 +19,29 @@ class VscodeServerConfigTests(unittest.TestCase):
         compose = yaml.safe_load(
             (VSCODE_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         )
-        self.assertEqual(compose["name"], "hermes-vscode")
+        self.assertIn("CODE_SERVER_PROJECT_NAME", compose["name"])
         service = compose["services"]["code-server"]
 
-        self.assertEqual(service["ports"], ["127.0.0.1:3001:8080"])
+        self.assertIn("CODE_SERVER_BIND_ADDRESS", service["ports"][0])
+        self.assertIn("CODE_SERVER_HOST_PORT", service["ports"][0])
+        settings = yaml.safe_load(
+            (HERMES_DIR / "config" / "vps-defaults.yml").read_text(encoding="utf-8")
+        )
+        self.assertEqual(settings["vps_vscode"]["bind_address"], "127.0.0.1")
+        self.assertEqual(settings["vps_vscode"]["host_port"], 3001)
+        self.assertIn("@sha256:", settings["vps_vscode"]["image"])
         self.assertEqual(
             service["build"]["args"],
             {
+                "CODE_SERVER_IMAGE": "${CODE_SERVER_IMAGE:?set CODE_SERVER_IMAGE in /etc/code-server.env}",
                 "HERMES_UID": "${HERMES_UID:?set HERMES_UID in /etc/code-server.env}",
                 "HERMES_GID": "${HERMES_GID:?set HERMES_GID in /etc/code-server.env}",
             },
         )
 
         volumes = service["volumes"]
-        self.assertTrue(
-            any("workspace/repositories:/home/coder/workspace/repositories" in item for item in volumes)
-        )
+        self.assertTrue(any("CODE_SERVER_REPOSITORIES_DIR" in item for item in volumes))
+        self.assertTrue(any("VPS_HERMES_HOME" in item for item in volumes))
         self.assertIn(
             "../runtime/github-cli-wrapper.py:/home/coder/.local/bin/gh:ro",
             volumes,
@@ -68,8 +75,12 @@ class VscodeServerConfigTests(unittest.TestCase):
         self.assertIn("PASSWORD={{ hermes_code_server_password }}", template)
         self.assertNotIn("| quote", template)
         self.assertIn("VPS_USER_HOME={{ hermes_user_home }}", template)
+        self.assertIn("VPS_HERMES_HOME={{ hermes_home }}", template)
         self.assertIn("HERMES_UID={{ hermes_vscode_uid.stdout }}", template)
         self.assertIn("HERMES_GID={{ hermes_vscode_gid.stdout }}", template)
+        self.assertIn("CODE_SERVER_REPOSITORIES_DIR={{ hermes_github_repositories_dir }}", template)
+        self.assertIn("CODE_SERVER_IMAGE={{ vps_vscode.image }}", template)
+        self.assertIn("CODE_SERVER_HOST_PORT={{ vps_vscode.host_port }}", template)
 
     def test_host_mounts_are_prepared_and_container_identity_is_verified(self) -> None:
         tasks = (HERMES_DIR / "ansible" / "tasks" / "vscode.yml").read_text(
@@ -80,7 +91,7 @@ class VscodeServerConfigTests(unittest.TestCase):
         )
         dockerfile = (VSCODE_DIR / "Dockerfile").read_text(encoding="utf-8")
 
-        self.assertIn('path: "{{ hermes_user_home }}/workspace/repositories"', tasks)
+        self.assertIn('path: "{{ hermes_github_repositories_dir }}"', tasks)
         self.assertIn('path: "{{ hermes_user_home }}/.gitconfig"', tasks)
         self.assertIn('VPS_USER_HOME: "{{ hermes_user_home }}"', tasks)
         self.assertIn("Verify the managed GitHub account inside code-server", tasks)
@@ -88,6 +99,8 @@ class VscodeServerConfigTests(unittest.TestCase):
         self.assertIn("vps_deploy.features.vscode_server", services)
         self.assertIn("ARG HERMES_UID=1000", dockerfile)
         self.assertIn("ARG HERMES_GID=1000", dockerfile)
+        self.assertIn("ARG CODE_SERVER_IMAGE", dockerfile)
+        self.assertNotIn("code-server:latest", dockerfile)
         self.assertIn('usermod -g "${HERMES_GID}" coder', dockerfile)
 
     def test_managed_wrapper_is_executable_and_manual_password_setup_is_safe(self) -> None:

@@ -1,4 +1,5 @@
-FROM codercom/code-server:latest
+ARG CODE_SERVER_IMAGE
+FROM ${CODE_SERVER_IMAGE}
 
 USER root
 

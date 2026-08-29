@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,6 +21,21 @@ SPEC.loader.exec_module(exporter)
 
 
 class ExportVpsConfigTests(unittest.TestCase):
+    def test_local_hermes_base_image_is_pinned_by_digest(self) -> None:
+        dockerfile = MODULE_PATH.with_name("Dockerfile").read_text(encoding="utf-8")
+
+        self.assertRegex(
+            dockerfile,
+            r"ARG HERMES_IMAGE=[^\s]+@sha256:[0-9a-f]{64}",
+        )
+
+        compose = MODULE_PATH.with_name("docker-compose.local.yml").read_text(
+            encoding="utf-8"
+        )
+        external_images = re.findall(r"^\s*image: ((?!hermes-local-test)[^\s]+)$", compose, re.MULTILINE)
+        self.assertTrue(external_images)
+        self.assertTrue(all(re.search(r"@sha256:[0-9a-f]{64}$", image) for image in external_images))
+
     def test_nested_mapping_is_not_exported_even_when_its_key_is_allowlisted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             config_path = Path(temporary_directory) / "config.yaml"
@@ -51,9 +67,8 @@ class ExportVpsConfigTests(unittest.TestCase):
         self.assertNotIn("api_key", rendered)
         self.assertNotIn("max_turns", rendered)
         self.assertEqual(
-            yaml.safe_load(rendered)["hermes_llm_config"],
+            yaml.safe_load(rendered)["vps_hermes"]["config"]["managed_overlay"],
             {
-                "model": {"provider": "openrouter", "default": "safe-model"},
                 "agent": {"reasoning_effort": "high"},
                 "stt": {"enabled": True, "language": "en"},
             },

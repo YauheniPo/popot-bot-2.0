@@ -1,0 +1,13 @@
+[Unit]
+Description=Prune expired Hermes observability rows daily
+
+[Timer]
+OnBootSec=@OBSERVABILITY_PRUNE_ON_BOOT_SEC@
+OnUnitActiveSec=@OBSERVABILITY_PRUNE_INTERVAL@
+AccuracySec=@OBSERVABILITY_PRUNE_ACCURACY_SEC@
+RandomizedDelaySec=@OBSERVABILITY_PRUNE_RANDOMIZED_DELAY_SEC@
+Persistent=true
+Unit=hermes-observability-prune.service
+
+[Install]
+WantedBy=timers.target

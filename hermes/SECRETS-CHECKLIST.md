@@ -18,16 +18,16 @@ Ansible Vault и `.env` исключены из Git.
 | Готово | Данные | Имя/формат | Где получить | Где хранить |
 |---|---|---|---|---|
 | [ ] | OpenRouter API key | `OPENROUTER_API_KEY` | [OpenRouter Keys](https://openrouter.ai/keys) | `hermes_secret_env` в Ansible Vault |
-| [ ] | OpenRouter model config | `hermes_llm_config` | каталог моделей OpenRouter или `hermes model` | Ansible Vault; это не секрет, но управляется вместе с provider dependencies |
+| [ ] | OpenRouter model policy | `vps_hermes.config.managed_overlay` | каталог моделей OpenRouter или `hermes model` | versioned `config/vps-defaults.yml`; не хранить в Vault |
 | [ ] | Brave Search API key | `BRAVE_SEARCH_API_KEY` | кабинет Brave Search API | `hermes_secret_env` в Ansible Vault; нужен для Brave `web_search` |
 | [ ] | Firecrawl API key | `FIRECRAWL_API_KEY` | Firecrawl dashboard | `hermes_secret_env` в Ansible Vault; извлечение HTML/PDF и browser-backed web |
 | [ ] | Telegram bot token | `TELEGRAM_BOT_TOKEN` | создать бота у `@BotFather` | `hermes_secret_env` в Ansible Vault |
 | [ ] | Разрешённый Telegram user ID | `TELEGRAM_ALLOWED_USERS="123..."` | ID личного аккаунта, не username | Vault/`.env`; это allowlist, не пароль |
 
 В типовом Ansible-профиле основной provider — OpenRouter. Задайте
-`OPENROUTER_API_KEY` и выберите доступную через него модель в
-`hermes_llm_config`. Другой provider настраивается его собственным набором
-credentials и конфигурацией в том же Vault. Минимальный фрагмент и правила
+`OPENROUTER_API_KEY`; repository-owned non-secret policy задайте в
+`vps_hermes.config.managed_overlay`. Выбранную через `/model_global` модель не
+добавляйте в authoritative overlay, если она должна переживать deploy. Минимальный фрагмент и правила
 замены placeholders находятся в
 [`ansible/group_vars/all/VAULT.md`](ansible/group_vars/all/VAULT.md).
 
@@ -157,7 +157,7 @@ credentials. Следите за диском VPS и периодически п
 | GitHub PAT | encrypted Ansible Vault → managed Hermes `.env` `0600` | README, Git, shell history, отдельный plaintext `gh` store |
 | VPS SSH private key | защищённый управляющий компьютер/password manager | VPS, Hermes home, Git |
 | Ansible Vault password | отдельный password manager | repository, VPS, `vault.yml` |
-| Provider/model IDs и endpoints | `hermes_llm_config` в encrypted Vault → `config.yaml` | Inline `api_key`, README, shell history |
+| Provider/model policy и endpoints | `vps_hermes.config.managed_overlay` → `config.yaml`; live model через `/model_global` | Inline `api_key`, README, shell history |
 | User IDs и public URLs | Public Ansible vars, inventory или Vault по policy | Не смешивать с secret values без необходимости |
 
 Важно: `.env` защищает ключи от других непривилегированных Unix users, но сам

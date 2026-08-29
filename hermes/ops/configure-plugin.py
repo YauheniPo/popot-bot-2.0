@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -26,8 +27,10 @@ def configure(
     data: dict[str, Any],
     hermes_home: Path,
     *,
+    gateway_service: str = "hermes-gateway.service",
     vscode_compose_file: Path | None = None,
     vscode_env_file: Path = Path("/etc/code-server.env"),
+    vscode_project_name: str = "hermes-vscode",
 ) -> bool:
     plugins = data.setdefault("plugins", {})
     if not isinstance(plugins, dict):
@@ -48,7 +51,11 @@ def configure(
 
     status_command = {
         "type": "exec",
-        "command": f"HERMES_HOME={hermes_home} /usr/local/lib/hermes-ops/status-report.py",
+        "command": (
+            f"HERMES_HOME={hermes_home} "
+            f"HERMES_GATEWAY_SERVICE={gateway_service} "
+            "/usr/local/lib/hermes-ops/status-report.py"
+        ),
     }
     if quick_commands.get("status") != status_command:
         quick_commands["status"] = status_command
@@ -63,7 +70,7 @@ def configure(
                     "docker",
                     "compose",
                     "--project-name",
-                    "hermes-vscode",
+                    vscode_project_name,
                     "--env-file",
                     str(vscode_env_file),
                     "-f",
@@ -97,11 +104,13 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--config", required=True, type=Path)
     result.add_argument("--hermes-home", required=True, type=Path)
+    result.add_argument("--gateway-service", default="hermes-gateway.service")
     result.add_argument("--vscode-enabled", action="store_true")
     result.add_argument("--vscode-compose-file", type=Path)
     result.add_argument(
         "--vscode-env-file", type=Path, default=Path("/etc/code-server.env")
     )
+    result.add_argument("--vscode-project-name", default="hermes-vscode")
     return result
 
 
@@ -110,14 +119,20 @@ def main() -> int:
     try:
         if args.vscode_enabled and args.vscode_compose_file is None:
             raise ValueError("--vscode-enabled requires --vscode-compose-file")
+        if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", args.vscode_project_name) is None:
+            raise ValueError("invalid --vscode-project-name")
+        if re.fullmatch(r"[A-Za-z0-9_.@:-]+[.]service", args.gateway_service) is None:
+            raise ValueError("invalid --gateway-service")
         data = load_config(args.config)
         changed = configure(
             data,
             args.hermes_home,
+            gateway_service=args.gateway_service,
             vscode_compose_file=(
                 args.vscode_compose_file if args.vscode_enabled else None
             ),
             vscode_env_file=args.vscode_env_file,
+            vscode_project_name=args.vscode_project_name,
         )
         if changed:
             write_config(args.config, data)

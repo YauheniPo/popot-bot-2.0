@@ -27,6 +27,9 @@ except ImportError:  # The bot reports a clear per-request error if setup was sk
 API_BASE_URL = "https://api.telegram.org"
 DEFAULT_POLL_TIMEOUT = 30
 MAX_POLL_TIMEOUT = 50
+WEBHOOK_CONFLICT_MARKER = (
+    "getUpdates: Conflict: can't use getUpdates method while webhook is active"
+)
 PROFILE_PAGE_SIZE = 100
 REPORT_SCHEMA_VERSION = 4
 BOT_API_REFERENCE = "https://core.telegram.org/bots/api"
@@ -1115,6 +1118,21 @@ def _poll_timeout() -> int:
     return max(1, min(value, MAX_POLL_TIMEOUT))
 
 
+def _is_webhook_conflict(error: BotAPIError) -> bool:
+    return WEBHOOK_CONFLICT_MARKER in str(error)
+
+
+def _delete_webhook(api: TelegramBotAPI) -> bool:
+    LOGGER.warning("Active webhook detected; deleting it for long polling")
+    try:
+        api.call("deleteWebhook", {"drop_pending_updates": False})
+    except BotAPIError as error:
+        LOGGER.warning("Could not delete webhook automatically: %s", error)
+        return False
+    LOGGER.info("Webhook deleted automatically; long polling will continue")
+    return True
+
+
 def run_bot(api: TelegramBotAPI, poll_timeout: int) -> None:
     bot_user = api.call("getMe")
     username = bot_user.get("username") if isinstance(bot_user, dict) else None
@@ -1122,6 +1140,7 @@ def run_bot(api: TelegramBotAPI, poll_timeout: int) -> None:
 
     offset: int | None = None
     retry_delay = 1
+    webhook_cleanup_attempted = False
     while True:
         payload: dict[str, Any] = {
             "timeout": poll_timeout,
@@ -1141,7 +1160,10 @@ def run_bot(api: TelegramBotAPI, poll_timeout: int) -> None:
             if updates:
                 LOGGER.info("Received %s Telegram update(s)", len(updates))
             retry_delay = 1
+            webhook_cleanup_attempted = False
         except BotAPIError as error:
+            if _is_webhook_conflict(error) and not webhook_cleanup_attempted:
+                webhook_cleanup_attempted = _delete_webhook(api)
             LOGGER.warning("%s; retrying in %s seconds", error, retry_delay)
             time.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 30)
