@@ -1,7 +1,7 @@
 @HERMES_HOME@/logs/ops-audit.jsonl {
     daily
-    rotate 30
-    maxsize 10M
+    rotate @OBSERVABILITY_AUDIT_ROTATED_FILES@
+    maxsize @OBSERVABILITY_AUDIT_MAX_BYTES@
     missingok
     notifempty
     compress

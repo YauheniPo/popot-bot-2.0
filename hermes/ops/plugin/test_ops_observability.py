@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -112,6 +114,35 @@ class ObservabilityRedactionTests(unittest.TestCase):
         self.assertNotIn(ssh_password, rendered)
         self.assertNotIn(uri_password, rendered)
         self.assertNotIn(curl_password, rendered)
+
+    def test_audit_rotation_uses_configured_number_of_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            audit = root / "ops-audit.jsonl"
+            audit.write_bytes(b"current" * 10000)
+            audit.with_name(audit.name + ".1").write_bytes(b"previous")
+            original_paths = observability.storage._paths
+            original_max = os.environ.get("HERMES_OBSERVABILITY_AUDIT_MAX_BYTES")
+            original_keep = os.environ.get("HERMES_OBSERVABILITY_AUDIT_ROTATED_FILES")
+            observability.storage._paths = lambda: (root, root / "metrics.db", audit)
+            os.environ["HERMES_OBSERVABILITY_AUDIT_MAX_BYTES"] = "65536"
+            os.environ["HERMES_OBSERVABILITY_AUDIT_ROTATED_FILES"] = "2"
+            try:
+                observability.storage._write_audit(b"new\n")
+            finally:
+                observability.storage._paths = original_paths
+                if original_max is None:
+                    os.environ.pop("HERMES_OBSERVABILITY_AUDIT_MAX_BYTES", None)
+                else:
+                    os.environ["HERMES_OBSERVABILITY_AUDIT_MAX_BYTES"] = original_max
+                if original_keep is None:
+                    os.environ.pop("HERMES_OBSERVABILITY_AUDIT_ROTATED_FILES", None)
+                else:
+                    os.environ["HERMES_OBSERVABILITY_AUDIT_ROTATED_FILES"] = original_keep
+
+            self.assertEqual(audit.read_bytes(), b"new\n")
+            self.assertTrue(audit.with_name(audit.name + ".1").read_bytes().startswith(b"current"))
+            self.assertEqual(audit.with_name(audit.name + ".2").read_bytes(), b"previous")
 
 
 if __name__ == "__main__":

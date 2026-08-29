@@ -1,9 +1,9 @@
 global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
+  scrape_interval: @PROMETHEUS_SCRAPE_INTERVAL@
+  evaluation_interval: @PROMETHEUS_EVALUATION_INTERVAL@
 
 scrape_configs:
   - job_name: hermes
     static_configs:
       - targets:
-          - 127.0.0.1:9100
+          - @NODE_EXPORTER_BIND_ADDRESS@:@NODE_EXPORTER_PORT@

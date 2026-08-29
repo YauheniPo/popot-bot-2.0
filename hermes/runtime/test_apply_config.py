@@ -21,21 +21,29 @@ class ApplyConfigTests(unittest.TestCase):
         settings = apply_config.load_settings(settings_path)
 
         self.assertEqual(settings["vps_deploy"]["identity"]["user"], "hermes")
-        source = settings["vps_deploy"]["source"]
-        self.assertEqual(source["branch"], "main")
-        self.assertEqual(source["version"], "0.20.5")
-        self.assertEqual(source["release"], "v2026.8.19")
+        hermes_source = settings["vps_deploy"]["hermes_source"]
+        self.assertEqual(hermes_source["branch"], "main")
+        self.assertEqual(hermes_source["version"], "0.20.5")
+        self.assertEqual(hermes_source["release"], "v2026.8.19")
         self.assertEqual(
-            source["commit"],
+            hermes_source["commit"],
             "f293e7206b4ddd66042329442c6afebc19a8808d",
         )
         self.assertEqual(
-            source["installer_sha256"],
+            hermes_source["installer_sha256"],
             "d5558cd419c8d46bdc958064cb97f963d1ea793866414c025906ec15033512ed",
         )
         self.assertTrue(settings["vps_deploy"]["features"]["observability"])
+        self.assertTrue(settings["vps_deploy"]["features"]["browser_automation"])
+        self.assertTrue(settings["vps_deploy"]["features"]["development_clis"])
+        self.assertTrue(settings["vps_deploy"]["features"]["google_workspace_cli"])
+        self.assertNotIn("model.default", settings["vps_runtime"]["set"])
+        self.assertEqual(settings["vps_deploy"]["bundle"]["dir"], "/opt/hermes-bootstrap")
+        self.assertEqual(settings["vps_hermes"]["config"]["managed_overlay"], {})
+        self.assertEqual(settings["vps_runtime"]["set"]["approvals.mode"], "manual")
         self.assertEqual(settings["vps_runtime"]["set"]["browser.backend"], "off")
         self.assertEqual(settings["vps_runtime"]["set"]["display.tool_progress"], "off")
+        self.assertEqual(settings["vps_runtime"]["set"]["model.max_tokens"], 4096)
         self.assertIn("agent.max_turns", settings["vps_runtime"]["unset"])
         self.assertTrue(settings["vps_github"]["enabled"])
         self.assertTrue(settings["vps_github"]["require_auth"])
@@ -45,23 +53,41 @@ class ApplyConfigTests(unittest.TestCase):
             "YauheniPo/popot-bot-2.0",
         )
         self.assertEqual(settings["vps_github"]["write_owners"], ["YauheniPo"])
+        self.assertEqual(settings["vps_ops"]["backup"]["retention_days"], 14)
+        self.assertEqual(settings["vps_ops"]["backup"]["full_keep"], 5)
+        self.assertEqual(settings["vps_ops"]["backup"]["deployment_keep"], 10)
+        self.assertEqual(
+            settings["vps_tools"]["google_workspace_cli"]["version"],
+            "0.22.5",
+        )
+        self.assertIn("@sha256:", settings["vps_vscode"]["image"])
+        self.assertEqual(settings["vps_browser"]["agent_browser_version"], "0.35.0")
         self.assertIn("hermes-gateway.service", settings["vps_services"]["gateway"])
 
-    def test_manual_deploy_defaults_match_global_source_pin(self) -> None:
+    def test_manual_deploy_defaults_match_global_hermes_source_pin(self) -> None:
         hermes_dir = MODULE_PATH.parent.parent
         settings = apply_config.load_settings(hermes_dir / "config" / "vps-defaults.yml")
-        source = settings["vps_deploy"]["source"]
+        hermes_source = settings["vps_deploy"]["hermes_source"]
         deploy_script = (hermes_dir / "deploy-hermes.sh").read_text(encoding="utf-8")
 
         expected_defaults = {
-            "DEFAULT_HERMES_BRANCH": source["branch"],
-            "DEFAULT_HERMES_VERSION": source["version"],
-            "DEFAULT_HERMES_RELEASE": source["release"],
-            "DEFAULT_HERMES_COMMIT": source["commit"],
-            "DEFAULT_INSTALLER_SHA256": source["installer_sha256"],
+            "DEFAULT_HERMES_BRANCH": hermes_source["branch"],
+            "DEFAULT_HERMES_VERSION": hermes_source["version"],
+            "DEFAULT_HERMES_RELEASE": hermes_source["release"],
+            "DEFAULT_HERMES_COMMIT": hermes_source["commit"],
+            "DEFAULT_INSTALLER_SHA256": hermes_source["installer_sha256"],
+            "DEFAULT_HERMES_RAW_BASE_URL": hermes_source["raw_base_url"],
         }
         for variable, value in expected_defaults.items():
             self.assertIn(f'readonly {variable}="{value}"', deploy_script)
+
+        expected_feature_defaults = {
+            "WITH_BROWSER": settings["vps_deploy"]["features"]["browser_automation"],
+            "INSTALL_DEV_CLIS": settings["vps_deploy"]["features"]["development_clis"],
+            "INSTALL_GOOGLE_CLI": settings["vps_deploy"]["features"]["google_workspace_cli"],
+        }
+        for variable, value in expected_feature_defaults.items():
+            self.assertIn(f"{variable}={str(value).lower()}", deploy_script)
 
     def test_build_operations_applies_defaults_capabilities_and_unsets_overrides(self) -> None:
         settings = {
@@ -122,6 +148,29 @@ class ApplyConfigTests(unittest.TestCase):
 
         self.assertEqual(operations, [apply_config.Operation("unset", "web.search_backend")])
 
+    def test_repository_owned_values_replace_old_config_without_touching_personal_state(self) -> None:
+        settings_path = MODULE_PATH.parent.parent / "config" / "vps-defaults.yml"
+        settings = apply_config.load_settings(settings_path)
+        current = {
+            "model": {"max_tokens": 1024},
+            "personal": {"preferred_workflow": "keep-this"},
+        }
+
+        operations = apply_config.build_operations(
+            settings,
+            current,
+            {"HERMES_WORKSPACE": "/home/hermes/workspace"},
+            set(),
+        )
+
+        self.assertIn(
+            apply_config.Operation("set", "model.max_tokens", 4096),
+            operations,
+        )
+        self.assertFalse(
+            any(operation.key.startswith("personal.") for operation in operations)
+        )
+
     def test_service_groups_are_deduplicated_in_order(self) -> None:
         settings = {"vps_services": {"gateway": ["gateway.service"], "ops": ["a.service", "gateway.service"]}}
 
@@ -129,6 +178,94 @@ class ApplyConfigTests(unittest.TestCase):
             apply_config.service_names(settings, ["gateway", "ops"]),
             ["gateway.service", "a.service"],
         )
+
+    def test_managed_ops_assets_render_from_repository_settings(self) -> None:
+        hermes_dir = MODULE_PATH.parent.parent
+        settings = apply_config.load_settings(hermes_dir / "config" / "vps-defaults.yml")
+        values = apply_config.build_asset_values(
+            settings,
+            hermes_user="hermes",
+            hermes_group="hermes",
+            user_home="/home/hermes",
+            hermes_home="/home/hermes/.hermes",
+            hermes_bin="/home/hermes/.local/bin/hermes",
+            workspace="/home/hermes/workspace",
+            backup_dir="/home/hermes/hermes-backups",
+        )
+        templates = [
+            hermes_dir / "ops" / "templates" / "hermes-ops.conf",
+            hermes_dir / "ops" / "templates" / "hermes-ops.logrotate",
+            hermes_dir / "ops" / "templates" / "hermes-prometheus.yml",
+            hermes_dir / "ops" / "templates" / "grafana-hermes-prometheus.yml",
+            *sorted((hermes_dir / "ops" / "systemd").glob("*.service")),
+            *sorted((hermes_dir / "ops" / "systemd").glob("*.timer")),
+            *sorted((hermes_dir / "ops" / "systemd").glob("*.conf")),
+        ]
+
+        rendered = {
+            template.name: apply_config.render_asset(
+                template.read_text(encoding="utf-8"),
+                values,
+            )
+            for template in templates
+        }
+
+        self.assertIn("HERMES_BACKUP_RETENTION_DAYS=14", rendered["hermes-ops.conf"])
+        self.assertIn("HERMES_FULL_BACKUP_KEEP=5", rendered["hermes-ops.conf"])
+        self.assertIn("HERMES_DEPLOYMENT_BACKUP_KEEP=10", rendered["hermes-ops.conf"])
+        self.assertIn(
+            "HERMES_OBSERVABILITY_DATABASE_RETENTION_DAYS=90",
+            rendered["hermes-ops.conf"],
+        )
+        self.assertIn("OnUnitActiveSec=1d", rendered["hermes-backup.timer"])
+        self.assertIn("OnUnitActiveSec=1d", rendered["hermes-observability-prune.timer"])
+        self.assertIn("127.0.0.1:9090", rendered["hermes-prometheus.service"])
+        self.assertTrue(all("@" not in content for content in rendered.values()))
+
+    def test_asset_renderer_rejects_public_observability_bind_address(self) -> None:
+        hermes_dir = MODULE_PATH.parent.parent
+        settings = apply_config.load_settings(hermes_dir / "config" / "vps-defaults.yml")
+        settings["vps_observability"]["prometheus"]["bind_address"] = "0.0.0.0"
+
+        with self.assertRaisesRegex(ValueError, "prometheus.bind_address"):
+            apply_config.build_asset_values(
+                settings,
+                hermes_user="hermes",
+                hermes_group="hermes",
+                user_home="/home/hermes",
+                hermes_home="/home/hermes/.hermes",
+                hermes_bin="/home/hermes/.local/bin/hermes",
+                workspace="/home/hermes/workspace",
+                backup_dir="/home/hermes/hermes-backups",
+            )
+
+    def test_deploy_consumers_use_global_tooling_and_ops_settings(self) -> None:
+        hermes_dir = MODULE_PATH.parent.parent
+        browser_installer = (
+            hermes_dir / "ops" / "install-browser-automation.sh"
+        ).read_text(encoding="utf-8")
+        asset_installer = (hermes_dir / "ops" / "install" / "assets.sh").read_text(
+            encoding="utf-8"
+        )
+        services = (hermes_dir / "ansible" / "tasks" / "services.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('"agent-browser@${AGENT_BROWSER_VERSION}"', browser_installer)
+        self.assertIn("vps_browser.agent_browser_version", services)
+        self.assertIn(
+            'render "${SCRIPT_DIR}/templates/hermes-ops.conf" /etc/hermes-ops.conf 0644',
+            asset_installer,
+        )
+        self.assertNotIn("preserving existing /etc/hermes-ops.conf", asset_installer)
+        runtime_installer = (hermes_dir / "deploy" / "runtime.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('"@googleworkspace/cli@$google_cli_version"', runtime_installer)
+        ansible_runtime = (hermes_dir / "ansible" / "tasks" / "runtime.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("npm audit fix", ansible_runtime)
 
 
 if __name__ == "__main__":

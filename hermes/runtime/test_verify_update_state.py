@@ -32,13 +32,24 @@ def create_kanban_db(path: Path, statuses: list[str]) -> None:
         connection.close()
 
 
-def create_backup(home: Path, backup_path: Path, *, omit: str | None = None) -> None:
+def create_backup(
+    home: Path,
+    backup_path: Path,
+    *,
+    omit: str | None = None,
+    replacements: dict[str, bytes] | None = None,
+) -> None:
+    replacements = replacements or {}
+    resolved_home = home.resolve()
     with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("config.yaml", "model: test\n")
-        for database in sorted(home.rglob("kanban.db")):
-            relative_path = database.relative_to(home).as_posix()
-            if relative_path != omit:
-                archive.write(database, relative_path)
+        for path in verify_update_state.discover_backup_files(home):
+            relative_path = path.relative_to(resolved_home).as_posix()
+            if relative_path == omit:
+                continue
+            if relative_path in replacements:
+                archive.writestr(relative_path, replacements[relative_path])
+            else:
+                archive.write(path, relative_path)
 
 
 class VerifyUpdateStateTests(unittest.TestCase):
@@ -47,6 +58,20 @@ class VerifyUpdateStateTests(unittest.TestCase):
         self.root = Path(self.temporary_directory.name)
         self.home = self.root / ".hermes"
         self.home.mkdir()
+        (self.home / "config.yaml").write_text("model: test\n", encoding="utf-8")
+        (self.home / "SOUL.md").write_text("personal identity\n", encoding="utf-8")
+        custom_skill = self.home / "skills" / "custom-review" / "SKILL.md"
+        custom_skill.parent.mkdir(parents=True)
+        custom_skill.write_text("custom skill\n", encoding="utf-8")
+        generated_dependency = self.home / "skills" / "custom-review" / "venv" / "dependency.py"
+        generated_dependency.parent.mkdir(parents=True)
+        generated_dependency.write_text("generated\n", encoding="utf-8")
+        installed_source = self.home / "hermes-agent" / "gateway" / "run.py"
+        installed_source.parent.mkdir(parents=True)
+        installed_source.write_text("replaceable source\n", encoding="utf-8")
+        session = self.home / "sessions" / "telegram" / "session.json"
+        session.parent.mkdir(parents=True)
+        session.write_text("{}\n", encoding="utf-8")
         create_kanban_db(self.home / "kanban.db", ["todo", "done", "done"])
         create_kanban_db(
             self.home / "kanban" / "boards" / "project-a" / "kanban.db",
@@ -75,6 +100,11 @@ class VerifyUpdateStateTests(unittest.TestCase):
             snapshot["databases"]["kanban.db"]["status_counts"],
             {"done": 2, "todo": 1},
         )
+        self.assertIn("SOUL.md", snapshot["files"])
+        self.assertIn("skills/custom-review/SKILL.md", snapshot["files"])
+        self.assertIn("sessions/telegram/session.json", snapshot["files"])
+        self.assertNotIn("skills/custom-review/venv/dependency.py", snapshot["files"])
+        self.assertNotIn("hermes-agent/gateway/run.py", snapshot["files"])
 
     def test_verified_backup_matches_live_snapshot(self) -> None:
         snapshot = verify_update_state.create_snapshot(self.home)
@@ -95,17 +125,26 @@ class VerifyUpdateStateTests(unittest.TestCase):
         with self.assertRaisesRegex(verify_update_state.VerificationError, "missing"):
             verify_update_state.verify_backup(backup_path, snapshot)
 
+    def test_backup_missing_a_custom_skill_fails_closed(self) -> None:
+        snapshot = verify_update_state.create_snapshot(self.home)
+        backup_path = self.root / "backup.zip"
+        create_backup(
+            self.home,
+            backup_path,
+            omit="skills/custom-review/SKILL.md",
+        )
+
+        with self.assertRaisesRegex(verify_update_state.VerificationError, "live Hermes files"):
+            verify_update_state.verify_backup(backup_path, snapshot)
+
     def test_corrupt_database_inside_backup_fails_closed(self) -> None:
         snapshot = verify_update_state.create_snapshot(self.home)
         backup_path = self.root / "backup.zip"
-        with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr("config.yaml", "model: test\n")
-            for database in sorted(self.home.rglob("kanban.db")):
-                relative_path = database.relative_to(self.home).as_posix()
-                if relative_path == "kanban.db":
-                    archive.writestr(relative_path, b"not a SQLite database")
-                else:
-                    archive.write(database, relative_path)
+        create_backup(
+            self.home,
+            backup_path,
+            replacements={"kanban.db": b"not a SQLite database"},
+        )
 
         with self.assertRaisesRegex(verify_update_state.VerificationError, "Kanban database"):
             verify_update_state.verify_backup(backup_path, snapshot)
@@ -127,6 +166,14 @@ class VerifyUpdateStateTests(unittest.TestCase):
         after = verify_update_state.create_snapshot(self.home)
 
         with self.assertRaisesRegex(verify_update_state.VerificationError, "status counts"):
+            verify_update_state.compare_snapshots(before, after)
+
+    def test_post_update_custom_skill_loss_fails_closed(self) -> None:
+        before = verify_update_state.create_snapshot(self.home)
+        (self.home / "skills" / "custom-review" / "SKILL.md").unlink()
+        after = verify_update_state.create_snapshot(self.home)
+
+        with self.assertRaisesRegex(verify_update_state.VerificationError, "files disappeared"):
             verify_update_state.compare_snapshots(before, after)
 
     def test_snapshot_file_round_trip(self) -> None:

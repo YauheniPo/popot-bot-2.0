@@ -43,8 +43,9 @@ EDITOR=nano ansible-vault edit vault.yml
 ```
 
 На macOS можно заменить `nano` на предпочитаемый текстовый редактор. Внесите
-значения в `hermes_secret_env` и при необходимости в `hermes_llm_config`, затем
-сохраните файл и выйдите из редактора.
+значения в `hermes_secret_env`, затем сохраните файл и выйдите из редактора.
+Non-secret модельную и runtime-политику меняйте в
+`config/vps-defaults.yml`, а не в Vault.
 
 ## Приватный просмотр
 
@@ -74,7 +75,7 @@ Vault password или API keys в чат, Git, issue либо shell history.
 ## Типичная конфигурация
 
 Минимальный набор для LLM — `OPENROUTER_API_KEY` в `hermes_secret_env` и
-модель в `hermes_llm_config`. Дополнительно можно добавить:
+модельная политика в `config/vps-defaults.yml`. Дополнительно можно добавить:
 
 - `FIRECRAWL_API_KEY` — чтение HTML/PDF и веб-страниц;
 - `BRAVE_SEARCH_API_KEY` — поиск через Brave;
@@ -83,16 +84,19 @@ Vault password или API keys в чат, Git, issue либо shell history.
 - `GITHUB_TOKEN` — private repositories, PR/reviews/issues и GitHub Actions
   через managed `gh`; используйте fine-grained PAT с selected repositories;
 - `hermes_grafana_admin_password` — пароль администратора Grafana;
+- `hermes_code_server_password` — пароль браузерного IDE code-server
+  (`vps_vscode.host_port` доступен только через SSH-туннель);
 - `tailscale_auth_key` — временный ключ подключения Tailscale.
 
 Для совместимости deployment также принимает `GH_TOKEN` или
 `GITHUB_PERSONAL_ACCESS_TOKEN`, но в managed Vault предпочтительно единое имя
 `GITHUB_TOKEN`, которое напрямую понимают bundled Hermes GitHub skills.
 
-При применении playbook Hermes получает в своём `workspace/AGENTS.md` только
-отсортированные **названия** ключей из `hermes_secret_env`. Это помогает ему
-выбрать нужный инструмент (например, GitHub или Firecrawl), но значения не
-попадают в этот документ: они остаются в `.hermes/.env` с правами `0600`.
+При применении playbook Vault-managed блок в `workspace/AGENTS.md` получает
+только отсортированные **названия** ключей из `hermes_secret_env`; личная часть
+файла сохраняется отдельно от этого блока. Это помогает Hermes выбрать нужный
+инструмент (например, GitHub или Firecrawl), но значения не попадают в этот
+документ: они остаются в `.hermes/.env` с правами `0600`.
 Название ключа не подтверждает, что токен ещё действителен или имеет нужные
 права — Hermes должен проверить это безопасной операцией, не читая и не
 печатая `.env`.
@@ -105,30 +109,19 @@ Vault password или API keys в чат, Git, issue либо shell history.
 подробное ограничение модели описано в
 [`../../../SECRETS-CHECKLIST.md`](../../../SECRETS-CHECKLIST.md).
 
-Не добавляйте `AGENT_BROWSER_ARGS`: безопасное для данного Ubuntu VPS значение
-управляется playbook автоматически и не является секретом.
+Не добавляйте `AGENT_BROWSER_ARGS` и `AGENT_BROWSER_CONFIG`: эти non-secret
+значения управляются через `config/vps-defaults.yml` и playbook автоматически.
 
 Минимальный пример для редактирования (замените placeholders внутри
 `ansible-vault edit`, но не публикуйте реальные значения):
 
 ```yaml
-hermes_manage_secret_env: true
 hermes_secret_env:
   OPENROUTER_API_KEY: "replace-inside-ansible-vault"
   FIRECRAWL_API_KEY: "replace-inside-ansible-vault"
   TELEGRAM_BOT_TOKEN: "replace-inside-ansible-vault"
   TELEGRAM_ALLOWED_USERS: "123456789"
   GITHUB_TOKEN: "replace-inside-ansible-vault"
-
-hermes_llm_config:
-  model:
-    provider: "openrouter"
-    default: "openrouter/free"
-    max_tokens: 4096
-  agent:
-    reasoning_effort: "medium"
-  display:
-    show_reasoning: false
 ```
 
 ## Применить изменения
@@ -143,6 +136,6 @@ ansible-playbook -i ansible/inventory.ini \
 ```
 
 Сначала будет запрошен текущий SSH/root-пароль VPS, затем пароль Ansible Vault.
-При `hermes_manage_secret_env: true` файл
+При `vps_deploy.secret_environment.managed: true` файл
 `/home/hermes/.hermes/.env` на VPS полностью управляется Vault и его ручные
 изменения будут перезаписаны при следующем запуске playbook.

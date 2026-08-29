@@ -1,4 +1,6 @@
-ARG HERMES_IMAGE=nousresearch/hermes-agent:latest
+# Local Docker is a separate test topology, but its upstream base must still be
+# immutable. Update this multi-architecture digest deliberately after testing.
+ARG HERMES_IMAGE=nousresearch/hermes-agent:latest@sha256:8f1e4cf86682139ce8c460c644daf9801ac0d4dbab660f1cfe0ad2bf0336e423
 FROM ${HERMES_IMAGE}
 
 USER root

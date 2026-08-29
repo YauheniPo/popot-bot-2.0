@@ -23,7 +23,8 @@ CONFIG_PATH = Path("/opt/data/config.yaml")
 # Exported values must always be scalar: a nested mapping can hide credentials
 # even when its top-level field name looks safe.
 SAFE_FIELDS: dict[str, tuple[str, ...]] = {
-    "model": ("provider", "default", "max_tokens"),
+    # provider/default stay live so /model_global survives later deployments.
+    "model": ("max_tokens",),
     "agent": ("reasoning_effort",),
     "stt": ("enabled", "language"),
     "web": ("backend", "search_backend", "extract_backend", "extract_char_limit"),
@@ -87,8 +88,15 @@ def main() -> int:
             overlay["platform_toolsets"] = safe_toolsets
 
     print("# Generated from Docker config.yaml; no .env, OAuth, sessions, memory, or tokens are included.")
-    print("# Review before copying `hermes_llm_config` into ansible/group_vars/all/vault.yml.")
-    print(yaml.safe_dump({"hermes_llm_config": overlay}, allow_unicode=True, sort_keys=False), end="")
+    print("# Review before merging managed_overlay into config/vps-defaults.yml.")
+    print(
+        yaml.safe_dump(
+            {"vps_hermes": {"config": {"managed_overlay": overlay}}},
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        end="",
+    )
     return 0
 
 

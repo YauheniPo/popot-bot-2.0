@@ -1,0 +1,23 @@
+[Unit]
+Description=Prune expired Hermes observability rows
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=@HERMES_USER@
+Group=@HERMES_GROUP@
+Environment=HOME=@USER_HOME@
+Environment=HERMES_HOME=@HERMES_HOME@
+EnvironmentFile=-/etc/hermes-ops.conf
+ExecStart=/usr/local/lib/hermes-ops/prune-observability.py --database @HERMES_HOME@/ops/metrics.db --retention-days @OBSERVABILITY_DATABASE_RETENTION_DAYS@
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@HERMES_HOME@/ops
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX

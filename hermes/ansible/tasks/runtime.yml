@@ -10,32 +10,60 @@
   no_log: true
   diff: false
 
+- name: Install the managed development and VPS diagnostic CLI bundle
+  ansible.builtin.apt:
+    name:
+      - ansible-core
+      - build-essential
+      - dnsutils
+      - file
+      - gh
+      - git-lfs
+      - jq
+      - lsof
+      - netcat-openbsd
+      - openssh-client
+      - pkg-config
+      - python3-pytest
+      - python3-yaml
+      - rsync
+      - shellcheck
+      - sqlite3
+      - tree
+      - unzip
+      - wget
+      - zip
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: vps_deploy.features.development_clis | bool
+
 - name: Inspect the existing Hermes configuration
   ansible.builtin.stat:
     path: "{{ hermes_home }}/config.yaml"
   register: hermes_config_file
-  when: hermes_llm_config | length > 0
+  when: hermes_managed_config | length > 0
 
 - name: Read the existing Hermes configuration
   ansible.builtin.slurp:
     path: "{{ hermes_home }}/config.yaml"
   register: hermes_config_contents
   when:
-    - hermes_llm_config | length > 0
+    - hermes_managed_config | length > 0
     - hermes_config_file.stat.exists
   no_log: true
 
 - name: Start the managed Hermes configuration from an empty mapping
   ansible.builtin.set_fact:
     hermes_existing_config: {}
-  when: hermes_llm_config | length > 0
+  when: hermes_managed_config | length > 0
   no_log: true
 
 - name: Decode the existing Hermes configuration
   ansible.builtin.set_fact:
     hermes_existing_config: "{{ (hermes_config_contents.content | b64decode | from_yaml) | default({}, true) }}"
   when:
-    - hermes_llm_config | length > 0
+    - hermes_managed_config | length > 0
     - hermes_config_file.stat.exists
   no_log: true
 
@@ -44,17 +72,20 @@
     that:
       - hermes_existing_config is mapping
     fail_msg: Existing Hermes config.yaml must contain a YAML mapping.
-  when: hermes_llm_config | length > 0
+  when: hermes_managed_config | length > 0
   no_log: true
 
 - name: Apply the managed Hermes model and voice configuration
   ansible.builtin.copy:
-    content: "{{ hermes_existing_config | combine(hermes_llm_config) | to_nice_yaml(indent=2, sort_keys=false) }}"
+    content: >-
+      {{ hermes_existing_config |
+         combine(hermes_managed_config, recursive=true, list_merge='replace') |
+         to_nice_yaml(indent=2, sort_keys=false) }}
     dest: "{{ hermes_home }}/config.yaml"
     owner: "{{ hermes_user }}"
     group: "{{ hermes_user }}"
     mode: "0600"
-  when: hermes_llm_config | length > 0
+  when: hermes_managed_config | length > 0
   no_log: true
   diff: false
 
@@ -69,7 +100,7 @@
           '--settings', hermes_bundle_dir ~ '/config/vps-defaults.yml',
           '--hermes-home', hermes_home,
           '--hermes-bin', hermes_bin,
-          '--workspace', hermes_user_home ~ '/workspace'
+          '--workspace', hermes_workspace
         ] +
         (
           ['--capability', 'brave_search']
@@ -94,28 +125,45 @@
   no_log: true
   when: hermes_venv_python.stat.exists
 
-- name: Check for a bundled npm workspace to audit
-  ansible.builtin.stat:
-    path: "{{ hermes_home }}/hermes-agent/package.json"
-  register: hermes_npm_workspace
-
-# Force-patches upstream advisories (e.g. electron/extract-zip) in the vendored
-# apps/desktop workspace, which this headless VPS never runs. Re-applied on
-# every playbook run so the fix survives `hermes update`'s
-# updates.non_interactive_local_changes: stash, which would otherwise discard
-# a one-off manual patch. --force can move a workspace dependency outside the
-# range upstream tested; acceptable here only because the component is unused.
-- name: Force-fix upstream npm audit advisories in the bundled workspace
+- name: Read the installed Google Workspace CLI version
   ansible.builtin.command:
-    argv: [npm, audit, fix, --force]
-    chdir: "{{ hermes_home }}/hermes-agent"
+    argv:
+      - python3
+      - -c
+      - "import json, sys; print(json.load(open(sys.argv[1], encoding='utf-8'))['version'])"
+      - "{{ hermes_home }}/node/lib/node_modules/@googleworkspace/cli/package.json"
+  register: hermes_google_workspace_cli_version
+  changed_when: false
+  failed_when: false
+  when: vps_deploy.features.google_workspace_cli | bool
+
+- name: Install the pinned Google Workspace CLI
+  ansible.builtin.command:
+    argv:
+      - "{{ hermes_home }}/node/bin/npm"
+      - install
+      - --global
+      - --omit=dev
+      - --prefix
+      - "{{ hermes_home }}/node"
+      - "@googleworkspace/cli@{{ vps_tools.google_workspace_cli.version }}"
   become_user: "{{ hermes_user }}"
   environment:
     HOME: "{{ hermes_user_home }}"
-  register: hermes_npm_audit_fix
-  changed_when: "'up to date' not in hermes_npm_audit_fix.stdout"
-  failed_when: false
-  when: hermes_npm_workspace.stat.exists
+    HERMES_HOME: "{{ hermes_home }}"
+    PATH: "{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/bin:/usr/bin:/bin"
+  when:
+    - vps_deploy.features.google_workspace_cli | bool
+    - hermes_google_workspace_cli_version.stdout | default('') != vps_tools.google_workspace_cli.version
+  changed_when: true
+
+- name: Verify the pinned Google Workspace CLI launcher
+  ansible.builtin.stat:
+    path: "{{ hermes_home }}/node/bin/gws"
+    follow: true
+  register: hermes_google_workspace_cli
+  failed_when: not hermes_google_workspace_cli.stat.exists
+  when: vps_deploy.features.google_workspace_cli | bool
 
 - name: Locate the unused Browser Use CLI
   ansible.builtin.shell:
@@ -184,5 +232,3 @@
     HERMES_HOME: "{{ hermes_home }}"
     PATH: "{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   changed_when: false
-
-
