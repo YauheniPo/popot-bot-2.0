@@ -39,7 +39,10 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertTrue(settings["vps_deploy"]["features"]["google_workspace_cli"])
         self.assertNotIn("model.default", settings["vps_runtime"]["set"])
         self.assertEqual(settings["vps_deploy"]["bundle"]["dir"], "/opt/hermes-bootstrap")
-        self.assertEqual(settings["vps_hermes"]["config"]["managed_overlay"], {})
+        self.assertEqual(
+            settings["vps_hermes"]["config"]["managed_overlay"],
+            {"user_char_limit": 3000, "memory_char_limit": 4000},
+        )
         self.assertEqual(settings["vps_runtime"]["set"]["approvals.mode"], "manual")
         self.assertEqual(settings["vps_runtime"]["set"]["browser.backend"], "off")
         self.assertEqual(settings["vps_runtime"]["set"]["display.tool_progress"], "off")

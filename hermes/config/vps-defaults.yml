@@ -48,7 +48,9 @@ vps_deploy:
 # model.default/provider out of this block when /model_global must persist.
 vps_hermes:
   config:
-    managed_overlay: {}
+    managed_overlay:
+      user_char_limit: 3000
+      memory_char_limit: 4000
 
 vps_tools:
   google_workspace_cli:
