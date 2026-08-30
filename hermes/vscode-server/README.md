@@ -38,9 +38,10 @@ when that account is not UID/GID 1000.
 
 The Ansible playbook installs and starts code-server automatically
 (`vps_deploy.features.vscode_server: true` in `hermes/config/vps-defaults.yml`).
-During the first managed deployment it replaces only the legacy container named
-`vscode-server-code-server-1`, if present; repositories and Hermes data remain
-in host bind mounts and are not removed.
+During the first managed deployment it stops and renames the legacy container
+`vscode-server-code-server-1` with a `-legacy-<container-id>` suffix. Its
+writable layer, including IDE settings and extensions, remains available for
+manual migration; the managed deployment does not delete it.
 Set the password once in encrypted `vault.yml`:
 
 ```yaml

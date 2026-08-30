@@ -57,6 +57,16 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertNotIn("DEFAULT_HERMES_COMMIT", deploy_script)
         self.assertNotIn("DEFAULT_INSTALLER_SHA256", deploy_script)
         self.assertIn('data["vps_deploy"]["hermes_source"]', deploy_script)
+        self.assertIn("8#$settings_perms & 8#022", deploy_script)
+        self.assertNotIn("settings_owner", deploy_script)
+        self.assertNotIn("must be owned by root", deploy_script)
+        self.assertIn('HERMES_BRANCH="${HERMES_BRANCH:-$source_branch}"', deploy_script)
+        self.assertIn('HERMES_COMMIT="${HERMES_COMMIT:-$source_commit}"', deploy_script)
+        self.assertIn('INSTALLER_SHA256="${INSTALLER_SHA256:-$source_installer_sha256}"', deploy_script)
+        self.assertIn(
+            "verify_updated_kanban_state\n  apply_local_hermes_patches",
+            deploy_script,
+        )
 
     def test_manual_deploy_preserves_path_options_and_resolves_gateway_service(self) -> None:
         hermes_dir = MODULE_PATH.parent.parent

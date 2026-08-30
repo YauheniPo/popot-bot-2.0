@@ -76,19 +76,30 @@
       - docker
       - container
       - inspect
+      - --format
+      - "{{ '{{' }}.Id{{ '}}' }}"
       - vscode-server-code-server-1
   register: hermes_legacy_vscode_container
   changed_when: false
   failed_when: false
 
-- name: Replace the legacy code-server container
+- name: Stop the legacy code-server container without deleting its data
   ansible.builtin.command:
     argv:
       - docker
       - container
-      - rm
-      - --force
+      - stop
       - vscode-server-code-server-1
+  when: hermes_legacy_vscode_container.rc == 0
+
+- name: Preserve the legacy code-server container for manual data migration
+  ansible.builtin.command:
+    argv:
+      - docker
+      - container
+      - rename
+      - vscode-server-code-server-1
+      - "vscode-server-code-server-1-legacy-{{ hermes_legacy_vscode_container.stdout[:12] }}"
   when: hermes_legacy_vscode_container.rc == 0
 
 - name: Start the managed code-server container

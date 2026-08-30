@@ -343,18 +343,18 @@ resolve_source_pin() {
   command -v python3 >/dev/null 2>&1 ||
     die "python3 is required to read the deploy source pin"
 
-  # The script runs as root and the parsed values drive a checksum-verified
-  # download, so refuse a settings file that a non-owner could have tampered
-  # with (symlink swap or world/group-writable edit).
-  local settings_owner settings_perms
-  settings_owner="$(stat -c '%U' "$VPS_SETTINGS_FILE")"
+  # A documented manual deployment runs this checked-out script with sudo, so
+  # its owner may be the SSH user. That checkout is an explicit operator input
+  # (the script itself has the same trust boundary); still reject a config that
+  # another group or world user can alter before the root process reads it.
+  local settings_perms
   settings_perms="$(stat -c '%a' "$VPS_SETTINGS_FILE")"
-  [[ "$settings_owner" == "root" ]] ||
-    die "$VPS_SETTINGS_FILE must be owned by root (found: $settings_owner)"
-  [[ "$settings_perms" =~ ^[0-7]00$ ]] ||
+  [[ "$settings_perms" =~ ^[0-7]{3,4}$ ]] ||
+    die "$VPS_SETTINGS_FILE has an invalid mode: $settings_perms"
+  (( (8#$settings_perms & 8#022) == 0 )) ||
     die "$VPS_SETTINGS_FILE must not be group- or world-writable (mode: $settings_perms)"
 
-  local parsed
+  local parsed source_raw_base_url source_branch source_version source_release source_commit source_installer_sha256
   parsed="$(python3 - "$VPS_SETTINGS_FILE" <<'PY'
 import sys
 
@@ -379,7 +379,13 @@ print(" ".join(source[key] for key in ("raw_base_url", "branch", "version", "rel
 PY
 )" || die "could not read the deploy source pin from $VPS_SETTINGS_FILE"
 
-  read -r HERMES_RAW_BASE_URL HERMES_BRANCH HERMES_VERSION HERMES_RELEASE HERMES_COMMIT INSTALLER_SHA256 <<<"$parsed"
+  read -r source_raw_base_url source_branch source_version source_release source_commit source_installer_sha256 <<<"$parsed"
+  HERMES_RAW_BASE_URL="${HERMES_RAW_BASE_URL:-$source_raw_base_url}"
+  HERMES_BRANCH="${HERMES_BRANCH:-$source_branch}"
+  HERMES_VERSION="${HERMES_VERSION:-$source_version}"
+  HERMES_RELEASE="${HERMES_RELEASE:-$source_release}"
+  HERMES_COMMIT="${HERMES_COMMIT:-$source_commit}"
+  INSTALLER_SHA256="${INSTALLER_SHA256:-$source_installer_sha256}"
   [[ "$HERMES_RAW_BASE_URL" == "https://raw.githubusercontent.com/NousResearch/hermes-agent" ]] ||
     die "unsupported Hermes source base URL: $HERMES_RAW_BASE_URL"
 }
@@ -405,6 +411,7 @@ main() {
   backup_existing_installation
   install_hermes
   verify_updated_kanban_state
+  apply_local_hermes_patches
   install_local_browser_automation
   configure_development_clis
   install_google_workspace_cli
