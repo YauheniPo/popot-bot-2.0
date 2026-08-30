@@ -58,6 +58,21 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertNotIn("DEFAULT_INSTALLER_SHA256", deploy_script)
         self.assertIn('data["vps_deploy"]["hermes_source"]', deploy_script)
 
+    def test_manual_deploy_preserves_path_options_and_resolves_gateway_service(self) -> None:
+        hermes_dir = MODULE_PATH.parent.parent
+        deploy_script = (hermes_dir / "deploy-hermes.sh").read_text(encoding="utf-8")
+
+        for option, variable in (
+            ("--user-home", "REQUESTED_USER_HOME"),
+            ("--hermes-home", "REQUESTED_HERMES_HOME"),
+            ("--workspace", "REQUESTED_HERMES_WORKSPACE"),
+            ("--backup-dir", "REQUESTED_HERMES_BACKUP_DIR"),
+        ):
+            self.assertIn(option, deploy_script)
+            self.assertIn(f'{variable}="$2"', deploy_script)
+        self.assertIn("resolve_user_paths\n  resolve_managed_runtime", deploy_script)
+        self.assertIn('systemctl start "$HERMES_GATEWAY_SERVICE"', deploy_script)
+
     def test_build_operations_applies_defaults_capabilities_and_unsets_overrides(self) -> None:
         settings = {
             "vps_runtime": {
