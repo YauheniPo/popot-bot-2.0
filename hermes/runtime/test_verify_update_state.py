@@ -115,6 +115,9 @@ class VerifyUpdateStateTests(unittest.TestCase):
         backup_path = self.root / "backup.zip"
         create_backup(self.home, backup_path)
 
+        with zipfile.ZipFile(backup_path) as archive:
+            self.assertNotIn("state-snapshots/scheduled/state.db", archive.namelist())
+
         verify_update_state.verify_backup(backup_path, snapshot)
 
     def test_backup_missing_a_board_fails_closed(self) -> None:

@@ -7,9 +7,13 @@
   ansible.builtin.assert:
     that:
       - hermes_code_server_password is string
-      - hermes_code_server_password | length > 0
+      - hermes_code_server_password | length >= 16
+      - hermes_code_server_password | length <= 128
+      - hermes_code_server_password != 'replace-inside-ansible-vault'
+      - hermes_code_server_password is match('^[A-Za-z0-9._~!@%^+=:,-]{16,128}$')
     fail_msg: >-
-      Set a non-empty code-server password in encrypted vault.yml.
+      Set a unique code-server password of 16-128 characters in encrypted
+      vault.yml. Allowed characters: letters, digits, . _ ~ ! @ % ^ + = : , -
   no_log: true
 
 - name: Install Docker Compose v2 plugin

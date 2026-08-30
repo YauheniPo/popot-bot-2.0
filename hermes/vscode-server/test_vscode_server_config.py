@@ -56,15 +56,20 @@ class VscodeServerConfigTests(unittest.TestCase):
             "!/home/coder/.local/bin/gh auth git-credential",
         )
 
-    def test_nonempty_password_is_json_escaped_before_dotenv_rendering(self) -> None:
+    def test_strong_password_is_json_escaped_before_dotenv_rendering(self) -> None:
         tasks = (HERMES_DIR / "ansible" / "tasks" / "vscode.yml").read_text(
             encoding="utf-8"
         )
         template = (
             HERMES_DIR / "ansible" / "templates" / "code-server.env.j2"
         ).read_text(encoding="utf-8")
-        self.assertIn("hermes_code_server_password | length > 0", tasks)
-        self.assertNotIn("hermes_code_server_password is match(", tasks)
+        self.assertIn("hermes_code_server_password | length >= 16", tasks)
+        self.assertIn("hermes_code_server_password | length <= 128", tasks)
+        self.assertIn("hermes_code_server_password != 'replace-inside-ansible-vault'", tasks)
+        self.assertIn(
+            "hermes_code_server_password is match('^[A-Za-z0-9._~!@%^+=:,-]{16,128}$')",
+            tasks,
+        )
         self.assertIn("PASSWORD={{ hermes_code_server_password | to_json }}", template)
         self.assertIn("VPS_USER_HOME={{ hermes_user_home }}", template)
         self.assertIn("VPS_HERMES_HOME={{ hermes_home }}", template)
@@ -119,7 +124,7 @@ class VscodeServerConfigTests(unittest.TestCase):
 
         self.assertTrue(wrapper.stat().st_mode & stat.S_IXUSR)
         self.assertIn("read -rsp", readme)
-        self.assertIn("Set a non-empty code-server password.", readme)
+        self.assertIn("Set a unique code-server password of 16-128 characters.", readme)
         self.assertIn("CODE_SERVER_PASSWORD_JSON", readme)
         self.assertIn("sudo install -o root -g root -m 0600", readme)
         self.assertNotIn('echo "PASSWORD=', readme)
