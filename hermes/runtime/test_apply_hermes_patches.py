@@ -82,6 +82,144 @@ class ApplyHermesPatchesTests(unittest.TestCase):
         self.assertIn('if canonical == "model_global":', migrated)
         self.assertNotIn(retired, migrated)
 
+    def test_route_migration_ignores_unrelated_retired_text(self) -> None:
+        retired = apply_hermes_patches._RETIRED_MODEL_GLOBAL
+        source = f'''        # Upstream migration note: /{retired} was renamed.
+        if canonical in ("{retired}", "model_global"):
+            # Local Hermes: {retired} route
+            return await self._handle_model_global_command(event)
+'''
+
+        migrated, changed = apply_hermes_patches._migrate_model_global_source(
+            "gateway/run.py", source
+        )
+
+        self.assertTrue(changed)
+        self.assertIn(f"/{retired} was renamed", migrated)
+        self.assertNotIn(f"# Local Hermes: {retired} route", migrated)
+        self.assertIn('if canonical == "model_global":', migrated)
+
+    def test_gw_restart_registry_migration_makes_it_canonical(self) -> None:
+        source = '''    CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
+               gateway_only=True, busy_policy="dispatch", aliases=("gw-restart",)),
+'''
+
+        migrated, changed = apply_hermes_patches._migrate_gw_restart_source(
+            "hermes_cli/commands.py", source
+        )
+
+        self.assertTrue(changed)
+        self.assertIn("# Local Hermes: gw-restart canonical", migrated)
+        self.assertIn('CommandDef("gw-restart"', migrated)
+        self.assertIn('aliases=("restart", "gw_restart")', migrated)
+
+    def test_gw_restart_route_migration_makes_it_canonical(self) -> None:
+        source = '''        if canonical in ("restart", "gw-restart"):
+            # /gw-restart is the user-facing alias; /restart is kept for
+            # backward compatibility with scripts that already use it.
+            return await self._handle_restart_command(event)
+'''
+
+        migrated, changed = apply_hermes_patches._migrate_gw_restart_source(
+            "gateway/run.py", source
+        )
+
+        self.assertTrue(changed)
+        self.assertIn("# Local Hermes: gw-restart route", migrated)
+        self.assertIn('if canonical in ("restart", "gw-restart"):', migrated)
+
+    def test_gw_restart_migration_accepts_legacy_underscore_aliases(self) -> None:
+        registry = '''    CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
+               gateway_only=True, busy_policy="dispatch", aliases=("gw-restart", "gw_restart")),
+'''
+        route = '''        if canonical in ("restart", "gw-restart", "gw_restart"):
+            # Earlier local route comment.
+            return await self._handle_restart_command(event)
+'''
+
+        migrated_registry, registry_changed = apply_hermes_patches._migrate_gw_restart_source(
+            "hermes_cli/commands.py", registry
+        )
+        migrated_route, route_changed = apply_hermes_patches._migrate_gw_restart_source(
+            "gateway/run.py", route
+        )
+
+        self.assertTrue(registry_changed)
+        self.assertTrue(route_changed)
+        self.assertIn("# Local Hermes: gw-restart canonical", migrated_registry)
+        self.assertIn("# Local Hermes: gw-restart route", migrated_route)
+
+    def test_gw_restart_registry_migration_accepts_underscore_only_alias(self) -> None:
+        source = '''    CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
+               gateway_only=True, busy_policy="dispatch", aliases=("gw_restart",)),
+'''
+
+        migrated, changed = apply_hermes_patches._migrate_gw_restart_source(
+            "hermes_cli/commands.py", source
+        )
+
+        self.assertTrue(changed)
+        self.assertIn('CommandDef("gw-restart"', migrated)
+
+    def test_gw_restart_registry_migration_adds_missing_marker_to_canonical_form(self) -> None:
+        source = '''    CommandDef("gw-restart", "Gracefully restart the gateway after draining active runs", "Session",
+               gateway_only=True, busy_policy="dispatch", aliases=("restart", "gw_restart")),
+'''
+
+        migrated, changed = apply_hermes_patches._migrate_gw_restart_source(
+            "hermes_cli/commands.py", source
+        )
+
+        self.assertTrue(changed)
+        self.assertIn("# Local Hermes: gw-restart canonical", migrated)
+        self.assertIn('aliases=("restart", "gw_restart")', migrated)
+
+    def test_main_recovers_from_partially_migrated_legacy_patch_set(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            install_dir = Path(temp_directory)
+            commands = install_dir / "hermes_cli" / "commands.py"
+            slash_commands = install_dir / "gateway" / "slash_commands.py"
+            run = install_dir / "gateway" / "run.py"
+            commands.parent.mkdir(parents=True)
+            slash_commands.parent.mkdir(parents=True)
+            commands.write_text(
+                apply_hermes_patches._PATCHES[0][3]
+                + '''    CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
+               gateway_only=True, busy_policy="dispatch", aliases=("gw-restart",)),
+''',
+                encoding="utf-8",
+            )
+            slash_commands.write_text(
+                apply_hermes_patches._PATCHES[2][3]
+                + apply_hermes_patches._PATCHES[6][3],
+                encoding="utf-8",
+            )
+            run.write_text(
+                apply_hermes_patches._PATCHES[3][3]
+                + '''        if canonical in ("restart", "gw-restart"):
+            # /gw-restart is the user-facing alias; /restart is kept for
+            # backward compatibility with scripts that already use it.
+            return await self._handle_restart_command(event)
+'''
+                + apply_hermes_patches._PATCHES[5][3],
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch.object(apply_hermes_patches, "HERMES_AGENT_DIR", install_dir),
+                mock.patch.object(apply_hermes_patches, "_PATCHES", apply_hermes_patches._PATCHES[:7]),
+            ):
+                self.assertEqual(apply_hermes_patches.main(), 0)
+
+            self.assertIn(
+                "# Local Hermes: gw-restart canonical",
+                commands.read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "# Local Hermes: gw-restart route",
+                run.read_text(encoding="utf-8"),
+            )
+
     def test_new_patch_definitions_contain_only_underscore_command(self) -> None:
         retired = apply_hermes_patches._RETIRED_MODEL_GLOBAL
         patch_payload = "\n".join(
@@ -92,6 +230,28 @@ class ApplyHermesPatchesTests(unittest.TestCase):
 
         self.assertIn("model_global", patch_payload)
         self.assertNotIn(retired, patch_payload)
+
+    def test_doctor_patch_is_a_gateway_only_fixed_argument_diagnostic(self) -> None:
+        patches = {
+            marker: new
+            for _path, marker, _old, new in apply_hermes_patches._PATCHES
+        }
+
+        self.assertIn(
+            'CommandDef("doctor", "Run read-only Hermes diagnostics", "Info"',
+            patches["# Local Hermes: doctor CommandDef"],
+        )
+        self.assertIn(
+            "gateway_only=True", patches["# Local Hermes: doctor CommandDef"]
+        )
+        self.assertIn('"doctor",', patches["# Local Hermes: doctor handler"])
+        self.assertIn(
+            "asyncio.create_subprocess_exec", patches["# Local Hermes: doctor handler"]
+        )
+        self.assertNotIn("shell=True", patches["# Local Hermes: doctor handler"])
+        self.assertIn(
+            'if canonical == "doctor":', patches["# Local Hermes: doctor route"]
+        )
 
     def test_missing_required_target_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:

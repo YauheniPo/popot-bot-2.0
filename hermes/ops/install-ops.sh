@@ -157,6 +157,8 @@ source "$SCRIPT_DIR/install/common.sh"
 source "$SCRIPT_DIR/install/packages.sh"
 # shellcheck source=install/plugin.sh
 source "$SCRIPT_DIR/install/plugin.sh"
+# shellcheck source=install/superpowers.sh
+source "$SCRIPT_DIR/install/superpowers.sh"
 # shellcheck source=install/assets.sh
 source "$SCRIPT_DIR/install/assets.sh"
 # shellcheck source=install/services.sh
@@ -164,5 +166,6 @@ source "$SCRIPT_DIR/install/services.sh"
 
 install_observability_dependencies
 install_observability_plugin
+install_superpowers_plugin
 install_operations_assets
 reconcile_observability_services

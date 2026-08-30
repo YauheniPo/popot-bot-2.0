@@ -38,6 +38,10 @@ when that account is not UID/GID 1000.
 
 The Ansible playbook installs and starts code-server automatically
 (`vps_deploy.features.vscode_server: true` in `hermes/config/vps-defaults.yml`).
+During the first managed deployment it stops and renames the legacy container
+`vscode-server-code-server-1` with a `-legacy-<container-id>` suffix. Its
+writable layer, including IDE settings and extensions, remains available for
+manual migration; the managed deployment does not delete it.
 Set the password once in encrypted `vault.yml`:
 
 ```yaml
@@ -50,16 +54,19 @@ Manual deploy (without Ansible):
 cd hermes/vscode-server
 read -rsp 'code-server password: ' CODE_SERVER_PASSWORD
 printf '\n'
-if [[ ! "$CODE_SERVER_PASSWORD" =~ ^[A-Za-z0-9._~!@%^+=:,-]{16,128}$ ]]; then
-  echo 'Use 16-128 characters: letters, digits, . _ ~ ! @ % ^ + = : , -' >&2
+if [[ ! "$CODE_SERVER_PASSWORD" =~ ^[A-Za-z0-9._~!@%^+=:,-]{16,128}$ || "$CODE_SERVER_PASSWORD" == 'replace-inside-ansible-vault' ]]; then
+  echo 'Set a unique code-server password of 16-128 characters.' >&2
+  echo 'Allowed characters: letters, digits, . _ ~ ! @ % ^ + = : , -' >&2
   exit 1
 fi
+CODE_SERVER_PASSWORD_JSON="$(printf '%s' "$CODE_SERVER_PASSWORD" | python3 -c \
+  'import json, sys; print(json.dumps(sys.stdin.read()))')"
 mkdir -p "$HOME/workspace/repositories"
 touch "$HOME/.gitconfig"
 HERMES_UID="$(id -u)"
 HERMES_GID="$(id -g)"
 printf '%s\n' \
-  "PASSWORD=$CODE_SERVER_PASSWORD" \
+  "PASSWORD=$CODE_SERVER_PASSWORD_JSON" \
   "VPS_USER_HOME=$HOME" \
   "VPS_HERMES_HOME=$HOME/.hermes" \
   "HERMES_UID=$HERMES_UID" \
@@ -71,7 +78,7 @@ printf '%s\n' \
   "CODE_SERVER_HOST_PORT=3001" \
   "CODE_SERVER_TIMEZONE=UTC" | \
   sudo install -o root -g root -m 0600 /dev/stdin /etc/code-server.env
-unset CODE_SERVER_PASSWORD
+unset CODE_SERVER_PASSWORD CODE_SERVER_PASSWORD_JSON
 sudo docker compose --project-name hermes-vscode \
   --env-file /etc/code-server.env up -d --build
 ```

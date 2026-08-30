@@ -721,7 +721,10 @@ def validate_findings(
     findings: list[Finding] = []
     seen_locations: set[tuple[str, str, int]] = set()
 
-    for response, chunk in zip(responses, chunks, strict=True):
+    if len(responses) != len(chunks):
+        raise ValueError("review responses and chunks must have the same length")
+
+    for response, chunk in zip(responses, chunks):
         raw_findings = response.get("findings", [])
         if not isinstance(raw_findings, list):
             continue

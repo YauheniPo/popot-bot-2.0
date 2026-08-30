@@ -5,12 +5,6 @@ set -Eeuo pipefail
 umask 027
 
 readonly DEFAULT_HERMES_USER="hermes"
-readonly DEFAULT_HERMES_BRANCH="main"
-readonly DEFAULT_HERMES_VERSION="0.20.5"
-readonly DEFAULT_HERMES_RELEASE="v2026.8.19"
-readonly DEFAULT_HERMES_COMMIT="fcbd1076a93841fa88855acce810e342a5b78101"
-readonly DEFAULT_INSTALLER_SHA256="0582d9b1562efcb6e0ac62f4451021667830b830a72ce7d91eaea9fee8b6c09b"
-readonly DEFAULT_HERMES_RAW_BASE_URL="https://raw.githubusercontent.com/NousResearch/hermes-agent"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 readonly VPS_SETTINGS_FILE="$SCRIPT_DIR/config/vps-defaults.yml"
@@ -18,12 +12,14 @@ readonly VPS_CONFIG_APPLIER="$SCRIPT_DIR/runtime/apply-config.py"
 readonly UPDATE_STATE_VERIFIER="$SCRIPT_DIR/runtime/verify-update-state.py"
 
 HERMES_USER="$DEFAULT_HERMES_USER"
-HERMES_BRANCH="$DEFAULT_HERMES_BRANCH"
-HERMES_VERSION="$DEFAULT_HERMES_VERSION"
-HERMES_RELEASE="$DEFAULT_HERMES_RELEASE"
-HERMES_COMMIT="$DEFAULT_HERMES_COMMIT"
-INSTALLER_SHA256="$DEFAULT_INSTALLER_SHA256"
-HERMES_RAW_BASE_URL="$DEFAULT_HERMES_RAW_BASE_URL"
+# The deploy source pin (branch/version/release/commit/installer SHA-256) is
+# read from VPS_SETTINGS_FILE by resolve_source_pin; CLI flags override it.
+HERMES_BRANCH=""
+HERMES_VERSION=""
+HERMES_RELEASE=""
+HERMES_COMMIT=""
+INSTALLER_SHA256=""
+HERMES_RAW_BASE_URL=""
 REQUESTED_USER_HOME=""
 REQUESTED_HERMES_HOME=""
 REQUESTED_HERMES_WORKSPACE=""
@@ -337,6 +333,63 @@ validate_inputs() {
 # Domain modules share the validated deployment context defined above.
 # shellcheck source=deploy/host.sh
 source "$SCRIPT_DIR/deploy/host.sh"
+
+resolve_source_pin() {
+  # The deploy source pin lives in vps-defaults.yml (single source of truth,
+  # shared with Ansible and apply-config.py). System python3 with PyYAML is
+  # available on every supported host before provisioning installs anything.
+  [[ -r "$VPS_SETTINGS_FILE" ]] ||
+    die "VPS settings file is missing or unreadable: $VPS_SETTINGS_FILE"
+  command -v python3 >/dev/null 2>&1 ||
+    die "python3 is required to read the deploy source pin"
+
+  # A documented manual deployment runs this checked-out script with sudo, so
+  # its owner may be the SSH user. That checkout is an explicit operator input
+  # (the script itself has the same trust boundary); still reject a config that
+  # another group or world user can alter before the root process reads it.
+  local settings_perms
+  settings_perms="$(stat -c '%a' "$VPS_SETTINGS_FILE")"
+  [[ "$settings_perms" =~ ^[0-7]{3,4}$ ]] ||
+    die "$VPS_SETTINGS_FILE has an invalid mode: $settings_perms"
+  (( (8#$settings_perms & 8#022) == 0 )) ||
+    die "$VPS_SETTINGS_FILE must not be group- or world-writable (mode: $settings_perms)"
+
+  local parsed source_raw_base_url source_branch source_version source_release source_commit source_installer_sha256
+  parsed="$(python3 - "$VPS_SETTINGS_FILE" <<'PY'
+import sys
+
+try:
+    import yaml
+except ImportError:
+    sys.exit("PyYAML is required to read the deploy source pin")
+
+with open(sys.argv[1]) as handle:
+    data = yaml.safe_load(handle)
+try:
+    source = data["vps_deploy"]["hermes_source"]
+except (TypeError, KeyError):
+    sys.exit("vps-defaults.yml is missing the vps_deploy.hermes_source mapping")
+for key in ("raw_base_url", "branch", "version", "release", "commit", "installer_sha256"):
+    if key not in source:
+        sys.exit(f"vps_deploy.hermes_source is missing the {key!r} key")
+    value = source[key]
+    if not isinstance(value, str) or not value:
+        sys.exit(f"deploy source pin {key!r} must be a non-empty string")
+print(" ".join(source[key] for key in ("raw_base_url", "branch", "version", "release", "commit", "installer_sha256")))
+PY
+)" || die "could not read the deploy source pin from $VPS_SETTINGS_FILE"
+
+  read -r source_raw_base_url source_branch source_version source_release source_commit source_installer_sha256 <<<"$parsed"
+  HERMES_RAW_BASE_URL="${HERMES_RAW_BASE_URL:-$source_raw_base_url}"
+  HERMES_BRANCH="${HERMES_BRANCH:-$source_branch}"
+  HERMES_VERSION="${HERMES_VERSION:-$source_version}"
+  HERMES_RELEASE="${HERMES_RELEASE:-$source_release}"
+  HERMES_COMMIT="${HERMES_COMMIT:-$source_commit}"
+  INSTALLER_SHA256="${INSTALLER_SHA256:-$source_installer_sha256}"
+  [[ "$HERMES_RAW_BASE_URL" == "https://raw.githubusercontent.com/NousResearch/hermes-agent" ]] ||
+    die "unsupported Hermes source base URL: $HERMES_RAW_BASE_URL"
+}
+
 # shellcheck source=deploy/runtime.sh
 source "$SCRIPT_DIR/deploy/runtime.sh"
 # shellcheck source=deploy/services.sh
@@ -345,6 +398,7 @@ source "$SCRIPT_DIR/deploy/services.sh"
 source "$SCRIPT_DIR/deploy/reporting.sh"
 
 main() {
+  resolve_source_pin
   validate_inputs
   install_host_dependencies
   install_tailscale
