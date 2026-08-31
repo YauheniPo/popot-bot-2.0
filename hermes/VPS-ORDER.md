@@ -90,7 +90,7 @@ brew install ansible
 
 ```bash
 cd hermes
-ansible-playbook -i ansible/inventory.ini \
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventory.ini \
   ansible/playbook.yml \
   --ask-vault-pass \
   --ask-pass

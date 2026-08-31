@@ -70,6 +70,38 @@
   no_log: true
   diff: false
 
+- name: Detect the legacy code-server container
+  ansible.builtin.command:
+    argv:
+      - docker
+      - container
+      - inspect
+      - --format
+      - "{{ '{{' }}.Id{{ '}}' }}"
+      - vscode-server-code-server-1
+  register: hermes_legacy_vscode_container
+  changed_when: false
+  failed_when: false
+
+- name: Stop the legacy code-server container without deleting its data
+  ansible.builtin.command:
+    argv:
+      - docker
+      - container
+      - stop
+      - vscode-server-code-server-1
+  when: hermes_legacy_vscode_container.rc == 0
+
+- name: Preserve the legacy code-server container for manual data migration
+  ansible.builtin.command:
+    argv:
+      - docker
+      - container
+      - rename
+      - vscode-server-code-server-1
+      - "vscode-server-code-server-1-legacy-{{ hermes_legacy_vscode_container.stdout[:12] }}"
+  when: hermes_legacy_vscode_container.rc == 0
+
 - name: Start the managed code-server container
   ansible.builtin.command:
     argv:
@@ -83,10 +115,10 @@
       - -d
       - --build
     chdir: "{{ hermes_bundle_dir }}/vscode-server"
-    environment:
-      VPS_USER_HOME: "{{ hermes_user_home }}"
-      HERMES_UID: "{{ hermes_vscode_uid.stdout }}"
-      HERMES_GID: "{{ hermes_vscode_gid.stdout }}"
+  environment:
+    VPS_USER_HOME: "{{ hermes_user_home }}"
+    HERMES_UID: "{{ hermes_vscode_uid.stdout }}"
+    HERMES_GID: "{{ hermes_vscode_gid.stdout }}"
   changed_when: true
 
 - name: Verify the code-server container is running

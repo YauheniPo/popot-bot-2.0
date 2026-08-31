@@ -652,7 +652,7 @@ timers Ansible перезапускает включённый gateway посл�
 Запускайте управляемое обновление с Ansible controller:
 
 ```bash
-ansible-playbook -i hermes/ansible/inventory.ini \
+ANSIBLE_CONFIG=hermes/ansible/ansible.cfg ansible-playbook -i hermes/ansible/inventory.ini \
   hermes/ansible/playbook.yml --ask-vault-pass
 ```
 
@@ -694,7 +694,7 @@ sudo systemctl status hermes-gateway.service
 Основной deploy запускается из каталога `hermes`:
 
 ```bash
-ansible-playbook -i ansible/inventory.ini \
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventory.ini \
   ansible/playbook.yml \
   --ask-vault-pass \
   --ask-pass
@@ -771,7 +771,7 @@ Playbook устанавливает Hermes, Tailscale, operations-слой и sy
 сессиями, profiles и skills передайте полный архив `hermes backup`:
 
 ```bash
-ansible-playbook -i ansible/inventory.ini \
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventory.ini \
   ansible/playbook.yml \
   --ask-vault-pass \
   --ask-pass \

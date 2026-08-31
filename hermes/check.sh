@@ -90,6 +90,7 @@ fi
 if optional_tool ansible-playbook; then
   log "checking Ansible syntax"
   mkdir -p "$CHECK_TEMP/ansible-local" "$CHECK_TEMP/ansible-remote"
+  ANSIBLE_CONFIG="$HERMES_DIR/ansible/ansible.cfg" \
   ANSIBLE_LOCAL_TEMP="$CHECK_TEMP/ansible-local" \
     ANSIBLE_REMOTE_TEMP="$CHECK_TEMP/ansible-remote" \
     ansible-playbook \
