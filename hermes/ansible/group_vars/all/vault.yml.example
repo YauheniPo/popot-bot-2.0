@@ -9,6 +9,12 @@
 # setting is true; manual remote .env edits are then replaced on the next run.
 hermes_secret_env: {}
 
+# SSH connection details are encrypted here so the VPS address is not present
+# in the repository. These variables are consumed by the neutral inventory
+# alias in inventory.ini.
+# ansible_host: "203.0.113.10"
+# ansible_user: "root"
+
 # Replace the empty mapping above with the OpenRouter key and only the
 # non-LLM integration credentials you use:
 # hermes_secret_env:
@@ -41,6 +47,8 @@ hermes_grafana_admin_password: "replace-inside-ansible-vault"
 # vps-defaults.yml). Ansible writes this to the root-only /etc/code-server.env.
 # This protects the browser IDE behind the SSH tunnel; it is not a substitute
 # for keeping vps_vscode.host_port loopback-only.
+# Any non-empty password is accepted; the deployment JSON-escapes it for the
+# Docker Compose environment file.
 hermes_code_server_password: "replace-inside-ansible-vault"
 
 # Optional one-use, ephemeral, tagged Tailscale auth key. Leave empty to run

@@ -37,6 +37,16 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertTrue(settings["vps_deploy"]["features"]["browser_automation"])
         self.assertTrue(settings["vps_deploy"]["features"]["development_clis"])
         self.assertTrue(settings["vps_deploy"]["features"]["google_workspace_cli"])
+        self.assertEqual(
+            settings["vps_ops"]["api_retry"],
+            {
+                "endpoint": "http://127.0.0.1:9119/api/execute",
+                "model": "poolside/laguna-s-2.1:free",
+                "message": "Hello",
+                "max_attempts": 6,
+                "wait_seconds": 30,
+            },
+        )
         self.assertNotIn("model.default", settings["vps_runtime"]["set"])
         self.assertEqual(settings["vps_deploy"]["bundle"]["dir"], "/opt/hermes-bootstrap")
         self.assertEqual(

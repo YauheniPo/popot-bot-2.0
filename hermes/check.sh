@@ -60,6 +60,8 @@ if optional_tool shellcheck; then
     "$HERMES_DIR/ops/backup.sh" \
     "$HERMES_DIR/ops/health-check.sh" \
     "$HERMES_DIR/ops/install-browser-automation.sh" \
+    "$HERMES_DIR/ops/api-retry-loop.sh" \
+    "$HERMES_DIR/ops/notify-doctor.sh" \
     "$HERMES_DIR/ops/startup-notify.sh"
 fi
 
@@ -95,7 +97,7 @@ if optional_tool ansible-playbook; then
     ANSIBLE_REMOTE_TEMP="$CHECK_TEMP/ansible-remote" \
     ansible-playbook \
       --syntax-check \
-      -i "$HERMES_DIR/ansible/inventory.example.ini" \
+      -i "$HERMES_DIR/ansible/inventory.ini" \
       "$HERMES_DIR/ansible/playbook.yml"
 fi
 

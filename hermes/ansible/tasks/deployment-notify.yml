@@ -1,0 +1,24 @@
+---
+# Deployment notifications are deliberately best-effort: Telegram outages must
+# never hide the original Ansible result.
+- name: Send Hermes deployment status to Telegram
+  ansible.builtin.uri:
+    url: "https://api.telegram.org/bot{{ hermes_secret_env.TELEGRAM_BOT_TOKEN }}/sendMessage"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      chat_id: "{{ item | trim }}"
+      text: "{{ hermes_deployment_notification }}"
+    timeout: 15
+    return_content: false
+    status_code: 200
+  loop: "{{ hermes_secret_env.TELEGRAM_ALLOWED_USERS.split(',') }}"
+  when:
+    - hermes_manage_secret_env | bool
+    - hermes_secret_env is mapping
+    - (hermes_secret_env.TELEGRAM_BOT_TOKEN | default('', true) | string | length) > 0
+    - (hermes_secret_env.TELEGRAM_ALLOWED_USERS | default('', true) | string | length) > 0
+    - item | trim | length > 0
+  changed_when: false
+  failed_when: false
+  no_log: true

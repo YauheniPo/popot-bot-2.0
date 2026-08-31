@@ -94,7 +94,12 @@ vps_runtime:
     # Local Hermes: keep /gw_restart and /model_global visible in the
     # Telegram menu — the default 60-command cap would hide them.
     platforms.telegram.extra.command_menu.priority_mode: prepend
-    platforms.telegram.extra.command_menu.priority: [gw_restart, model_global]
+    platforms.telegram.extra.command_menu.priority: [gw_restart, model_global, model, status, doctor, stop]
+    # Commands above stay pinned in this exact order. Remaining commands are
+    # ranked by persisted authorized Telegram command usage and the menu is
+    # refreshed after every five invocations.
+    platforms.telegram.extra.command_menu.usage_ranking.enabled: true
+    platforms.telegram.extra.command_menu.usage_ranking.refresh_every: 5
     session_reset.mode: idle
     session_reset.idle_minutes: 2880
     model.max_tokens: 4096
@@ -137,6 +142,14 @@ vps_github:
 vps_ops:
   alert_target: telegram
   service_restart_sec: 5s
+  # Default parameters for the local API retry helper. The script reads these
+  # values from the root-owned /etc/hermes-ops.conf rendered at deployment.
+  api_retry:
+    endpoint: http://127.0.0.1:9119/api/execute
+    model: poolside/laguna-s-2.1:free
+    message: Hello
+    max_attempts: 6
+    wait_seconds: 30
   backup:
     required: true
     retention_days: 14

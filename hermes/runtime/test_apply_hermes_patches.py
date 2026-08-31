@@ -248,10 +248,67 @@ class ApplyHermesPatchesTests(unittest.TestCase):
         self.assertIn(
             "asyncio.create_subprocess_exec", patches["# Local Hermes: doctor handler"]
         )
+        self.assertIn(
+            "*_resolve_hermes_bin()", patches["# Local Hermes: doctor handler"]
+        )
+        self.assertNotIn(
+            "str(_resolve_hermes_bin())", patches["# Local Hermes: doctor handler"]
+        )
         self.assertNotIn("shell=True", patches["# Local Hermes: doctor handler"])
         self.assertIn(
             'if canonical == "doctor":', patches["# Local Hermes: doctor route"]
         )
+
+    def test_doctor_handler_migration_expands_the_resolved_command_argv(self) -> None:
+        handler = next(
+            new
+            for _path, marker, _old, new in apply_hermes_patches._PATCHES
+            if marker == "# Local Hermes: doctor handler"
+        ).replace("*_resolve_hermes_bin()", "str(_resolve_hermes_bin())")
+
+        migrated, changed = apply_hermes_patches._migrate_doctor_handler_source(
+            "gateway/slash_commands.py", handler
+        )
+
+        self.assertTrue(changed)
+        self.assertIn("*_resolve_hermes_bin()", migrated)
+        self.assertNotIn("str(_resolve_hermes_bin())", migrated)
+
+    def test_telegram_usage_ranking_preserves_pins_and_refreshes_the_menu(self) -> None:
+        patches = {
+            marker: new
+            for _path, marker, _old, new in apply_hermes_patches._PATCHES
+        }
+
+        ranking = patches["# Local Hermes: telegram usage ranking"]
+        state = patches["# Local Hermes: telegram usage state"]
+        refresh = patches["# Local Hermes: telegram usage refresh"]
+        record = patches["# Local Hermes: telegram usage record"]
+
+        self.assertIn("pinned_indexes", ranking)
+        self.assertIn("absolute first tier", ranking)
+        self.assertIn("-usage_counts.get(name, 0)", ranking)
+        self.assertIn("telegram-command-usage.json", state)
+        self.assertIn("record_telegram_command_usage", state)
+        self.assertIn("refresh_every", state)
+        self.assertIn("set_my_commands", refresh)
+        self.assertIn("_record_telegram_command_usage(event.text)", record)
+
+    def test_telegram_usage_ranking_migration_adds_missing_marker(self) -> None:
+        marker = "# Local Hermes: telegram usage ranking"
+        source = """def _prioritize_telegram_menu_commands(\n    commands: list[tuple[str, str]],\n) -> list[tuple[str, str]]:\n    menu_cfg = _telegram_command_menu_config()\n    configured_priority = _dedupe_sanitized_names(menu_cfg[\"priority\"])\n"""
+
+        migrated, changed = apply_hermes_patches._migrate_telegram_usage_ranking_source(
+            "hermes_cli/commands.py", source
+        )
+
+        self.assertTrue(changed)
+        self.assertIn(marker, migrated)
+        second_pass, second_changed = apply_hermes_patches._migrate_telegram_usage_ranking_source(
+            "hermes_cli/commands.py", migrated
+        )
+        self.assertFalse(second_changed)
+        self.assertEqual(second_pass, migrated)
 
     def test_missing_required_target_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:

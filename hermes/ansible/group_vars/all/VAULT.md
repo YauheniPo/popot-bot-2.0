@@ -85,7 +85,8 @@ Vault password или API keys в чат, Git, issue либо shell history.
   через managed `gh`; используйте fine-grained PAT с selected repositories;
 - `hermes_grafana_admin_password` — пароль администратора Grafana;
 - `hermes_code_server_password` — пароль браузерного IDE code-server
-  (`vps_vscode.host_port` доступен только через SSH-туннель);
+  (`vps_vscode.host_port` доступен только через SSH-туннель); допускаются любые
+  непустые символы, перед записью в Compose окружение пароль JSON-экранируется;
 - `tailscale_auth_key` — временный ключ подключения Tailscale.
 
 Для совместимости deployment также принимает `GH_TOKEN` или

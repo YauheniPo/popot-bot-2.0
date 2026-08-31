@@ -318,7 +318,7 @@ GitHub permissions и messenger tokens подключаются отдельно
 | [`ansible/playbook.yml`](ansible/playbook.yml) | Порядок provision/restore; network, runtime и services вынесены в [`ansible/tasks/`](ansible/tasks) |
 | [`ansible/tasks/github.yml`](ansible/tasks/github.yml) | Git/GitHub packages, identity, credential helper, private-repository probe и managed workflow instructions |
 | [`ansible/AGENTS.md`](ansible/AGENTS.md) | Поведение Hermes на выделенном VPS: полный `sudo`, запрет удаления и обращения с secrets |
-| [`ansible/inventory.example.ini`](ansible/inventory.example.ini) | Шаблон inventory; рабочий файл — `ansible/inventory.ini`, он игнорируется Git |
+| [`ansible/inventory.ini`](ansible/inventory.ini) | Нейтральный inventory-алиас; адрес VPS и SSH-пользователь загружаются из зашифрованного Vault |
 | [`ansible/group_vars/all/vars.yml`](ansible/group_vars/all/vars.yml) | Публичные IaC defaults без credentials |
 | [`ansible/group_vars/all/vault.yml.example`](ansible/group_vars/all/vault.yml.example) | Шаблон private API keys и tokens; рабочий файл — `ansible/group_vars/all/vault.yml`, он шифруется и игнорируется Git; команды находятся в [`VAULT.md`](ansible/group_vars/all/VAULT.md) |
 | [`ansible/templates/hermes.env.j2`](ansible/templates/hermes.env.j2) | Безопасно формирует Hermes `.env` из расшифрованных только на время deploy значений и нормализует GitHub token alias |
@@ -338,6 +338,9 @@ GitHub permissions и messenger tokens подключаются отдельно
   репозитория, не к исходникам Hermes Agent;
 - `vps_deploy.features` — критические feature switches;
 - `vps_runtime.set` — обязательные Hermes runtime defaults;
+  `platforms.telegram.extra.command_menu.priority` закрепляет команды в
+  указанном порядке, а `usage_ranking` сортирует остальные команды Telegram
+  по накопленному числу вызовов и обновляет меню с заданной периодичностью;
 - `vps_runtime.unset` — опасные или устаревшие overrides, которые deploy
   удаляет;
 - `vps_runtime.capabilities` — backend, включаемый только при наличии
@@ -655,6 +658,10 @@ timers Ansible перезапускает включённый gateway посл�
 ANSIBLE_CONFIG=hermes/ansible/ansible.cfg ansible-playbook -i hermes/ansible/inventory.ini \
   hermes/ansible/playbook.yml --ask-vault-pass
 ```
+
+`inventory.ini` содержит только нейтральный алиас `hermes_target`.
+Значения `ansible_host` и `ansible_user` задаются в зашифрованном
+`ansible/group_vars/all/vault.yml`, поэтому адрес VPS не хранится в репозитории.
 
 Встроенная команда Telegram:
 
