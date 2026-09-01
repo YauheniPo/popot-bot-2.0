@@ -51,6 +51,9 @@ vps_hermes:
     managed_overlay:
       user_char_limit: 3000
       memory_char_limit: 4000
+      # Compact long sessions after 70% of the active model context is used.
+      compression:
+        threshold: 0.70
       # Keep scheduled jobs independent from interactive model changes.
       # A per-job provider/model pin still takes precedence.
       cron:

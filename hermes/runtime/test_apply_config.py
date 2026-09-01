@@ -54,6 +54,7 @@ class ApplyConfigTests(unittest.TestCase):
             {
                 "user_char_limit": 3000,
                 "memory_char_limit": 4000,
+                "compression": {"threshold": 0.70},
                 "cron": {
                     "model_provider": "nous",
                     "model": "upstage/solar-pro4:free",
