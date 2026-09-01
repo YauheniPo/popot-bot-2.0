@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -25,6 +26,7 @@ MAX_RENDERED_COMMENTS_PER_THREAD = 3
 MAX_RENDERED_COMMENT_CHARACTERS = 1_000
 MAX_REPLY_CHARACTERS = 4_000
 MAX_INLINE_COMMENT_CHARACTERS = 4_000
+MAX_CLAUDE_EXECUTION_FILE_BYTES = 8 * 1024 * 1024
 COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
 HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 SEMANTIC_DUPLICATE_THRESHOLD = 0.42
@@ -588,6 +590,61 @@ def _clean_result_text(value: object, limit: int) -> str:
     return " ".join(value.split())[:limit]
 
 
+def _require_exact_keys(value: object, expected: frozenset[str], label: str) -> dict:
+    if not isinstance(value, dict) or frozenset(value) != expected:
+        raise RuntimeError(f"Claude review output has an invalid {label} object")
+    return value
+
+
+def _validate_claude_result_contract(result: object) -> dict:
+    document = _require_exact_keys(
+        result,
+        frozenset({"summary", "findings", "thread_verdicts"}),
+        "top-level",
+    )
+    if not isinstance(document["summary"], str) or not document["summary"].strip():
+        raise RuntimeError("Claude review output has an invalid summary")
+    findings = document["findings"]
+    verdicts = document["thread_verdicts"]
+    if not isinstance(findings, list) or len(findings) > 5:
+        raise RuntimeError("Claude review output has an invalid findings array")
+    if not isinstance(verdicts, list) or len(verdicts) > 200:
+        raise RuntimeError("Claude review output has an invalid thread_verdicts array")
+
+    finding_keys = frozenset(
+        {"severity", "path", "side", "line", "title", "impact", "fix"}
+    )
+    for raw in findings:
+        finding = _require_exact_keys(raw, finding_keys, "finding")
+        line = finding["line"]
+        if (
+            finding["severity"] not in {"P1", "P2"}
+            or finding["side"] not in {"LEFT", "RIGHT"}
+            or isinstance(line, bool)
+            or not isinstance(line, int)
+            or line < 1
+            or any(
+                not isinstance(finding[field], str) or not finding[field].strip()
+                for field in ("path", "title", "impact", "fix")
+            )
+        ):
+            raise RuntimeError("Claude review output has an invalid finding value")
+
+    verdict_keys = frozenset({"thread_id", "verdict", "reason"})
+    for raw in verdicts:
+        verdict = _require_exact_keys(raw, verdict_keys, "thread verdict")
+        if (
+            verdict["verdict"] not in {"confirmed", "rejected", "needs_human"}
+            or not isinstance(verdict["thread_id"], str)
+            or not verdict["thread_id"].strip()
+            or len(verdict["thread_id"]) > 200
+            or not isinstance(verdict["reason"], str)
+            or not verdict["reason"].strip()
+        ):
+            raise RuntimeError("Claude review output has an invalid thread verdict value")
+    return document
+
+
 def _validated_claude_result(
     raw_result: str,
     base_sha: str,
@@ -597,8 +654,7 @@ def _validated_claude_result(
         result = json.loads(raw_result)
     except json.JSONDecodeError as error:
         raise RuntimeError("Claude review output is not valid JSON") from error
-    if not isinstance(result, dict):
-        raise RuntimeError("Claude review output must be a JSON object")
+    result = _validate_claude_result_contract(result)
     summary = _clean_result_text(result.get("summary"), 1_000)
     raw_findings = result.get("findings")
     raw_verdicts = result.get("thread_verdicts")
@@ -666,6 +722,161 @@ def _validated_claude_result(
     return summary, findings, verdicts
 
 
+def _claude_execution_events(execution_file: Path) -> list[object]:
+    """Read bounded Claude SDK events from a JSON array or JSON-lines file."""
+    try:
+        size = execution_file.stat().st_size
+    except OSError as error:
+        raise RuntimeError("Claude execution output is unavailable") from error
+    if size < 1 or size > MAX_CLAUDE_EXECUTION_FILE_BYTES:
+        raise RuntimeError("Claude execution output has an invalid size")
+    try:
+        raw_output = execution_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise RuntimeError("Claude execution output could not be read as UTF-8") from error
+
+    try:
+        document = json.loads(raw_output)
+    except json.JSONDecodeError:
+        events: list[object] = []
+        try:
+            for line in raw_output.splitlines():
+                if line.strip():
+                    events.append(json.loads(line))
+        except json.JSONDecodeError as error:
+            raise RuntimeError("Claude execution output is not valid JSON") from error
+        if not events:
+            raise RuntimeError("Claude execution output contains no SDK events")
+        return events
+
+    if isinstance(document, list):
+        return document
+    if isinstance(document, dict):
+        for key in ("events", "messages"):
+            nested = document.get(key)
+            if isinstance(nested, list):
+                return nested
+        return [document]
+    raise RuntimeError("Claude execution output has an invalid top-level shape")
+
+
+def _claude_final_response(execution_file: Path) -> str:
+    """Extract the final text from Claude Code's execution event stream."""
+    events = _claude_execution_events(execution_file)
+    for event in reversed(events):
+        if not isinstance(event, dict) or event.get("type") != "result":
+            continue
+        if event.get("is_error") is True:
+            raise RuntimeError("Claude Code reported an unsuccessful result")
+        result = event.get("result")
+        if isinstance(result, str) and result.strip():
+            return result.strip()
+
+    # Older action/SDK combinations may omit the result text while retaining
+    # the last assistant message. Accept text blocks only; tool payloads remain
+    # untrusted execution data and are never interpreted as the final review.
+    for event in reversed(events):
+        if not isinstance(event, dict) or event.get("type") != "assistant":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+        if not isinstance(content, list):
+            continue
+        text_blocks = [
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+        ]
+        combined = "".join(text_blocks).strip()
+        if combined:
+            return combined
+    raise RuntimeError("Claude execution output contains no final text response")
+
+
+def _json_response_text(response: str) -> str:
+    """Allow either plain JSON or one JSON fence, with no surrounding prose."""
+    candidate = response.strip()
+    if candidate.startswith("```"):
+        match = re.fullmatch(r"```(?:json)?\s*\n?(.*?)\n?```", candidate, re.DOTALL)
+        if match is None:
+            raise RuntimeError("Claude review output contains an invalid Markdown fence")
+        candidate = match.group(1).strip()
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("Claude review output is not valid JSON") from error
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Claude review output must be a JSON object")
+    return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+
+
+def _normalized_claude_result(raw_result: str, base_sha: str, head_sha: str) -> str:
+    summary, findings, verdicts = _validated_claude_result(
+        _json_response_text(raw_result),
+        base_sha,
+        head_sha,
+    )
+    result = {
+        "summary": summary,
+        "findings": [
+            {
+                "severity": finding.severity,
+                "path": finding.path,
+                "side": finding.side,
+                "line": finding.line,
+                "title": finding.title,
+                "impact": finding.impact,
+                "fix": finding.fix,
+            }
+            for finding in findings
+        ],
+        "thread_verdicts": [
+            {
+                "thread_id": verdict.thread_id,
+                "verdict": verdict.verdict,
+                "reason": verdict.reason,
+            }
+            for verdict in verdicts
+        ],
+    }
+    return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+
+
+def _command_extract(execution_file: Path, output_file: Path) -> None:
+    normalized = _normalized_claude_result(
+        _claude_final_response(execution_file),
+        _required_commit_sha("BASE_SHA"),
+        _required_commit_sha("HEAD_SHA"),
+    )
+    try:
+        output_file.write_text(normalized + "\n", encoding="utf-8")
+    except OSError as error:
+        raise RuntimeError("Validated Claude review output could not be written") from error
+    print("Extracted and validated Claude's final JSON review response.")
+
+
+def _claude_review_result() -> str:
+    result_file = os.environ.get("CLAUDE_REVIEW_RESULT_FILE", "").strip()
+    if not result_file:
+        return _required_env("CLAUDE_REVIEW_RESULT")
+    path = Path(result_file)
+    try:
+        if path.stat().st_size > MAX_CLAUDE_EXECUTION_FILE_BYTES:
+            raise RuntimeError("Validated Claude review result is too large")
+        result = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as error:
+        raise RuntimeError("Validated Claude review result could not be read") from error
+    if not result:
+        raise RuntimeError("Validated Claude review result is empty")
+    return result
+
+
 def _finding_text(finding: ReviewFinding) -> str:
     return f"{finding.title} {finding.impact} {finding.fix}"
 
@@ -699,7 +910,7 @@ def _command_publish() -> None:
         return
 
     summary, findings, verdicts = _validated_claude_result(
-        _required_env("CLAUDE_REVIEW_RESULT"),
+        _claude_review_result(),
         base_sha,
         head_sha,
     )
@@ -870,11 +1081,19 @@ def main() -> None:
         "publish",
         help="Validate and publish the structured Claude review result",
     )
+    extract_parser = subparsers.add_parser(
+        "extract",
+        help="Extract and validate JSON from a Claude Code execution output file",
+    )
+    extract_parser.add_argument("--execution-file", required=True, type=Path)
+    extract_parser.add_argument("--output", required=True, type=Path)
     arguments = parser.parse_args()
     if arguments.command == "render":
         _command_render()
     elif arguments.command == "reply":
         _command_reply(arguments.comment_id, arguments.body)
+    elif arguments.command == "extract":
+        _command_extract(arguments.execution_file, arguments.output)
     else:
         _command_publish()
 

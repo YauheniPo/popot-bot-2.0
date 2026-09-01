@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -215,6 +216,94 @@ class InlineCommentTest(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0].line, 12)
         self.assertEqual(verdicts[0].verdict, "rejected")
+
+    def test_extracts_and_validates_plain_json_from_claude_execution_file(self) -> None:
+        review = {
+            "summary": "No actionable findings.",
+            "findings": [],
+            "thread_verdicts": [],
+        }
+        execution = [
+            {"type": "system", "subtype": "init"},
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "result": context.json.dumps(review),
+            },
+        ]
+        environment = {"BASE_SHA": "a" * 40, "HEAD_SHA": "b" * 40}
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            execution_file = Path(temporary_directory) / "execution.json"
+            output_file = Path(temporary_directory) / "review.json"
+            execution_file.write_text(context.json.dumps(execution), encoding="utf-8")
+            with (
+                mock.patch.dict(context.os.environ, environment, clear=True),
+                mock.patch.object(context, "_changed_paths", return_value=set()),
+                mock.patch("builtins.print"),
+            ):
+                context._command_extract(execution_file, output_file)
+            extracted = context.json.loads(output_file.read_text(encoding="utf-8"))
+
+        self.assertEqual(extracted, review)
+
+    def test_extracts_json_fence_from_last_assistant_event(self) -> None:
+        review = {
+            "summary": "No actionable findings.",
+            "findings": [],
+            "thread_verdicts": [],
+        }
+        execution = {
+            "events": [
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"```json\n{context.json.dumps(review)}\n```",
+                            }
+                        ]
+                    },
+                },
+                {"type": "result", "subtype": "success", "result": ""},
+            ]
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            execution_file = Path(temporary_directory) / "execution.json"
+            execution_file.write_text(context.json.dumps(execution), encoding="utf-8")
+            response = context._claude_final_response(execution_file)
+
+        self.assertEqual(context.json.loads(context._json_response_text(response)), review)
+
+    def test_rejects_final_response_with_surrounding_prose(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "not valid JSON"):
+            context._json_response_text(
+                'Review complete: {"summary":"ok","findings":[],"thread_verdicts":[]}'
+            )
+
+    def test_rejects_json_that_does_not_match_the_review_contract(self) -> None:
+        invalid_review = {
+            "summary": "Found one issue.",
+            "findings": [
+                {
+                    "severity": "P3",
+                    "path": "app.py",
+                    "side": "RIGHT",
+                    "line": 12,
+                    "title": "Wrong value",
+                    "impact": "The API returns stale data.",
+                    "fix": "Return the current value.",
+                }
+            ],
+            "thread_verdicts": [],
+        }
+        with self.assertRaisesRegex(RuntimeError, "invalid finding value"):
+            context._normalized_claude_result(
+                context.json.dumps(invalid_review),
+                "a" * 40,
+                "b" * 40,
+            )
 
     def test_publisher_posts_validated_inline_and_summary_comments(self) -> None:
         result = {
