@@ -27,6 +27,7 @@ from pr_review_context import (
 
 MAX_CHUNK_CHARACTERS = 48_000
 MAX_REVIEW_CHUNKS = 12
+MAX_CONFIGURED_REVIEW_CHUNKS = 100
 DEFAULT_REQUESTS_PER_MINUTE = 8
 DEFAULT_RATE_LIMIT_RETRY_SECONDS = 15.0
 MAX_REQUEST_ATTEMPTS = 5
@@ -261,7 +262,12 @@ def changed_paths(base_sha: str, head_sha: str) -> list[str]:
     raw_paths = run_git("diff", "--name-only", "-z", base_sha, head_sha, "--", ".", text=False)
     assert isinstance(raw_paths, bytes)
     paths = raw_paths.decode("utf-8", errors="surrogateescape").split("\0")
-    return [path for path in paths if path and path not in EXCLUDED_REVIEW_PATHS]
+    include_reviewer_files = os.environ.get("REVIEW_INCLUDE_REVIEWER_FILES") == "true"
+    return [
+        path
+        for path in paths
+        if path and (include_reviewer_files or path not in EXCLUDED_REVIEW_PATHS)
+    ]
 
 
 def _bounded_line(line: str) -> tuple[str, bool]:
@@ -379,7 +385,12 @@ def _pack_chunk(segments: list[DiffSegment]) -> ReviewChunk:
     )
 
 
-def build_review_plan(review_files: list[ReviewFile]) -> ReviewPlan:
+def build_review_plan(
+    review_files: list[ReviewFile],
+    max_review_chunks: int | None = None,
+) -> ReviewPlan:
+    if max_review_chunks is None:
+        max_review_chunks = MAX_REVIEW_CHUNKS
     ordered_files = sorted(review_files, key=_review_priority)
     all_segments = [segment for review_file in ordered_files for segment in split_file(review_file)]
     chunks: list[ReviewChunk] = []
@@ -398,7 +409,7 @@ def build_review_plan(review_files: list[ReviewFile]) -> ReviewPlan:
     if chunk_segments:
         chunks.append(_pack_chunk(chunk_segments))
 
-    selected_chunks = chunks[:MAX_REVIEW_CHUNKS]
+    selected_chunks = chunks[:max_review_chunks]
     included_segments = Counter(path for chunk in selected_chunks for path in chunk.segment_paths)
     total_segments = Counter(segment.path for segment in all_segments)
     shortened_paths = {review_file.path for review_file in review_files if review_file.shortened}
@@ -607,7 +618,7 @@ def review_chunk(
     total_chunks: int,
 ) -> dict[str, object]:
     existing_context = render_review_context(review_threads, chunk.paths)
-    user_prompt = f"""Review chunk {chunk_number} of {total_chunks} from one pull request.
+    user_prompt = f"""Review chunk {chunk_number} of {total_chunks} from one code review.
 
 The diff is annotated with exact GitHub coordinates. A line labelled `RIGHT 42|+` is
 new line 42; `LEFT 17|-` is deleted line 17. Context and META lines cannot receive a
@@ -674,6 +685,35 @@ def configured_requests_per_minute() -> int:
     if not 1 <= requests_per_minute <= 60:
         raise RuntimeError("OPENROUTER_REVIEW_RPM must be between 1 and 60")
     return requests_per_minute
+
+
+def configured_max_review_chunks() -> int:
+    raw_value = os.environ.get(
+        "OPENROUTER_MAX_REVIEW_CHUNKS",
+        str(MAX_REVIEW_CHUNKS),
+    ).strip()
+    try:
+        max_review_chunks = int(raw_value)
+    except ValueError as error:
+        raise RuntimeError("OPENROUTER_MAX_REVIEW_CHUNKS must be an integer") from error
+    if not 1 <= max_review_chunks <= MAX_CONFIGURED_REVIEW_CHUNKS:
+        raise RuntimeError(
+            "OPENROUTER_MAX_REVIEW_CHUNKS must be between 1 and "
+            f"{MAX_CONFIGURED_REVIEW_CHUNKS}"
+        )
+    return max_review_chunks
+
+
+def ensure_required_coverage(plan: ReviewPlan) -> None:
+    if os.environ.get("REQUIRE_COMPLETE_REVIEW") != "true" or plan.complete:
+        return
+    raise RuntimeError(
+        "The full-branch review exceeds its configured chunk or line-size budget: "
+        f"{len(plan.partial_files)} partial file(s), "
+        f"{len(plan.omitted_files)} omitted file(s). Increase "
+        "MANUAL_REVIEW_MAX_CHUNKS within the supported safety limit or split "
+        "the review into smaller branches."
+    )
 
 
 def review_chunks(
@@ -954,6 +994,98 @@ def publish_review(
     )
 
 
+def _check_run_summary(
+    model: str,
+    head_sha: str,
+    plan: ReviewPlan,
+    findings: list[Finding],
+) -> str:
+    reviewed_count = len(plan.complete_files)
+    if plan.complete:
+        coverage = f"complete — {reviewed_count}/{plan.total_files} eligible changed files"
+    else:
+        coverage = (
+            f"partial — {reviewed_count}/{plan.total_files} files complete, "
+            f"{len(plan.partial_files)} partial, {len(plan.omitted_files)} omitted"
+        )
+    lines = [
+        f"Provider: OpenRouter · Model: `{model}`",
+        f"Reviewed commit: `{head_sha}`",
+        f"Coverage: {coverage}",
+        "",
+    ]
+    if not findings:
+        lines.append("No actionable findings were found.")
+    else:
+        lines.append(f"Found {len(findings)} actionable issue(s):")
+        lines.append("")
+        lines.extend(
+            f"- **{finding.severity} — `{finding.path}:{finding.line}`**: "
+            f"{finding.title}. {finding.impact} Proposed fix: {finding.fix}"
+            for finding in findings
+        )
+    return "\n".join(lines)
+
+
+def publish_check_run(
+    repository: str,
+    token: str,
+    model: str,
+    head_sha: str,
+    plan: ReviewPlan,
+    findings: list[Finding],
+    request_id: str,
+) -> None:
+    """Publish a branch review when no pull request exists."""
+    annotations = [
+        {
+            "path": finding.path,
+            "start_line": finding.line,
+            "end_line": finding.line,
+            "annotation_level": "failure" if finding.severity == "P1" else "warning",
+            "title": f"{finding.severity} — {finding.title}"[:255],
+            "message": (
+                f"Impact: {finding.impact}\n\nProposed fix: {finding.fix}"
+            )[:65_535],
+        }
+        # Check Run annotations address files at the reviewed commit, so a
+        # deleted LEFT-side line has no valid current-file anchor. Such findings
+        # remain visible in the complete Markdown summary above.
+        for finding in findings
+        if finding.side == "RIGHT"
+    ]
+    server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
+    run_id = os.environ.get("GITHUB_RUN_ID", "").strip()
+    payload: dict[str, object] = {
+        "name": os.environ.get("CHECK_RUN_NAME", "Manual AI code review")[:100],
+        "head_sha": head_sha,
+        "status": "completed",
+        "conclusion": "neutral" if findings else "success",
+        "external_id": request_id[:255],
+        "output": {
+            "title": (
+                f"{len(findings)} actionable finding(s)"
+                if findings
+                else "No actionable findings"
+            ),
+            "summary": _check_run_summary(model, head_sha, plan, findings)[:65_535],
+            "annotations": annotations,
+        },
+    }
+    if run_id:
+        payload["details_url"] = f"{server_url}/{repository}/actions/runs/{run_id}"
+    request_json(
+        f"{GITHUB_API_URL}/repos/{repository}/check-runs",
+        "POST",
+        _github_headers(token),
+        payload,
+    )
+    print(
+        "Created a GitHub Check Run with "
+        f"{len(annotations)} inline annotation(s) and {len(findings)} total finding(s)."
+    )
+
+
 def main() -> None:
     api_key = required_env("OPENROUTER_API_KEY")
     github_token = required_env("GITHUB_TOKEN")
@@ -961,19 +1093,24 @@ def main() -> None:
     if not model:
         raise RuntimeError("OPENROUTER_REVIEW_MODEL must not be blank")
     repository = required_env("GITHUB_REPOSITORY")
-    pr_number = required_env("PR_NUMBER")
+    pr_number = os.environ.get("PR_NUMBER", "").strip()
     base_sha = required_env("BASE_SHA")
     head_sha = required_env("HEAD_SHA")
 
-    review_threads = tuple(
-        fetch_unresolved_review_threads(repository, pr_number, github_token)
+    review_threads = (
+        tuple(fetch_unresolved_review_threads(repository, pr_number, github_token))
+        if pr_number
+        else ()
     )
     review_files = read_review_files(base_sha, head_sha)
-    plan = build_review_plan(review_files)
+    plan = build_review_plan(review_files, configured_max_review_chunks())
+    ensure_required_coverage(plan)
     try:
         responses = review_chunks(api_key, model, review_threads, plan.chunks)
     except RequestError as error:
         if _is_rate_limited(error):
+            if os.environ.get("REQUIRE_REVIEW_RESULT") == "true":
+                raise
             # Free OpenRouter pools can be shared and temporarily exhausted even
             # after the bounded primary/fallback retries. Leave the Claude
             # reviewer and normal PR checks available instead of failing CI for
@@ -987,7 +1124,19 @@ def main() -> None:
         raise
     findings = validate_findings(responses, plan.chunks, review_files)
     publication = build_publication_plan(findings, review_threads)
-    publish_review(repository, pr_number, github_token, model, head_sha, plan, publication)
+    if pr_number:
+        publish_review(repository, pr_number, github_token, model, head_sha, plan, publication)
+    else:
+        request_id = os.environ.get("REVIEW_REQUEST_ID", head_sha).strip() or head_sha
+        publish_check_run(
+            repository,
+            github_token,
+            model,
+            head_sha,
+            plan,
+            findings,
+            request_id,
+        )
 
 
 if __name__ == "__main__":

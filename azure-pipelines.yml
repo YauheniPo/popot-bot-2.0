@@ -20,7 +20,7 @@ parameters:
     default: main
 
   - name: baseRef
-    displayName: Compare against
+    displayName: Compare against (ignored for full_branch)
     type: string
     default: main
 
@@ -32,15 +32,7 @@ parameters:
       - branch_diff
       - last_commit
       - commit_range
-
-  - name: reviewer
-    displayName: Reviewer
-    type: string
-    default: both
-    values:
-      - both
-      - openrouter
-      - claude
+      - full_branch
 
   - name: model
     displayName: Model name
@@ -68,7 +60,6 @@ steps:
           --arg target_ref "${TARGET_REF}" \
           --arg base_ref "${BASE_REF}" \
           --arg scope "${REVIEW_SCOPE}" \
-          --arg reviewer "${REVIEWER}" \
           --arg model "${REVIEW_MODEL}" \
           --arg publish "${PUBLISH_MODE}" \
           --arg request_id "ado-${BUILD_BUILDID}" \
@@ -78,7 +69,6 @@ steps:
               target_ref: $target_ref,
               base_ref: $base_ref,
               scope: $scope,
-              reviewer: $reviewer,
               model: $model,
               publish: $publish,
               request_id: $request_id
@@ -105,6 +95,5 @@ steps:
       TARGET_REF: ${{ parameters.targetRef }}
       BASE_REF: ${{ parameters.baseRef }}
       REVIEW_SCOPE: ${{ parameters.scope }}
-      REVIEWER: ${{ parameters.reviewer }}
       REVIEW_MODEL: ${{ parameters.model }}
       PUBLISH_MODE: ${{ parameters.publishMode }}
