@@ -40,10 +40,12 @@ WAIT_SECONDS="$(required_config_value HERMES_API_RETRY_WAIT_SECONDS)"
     die "HERMES_API_RETRY_ENDPOINT must be a loopback HTTP URL"
 [[ "$MODEL_NAME" =~ ^[A-Za-z0-9._:/-]+$ ]] || die "model name contains unsupported characters"
 [[ -n "$USER_MESSAGE" ]] || die "request message must not be empty"
-[[ "$MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] && (( MAX_ATTEMPTS <= 99 )) ||
+if ! [[ "$MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || (( MAX_ATTEMPTS > 99 )); then
     die "HERMES_API_RETRY_MAX_ATTEMPTS must be between 1 and 99"
-[[ "$WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]] && (( WAIT_SECONDS <= 3600 )) ||
+fi
+if ! [[ "$WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]] || (( WAIT_SECONDS > 3600 )); then
     die "HERMES_API_RETRY_WAIT_SECONDS must be between 1 and 3600"
+fi
 
 REQUEST_BODY="$(python3 -c '
 import json
