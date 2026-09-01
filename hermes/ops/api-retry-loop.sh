@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# api-retry-loop.sh — повторює запит до моделі кожні 30 сек, максимум 3 хвилини (6 спроб) при rate-limit (429)
-# Використання: ./api-retry-loop.sh [MODEL_NAME] ["USER_MESSAGE"]
-# Приклад: ./api-retry-loop.sh "poolside/laguna-s-2.1:free" "напиши короткий опис"
+# api-retry-loop.sh — retries model requests after rate limits (429).
+# Usage: ./api-retry-loop.sh [MODEL_NAME] ["USER_MESSAGE"]
+# Example: ./api-retry-loop.sh "poolside/laguna-s-2.1:free" "write a short description"
 
 set -uo pipefail
 
@@ -57,13 +57,13 @@ print(json.dumps({
 }, ensure_ascii=False))
 ' "$MODEL_NAME" "$USER_MESSAGE")"
 
-echo "🔄 Запуск retry-циклу для моделі: $MODEL_NAME"
+echo "🔄 Starting retry loop for model: $MODEL_NAME"
 echo "📡 API endpoint: $API_URL"
-echo "⏱ Интервал повторів: кожні $WAIT_SECONDS секунд"
+echo "⏱ Retry interval: every $WAIT_SECONDS seconds"
 echo "========================================"
 
 for ((i = 1; i <= MAX_ATTEMPTS; i++)); do
-    # Надсилаємо запит
+    # Send the request.
     RESPONSE=$(curl -sS -w "\n%{http_code}" "$API_URL" \
         -H "Content-Type: application/json" \
         --data-binary "$REQUEST_BODY")
@@ -72,21 +72,21 @@ for ((i = 1; i <= MAX_ATTEMPTS; i++)); do
     BODY="${RESPONSE%$'\n'*}"
 
     if [[ "$HTTP_CODE" == "200" ]]; then
-        echo "✅ [$(date '+%H:%M:%S')] Успішно! Відповідь:"
+        echo "✅ [$(date '+%H:%M:%S')] Success! Response:"
         echo "$BODY"
         exit 0
     elif [[ "$HTTP_CODE" == "429" ]]; then
         REMAINING_MIN=$(( (MAX_ATTEMPTS - i) * WAIT_SECONDS / 60 ))
-        echo "🕐 [$(date '+%H:%M:%S')] Rate limited (429). Чекаю $WAIT_SECONDS сек... (спроба $i/$MAX_ATTEMPTS, залишилось ~${REMAINING_MIN} хв)"
+        echo "🕐 [$(date '+%H:%M:%S')] Rate limited (429). Waiting $WAIT_SECONDS sec... (attempt $i/$MAX_ATTEMPTS, ~${REMAINING_MIN} min remaining)"
         sleep "$WAIT_SECONDS"
     else
         echo "❌ [$(date '+%H:%M:%S')] HTTP $HTTP_CODE: $BODY"
         if [[ $i -lt $MAX_ATTEMPTS ]]; then
-            echo "🔄 Чекаємо $WAIT_SECONDS сек і повторюємо..."
+            echo "🔄 Waiting $WAIT_SECONDS sec and retrying..."
             sleep "$WAIT_SECONDS"
         fi
     fi
 done
 
-echo "🔴 [$(date '+%H:%M:%S')] Вичерпано спроби ($MAX_ATTEMPTS). Не вдалося виконати запрос."
+echo "🔴 [$(date '+%H:%M:%S')] Attempts exhausted ($MAX_ATTEMPTS). Request failed."
 exit 1

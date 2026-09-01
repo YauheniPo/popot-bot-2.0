@@ -706,6 +706,11 @@ def review_chunks(
     return results
 
 
+def _is_rate_limited(error: RequestError) -> bool:
+    """Identify provider throttling that should not fail the CI review job."""
+    return error.status == 429
+
+
 def _clean_text(value: object, limit: int) -> str:
     if not isinstance(value, str):
         return ""
@@ -965,7 +970,21 @@ def main() -> None:
     )
     review_files = read_review_files(base_sha, head_sha)
     plan = build_review_plan(review_files)
-    responses = review_chunks(api_key, model, review_threads, plan.chunks)
+    try:
+        responses = review_chunks(api_key, model, review_threads, plan.chunks)
+    except RequestError as error:
+        if _is_rate_limited(error):
+            # Free OpenRouter pools can be shared and temporarily exhausted even
+            # after the bounded primary/fallback retries. Leave the Claude
+            # reviewer and normal PR checks available instead of failing CI for
+            # a provider-side capacity condition.
+            print(
+                "OpenRouter is temporarily rate-limited after all review retries; "
+                "skipping this direct review run.",
+                file=sys.stderr,
+            )
+            return
+        raise
     findings = validate_findings(responses, plan.chunks, review_files)
     publication = build_publication_plan(findings, review_threads)
     publish_review(repository, pr_number, github_token, model, head_sha, plan, publication)
