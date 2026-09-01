@@ -49,6 +49,7 @@ EXCLUDED_REVIEW_PATHS = frozenset(
 HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 RETRYABLE_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 PARAMETER_ROUTING_ERROR = "no endpoints found that can handle the requested parameters"
+MANDATORY_REASONING_ERROR = "reasoning is mandatory"
 REVIEW_RESPONSE_SCHEMA = {
     "name": "pull_request_review_chunk",
     "strict": True,
@@ -577,6 +578,20 @@ def request_fallback_review(
     try:
         return request_valid_review(headers, strict_body, "fallback")
     except RequestError as error:
+        if error.status == 400 and MANDATORY_REASONING_ERROR in str(error).lower():
+            reasoning_body = {
+                **strict_body,
+                "reasoning": {"effort": "low", "exclude": True},
+            }
+            print(
+                "  fallback requires reasoning; retrying with low hidden reasoning",
+                file=sys.stderr,
+            )
+            return request_valid_review(
+                headers,
+                reasoning_body,
+                "fallback reasoning-compatible request",
+            )
         # Some fallback models accept ordinary text generation but do not expose
         # response_format. OpenRouter returns this routing-specific 404 when
         # require_parameters filters out every endpoint. Retry only that case;

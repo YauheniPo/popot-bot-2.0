@@ -800,20 +800,32 @@ def _claude_final_response(execution_file: Path) -> str:
 
 
 def _json_response_text(response: str) -> str:
-    """Allow either plain JSON or one JSON fence, with no surrounding prose."""
+    """Extract a schema-valid review object from an ordinary final response."""
     candidate = response.strip()
-    if candidate.startswith("```"):
-        match = re.fullmatch(r"```(?:json)?\s*\n?(.*?)\n?```", candidate, re.DOTALL)
-        if match is None:
-            raise RuntimeError("Claude review output contains an invalid Markdown fence")
-        candidate = match.group(1).strip()
     try:
         parsed = json.loads(candidate)
-    except json.JSONDecodeError as error:
-        raise RuntimeError("Claude review output is not valid JSON") from error
-    if not isinstance(parsed, dict):
-        raise RuntimeError("Claude review output must be a JSON object")
-    return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        _validate_claude_result_contract(parsed)
+        return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+
+    # OpenRouter-backed models sometimes add a short explanation or Markdown
+    # fence despite the prompt. Decode every complete object boundary, accept
+    # only objects satisfying the exact review contract, and use the last one
+    # as the model's final answer. Surrounding text is never interpreted.
+    decoder = json.JSONDecoder()
+    valid_objects: list[dict] = []
+    for match in re.finditer(r"\{", candidate):
+        try:
+            embedded, _ = decoder.raw_decode(candidate[match.start() :])
+            document = _validate_claude_result_contract(embedded)
+        except (json.JSONDecodeError, RuntimeError):
+            continue
+        valid_objects.append(document)
+    if not valid_objects:
+        raise RuntimeError("Claude review output contains no schema-valid JSON object")
+    return json.dumps(valid_objects[-1], ensure_ascii=False, separators=(",", ":"))
 
 
 def _normalized_claude_result(raw_result: str, base_sha: str, head_sha: str) -> str:

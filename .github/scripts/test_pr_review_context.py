@@ -276,11 +276,18 @@ class InlineCommentTest(unittest.TestCase):
 
         self.assertEqual(context.json.loads(context._json_response_text(response)), review)
 
-    def test_rejects_final_response_with_surrounding_prose(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "not valid JSON"):
-            context._json_response_text(
-                'Review complete: {"summary":"ok","findings":[],"thread_verdicts":[]}'
-            )
+    def test_extracts_schema_valid_json_from_surrounding_prose(self) -> None:
+        review = {"summary": "ok", "findings": [], "thread_verdicts": []}
+
+        extracted = context._json_response_text(
+            f"Review complete.\n```json\n{context.json.dumps(review)}\n```\nDone."
+        )
+
+        self.assertEqual(context.json.loads(extracted), review)
+
+    def test_rejects_prose_without_schema_valid_review_json(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "no schema-valid JSON object"):
+            context._json_response_text('Review complete: {"status":"ok"}')
 
     def test_rejects_json_that_does_not_match_the_review_contract(self) -> None:
         invalid_review = {

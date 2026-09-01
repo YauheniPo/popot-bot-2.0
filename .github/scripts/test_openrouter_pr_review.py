@@ -324,6 +324,46 @@ class OpenRouterRequestTest(unittest.TestCase):
             {"effort": "none", "exclude": True},
         )
 
+    def test_enables_low_reasoning_when_fallback_requires_it(self) -> None:
+        response = {
+            "choices": [
+                {"message": {"content": json.dumps({"summary": "Reviewed.", "findings": []})}}
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        with (
+            mock.patch.dict(
+                reviewer.os.environ,
+                {"OPENROUTER_REVIEW_FALLBACK_MODEL": "fallback-model"},
+            ),
+            mock.patch.object(
+                reviewer,
+                "request_json",
+                side_effect=[
+                    reviewer.RequestError("primary rejected request", status=400),
+                    reviewer.RequestError(
+                        "Reasoning is mandatory for this endpoint and cannot be disabled.",
+                        status=400,
+                    ),
+                    response,
+                ],
+            ) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch("builtins.print"),
+        ):
+            result = reviewer.review_chunk("api-key", "primary-model", (), chunk, 1, 1)
+
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(request.call_count, 3)
+        reasoning_body = request.call_args_list[2].args[3]
+        self.assertEqual(reasoning_body["model"], "fallback-model")
+        self.assertEqual(
+            reasoning_body["reasoning"],
+            {"effort": "low", "exclude": True},
+        )
+        self.assertTrue(reasoning_body["provider"]["require_parameters"])
+        self.assertEqual(reasoning_body["response_format"]["type"], "json_schema")
+
     def test_does_not_relax_unrelated_fallback_404(self) -> None:
         chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
         with (
