@@ -294,6 +294,56 @@ class ApplyHermesPatchesTests(unittest.TestCase):
         self.assertIn("set_my_commands", refresh)
         self.assertIn("_record_telegram_command_usage(event.text)", record)
 
+    def test_status_includes_portal_provider_and_tool_info(self) -> None:
+        patches = {
+            marker: new
+            for _path, marker, _old, new in apply_hermes_patches._PATCHES
+        }
+        portal = patches["# Local Hermes: portal info"]
+        self.assertIn('"portal",', portal)
+        self.assertIn('"info",', portal)
+        self.assertIn("Provider and tools", portal)
+        self.assertIn("asyncio.wait_for", portal)
+        self.assertIn("portal_process.kill()", portal)
+        self.assertIn("await portal_process.communicate()", portal)
+
+    def test_portal_migration_preserves_status_handler_tail(self) -> None:
+        legacy = '''class StatusMixin:
+    async def status(self):
+        lines = []
+        # Local Hermes: portal info
+        try:
+            portal_info = "configured"
+            if portal_info:
+                lines.append("**Provider and tools:**
+```
+" + portal_info + "
+```")
+        except Exception:
+            lines.append("**Provider and tools:** unavailable")
+        lines.append("Connected Platforms: telegram")
+        return "\\n".join(lines)
+
+    async def next_handler(self):
+        return "ok"
+'''
+        with tempfile.TemporaryDirectory() as temp_directory:
+            install_dir = Path(temp_directory)
+            target = install_dir / "gateway" / "slash_commands.py"
+            target.parent.mkdir(parents=True)
+            target.write_text(legacy, encoding="utf-8")
+            with mock.patch.object(
+                apply_hermes_patches, "HERMES_AGENT_DIR", install_dir
+            ):
+                self.assertEqual(
+                    apply_hermes_patches._migrate_installed_portal_info(), 1
+                )
+
+            migrated = target.read_text(encoding="utf-8")
+            self.assertIn('lines.append("Connected Platforms: telegram")', migrated)
+            self.assertIn("async def next_handler", migrated)
+            compile(migrated, str(target), "exec")
+
     def test_telegram_usage_ranking_migration_adds_missing_marker(self) -> None:
         marker = "# Local Hermes: telegram usage ranking"
         source = """def _prioritize_telegram_menu_commands(\n    commands: list[tuple[str, str]],\n) -> list[tuple[str, str]]:\n    menu_cfg = _telegram_command_menu_config()\n    configured_priority = _dedupe_sanitized_names(menu_cfg[\"priority\"])\n"""

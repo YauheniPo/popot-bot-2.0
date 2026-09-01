@@ -90,6 +90,46 @@ sudo ./deploy-hermes.sh --portal
 Для Portal необходима соответствующая подписка. Если она не нужна, используйте
 обычный запуск и настройте собственные провайдеры в мастере.
 
+### Настройка Nous Portal на VPS
+
+После установки Hermes на headless VPS подключите Nous Portal от имени
+сервисного пользователя `hermes`:
+
+```bash
+sudo -u hermes -H /home/hermes/.local/bin/hermes auth add nous --type oauth
+```
+
+Hermes покажет device-code и ссылку. Откройте ссылку на своём компьютере,
+введите код и подтвердите вход; браузер на VPS не нужен. После успешной
+авторизации refresh token сохраняется в
+`/home/hermes/.hermes/auth.json`.
+
+Проверьте авторизацию и выберите модель Nous:
+
+```bash
+sudo -u hermes -H /home/hermes/.local/bin/hermes portal info
+sudo -u hermes -H /home/hermes/.local/bin/hermes model
+```
+
+В меню `model` выберите **Nous Portal**. Для включения отдельных инструментов
+запустите `hermes tools` и выберите **Nous Subscription** для web search,
+image generation, TTS или browser. Повторно проверьте результат:
+
+```bash
+sudo -u hermes -H /home/hermes/.local/bin/hermes portal info
+```
+
+В выводе должно быть `Model: ✓ using Nous as inference provider`. Настройки
+`config.yaml` и OAuth-файл `auth.json` входят в полный Hermes backup. Portal
+может тарифицировать модели и hosted tools согласно плану; бесплатный план
+ограничен free-моделями и стандартными лимитами.
+
+Если gateway уже запущен, примените новый provider перезапуском службы:
+
+```bash
+sudo systemctl restart hermes-gateway.service
+```
+
 Это ручной путь — для повторяемого/восстанавливаемого деплоя без ручных
 заходов на VPS есть альтернатива через Ansible, см.
 [«Infrastructure as Code и восстановление одной командой»](#infrastructure-as-code-и-восстановление-одной-командой).
@@ -115,6 +155,14 @@ sudo ./deploy-hermes.sh --portal
   тесты, делать commit/push и создавать PR после авторизации GitHub.
 - **OpenRouter LLM config.** Ansible Vault хранит `OPENROUTER_API_KEY` и
   управляет выбранной OpenRouter model через `config.yaml` overlay.
+- **NVIDIA NIM.** Для альтернативного inference provider добавьте
+  `NVIDIA_API_KEY` в Vault и выберите модель командой `/model
+  nvidia:<model-id>`. NVIDIA имеет собственные квоты и rate limits; бесплатный
+  ключ не означает безлимитное использование.
+- **Nous Portal.** Portal подключается OAuth-командой `hermes auth add nous` и
+  хранит refresh token в `~/.hermes/auth.json`. Модели и Tool Gateway могут
+  тарифицироваться по плану Portal; бесплатный план ограничен free-моделями и
+  стандартными лимитами. Проверяйте фактическое потребление в Portal Usage.
 - **Web search с явными credentials.** `BRAVE_SEARCH_API_KEY` явно включает
   Brave Search; без ключа Hermes автоматически выбирает доступный Nous Tool
   Gateway либо другой явно настроенный web backend. Chromium остаётся локальным.
@@ -1132,6 +1180,34 @@ providers могут быть описаны в `vps_hermes.config.managed_overl
 Для основной работы выбирайте tool-capable модель с достаточным context window.
 Model IDs не закреплены в репозитории: каталоги и доступность меняются. Не
 присылайте ключи в Telegram или в чат агенту.
+
+### Надёжные cron-задачи
+
+Для cron задан отдельный fleet-default: `cron.model_provider: nous` и
+`cron.model: upstage/solar-pro4:free`. Поэтому задачи без собственного pin не
+зависят от переключения основной модели чата и не получают `drift_skip` при
+изменении интерактивного provider. Личный pin конкретной задачи имеет
+приоритет над этим default. Если Nous недоступен или не авторизован, preflight
+переведёт задачу в `blocked_config` без скрытого запуска на другой модели.
+
+Для другой модели измените только эти два значения в
+`vps_hermes.config.managed_overlay` и примените Ansible-деплой. Для разовой
+задачи задайте pin явно:
+
+```text
+cronjob(action="create", schedule="every 2h", prompt="Check server status",
+        provider="nous", model="upstage/solar-pro4:free", deliver="origin")
+```
+
+Проверить существующие задачи можно командами:
+
+```bash
+sudo -u hermes -H /home/hermes/.local/bin/hermes cron list
+sudo -u hermes -H /home/hermes/.local/bin/hermes cron status
+```
+
+Не добавляйте пустые entries в `fallback_providers`. Hermes игнорирует записи
+без `provider` или `model`, а provider без credentials не проходит preflight.
 
 Переключение внутри Hermes или Telegram не требует перезапуска и не теряет
 историю диалога:

@@ -51,7 +51,19 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertEqual(settings["vps_deploy"]["bundle"]["dir"], "/opt/hermes-bootstrap")
         self.assertEqual(
             settings["vps_hermes"]["config"]["managed_overlay"],
-            {"user_char_limit": 3000, "memory_char_limit": 4000},
+            {
+                "user_char_limit": 3000,
+                "memory_char_limit": 4000,
+                "cron": {
+                    "model_provider": "nous",
+                    "model": "upstage/solar-pro4:free",
+                    "model_drift_guard": True,
+                },
+                "web": {
+                    "search_backend": "auto",
+                    "extract_backend": "auto",
+                },
+            },
         )
         self.assertEqual(settings["vps_runtime"]["set"]["approvals.mode"], "manual")
         self.assertEqual(settings["vps_runtime"]["set"]["browser.backend"], "off")

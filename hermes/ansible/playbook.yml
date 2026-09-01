@@ -797,7 +797,9 @@
               ❌ Hermes deployment failed
               Task: {{ ansible_failed_task.name | default('unknown task') }}
               Host: {{ inventory_hostname }}
-              Error: {{ ansible_failed_result.msg | default('no error details') }}
+              Error: {{ 'details hidden because the failed task protects sensitive output' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.msg | default('no error details')) }}
+              RC: {{ 'hidden' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.rc | default('n/a')) }}
+              Details: {{ 'hidden' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.stderr | default(ansible_failed_result.stdout | default(''), true) | trim | truncate(1200, true, '...')) }}
             hermes_deployment_failed: true
           no_log: true
 
@@ -809,6 +811,9 @@
             msg: >-
               Hermes deployment failed at task
               '{{ ansible_failed_task.name | default('unknown task') }}'.
+              Error: {{ 'details hidden because the failed task protects sensitive output' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.msg | default('no error details')) }}
+              RC: {{ 'hidden' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.rc | default('n/a')) }}
+              Details: {{ 'hidden' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.stderr | default(ansible_failed_result.stdout | default(''), true) | trim | truncate(4000, true, '...')) }}
       always:
         - name: Prepare successful Hermes deployment notification
           ansible.builtin.set_fact:

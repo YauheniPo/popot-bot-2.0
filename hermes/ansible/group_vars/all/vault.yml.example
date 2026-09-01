@@ -19,15 +19,16 @@ hermes_secret_env: {}
 # non-LLM integration credentials you use:
 # hermes_secret_env:
 #   OPENROUTER_API_KEY: "replace-inside-ansible-vault"
+#   # NVIDIA NIM / build.nvidia.com. Optional alternative to OpenRouter.
+#   NVIDIA_API_KEY: "replace-inside-ansible-vault"
+#   # Separate web providers used by the managed config defaults.
+#   BRAVE_SEARCH_API_KEY: "replace-inside-ansible-vault"
+#   FIRECRAWL_API_KEY: "replace-inside-ansible-vault"
 #
 #   # Non-LLM integrations are managed by the same map:
 #   # Brave's Hermes backend is named `brave-free`, but Brave still requires
 #   # this key for `web_search`. Without it Hermes may use Nous Tool Gateway
 #   # after OAuth or another configured backend instead.
-#   BRAVE_SEARCH_API_KEY: "replace-inside-ansible-vault"
-#   # Optional but recommended for reading HTML pages, PDFs, and public Drive
-#   # documents. The free Firecrawl plan has a monthly credit limit.
-#   FIRECRAWL_API_KEY: "replace-inside-ansible-vault"
 #   # Providing both values starts the Telegram gateway automatically.
 #   TELEGRAM_BOT_TOKEN: "replace-inside-ansible-vault"
 #   TELEGRAM_ALLOWED_USERS: "123456789"
