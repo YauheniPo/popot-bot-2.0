@@ -265,12 +265,15 @@ jobs:
         shell: bash
         env:
           FALLBACK_MODEL: ${{ steps.requested_model.outputs.fallback }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PRIMARY_MODEL: ${{ steps.requested_model.outputs.primary }}
         run: |
           set -euo pipefail
           python3 reviewer/.github/scripts/openrouter_model_preflight.py \
             --primary "${PRIMARY_MODEL}" \
             --fallback "${FALLBACK_MODEL}" \
+            --discover-free-fallback \
+            --probe-schema \
             --require max_tokens \
             --require temperature \
             --require reasoning \
