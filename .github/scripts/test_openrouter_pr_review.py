@@ -70,6 +70,59 @@ class ReviewPlanTest(unittest.TestCase):
         self.assertNotIn("docs/guide.md", plan.complete_files)
         self.assertFalse(plan.complete)
 
+    def test_full_review_rejects_partial_coverage(self) -> None:
+        plan = reviewer.ReviewPlan(
+            chunks=(),
+            total_files=2,
+            complete_files=frozenset(),
+            partial_files=frozenset({"large.py"}),
+            omitted_files=frozenset({"later.py"}),
+        )
+        with mock.patch.dict(
+            reviewer.os.environ,
+            {"REQUIRE_COMPLETE_REVIEW": "true"},
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "full-branch review exceeds"):
+                reviewer.ensure_required_coverage(plan)
+
+    def test_normal_review_allows_partial_coverage(self) -> None:
+        plan = reviewer.ReviewPlan(
+            chunks=(),
+            total_files=1,
+            complete_files=frozenset(),
+            partial_files=frozenset(),
+            omitted_files=frozenset({"later.py"}),
+        )
+        with mock.patch.dict(reviewer.os.environ, {}, clear=True):
+            reviewer.ensure_required_coverage(plan)
+
+
+class ChangedPathsTest(unittest.TestCase):
+    def test_full_review_includes_reviewer_implementation_files(self) -> None:
+        paths = (
+            b".github/scripts/openrouter_pr_review.py\0"
+            b".github/REVIEWER.md\0app.py\0"
+        )
+        with (
+            mock.patch.object(reviewer, "run_git", return_value=paths),
+            mock.patch.dict(
+                reviewer.os.environ,
+                {"REVIEW_INCLUDE_REVIEWER_FILES": "true"},
+                clear=False,
+            ),
+        ):
+            changed = reviewer.changed_paths("base", "head")
+
+        self.assertEqual(
+            changed,
+            [
+                ".github/scripts/openrouter_pr_review.py",
+                ".github/REVIEWER.md",
+                "app.py",
+            ],
+        )
+
 
 class FindingValidationTest(unittest.TestCase):
     def test_rejects_unverified_locations_and_deduplicates_anchors(self) -> None:
@@ -492,6 +545,21 @@ class OpenRouterRequestTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "between 1 and 60"):
                 reviewer.configured_requests_per_minute()
 
+    def test_accepts_manual_full_review_chunk_budget(self) -> None:
+        with mock.patch.dict(
+            reviewer.os.environ,
+            {"OPENROUTER_MAX_REVIEW_CHUNKS": "60"},
+        ):
+            self.assertEqual(reviewer.configured_max_review_chunks(), 60)
+
+    def test_rejects_excessive_manual_chunk_budget(self) -> None:
+        with mock.patch.dict(
+            reviewer.os.environ,
+            {"OPENROUTER_MAX_REVIEW_CHUNKS": "101"},
+        ):
+            with self.assertRaisesRegex(RuntimeError, "between 1 and 100"):
+                reviewer.configured_max_review_chunks()
+
 
 class GitHubReviewTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -648,6 +716,81 @@ class GitHubReviewTest(unittest.TestCase):
             )
 
         reply.assert_not_called()
+
+    def test_publishes_check_run_when_a_pull_request_does_not_exist(self) -> None:
+        left_finding = reviewer.Finding(
+            "P1",
+            "removed.py",
+            "LEFT",
+            7,
+            "Removed validation",
+            "Invalid input is accepted.",
+            "Restore the validation.",
+        )
+        with (
+            mock.patch.object(reviewer, "request_json", return_value={}) as request,
+            mock.patch.dict(
+                reviewer.os.environ,
+                {
+                    "CHECK_RUN_NAME": "Manual branch review",
+                    "GITHUB_RUN_ID": "123",
+                    "GITHUB_SERVER_URL": "https://github.example",
+                },
+                clear=False,
+            ),
+            mock.patch("builtins.print"),
+        ):
+            reviewer.publish_check_run(
+                "owner/repository",
+                "token",
+                "review-model",
+                "b" * 40,
+                self.plan,
+                [self.finding, left_finding],
+                "ado-42",
+            )
+
+        self.assertEqual(
+            request.call_args.args[:3],
+            (
+                "https://api.github.com/repos/owner/repository/check-runs",
+                "POST",
+                reviewer._github_headers("token"),
+            ),
+        )
+        payload = request.call_args.args[3]
+        self.assertEqual(payload["name"], "Manual branch review")
+        self.assertEqual(payload["head_sha"], "b" * 40)
+        self.assertEqual(payload["conclusion"], "neutral")
+        self.assertEqual(payload["external_id"], "ado-42")
+        self.assertEqual(len(payload["output"]["annotations"]), 1)
+        self.assertEqual(payload["output"]["annotations"][0]["path"], "app.py")
+        self.assertIn("removed.py:7", payload["output"]["summary"])
+        self.assertEqual(
+            payload["details_url"],
+            "https://github.example/owner/repository/actions/runs/123",
+        )
+
+    def test_successful_check_run_has_no_annotations(self) -> None:
+        with (
+            mock.patch.object(reviewer, "request_json", return_value={}) as request,
+            mock.patch.dict(reviewer.os.environ, {}, clear=True),
+            mock.patch("builtins.print"),
+        ):
+            reviewer.publish_check_run(
+                "owner/repository",
+                "token",
+                "review-model",
+                "b" * 40,
+                self.plan,
+                [],
+                "manual-1",
+            )
+
+        payload = request.call_args.args[3]
+        self.assertEqual(payload["conclusion"], "success")
+        self.assertEqual(payload["output"]["annotations"], [])
+        self.assertNotIn("details_url", payload)
 
 
 class PublicationPlanTest(unittest.TestCase):

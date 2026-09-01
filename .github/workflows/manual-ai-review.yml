@@ -1,0 +1,320 @@
+name: Manual AI branch review
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: Branch, tag, or commit to review
+        required: true
+        default: main
+        type: string
+      base_ref:
+        description: Comparison base (ignored by full_branch)
+        required: true
+        default: main
+        type: string
+      scope:
+        description: Select how the comparison base is calculated
+        required: true
+        default: branch_diff
+        type: choice
+        options:
+          - branch_diff
+          - last_commit
+          - commit_range
+          - full_branch
+      model:
+        description: OpenRouter model id, or auto to use repository defaults
+        required: true
+        default: auto
+        type: string
+      publish:
+        description: Where review findings should be published
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - existing_pr
+          - check_annotations
+          - draft_pr
+      request_id:
+        description: Optional external request id, normally supplied by Azure DevOps
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  checks: write
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: manual-ai-review-${{ inputs.target_ref }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Validate manual review inputs
+        shell: bash
+        env:
+          TARGET_REF: ${{ inputs.target_ref }}
+          BASE_REF: ${{ inputs.base_ref }}
+        run: |
+          set -euo pipefail
+
+          validate_ref() {
+            local value="$1"
+            local label="$2"
+            if [[ ! "${value}" =~ ^[A-Za-z0-9._/-]{1,200}$ ]] ||
+               [[ "${value}" == -* ]] ||
+               [[ "${value}" == *..* ]] ||
+               [[ "${value}" == *'@{'* ]] ||
+               [[ "${value}" == */ ]]; then
+              echo "::error::${label} is not a safe Git ref, tag, or commit value."
+              exit 1
+            fi
+          }
+
+          validate_ref "${TARGET_REF}" target_ref
+          validate_ref "${BASE_REF}" base_ref
+
+      # Keep executable review tooling on the trusted default branch. The
+      # selected target is checked out separately and treated only as data.
+      - name: Check out trusted reviewer tooling
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          path: reviewer
+          persist-credentials: false
+          ref: main
+
+      - name: Check out the selected review target
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          path: target
+          persist-credentials: false
+          ref: ${{ inputs.target_ref }}
+
+      - name: Resolve the exact comparison and publication target
+        id: context
+        shell: bash
+        env:
+          BASE_REF: ${{ inputs.base_ref }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLISH_MODE: ${{ inputs.publish }}
+          REVIEW_SCOPE: ${{ inputs.scope }}
+          TARGET_REF: ${{ inputs.target_ref }}
+        run: |
+          set -euo pipefail
+
+          head_sha="$(git -C target rev-parse 'HEAD^{commit}')"
+          if [[ "${REVIEW_SCOPE}" == "full_branch" ]]; then
+            # Compare the current snapshot with an empty tree so every tracked
+            # file is represented as added content with valid RIGHT-side lines.
+            base_sha="$(
+              git -C target hash-object -t tree -w --stdin </dev/null
+            )"
+          else
+            if requested_base_sha="$(
+              git -C target rev-parse --verify "${BASE_REF}^{commit}" 2>/dev/null
+            )"; then
+              :
+            elif requested_base_sha="$(
+              git -C target rev-parse --verify \
+                "refs/remotes/origin/${BASE_REF}^{commit}" 2>/dev/null
+            )"; then
+              :
+            elif requested_base_sha="$(
+              git -C target rev-parse --verify \
+                "refs/tags/${BASE_REF}^{commit}" 2>/dev/null
+            )"; then
+              :
+            else
+              echo "::error::base_ref does not resolve to a fetched commit."
+              exit 1
+            fi
+
+            case "${REVIEW_SCOPE}" in
+              branch_diff)
+                base_sha="$(git -C target merge-base "${requested_base_sha}" "${head_sha}")"
+                ;;
+              last_commit)
+                base_sha="$(git -C target rev-parse "${head_sha}^")"
+                ;;
+              commit_range)
+                base_sha="${requested_base_sha}"
+                ;;
+              *)
+                echo "::error::Unsupported review scope."
+                exit 1
+                ;;
+            esac
+          fi
+
+          if [[ "${base_sha}" == "${head_sha}" ]]; then
+            echo "::error::The selected scope has no changes to review."
+            exit 1
+          fi
+
+          associated_pulls="$(
+            gh api \
+              --header 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/commits/${head_sha}/pulls?per_page=100"
+          )"
+          pr_number="$(
+            jq -r \
+              --arg head "${head_sha}" \
+              --arg base "${BASE_REF}" \
+              '[.[] | select(.state == "open" and .head.sha == $head)] |
+               ((map(select(.base.ref == $base)) + .)[0].number // empty)' \
+              <<<"${associated_pulls}"
+          )"
+
+          if [[ "${REVIEW_SCOPE}" == "full_branch" ]]; then
+            if [[ "${PUBLISH_MODE}" == "existing_pr" ||
+                  "${PUBLISH_MODE}" == "draft_pr" ]]; then
+              echo "::error::full_branch supports auto or check_annotations publication only."
+              exit 1
+            fi
+          fi
+
+          case "${PUBLISH_MODE}" in
+            auto)
+              ;;
+            check_annotations)
+              pr_number=""
+              ;;
+            existing_pr)
+              if [[ -z "${pr_number}" ]]; then
+                echo "::error::No open pull request exists for the selected target commit."
+                exit 1
+              fi
+              ;;
+            draft_pr)
+              if [[ -z "${pr_number}" ]]; then
+                if [[ "${TARGET_REF}" == "${BASE_REF}" ]]; then
+                  echo "::error::A draft pull request requires different target and base branches."
+                  exit 1
+                fi
+                pr_number="$(
+                  gh api \
+                    --method POST \
+                    "repos/${GITHUB_REPOSITORY}/pulls" \
+                    -f title="Manual AI review: ${TARGET_REF}" \
+                    -f head="${TARGET_REF}" \
+                    -f base="${BASE_REF}" \
+                    -F draft=true \
+                    --jq '.number'
+                )"
+              fi
+              ;;
+            *)
+              echo "::error::Unsupported publication mode."
+              exit 1
+              ;;
+          esac
+
+          if [[ "${REVIEW_SCOPE}" == "full_branch" ]]; then
+            # Unchanged files cannot be attached to PR diff threads. A Check
+            # Run can annotate any current file in the reviewed commit.
+            pr_number=""
+          fi
+
+          printf 'base_sha=%s\n' "${base_sha}" >>"${GITHUB_OUTPUT}"
+          printf 'head_sha=%s\n' "${head_sha}" >>"${GITHUB_OUTPUT}"
+          printf 'pr_number=%s\n' "${pr_number}" >>"${GITHUB_OUTPUT}"
+          if [[ -n "${pr_number}" ]]; then
+            echo 'publish_target=pull_request' >>"${GITHUB_OUTPUT}"
+            echo "Review findings will be published to pull request #${pr_number}."
+          else
+            echo 'publish_target=check_run' >>"${GITHUB_OUTPUT}"
+            echo "Review findings will be published as a Check Run on ${head_sha}."
+          fi
+
+      - name: Select requested OpenRouter model
+        id: requested_model
+        shell: bash
+        env:
+          DEFAULT_FALLBACK_MODEL: ${{ vars.OPENROUTER_REVIEW_FALLBACK_MODEL || 'nvidia/nemotron-3-super-120b-a12b:free' }}
+          DEFAULT_PRIMARY_MODEL: ${{ vars.OPENROUTER_REVIEW_MODEL || 'z-ai/glm-5.2:free' }}
+          REQUESTED_MODEL: ${{ inputs.model }}
+        run: |
+          set -euo pipefail
+
+          primary_model="${REQUESTED_MODEL}"
+          if [[ "${primary_model}" == "auto" ]]; then
+            primary_model="${DEFAULT_PRIMARY_MODEL}"
+          fi
+          model_pattern='^[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$'
+          if [[ ! "${primary_model}" =~ ${model_pattern} ]] ||
+             [[ ! "${DEFAULT_FALLBACK_MODEL}" =~ ${model_pattern} ]]; then
+            echo "::error::Models must use a safe provider/model OpenRouter id."
+            exit 1
+          fi
+          printf 'primary=%s\n' "${primary_model}" >>"${GITHUB_OUTPUT}"
+          printf 'fallback=%s\n' "${DEFAULT_FALLBACK_MODEL}" >>"${GITHUB_OUTPUT}"
+
+      - name: Select a compatible active model endpoint
+        id: models
+        shell: bash
+        env:
+          FALLBACK_MODEL: ${{ steps.requested_model.outputs.fallback }}
+          PRIMARY_MODEL: ${{ steps.requested_model.outputs.primary }}
+        run: |
+          set -euo pipefail
+          python3 reviewer/.github/scripts/openrouter_model_preflight.py \
+            --primary "${PRIMARY_MODEL}" \
+            --fallback "${FALLBACK_MODEL}" \
+            --require max_tokens \
+            --require temperature \
+            --require reasoning \
+            --require response_format \
+            --require structured_outputs
+
+      - name: Review selected revision and publish findings
+        working-directory: target
+        env:
+          BASE_SHA: ${{ steps.context.outputs.base_sha }}
+          CHECK_RUN_NAME: Manual AI code review
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ steps.context.outputs.head_sha }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_REVIEW_FALLBACK_MODEL: ${{ steps.models.outputs.secondary_model }}
+          OPENROUTER_MAX_REVIEW_CHUNKS: ${{ vars.MANUAL_REVIEW_MAX_CHUNKS || '60' }}
+          OPENROUTER_REVIEW_MODEL: ${{ steps.models.outputs.selected_model }}
+          OPENROUTER_REVIEW_RPM: ${{ vars.OPENROUTER_REVIEW_RPM || '8' }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          REQUIRE_COMPLETE_REVIEW: ${{ inputs.scope == 'full_branch' && 'true' || 'false' }}
+          REQUIRE_REVIEW_RESULT: "true"
+          REVIEW_INCLUDE_REVIEWER_FILES: ${{ inputs.scope == 'full_branch' && 'true' || 'false' }}
+          REVIEW_REQUEST_ID: ${{ inputs.request_id }}
+        run: python3 ../reviewer/.github/scripts/openrouter_pr_review.py
+
+      - name: Summarize manual review
+        if: always()
+        shell: bash
+        env:
+          BASE_SHA: ${{ steps.context.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.context.outputs.head_sha }}
+          MODEL: ${{ steps.models.outputs.selected_model }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          PUBLISH_TARGET: ${{ steps.context.outputs.publish_target }}
+          TARGET_REF: ${{ inputs.target_ref }}
+        run: |
+          {
+            echo '## Manual AI code review'
+            echo
+            echo "- Target: \`${TARGET_REF}\`"
+            echo "- Range: \`${BASE_SHA}..${HEAD_SHA}\`"
+            echo "- Model: \`${MODEL}\`"
+            echo "- Publication: \`${PUBLISH_TARGET}\`"
+            if [[ -n "${PR_NUMBER}" ]]; then
+              echo "- Pull request: #${PR_NUMBER}"
+            fi
+          } >>"${GITHUB_STEP_SUMMARY}"
