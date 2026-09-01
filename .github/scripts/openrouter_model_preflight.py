@@ -180,12 +180,24 @@ def _probe_json_schema(model: str, api_key: str) -> tuple[bool | None, str]:
     if not isinstance(message, dict):
         return False, "live JSON-schema probe returned no completion message"
     content = message.get("content")
-    if not isinstance(content, str):
-        return False, "live JSON-schema probe returned non-text content"
-    try:
-        result = json.loads(content)
-    except json.JSONDecodeError:
-        return False, "live JSON-schema probe did not return valid JSON"
+    if isinstance(content, dict):
+        result = content
+    else:
+        if isinstance(content, list):
+            content = "".join(
+                block.get("text", "")
+                for block in content
+                if isinstance(block, dict) and isinstance(block.get("text"), str)
+            )
+        if isinstance(content, str) and content.strip():
+            try:
+                result = json.loads(content)
+            except json.JSONDecodeError:
+                return False, "live JSON-schema probe did not return valid JSON"
+        else:
+            result = message.get("parsed")
+            if not isinstance(result, dict):
+                return False, "live JSON-schema probe returned no structured content"
     if result != {"status": "ok"}:
         return False, "live JSON-schema probe did not satisfy the requested schema"
     return True, "passed the live JSON-schema probe"

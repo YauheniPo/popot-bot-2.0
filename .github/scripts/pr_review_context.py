@@ -26,7 +26,8 @@ MAX_RENDERED_COMMENTS_PER_THREAD = 3
 MAX_RENDERED_COMMENT_CHARACTERS = 1_000
 MAX_REPLY_CHARACTERS = 4_000
 MAX_INLINE_COMMENT_CHARACTERS = 4_000
-MAX_CLAUDE_EXECUTION_FILE_BYTES = 8 * 1024 * 1024
+MAX_CLAUDE_EXECUTION_FILE_BYTES = 64 * 1024 * 1024
+MAX_CLAUDE_REVIEW_RESULT_BYTES = 1024 * 1024
 COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
 HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 SEMANTIC_DUPLICATE_THRESHOLD = 0.42
@@ -879,7 +880,7 @@ def _claude_review_result() -> str:
         return _required_env("CLAUDE_REVIEW_RESULT")
     path = Path(result_file)
     try:
-        if path.stat().st_size > MAX_CLAUDE_EXECUTION_FILE_BYTES:
+        if path.stat().st_size > MAX_CLAUDE_REVIEW_RESULT_BYTES:
             raise RuntimeError("Validated Claude review result is too large")
         result = path.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError) as error:

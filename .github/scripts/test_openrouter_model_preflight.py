@@ -86,6 +86,60 @@ class ModelSelectionTest(unittest.TestCase):
         self.assertEqual(request_body["response_format"]["type"], "json_schema")
         self.assertEqual(request.get_header("Authorization"), "Bearer secret")
 
+    def test_live_schema_probe_accepts_block_content(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value = io.StringIO(
+            json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": [
+                                    {"type": "text", "text": '{"status":'},
+                                    {"type": "text", "text": '"ok"}'},
+                                ]
+                            }
+                        }
+                    ]
+                }
+            )
+        )
+        with mock.patch.object(
+            preflight.urllib.request,
+            "urlopen",
+            return_value=response,
+        ):
+            ready, reason = preflight._probe_json_schema("provider/model", "secret")
+
+        self.assertTrue(ready)
+        self.assertIn("passed", reason)
+
+    def test_live_schema_probe_accepts_parsed_content(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value = io.StringIO(
+            json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": None,
+                                "parsed": {"status": "ok"},
+                            }
+                        }
+                    ]
+                }
+            )
+        )
+        with mock.patch.object(
+            preflight.urllib.request,
+            "urlopen",
+            return_value=response,
+        ):
+            ready, reason = preflight._probe_json_schema("provider/model", "secret")
+
+        self.assertTrue(ready)
+        self.assertIn("passed", reason)
+
     def test_live_schema_probe_rejects_schema_mismatch(self) -> None:
         response = mock.MagicMock()
         response.__enter__.return_value = io.StringIO(
