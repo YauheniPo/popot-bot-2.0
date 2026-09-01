@@ -129,7 +129,7 @@ def _fetch_free_models(required_capabilities: frozenset[str]) -> object:
     raise AssertionError("unreachable")
 
 
-def _probe_json_schema(model: str, api_key: str) -> tuple[bool, str]:
+def _probe_json_schema(model: str, api_key: str) -> tuple[bool | None, str]:
     """Make a live structured-output request and validate its exact result."""
     _model_url(model)
     body = {
@@ -163,9 +163,11 @@ def _probe_json_schema(model: str, api_key: str) -> tuple[bool, str]:
         with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
             payload = json.load(response)
     except urllib.error.HTTPError as error:
+        if error.code in RETRYABLE_HTTP_STATUSES:
+            return None, f"live JSON-schema probe was inconclusive after HTTP {error.code}"
         return False, f"live JSON-schema probe returned HTTP {error.code}"
     except urllib.error.URLError:
-        return False, "live JSON-schema probe could not reach OpenRouter"
+        return None, "live JSON-schema probe was inconclusive because OpenRouter was unreachable"
     except (json.JSONDecodeError, UnicodeDecodeError):
         return False, "live JSON-schema probe returned invalid response JSON"
 
@@ -194,7 +196,7 @@ def discover_free_fallback(
     excluded_models: frozenset[str],
     fetch_models: Callable[[frozenset[str]], object] = _fetch_free_models,
     fetch_model: Callable[[str], object] = _fetch_model,
-    probe_model: Callable[[str], tuple[bool, str]] | None = None,
+    probe_model: Callable[[str], tuple[bool | None, str]] | None = None,
 ) -> ModelCheck | None:
     payload = fetch_models(required_capabilities)
     if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
@@ -230,7 +232,7 @@ def check_model(
     model: str,
     required_capabilities: frozenset[str],
     fetch_model: Callable[[str], object] = _fetch_model,
-    probe_model: Callable[[str], tuple[bool, str]] | None = None,
+    probe_model: Callable[[str], tuple[bool | None, str]] | None = None,
 ) -> ModelCheck:
     try:
         _model_url(model)
@@ -266,7 +268,7 @@ def check_model(
             probe_reason = ""
             if probe_model is not None:
                 probe_ready, probe_reason = probe_model(model)
-                if not probe_ready:
+                if probe_ready is False:
                     return ModelCheck(model, False, 0, _safe_message(probe_reason))
             return ModelCheck(
                 model,
@@ -297,7 +299,7 @@ def select_models(
     fetch_model: Callable[[str], object] = _fetch_model,
     discover_free: bool = False,
     fetch_models: Callable[[frozenset[str]], object] = _fetch_free_models,
-    probe_model: Callable[[str], tuple[bool, str]] | None = None,
+    probe_model: Callable[[str], tuple[bool | None, str]] | None = None,
 ) -> ModelSelection:
     primary = check_model(primary_model, required_capabilities, fetch_model, probe_model)
     if fallback_model == primary_model:
@@ -380,13 +382,13 @@ def main(argv: list[str] | None = None) -> int:
     if any(not re.fullmatch(r"[a-z0-9_]+", item) for item in required_capabilities):
         raise RuntimeError("required capabilities must use lowercase API parameter names")
 
-    probe_model: Callable[[str], tuple[bool, str]] | None = None
+    probe_model: Callable[[str], tuple[bool | None, str]] | None = None
     if args.probe_schema:
         api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
         if not api_key:
             raise RuntimeError("OPENROUTER_API_KEY is required for --probe-schema")
 
-        def live_probe(model: str) -> tuple[bool, str]:
+        def live_probe(model: str) -> tuple[bool | None, str]:
             return _probe_json_schema(model, api_key)
 
         probe_model = live_probe

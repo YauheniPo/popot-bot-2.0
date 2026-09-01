@@ -107,6 +107,26 @@ class ModelSelectionTest(unittest.TestCase):
         self.assertFalse(ready)
         self.assertIn("did not satisfy", reason)
 
+    def test_live_schema_probe_treats_rate_limit_as_inconclusive(self) -> None:
+        http_error = urllib.error.HTTPError(
+            "https://openrouter.ai",
+            429,
+            "Too Many Requests",
+            {},
+            io.BytesIO(b"{}"),
+        )
+        self.addCleanup(http_error.close)
+        with mock.patch.object(
+            preflight.urllib.request,
+            "urlopen",
+            side_effect=http_error,
+        ):
+            ready, reason = preflight._probe_json_schema("provider/model", "secret")
+
+        self.assertIsNone(ready)
+        self.assertIn("inconclusive", reason)
+        self.assertIn("HTTP 429", reason)
+
     def test_selects_compatible_primary_and_keeps_compatible_fallback(self) -> None:
         responses = {
             "provider/primary": payload(endpoint(*REQUIRED)),
@@ -223,11 +243,22 @@ class ModelSelectionTest(unittest.TestCase):
             "provider/model",
             REQUIRED,
             lambda _model: payload(endpoint(*REQUIRED)),
-            lambda _model: (False, "live JSON-schema probe returned HTTP 429"),
+            lambda _model: (False, "live JSON-schema probe did not satisfy the schema"),
         )
 
         self.assertFalse(check.ready)
-        self.assertIn("HTTP 429", check.reason)
+        self.assertIn("did not satisfy", check.reason)
+
+    def test_keeps_metadata_compatible_model_when_live_probe_is_inconclusive(self) -> None:
+        check = preflight.check_model(
+            "provider/model",
+            REQUIRED,
+            lambda _model: payload(endpoint(*REQUIRED)),
+            lambda _model: (None, "live JSON-schema probe was inconclusive after HTTP 429"),
+        )
+
+        self.assertTrue(check.ready)
+        self.assertIn("inconclusive", check.reason)
 
     def test_falls_back_when_primary_fails_the_live_schema_probe(self) -> None:
         responses = {
@@ -250,6 +281,28 @@ class ModelSelectionTest(unittest.TestCase):
         self.assertFalse(selection.primary.ready)
         self.assertTrue(selection.fallback.ready)
         self.assertEqual(selection.selected_model, "provider/fallback")
+
+    def test_selects_primary_after_transient_probe_when_fallback_is_down(self) -> None:
+        responses = {
+            "provider/primary": payload(endpoint(*REQUIRED)),
+            "provider/fallback": payload(),
+        }
+
+        selection = preflight.select_models(
+            "provider/primary",
+            "provider/fallback",
+            REQUIRED,
+            responses.__getitem__,
+            probe_model=lambda _model: (
+                None,
+                "live JSON-schema probe was inconclusive after HTTP 429",
+            ),
+        )
+
+        self.assertTrue(selection.primary.ready)
+        self.assertFalse(selection.fallback.ready)
+        self.assertEqual(selection.selected_model, "provider/primary")
+        self.assertEqual(selection.secondary_model, "")
 
     def test_ignores_inactive_compatible_endpoint(self) -> None:
         check = preflight.check_model(

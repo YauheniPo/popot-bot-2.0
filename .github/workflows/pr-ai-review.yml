@@ -122,6 +122,20 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
 
+      # The live schema probe is an OpenRouter completion too, so wait before
+      # model selection when the direct reviewer used the same API key first.
+      - name: Wait for the shared OpenRouter rate-limit window
+        if: vars.PR_REVIEWER == '' || vars.PR_REVIEWER == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${OPENROUTER_REVIEW_COOLDOWN_SECONDS}" =~ ^[0-9]{1,3}$ ]] ||
+             (( OPENROUTER_REVIEW_COOLDOWN_SECONDS > 300 )); then
+            echo "::error::OPENROUTER_REVIEW_COOLDOWN_SECONDS must be an integer from 0 to 300."
+            exit 1
+          fi
+          sleep "${OPENROUTER_REVIEW_COOLDOWN_SECONDS}"
+
       - name: Select compatible Claude Code models
         id: claude_models
         shell: bash
@@ -176,18 +190,6 @@ jobs:
             printf '%s\n' "${context}"
             printf '%s\n' "${delimiter}"
           } >>"${GITHUB_OUTPUT}"
-
-      - name: Wait for the shared OpenRouter rate-limit window
-        if: vars.PR_REVIEWER == '' || vars.PR_REVIEWER == '0'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ ! "${OPENROUTER_REVIEW_COOLDOWN_SECONDS}" =~ ^[0-9]{1,3}$ ]] ||
-             (( OPENROUTER_REVIEW_COOLDOWN_SECONDS > 300 )); then
-            echo "::error::OPENROUTER_REVIEW_COOLDOWN_SECONDS must be an integer from 0 to 300."
-            exit 1
-          fi
-          sleep "${OPENROUTER_REVIEW_COOLDOWN_SECONDS}"
 
       - name: Install bubblewrap for Claude Code subprocess isolation
         shell: bash
