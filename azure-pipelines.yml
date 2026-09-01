@@ -1,0 +1,110 @@
+# Manual Azure DevOps launcher for the GitHub AI code-review workflow.
+#
+# Prerequisites:
+#   1. `.github/workflows/manual-ai-review.yml` must exist on the GitHub
+#      repository's default branch and accept the inputs sent below.
+#   2. Add `GITHUB_ACTIONS_TOKEN` as a secret variable in this Azure pipeline.
+#      Use a fine-grained GitHub token restricted to this repository with the
+#      repository permission Actions: Read and write.
+
+trigger: none
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+parameters:
+  - name: targetRef
+    displayName: Branch, tag, or commit to review
+    type: string
+    default: main
+
+  - name: baseRef
+    displayName: Compare against
+    type: string
+    default: main
+
+  - name: scope
+    displayName: Review scope
+    type: string
+    default: branch_diff
+    values:
+      - branch_diff
+      - last_commit
+      - commit_range
+
+  - name: reviewer
+    displayName: Reviewer
+    type: string
+    default: both
+    values:
+      - both
+      - openrouter
+      - claude
+
+  - name: model
+    displayName: Model name
+    type: string
+    default: auto
+
+  - name: publishMode
+    displayName: Result publication
+    type: string
+    default: auto
+    values:
+      - auto
+      - existing_pr
+      - check_annotations
+      - draft_pr
+
+steps:
+  - checkout: none
+
+  - bash: |
+      set -euo pipefail
+
+      payload="$(
+        jq -n \
+          --arg target_ref "${TARGET_REF}" \
+          --arg base_ref "${BASE_REF}" \
+          --arg scope "${REVIEW_SCOPE}" \
+          --arg reviewer "${REVIEWER}" \
+          --arg model "${REVIEW_MODEL}" \
+          --arg publish "${PUBLISH_MODE}" \
+          --arg request_id "ado-${BUILD_BUILDID}" \
+          '{
+            ref: "main",
+            inputs: {
+              target_ref: $target_ref,
+              base_ref: $base_ref,
+              scope: $scope,
+              reviewer: $reviewer,
+              model: $model,
+              publish: $publish,
+              request_id: $request_id
+            }
+          }'
+      )"
+
+      curl \
+        --fail-with-body \
+        --silent \
+        --show-error \
+        --request POST \
+        --header "Authorization: Bearer ${GITHUB_ACTIONS_TOKEN}" \
+        --header "Accept: application/vnd.github+json" \
+        --header "X-GitHub-Api-Version: 2022-11-28" \
+        --header "Content-Type: application/json" \
+        --data "${payload}" \
+        "https://api.github.com/repos/YauheniPo/popot-bot-2.0/actions/workflows/manual-ai-review.yml/dispatches"
+
+      echo "GitHub code review requested for ${TARGET_REF} against ${BASE_REF}."
+    displayName: Start GitHub AI code review
+    env:
+      GITHUB_ACTIONS_TOKEN: $(GITHUB_ACTIONS_TOKEN)
+      TARGET_REF: ${{ parameters.targetRef }}
+      BASE_REF: ${{ parameters.baseRef }}
+      REVIEW_SCOPE: ${{ parameters.scope }}
+      REVIEWER: ${{ parameters.reviewer }}
+      REVIEW_MODEL: ${{ parameters.model }}
+      PUBLISH_MODE: ${{ parameters.publishMode }}
