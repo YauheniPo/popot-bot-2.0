@@ -96,6 +96,70 @@ class ModelSelectionTest(unittest.TestCase):
         self.assertEqual(selection.selected_model, "provider/fallback")
         self.assertEqual(selection.secondary_model, "")
 
+    def test_discovers_compatible_free_fallback_when_configured_one_is_down(self) -> None:
+        responses = {
+            "provider/primary": payload(endpoint(*REQUIRED)),
+            "provider/configured:free": payload(),
+            "provider/discovered:free": payload(endpoint(*REQUIRED)),
+        }
+        catalog = {
+            "data": [
+                {
+                    "id": "provider/paid",
+                    "supported_parameters": list(REQUIRED),
+                },
+                {
+                    "id": "provider/incomplete:free",
+                    "supported_parameters": ["tools"],
+                },
+                {
+                    "id": "provider/discovered:free",
+                    "supported_parameters": list(REQUIRED),
+                },
+            ]
+        }
+
+        selection = preflight.select_models(
+            "provider/primary",
+            "provider/configured:free",
+            REQUIRED,
+            responses.__getitem__,
+            discover_free=True,
+            fetch_models=lambda _required: catalog,
+        )
+
+        self.assertTrue(selection.primary.ready)
+        self.assertEqual(selection.fallback.model, "provider/discovered:free")
+        self.assertTrue(selection.fallback.ready)
+        self.assertEqual(selection.secondary_model, "provider/discovered:free")
+
+    def test_uses_discovered_free_model_when_primary_and_fallback_are_down(self) -> None:
+        responses = {
+            "provider/primary": payload(),
+            "provider/configured:free": payload(),
+            "provider/discovered:free": payload(endpoint(*REQUIRED)),
+        }
+        catalog = {
+            "data": [
+                {
+                    "id": "provider/discovered:free",
+                    "supported_parameters": list(REQUIRED),
+                }
+            ]
+        }
+
+        selection = preflight.select_models(
+            "provider/primary",
+            "provider/configured:free",
+            REQUIRED,
+            responses.__getitem__,
+            discover_free=True,
+            fetch_models=lambda _required: catalog,
+        )
+
+        self.assertEqual(selection.selected_model, "provider/discovered:free")
+        self.assertEqual(selection.secondary_model, "")
+
     def test_rejects_endpoint_missing_required_capabilities(self) -> None:
         check = preflight.check_model(
             "provider/model",
