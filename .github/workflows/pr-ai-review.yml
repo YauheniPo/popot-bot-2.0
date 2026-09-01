@@ -79,6 +79,7 @@ jobs:
           python3 .github/scripts/openrouter_model_preflight.py \
             --primary "${PRIMARY_MODEL}" \
             --fallback "${FALLBACK_MODEL}" \
+            --discover-free-fallback \
             --require max_tokens \
             --require temperature \
             --require reasoning \
@@ -130,6 +131,7 @@ jobs:
           python3 .github/scripts/openrouter_model_preflight.py \
             --primary "${PRIMARY_MODEL}" \
             --fallback "${FALLBACK_MODEL}" \
+            --discover-free-fallback \
             --require max_tokens \
             --require response_format \
             --require structured_outputs \

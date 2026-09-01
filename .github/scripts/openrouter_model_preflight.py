@@ -12,6 +12,7 @@ import sys
 import time
 from typing import Callable
 import urllib.error
+import urllib.parse
 import urllib.request
 
 
@@ -19,6 +20,7 @@ OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 MODEL_ID = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$")
 REQUEST_TIMEOUT_SECONDS = 15
 MAX_METADATA_ATTEMPTS = 3
+MAX_FREE_CANDIDATES = 12
 RETRYABLE_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 
 
@@ -78,6 +80,74 @@ def _fetch_model(model: str) -> object:
             raise RuntimeError("OpenRouter endpoint metadata was not valid JSON") from error
         time.sleep(float(2 ** (attempt - 1)))
     raise AssertionError("unreachable")
+
+
+def _fetch_free_models(required_capabilities: frozenset[str]) -> object:
+    query = urllib.parse.urlencode(
+        {
+            "supported_parameters": ",".join(sorted(required_capabilities)),
+            "sort": "most-popular",
+        }
+    )
+    request = urllib.request.Request(
+        f"{OPENROUTER_MODELS_URL}?{query}",
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "popot-bot-pr-review-preflight/1",
+        },
+    )
+    for attempt in range(1, MAX_METADATA_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            retryable = error.code in RETRYABLE_HTTP_STATUSES
+            if not retryable or attempt == MAX_METADATA_ATTEMPTS:
+                raise RuntimeError(
+                    f"OpenRouter model catalog returned HTTP {error.code}"
+                ) from error
+        except urllib.error.URLError as error:
+            if attempt == MAX_METADATA_ATTEMPTS:
+                raise RuntimeError(
+                    "OpenRouter model catalog is temporarily unavailable"
+                ) from error
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            raise RuntimeError("OpenRouter model catalog was not valid JSON") from error
+        time.sleep(float(2 ** (attempt - 1)))
+    raise AssertionError("unreachable")
+
+
+def discover_free_fallback(
+    required_capabilities: frozenset[str],
+    excluded_models: frozenset[str],
+    fetch_models: Callable[[frozenset[str]], object] = _fetch_free_models,
+    fetch_model: Callable[[str], object] = _fetch_model,
+) -> ModelCheck | None:
+    payload = fetch_models(required_capabilities)
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        raise RuntimeError("OpenRouter model catalog has an invalid shape")
+
+    checked = 0
+    for entry in payload["data"]:
+        if not isinstance(entry, dict):
+            continue
+        model = entry.get("id")
+        supported = entry.get("supported_parameters", [])
+        if (
+            not isinstance(model, str)
+            or not model.endswith(":free")
+            or model in excluded_models
+            or not isinstance(supported, list)
+            or not required_capabilities <= {item for item in supported if isinstance(item, str)}
+        ):
+            continue
+        checked += 1
+        candidate = check_model(model, required_capabilities, fetch_model)
+        if candidate.ready:
+            return candidate
+        if checked >= MAX_FREE_CANDIDATES:
+            break
+    return None
 
 
 def check_model(
@@ -140,6 +210,8 @@ def select_models(
     fallback_model: str,
     required_capabilities: frozenset[str],
     fetch_model: Callable[[str], object] = _fetch_model,
+    discover_free: bool = False,
+    fetch_models: Callable[[frozenset[str]], object] = _fetch_free_models,
 ) -> ModelSelection:
     primary = check_model(primary_model, required_capabilities, fetch_model)
     if fallback_model == primary_model:
@@ -151,6 +223,16 @@ def select_models(
         )
     else:
         fallback = check_model(fallback_model, required_capabilities, fetch_model)
+
+    if not fallback.ready and discover_free:
+        discovered = discover_free_fallback(
+            required_capabilities,
+            frozenset({primary_model, fallback_model}),
+            fetch_models,
+            fetch_model,
+        )
+        if discovered is not None:
+            fallback = discovered
 
     if primary.ready:
         selected_model = primary.model
@@ -193,6 +275,11 @@ def main(argv: list[str] | None = None) -> int:
         dest="required_capabilities",
         help="Endpoint capability that must be present; may be repeated.",
     )
+    parser.add_argument(
+        "--discover-free-fallback",
+        action="store_true",
+        help="Select another compatible :free model when the configured fallback is unavailable.",
+    )
     args = parser.parse_args(argv)
 
     required_capabilities = frozenset(args.required_capabilities)
@@ -205,6 +292,7 @@ def main(argv: list[str] | None = None) -> int:
         args.primary.strip(),
         args.fallback.strip(),
         required_capabilities,
+        discover_free=args.discover_free_fallback,
     )
     for label, check in (("primary", selection.primary), ("fallback", selection.fallback)):
         state = "ready" if check.ready else "unavailable"
