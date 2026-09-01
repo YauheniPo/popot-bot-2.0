@@ -219,6 +219,34 @@ def build_asset_values(
     if len(gateway_services) != 1:
         raise ValueError("vps_services.gateway must contain exactly one service")
 
+    api_retry_endpoint = _string_setting(
+        settings,
+        "vps_ops.api_retry.endpoint",
+        r"http://127[.]0[.]0[.]1:[1-9][0-9]{0,4}/[A-Za-z0-9._~/%:-]*",
+    )
+    api_retry_model = _string_setting(
+        settings,
+        "vps_ops.api_retry.model",
+        r"[A-Za-z0-9._:/-]+",
+    )
+    api_retry_message = _string_setting(
+        settings,
+        "vps_ops.api_retry.message",
+        r"[^\r\n]+",
+    )
+    api_retry_max_attempts = _integer_setting(
+        settings,
+        "vps_ops.api_retry.max_attempts",
+        1,
+        99,
+    )
+    api_retry_wait_seconds = _integer_setting(
+        settings,
+        "vps_ops.api_retry.wait_seconds",
+        1,
+        3600,
+    )
+
     backup_required = _boolean_setting(settings, "vps_ops.backup.required")
     backup_retention = _integer_setting(settings, "vps_ops.backup.retention_days", 1, 3650)
     backup_full_day = _integer_setting(settings, "vps_ops.backup.full_day", 1, 7)
@@ -358,6 +386,11 @@ def build_asset_values(
         "OPS_ALERT_TARGET": alert_target,
         "SERVICE_RESTART_SEC": service_restart_sec,
         "GATEWAY_SERVICE": gateway_services[0],
+        "API_RETRY_ENDPOINT": api_retry_endpoint,
+        "API_RETRY_MODEL": api_retry_model,
+        "API_RETRY_MESSAGE": api_retry_message,
+        "API_RETRY_MAX_ATTEMPTS": str(api_retry_max_attempts),
+        "API_RETRY_WAIT_SECONDS": str(api_retry_wait_seconds),
         "BACKUP_REQUIRED": cli_value(backup_required),
         "BACKUP_DIR": backup_dir,
         "BACKUP_MAX_AGE_HOURS": str(backup_max_age),

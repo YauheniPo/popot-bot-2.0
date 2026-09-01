@@ -12,6 +12,7 @@ Covered customizations (not yet upstream):
    aliases so the Telegram menu entry resolves), /model_global, and /doctor
  * /status shows reasoning effort, visibility, global + topic model
  * busy-session dispatch handles /gw-restart like /restart
+ * Telegram command-menu usage ranking, with explicit user priorities pinned
 The existing Edge TTS retry lives in ops/apply-edge-tts-retry.py and is not
 touched here.
 """
@@ -208,6 +209,70 @@ def _migrate_installed_gw_restart() -> int:
     return len(planned_writes)
 
 
+def _migrate_doctor_handler_source(relative_path: str, source: str) -> tuple[str, bool]:
+    """Migrate the first /doctor patch to pass the resolved command as argv."""
+    if relative_path != "gateway/slash_commands.py":
+        return source, False
+
+    marker = _PREFIX + " doctor handler"
+    if marker not in source:
+        return source, False
+    old = '''                str(_resolve_hermes_bin()),
+                "doctor",
+'''
+    new = '''                *_resolve_hermes_bin(),
+                "doctor",
+'''
+    if old not in source:
+        if new in source:
+            return source, False
+        raise PatchMigrationError(
+            "cannot migrate doctor handler: unknown Hermes command invocation"
+        )
+    return source.replace(old, new, 1), True
+
+
+def _migrate_installed_doctor_handler() -> int:
+    target = HERMES_AGENT_DIR / "gateway" / "slash_commands.py"
+    if not target.is_file():
+        return 0
+    migrated, changed = _migrate_doctor_handler_source(
+        "gateway/slash_commands.py", target.read_text(encoding="utf-8")
+    )
+    if not changed:
+        return 0
+    target.write_text(migrated, encoding="utf-8")
+    print(f"[hermes-patch] migrated {target.relative_to(HERMES_AGENT_DIR)}")
+    return 1
+
+
+def _migrate_telegram_usage_ranking_source(relative_path: str, source: str) -> tuple[str, bool]:
+    """Mark the first usage-ranking patch, which predated its idempotency marker."""
+    if relative_path != "hermes_cli/commands.py":
+        return source, False
+    marker = _PREFIX + " telegram usage ranking"
+    if marker in source:
+        return source, False
+    anchor = "    configured_priority = _dedupe_sanitized_names(menu_cfg[\"priority\"])\n"
+    if anchor not in source:
+        return source, False
+    return source.replace(anchor, f"    {marker}\n" + anchor, 1), True
+
+
+def _migrate_installed_telegram_usage_ranking() -> int:
+    target = HERMES_AGENT_DIR / "hermes_cli" / "commands.py"
+    if not target.is_file():
+        return 0
+    migrated, changed = _migrate_telegram_usage_ranking_source(
+        "hermes_cli/commands.py", target.read_text(encoding="utf-8")
+    )
+    if not changed:
+        return 0
+    target.write_text(migrated, encoding="utf-8")
+    print(f"[hermes-patch] migrated {target.relative_to(HERMES_AGENT_DIR)}")
+    return 1
+
+
 _PATCHES: list[tuple[str, str, str, str]] = [
     # NOTE: every ``new`` block MUST include its marker as a comment line so
     # the idempotency check (marker already present -> skip) works on re-run.
@@ -388,7 +453,7 @@ _PATCHES: list[tuple[str, str, str, str]] = [
         process = None
         try:
             process = await asyncio.create_subprocess_exec(
-                str(_resolve_hermes_bin()),
+                *_resolve_hermes_bin(),
                 "doctor",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
@@ -430,6 +495,249 @@ _PATCHES: list[tuple[str, str, str, str]] = [
         if canonical == "debug":
 ''',
     ),
+    (
+        "hermes_cli/commands.py",
+        _PREFIX + " telegram usage ranking",
+        '''def _prioritize_telegram_menu_commands(
+    commands: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    priority = {
+        name: index
+        for index, name in enumerate(_telegram_effective_priority())
+    }
+    return [
+        command
+        for _index, command in sorted(
+            enumerate(commands),
+            key=lambda item: (
+                0,
+                priority[item[1][0]],
+                item[0],
+            )
+            if item[1][0] in priority
+            else (
+                1,
+                item[0],
+            ),
+        )
+    ]
+
+''',
+        '''def _prioritize_telegram_menu_commands(
+    commands: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    # Local Hermes: telegram usage ranking
+    menu_cfg = _telegram_command_menu_config()
+    configured_priority = _dedupe_sanitized_names(menu_cfg["priority"])
+    pinned_indexes = {
+        name: index for index, name in enumerate(configured_priority)
+    }
+    default_indexes = {
+        name: index
+        for index, name in enumerate(_telegram_effective_priority())
+    }
+    usage_ranking_enabled, _refresh_every = _telegram_usage_ranking_config()
+    usage_counts = _telegram_command_usage_counts() if usage_ranking_enabled else {}
+
+    def sort_key(item: tuple[int, tuple[str, str]]) -> tuple[int, int, int]:
+        original_index, command = item
+        name = command[0]
+        # Explicit user priority is an absolute first tier. Usage counts can
+        # never move a pinned command below an unpinned command.
+        if name in pinned_indexes:
+            return (0, pinned_indexes[name], original_index)
+        if usage_ranking_enabled:
+            return (1, -usage_counts.get(name, 0), original_index)
+        if name in default_indexes:
+            return (1, default_indexes[name], original_index)
+        return (2, original_index, original_index)
+
+    return [command for _index, command in sorted(enumerate(commands), key=sort_key)]
+
+''',
+    ),
+    (
+        "hermes_cli/commands.py",
+        _PREFIX + " telegram usage state",
+        '''def _clamp_command_names(
+    entries: list[tuple[str, ...]],
+    reserved: set[str],
+) -> list[tuple[str, ...]]:
+''',
+        '''def _telegram_usage_ranking_config() -> tuple[bool, int]:
+    """Return whether dynamic Telegram menu ranking is enabled and its cadence."""
+    raw_ranking = _telegram_command_menu_config().get("usage_ranking", {})
+    if not isinstance(raw_ranking, Mapping):
+        return False, 5
+    enabled = raw_ranking.get("enabled", False)
+    if isinstance(enabled, str):
+        enabled = enabled.strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        refresh_every = int(raw_ranking.get("refresh_every", 5))
+    except (TypeError, ValueError):
+        refresh_every = 5
+    return bool(enabled), max(1, min(100, refresh_every))
+
+
+def _telegram_usage_state_path() -> str:
+    hermes_home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+    return os.path.join(hermes_home, "telegram-command-usage.json")
+
+
+def _telegram_usage_state() -> tuple[dict[str, int], int]:
+    import json
+
+    try:
+        with open(_telegram_usage_state_path(), encoding="utf-8") as state_file:
+            raw_state = json.load(state_file)
+    except (OSError, ValueError, TypeError):
+        return {}, 0
+    if not isinstance(raw_state, Mapping):
+        return {}, 0
+    raw_counts = raw_state.get("counts", {})
+    counts: dict[str, int] = {}
+    if isinstance(raw_counts, Mapping):
+        for raw_name, raw_count in raw_counts.items():
+            name = _sanitize_telegram_name(str(raw_name))
+            try:
+                count = int(raw_count)
+            except (TypeError, ValueError):
+                continue
+            if name and len(name) <= _CMD_NAME_LIMIT and count > 0:
+                counts[name] = min(count, 1_000_000_000)
+    try:
+        pending_refresh = int(raw_state.get("pending_refresh", 0))
+    except (TypeError, ValueError):
+        pending_refresh = 0
+    return counts, max(0, pending_refresh)
+
+
+def _write_telegram_usage_state(counts: Mapping[str, int], pending_refresh: int) -> None:
+    import json
+
+    state_path = _telegram_usage_state_path()
+    os.makedirs(os.path.dirname(state_path), mode=0o700, exist_ok=True)
+    temporary_path = state_path + ".tmp"
+    with open(temporary_path, "w", encoding="utf-8") as state_file:
+        json.dump(
+            {"counts": dict(counts), "pending_refresh": pending_refresh},
+            state_file,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        state_file.write("\\n")
+    os.chmod(temporary_path, 0o600)
+    os.replace(temporary_path, state_path)
+
+
+def _telegram_command_usage_counts() -> dict[str, int]:
+    enabled, _refresh_every = _telegram_usage_ranking_config()
+    return _telegram_usage_state()[0] if enabled else {}
+
+
+def record_telegram_command_usage(raw_command: str) -> bool:
+    """Persist one command invocation and report when Telegram menu should refresh."""
+    enabled, refresh_every = _telegram_usage_ranking_config()
+    name = _sanitize_telegram_name(raw_command)
+    if not enabled or not name or len(name) > _CMD_NAME_LIMIT:
+        return False
+    counts, pending_refresh = _telegram_usage_state()
+    counts[name] = min(counts.get(name, 0) + 1, 1_000_000_000)
+    pending_refresh += 1
+    should_refresh = pending_refresh >= refresh_every
+    try:
+        _write_telegram_usage_state(counts, 0 if should_refresh else pending_refresh)
+    except OSError:
+        logger.debug("Could not persist Telegram command usage state", exc_info=True)
+        return False
+    return should_refresh
+
+
+def _clamp_command_names(
+    entries: list[tuple[str, ...]],
+    reserved: set[str],
+) -> list[tuple[str, ...]]:
+    # Local Hermes: telegram usage state
+''',
+    ),
+    (
+        "plugins/platforms/telegram/adapter.py",
+        _PREFIX + " telegram usage refresh",
+        '''    def _effective_update_message(self, update: Update) -> Optional[Message]:
+''',
+        '''    def _record_telegram_command_usage(self, text: str) -> None:
+        """Persist authorized slash-command usage and coalesce menu refreshes."""
+        command = text.lstrip().split(None, 1)[0].lstrip("/").split("@", 1)[0]
+        try:
+            from hermes_cli.commands import record_telegram_command_usage
+
+            should_refresh = record_telegram_command_usage(command)
+        except Exception:
+            logger.debug("[%s] Could not record Telegram command usage", self.name, exc_info=True)
+            return
+        if not should_refresh:
+            return
+        task = getattr(self, "_command_menu_usage_refresh_task", None)
+        if task and not task.done():
+            return
+        self._command_menu_usage_refresh_task = asyncio.ensure_future(
+            self._refresh_telegram_command_menu_by_usage()
+        )
+
+    async def _refresh_telegram_command_menu_by_usage(self) -> None:
+        """Best-effort refresh for the shared and known forum Telegram menus."""
+        try:
+            from telegram import (
+                BotCommand,
+                BotCommandScopeAllGroupChats,
+                BotCommandScopeAllPrivateChats,
+                BotCommandScopeChat,
+                BotCommandScopeDefault,
+            )
+            from hermes_cli.commands import telegram_menu_commands, telegram_menu_max_commands
+
+            if not self._bot:
+                return
+            menu_commands, _ = telegram_menu_commands(
+                max_commands=telegram_menu_max_commands()
+            )
+            bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
+            for scope_cls in (
+                BotCommandScopeDefault,
+                BotCommandScopeAllPrivateChats,
+                BotCommandScopeAllGroupChats,
+            ):
+                await self._bot.set_my_commands(bot_commands, scope=scope_cls())
+            for chat_id in tuple(getattr(self, "_forum_command_registered", set())):
+                await self._bot.set_my_commands(
+                    bot_commands,
+                    scope=BotCommandScopeChat(chat_id=chat_id),
+                )
+            logger.info("[%s] Refreshed Telegram command menu from usage ranking", self.name)
+        except Exception:
+            logger.warning("[%s] Telegram usage menu refresh failed", self.name, exc_info=True)
+        finally:
+            if getattr(self, "_command_menu_usage_refresh_task", None) is asyncio.current_task():
+                self._command_menu_usage_refresh_task = None
+
+    # Local Hermes: telegram usage refresh
+    def _effective_update_message(self, update: Update) -> Optional[Message]:
+''',
+    ),
+    (
+        "plugins/platforms/telegram/adapter.py",
+        _PREFIX + " telegram usage record",
+        '''        event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
+        event.text = self._clean_bot_trigger_text(event.text)
+        await self._cache_replied_media(msg, event)
+''',
+        '''        event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
+        event.text = self._clean_bot_trigger_text(event.text)
+        self._record_telegram_command_usage(event.text)
+        await self._cache_replied_media(msg, event)
+        # Local Hermes: telegram usage record
+''',
+    ),
 ]
 
 
@@ -441,7 +749,12 @@ def main() -> int:
         )
         return 1
     try:
-        migrated = _migrate_installed_model_global() + _migrate_installed_gw_restart()
+        migrated = (
+            _migrate_installed_model_global()
+            + _migrate_installed_gw_restart()
+            + _migrate_installed_doctor_handler()
+            + _migrate_installed_telegram_usage_ranking()
+        )
     except PatchMigrationError as exc:
         print(f"[hermes-patch] ERROR: {exc}", file=sys.stderr)
         return 1

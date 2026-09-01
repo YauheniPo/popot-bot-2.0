@@ -105,6 +105,18 @@ class FindingValidationTest(unittest.TestCase):
 
         self.assertEqual(findings, [reviewer.Finding("P2", "app.py", "RIGHT", 5, "Broken contract", "Clients receive the wrong value.", "Restore the expected value.")])
 
+    def test_rejects_mismatched_response_and_chunk_counts(self) -> None:
+        review_file = reviewer.ReviewFile(
+            "app.py",
+            "RIGHT 5|+changed",
+            frozenset({5}),
+            frozenset(),
+        )
+        chunk = reviewer.ReviewChunk("diff", frozenset({"app.py"}), ("app.py",))
+
+        with self.assertRaisesRegex(ValueError, "same length"):
+            reviewer.validate_findings([], (chunk,), [review_file])
+
 
 class OpenRouterRequestTest(unittest.TestCase):
     def test_extracts_review_json_from_mixed_provider_text(self) -> None:

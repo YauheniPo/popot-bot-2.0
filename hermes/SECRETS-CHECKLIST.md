@@ -113,8 +113,8 @@ Calendar`. После OAuth проверьте, что оба JSON-файла п
 
 | Готово | Данные | Секрет | Правильное место |
 |---|---|---|---|
-| [ ] | Public IP или Tailscale IP/MagicDNS | Нет | `ansible/inventory.ini` |
-| [ ] | SSH username | Нет | `ansible/inventory.ini` |
+| [ ] | Public IP или Tailscale IP/MagicDNS | Да | зашифрованный `ansible/group_vars/all/vault.yml` (`ansible_host`) |
+| [ ] | SSH username | Да | зашифрованный `ansible/group_vars/all/vault.yml` (`ansible_user`) |
 | [ ] | SSH public key | Нет | cloud-init/VPS `authorized_keys` |
 | [ ] | SSH private key для входа на VPS | Да | Только управляющий компьютер; на VPS не копировать |
 | [ ] | Пароль Ansible Vault | Да | Password manager, отдельно от encrypted `vault.yml` |

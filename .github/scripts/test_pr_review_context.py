@@ -264,6 +264,56 @@ class InlineCommentTest(unittest.TestCase):
         self.assertIn(context.CLAUDE_REVIEWER_LABEL, summary_payload["body"])
         self.assertIn("<!-- claude-pr-review:" + "b" * 40 + ":123 -->", summary_payload["body"])
 
+    def test_publisher_falls_back_to_summary_when_github_rejects_an_inline_anchor(self) -> None:
+        result = {
+            "summary": "Found one issue.",
+            "thread_verdicts": [],
+            "findings": [
+                {
+                    "severity": "P2",
+                    "path": "app.py",
+                    "side": "RIGHT",
+                    "line": 12,
+                    "title": "Wrong value",
+                    "impact": "The API returns stale data.",
+                    "fix": "Return the current value.",
+                }
+            ],
+        }
+        environment = {
+            "GITHUB_REPOSITORY": "owner/repo",
+            "PR_NUMBER": "2",
+            "GITHUB_TOKEN": "token",
+            "BASE_SHA": "a" * 40,
+            "HEAD_SHA": "b" * 40,
+            "CLAUDE_REVIEW_MODEL": "review-model",
+            "CLAUDE_REVIEW_RUN_ID": "123",
+            "CLAUDE_REVIEW_RESULT": context.json.dumps(result),
+        }
+        anchor_error = context.GitHubRequestError(
+            "POST https://api.github.com/repos/owner/repo/pulls/2/comments "
+            "failed with HTTP 422: could not be resolved"
+        )
+        with (
+            mock.patch.dict(context.os.environ, environment, clear=True),
+            mock.patch.object(context, "_changed_paths", return_value={"app.py"}),
+            mock.patch.object(
+                context,
+                "changed_diff_lines",
+                return_value={"LEFT": set(), "RIGHT": {12}},
+            ),
+            mock.patch.object(context, "fetch_unresolved_review_threads", return_value=[]),
+            mock.patch.object(context, "create_inline_comment", side_effect=anchor_error),
+            mock.patch.object(context, "_request_json", side_effect=[[], {}]) as request,
+            mock.patch("builtins.print"),
+        ):
+            context._command_publish()
+
+        summary_payload = request.call_args_list[1].args[3]
+        self.assertIn("New inline findings: 0.", summary_payload["body"])
+        self.assertIn("Findings without inline anchors:", summary_payload["body"])
+        self.assertIn("`app.py:12`", summary_payload["body"])
+
     def test_publisher_rejects_and_resolves_only_a_current_machine_thread(self) -> None:
         head_sha = "b" * 40
         result = {

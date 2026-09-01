@@ -669,6 +669,11 @@ def _validated_claude_result(
 def _finding_text(finding: ReviewFinding) -> str:
     return f"{finding.title} {finding.impact} {finding.fix}"
 
+def _is_unresolvable_inline_anchor(error: GitHubRequestError) -> bool:
+    """Return whether GitHub rejected only an inline review anchor."""
+    message = str(error)
+    return "HTTP 422" in message and "could not be resolved" in message
+
 
 def _command_publish() -> None:
     repository = _required_env("GITHUB_REPOSITORY")
@@ -755,6 +760,7 @@ def _command_publish() -> None:
         else:
             new_findings.append(finding)
 
+    unanchored_findings: list[ReviewFinding] = []
     for finding in new_findings:
         location_digest = hashlib.sha256(
             f"{finding.path}:{finding.side}:{finding.line}".encode("utf-8")
@@ -762,20 +768,29 @@ def _command_publish() -> None:
         inline_marker = (
             f"<!-- claude-inline:{head_sha}:{location_digest} -->"
         )
-        create_inline_comment(
-            repository,
-            pr_number,
-            token,
-            head_sha,
-            finding.path,
-            finding.side,
-            finding.line,
-            (
-                f"{inline_marker}\n**[{CLAUDE_REVIEWER_LABEL}] "
-                f"{finding.severity} — {finding.title}**\n\n"
-                f"Impact: {finding.impact}\n\nProposed fix: {finding.fix}"
-            ),
-        )
+        try:
+            create_inline_comment(
+                repository,
+                pr_number,
+                token,
+                head_sha,
+                finding.path,
+                finding.side,
+                finding.line,
+                (
+                    f"{inline_marker}\n**[{CLAUDE_REVIEWER_LABEL}] "
+                    f"{finding.severity} — {finding.title}**\n\n"
+                    f"Impact: {finding.impact}\n\nProposed fix: {finding.fix}"
+                ),
+            )
+        except GitHubRequestError as error:
+            if not _is_unresolvable_inline_anchor(error):
+                raise
+            unanchored_findings.append(finding)
+            print(
+                "GitHub rejected the inline review anchor for "
+                f"{finding.path}:{finding.line}; publishing it in the review summary."
+            )
 
     posted_follow_ups: list[ReviewFinding] = []
     for finding, thread in follow_ups:
@@ -807,7 +822,7 @@ def _command_publish() -> None:
         "",
         f"Summary: {summary}",
         "",
-        f"New inline findings: {len(new_findings)}.",
+        f"New inline findings: {len(new_findings) - len(unanchored_findings)}.",
         f"Material thread follow-ups: {len(posted_follow_ups)}.",
         f"Existing unresolved findings not repeated: {len(duplicates)}.",
         f"OpenRouterAPI findings confirmed: {confirmed_direct_findings}.",
@@ -821,6 +836,13 @@ def _command_publish() -> None:
         lines.extend(
             f"- **{finding.severity} — `{finding.path}:{finding.line}`**: {finding.title}."
             for finding in new_findings
+        )
+    if unanchored_findings:
+        lines.extend(["", "Findings without inline anchors:"])
+        lines.extend(
+            f"- **{finding.severity} — `{finding.path}:{finding.line}`**: "
+            f"{finding.title}. GitHub rejected this diff anchor."
+            for finding in unanchored_findings
         )
     if posted_follow_ups:
         lines.extend(["", "Material additions to existing threads:"])

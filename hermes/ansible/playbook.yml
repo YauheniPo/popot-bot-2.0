@@ -49,6 +49,7 @@
           - vps_tools is mapping
           - vps_ops.backup is mapping
           - vps_ops.health is mapping
+          - vps_ops.api_retry is mapping
           - vps_ops.timers is mapping
           - vps_observability.dashboard is mapping
           - vps_observability.grafana is mapping
@@ -82,6 +83,14 @@
           - vps_packages.apt_retry_delay_seconds | int >= 1
           - vps_packages.apt_retry_delay_seconds | int <= 999
           - vps_ops.service_restart_sec is match('^[1-9][0-9]*(ms|s|min|h|d|w)$')
+          - vps_ops.api_retry.endpoint is match('^http://127\\.0\\.0\\.1:[1-9][0-9]{0,4}/[A-Za-z0-9._~/%:-]*$')
+          - vps_ops.api_retry.model is match('^[A-Za-z0-9._:/-]+$')
+          - vps_ops.api_retry.message is string
+          - vps_ops.api_retry.message | length > 0
+          - vps_ops.api_retry.max_attempts | int >= 1
+          - vps_ops.api_retry.max_attempts | int <= 99
+          - vps_ops.api_retry.wait_seconds | int >= 1
+          - vps_ops.api_retry.wait_seconds | int <= 3600
           - vps_ops.backup.required is boolean
           - vps_ops.backup.retention_days | int >= 1
           - vps_ops.backup.full_day | int >= 1
@@ -764,18 +773,52 @@
           dependent services cannot proceed.
       when: hermes_binary.stat.exists
 
-    - name: Configure Hermes runtime
-      ansible.builtin.import_tasks: tasks/runtime.yml
-      when: hermes_venv_python.stat.exists
+    - name: Complete Hermes deployment and report its result
+      block:
+        - name: Configure Hermes runtime
+          ansible.builtin.import_tasks: tasks/runtime.yml
+          when: hermes_venv_python.stat.exists
 
-    - name: Configure managed GitHub tooling and access
-      ansible.builtin.import_tasks: tasks/github.yml
+        - name: Configure managed GitHub tooling and access
+          ansible.builtin.import_tasks: tasks/github.yml
 
-    - name: Install and reconcile Hermes services
-      ansible.builtin.import_tasks: tasks/services.yml
+        - name: Install and reconcile Hermes services
+          ansible.builtin.import_tasks: tasks/services.yml
 
-    - name: Install and start the code-server container
-      ansible.builtin.import_tasks: tasks/vscode.yml
-      when:
-        - hermes_host_admin_enabled | bool
-        - vps_deploy.features.vscode_server | default(false) | bool
+        - name: Install and start the code-server container
+          ansible.builtin.import_tasks: tasks/vscode.yml
+          when:
+            - hermes_host_admin_enabled | bool
+            - vps_deploy.features.vscode_server | default(false) | bool
+      rescue:
+        - name: Capture the failed Hermes deployment task
+          ansible.builtin.set_fact:
+            hermes_deployment_notification: >-
+              ❌ Hermes deployment failed
+              Task: {{ ansible_failed_task.name | default('unknown task') }}
+              Host: {{ inventory_hostname }}
+              Error: {{ ansible_failed_result.msg | default('no error details') }}
+            hermes_deployment_failed: true
+          no_log: true
+
+        - name: Notify Telegram about the failed Hermes deployment
+          ansible.builtin.include_tasks: tasks/deployment-notify.yml
+
+        - name: Re-raise the Hermes deployment failure
+          ansible.builtin.fail:
+            msg: >-
+              Hermes deployment failed at task
+              '{{ ansible_failed_task.name | default('unknown task') }}'.
+      always:
+        - name: Prepare successful Hermes deployment notification
+          ansible.builtin.set_fact:
+            hermes_deployment_notification: >-
+              ✅ Hermes deployment completed successfully
+              Host: {{ inventory_hostname }}
+            hermes_deployment_failed: "{{ hermes_deployment_failed | default(false) }}"
+          when: not (hermes_deployment_failed | default(false) | bool)
+          no_log: true
+
+        - name: Notify Telegram about the successful Hermes deployment
+          ansible.builtin.include_tasks: tasks/deployment-notify.yml
+          when: not (hermes_deployment_failed | default(false) | bool)

@@ -64,13 +64,13 @@ ssh root@YOUR_VPS_IP
 
 В репозитории на Mac:
 
-- в `hermes/ansible/inventory.ini` укажите `ansible_host=YOUR_VPS_IP` и
-  `ansible_user=root`;
+- используйте `hermes/ansible/inventory.ini`; адрес VPS и SSH-пользователь
+  задайте в зашифрованном `hermes/ansible/group_vars/all/vault.yml`;
 - заполните `hermes/ansible/group_vars/all/vault.yml` необходимыми секретами:
   OpenRouter, Telegram (обе переменные), Brave и Grafana.
 
 `tailscale_auth_key` можно оставить пустым: Tailscale можно подключить позднее
-вручную. Не добавляйте `inventory.ini` или `vault.yml` в Git.
+вручную. Не добавляйте расшифрованный `vault.yml` в Git.
 
 ### 3. Установить Ansible и подготовить Vault
 

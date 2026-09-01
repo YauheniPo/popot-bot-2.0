@@ -48,15 +48,18 @@ Set the password once in encrypted `vault.yml`:
 hermes_code_server_password: "your-strong-password"
 ```
 
+The password may contain any characters, but cannot be empty. Ansible and the
+manual command JSON-escape it before writing the Docker Compose environment
+file.
+
 Manual deploy (without Ansible):
 
 ```bash
 cd hermes/vscode-server
 read -rsp 'code-server password: ' CODE_SERVER_PASSWORD
 printf '\n'
-if [[ ! "$CODE_SERVER_PASSWORD" =~ ^[A-Za-z0-9._~!@%^+=:,-]{16,128}$ || "$CODE_SERVER_PASSWORD" == 'replace-inside-ansible-vault' ]]; then
-  echo 'Set a unique code-server password of 16-128 characters.' >&2
-  echo 'Allowed characters: letters, digits, . _ ~ ! @ % ^ + = : , -' >&2
+if [[ -z "$CODE_SERVER_PASSWORD" ]]; then
+  echo 'Set a non-empty code-server password; any characters are allowed.' >&2
   exit 1
 fi
 CODE_SERVER_PASSWORD_JSON="$(printf '%s' "$CODE_SERVER_PASSWORD" | python3 -c \

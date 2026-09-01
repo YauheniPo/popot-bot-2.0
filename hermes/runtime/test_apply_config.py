@@ -34,6 +34,26 @@ class ApplyConfigTests(unittest.TestCase):
             "d5558cd419c8d46bdc958064cb97f963d1ea793866414c025906ec15033512ed",
         )
         self.assertTrue(settings["vps_deploy"]["features"]["observability"])
+        self.assertTrue(settings["vps_deploy"]["features"]["browser_automation"])
+        self.assertTrue(settings["vps_deploy"]["features"]["development_clis"])
+        self.assertTrue(settings["vps_deploy"]["features"]["google_workspace_cli"])
+        self.assertEqual(
+            settings["vps_ops"]["api_retry"],
+            {
+                "endpoint": "http://127.0.0.1:9119/api/execute",
+                "model": "poolside/laguna-s-2.1:free",
+                "message": "Hello",
+                "max_attempts": 6,
+                "wait_seconds": 30,
+            },
+        )
+        self.assertNotIn("model.default", settings["vps_runtime"]["set"])
+        self.assertEqual(settings["vps_deploy"]["bundle"]["dir"], "/opt/hermes-bootstrap")
+        self.assertEqual(
+            settings["vps_hermes"]["config"]["managed_overlay"],
+            {"user_char_limit": 3000, "memory_char_limit": 4000},
+        )
+        self.assertEqual(settings["vps_runtime"]["set"]["approvals.mode"], "manual")
         self.assertEqual(settings["vps_runtime"]["set"]["browser.backend"], "off")
         self.assertEqual(settings["vps_runtime"]["set"]["display.tool_progress"], "off")
         self.assertIn("agent.max_turns", settings["vps_runtime"]["unset"])
