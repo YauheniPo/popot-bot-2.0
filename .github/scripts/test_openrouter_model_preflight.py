@@ -363,6 +363,43 @@ class ModelSelectionTest(unittest.TestCase):
         self.assertTrue(selection.fallback.ready)
         self.assertEqual(selection.secondary_model, "provider/discovered:free")
 
+    def test_marks_strict_discovery_strict_after_ordinary_fallback_fails(self) -> None:
+        ordinary_required = REQUIRED - preflight.ORDINARY_JSON_OMITTED_CAPABILITIES
+        catalog = {
+            "data": [
+                {
+                    "id": "provider/discovered:free",
+                    "supported_parameters": list(REQUIRED),
+                }
+            ]
+        }
+
+        for primary_ready in (True, False):
+            with self.subTest(primary_ready=primary_ready):
+                responses = {
+                    "provider/primary": (
+                        payload(endpoint(*REQUIRED)) if primary_ready else payload()
+                    ),
+                    "provider/configured:free": payload(),
+                    "provider/discovered:free": payload(endpoint(*REQUIRED)),
+                }
+                selection = preflight.select_models(
+                    "provider/primary",
+                    "provider/configured:free",
+                    REQUIRED,
+                    responses.__getitem__,
+                    discover_free=True,
+                    fetch_models=lambda _required: catalog,
+                    fallback_required_capabilities=ordinary_required,
+                )
+
+                self.assertEqual(selection.fallback.model, "provider/discovered:free")
+                self.assertTrue(selection.fallback.ready)
+                if primary_ready:
+                    self.assertEqual(selection.secondary_mode, "strict")
+                else:
+                    self.assertEqual(selection.selected_mode, "strict")
+
     def test_uses_discovered_free_model_when_primary_and_fallback_are_down(self) -> None:
         responses = {
             "provider/primary": payload(),

@@ -426,13 +426,15 @@ def select_models(
             probe_model,
         )
         if not fallback.ready and fallback_required_capabilities is not None:
-            fallback = check_model(
+            ordinary_fallback = check_model(
                 fallback_model,
                 fallback_capabilities,
                 fetch_model,
                 fallback_probe_model,
             )
-            fallback_mode = "ordinary"
+            fallback = ordinary_fallback
+            if ordinary_fallback.ready:
+                fallback_mode = "ordinary"
 
     if not fallback.ready and discover_free:
         discovered = discover_free_fallback(
@@ -442,17 +444,20 @@ def select_models(
             fetch_model,
             probe_model,
         )
-        if discovered is None and fallback_required_capabilities is not None:
-            discovered = discover_free_fallback(
+        if discovered is not None:
+            fallback = discovered
+            fallback_mode = "strict"
+        elif fallback_required_capabilities is not None:
+            ordinary_discovered = discover_free_fallback(
                 fallback_capabilities,
                 frozenset({primary_model, fallback_model}),
                 fetch_models,
                 fetch_model,
                 fallback_probe_model,
             )
-            fallback_mode = "ordinary"
-        if discovered is not None:
-            fallback = discovered
+            if ordinary_discovered is not None:
+                fallback = ordinary_discovered
+                fallback_mode = "ordinary"
 
     if primary.ready:
         selected_model = primary.model

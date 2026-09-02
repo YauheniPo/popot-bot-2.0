@@ -226,6 +226,44 @@ class OpenRouterRequestTest(unittest.TestCase):
         self.assertIn("chunk 1 of 2", request_body["messages"][1]["content"])
         self.assertIn("UNRESOLVED_REVIEW_THREADS", request_body["messages"][1]["content"])
 
+    def test_enables_low_reasoning_for_strict_primary_when_required(self) -> None:
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps({"summary": "Reviewed.", "findings": []})
+                    }
+                }
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        with (
+            mock.patch.object(
+                reviewer,
+                "request_json",
+                side_effect=[
+                    reviewer.RequestError(
+                        "Reasoning is mandatory for this endpoint and cannot be disabled.",
+                        status=400,
+                    ),
+                    response,
+                ],
+            ) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch("builtins.print"),
+        ):
+            result = reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
+
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(request.call_count, 2)
+        retry_body = request.call_args_list[1].args[3]
+        self.assertEqual(
+            retry_body["reasoning"],
+            {"effort": "low", "exclude": True},
+        )
+        self.assertEqual(retry_body["response_format"]["type"], "json_schema")
+        self.assertTrue(retry_body["provider"]["require_parameters"])
+
     def test_requests_ordinary_json_for_selected_ordinary_model(self) -> None:
         response = {
             "choices": [

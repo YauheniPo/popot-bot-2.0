@@ -618,22 +618,8 @@ def request_fallback_review(
             "ordinary JSON fallback",
         )
     try:
-        return request_valid_review(headers, strict_body, "fallback")
+        return request_reasoning_compatible_review(headers, strict_body, "fallback")
     except RequestError as error:
-        if error.status == 400 and MANDATORY_REASONING_ERROR in str(error).lower():
-            reasoning_body = {
-                **strict_body,
-                "reasoning": {"effort": "low", "exclude": True},
-            }
-            print(
-                "  fallback requires reasoning; retrying with low hidden reasoning",
-                file=sys.stderr,
-            )
-            return request_valid_review(
-                headers,
-                reasoning_body,
-                "fallback reasoning-compatible request",
-            )
         # Some fallback models accept ordinary text generation but do not expose
         # response_format. OpenRouter returns this routing-specific 404 when
         # require_parameters filters out every endpoint. Retry only that case;
@@ -682,6 +668,15 @@ def request_ordinary_review(
     model_label: str,
 ) -> dict[str, object]:
     """Request ordinary JSON and accommodate providers that require reasoning."""
+    return request_reasoning_compatible_review(headers, body, model_label)
+
+
+def request_reasoning_compatible_review(
+    headers: dict[str, str],
+    body: dict[str, object],
+    model_label: str,
+) -> dict[str, object]:
+    """Retry once with bounded hidden reasoning when an endpoint requires it."""
     try:
         return request_valid_review(headers, body, model_label)
     except RequestError as error:
@@ -758,7 +753,7 @@ UNRESOLVED_REVIEW_THREADS:
     try:
         if primary_mode == ORDINARY_MODEL_MODE:
             return request_ordinary_review(headers, body, "ordinary JSON primary")
-        return request_valid_review(headers, body, "primary")
+        return request_reasoning_compatible_review(headers, body, "primary")
     except (RequestError, ReviewResponseError) as error:
         print(
             "  primary review failed after retries: "
@@ -1262,9 +1257,13 @@ def main() -> None:
             # after the bounded primary/fallback retries. Leave the Claude
             # reviewer and normal PR checks available instead of failing CI for
             # a provider-side capacity condition.
-            print(
+            message = (
                 "OpenRouter is temporarily rate-limited after all review retries; "
-                "skipping this direct review run.",
+                "skipping this direct review run."
+            )
+            print(message, file=sys.stderr)
+            print(
+                f"::warning title=OpenRouter direct review skipped::{message}",
                 file=sys.stderr,
             )
             return
