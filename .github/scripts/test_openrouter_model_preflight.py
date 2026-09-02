@@ -181,6 +181,57 @@ class ModelSelectionTest(unittest.TestCase):
         self.assertIn("inconclusive", reason)
         self.assertIn("HTTP 429", reason)
 
+    def test_live_tool_probe_sends_and_validates_forced_tool_call(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value = io.StringIO(
+            json.dumps(
+                {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "review_model_preflight",
+                            "input": {"status": "ok"},
+                        }
+                    ]
+                }
+            )
+        )
+        with mock.patch.object(
+            preflight.urllib.request,
+            "urlopen",
+            return_value=response,
+        ) as urlopen:
+            ready, reason = preflight._probe_tool_call("provider/model", "secret")
+
+        self.assertTrue(ready)
+        self.assertIn("passed", reason)
+        request_body = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(request_body["model"], "provider/model")
+        self.assertEqual(
+            request_body["tool_choice"]["name"],
+            "review_model_preflight",
+        )
+        self.assertEqual(
+            urlopen.call_args.args[0].full_url,
+            preflight.OPENROUTER_ANTHROPIC_MESSAGES_URL,
+        )
+        self.assertNotIn("response_format", request_body)
+
+    def test_live_tool_probe_rejects_plain_text_response(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value = io.StringIO(
+            json.dumps({"content": [{"type": "text", "text": "ok"}]})
+        )
+        with mock.patch.object(
+            preflight.urllib.request,
+            "urlopen",
+            return_value=response,
+        ):
+            ready, reason = preflight._probe_tool_call("provider/model", "secret")
+
+        self.assertFalse(ready)
+        self.assertIn("no tool call", reason)
+
     def test_selects_compatible_primary_and_keeps_compatible_fallback(self) -> None:
         responses = {
             "provider/primary": payload(endpoint(*REQUIRED)),
@@ -215,6 +266,64 @@ class ModelSelectionTest(unittest.TestCase):
         self.assertFalse(selection.primary.ready)
         self.assertTrue(selection.fallback.ready)
         self.assertEqual(selection.selected_model, "provider/fallback")
+        self.assertEqual(selection.secondary_model, "")
+
+    def test_keeps_ordinary_json_fallback_without_schema_capabilities(self) -> None:
+        ordinary_required = REQUIRED - preflight.ORDINARY_JSON_OMITTED_CAPABILITIES
+        responses = {
+            "provider/primary": payload(endpoint(*REQUIRED)),
+            "provider/fallback": payload(endpoint(*ordinary_required)),
+        }
+
+        selection = preflight.select_models(
+            "provider/primary",
+            "provider/fallback",
+            REQUIRED,
+            responses.__getitem__,
+            fallback_required_capabilities=ordinary_required,
+        )
+
+        self.assertTrue(selection.primary.ready)
+        self.assertTrue(selection.fallback.ready)
+        self.assertEqual(selection.selected_mode, "strict")
+        self.assertEqual(selection.secondary_mode, "ordinary")
+
+    def test_keeps_structured_fallback_in_strict_mode_when_ordinary_is_allowed(self) -> None:
+        ordinary_required = REQUIRED - preflight.ORDINARY_JSON_OMITTED_CAPABILITIES
+        responses = {
+            "provider/primary": payload(endpoint(*REQUIRED)),
+            "provider/fallback": payload(endpoint(*REQUIRED)),
+        }
+
+        selection = preflight.select_models(
+            "provider/primary",
+            "provider/fallback",
+            REQUIRED,
+            responses.__getitem__,
+            fallback_required_capabilities=ordinary_required,
+        )
+
+        self.assertTrue(selection.fallback.ready)
+        self.assertEqual(selection.secondary_model, "provider/fallback")
+        self.assertEqual(selection.secondary_mode, "strict")
+
+    def test_selects_ordinary_json_fallback_when_strict_primary_is_down(self) -> None:
+        ordinary_required = REQUIRED - preflight.ORDINARY_JSON_OMITTED_CAPABILITIES
+        responses = {
+            "provider/primary": payload(),
+            "provider/fallback": payload(endpoint(*ordinary_required)),
+        }
+
+        selection = preflight.select_models(
+            "provider/primary",
+            "provider/fallback",
+            REQUIRED,
+            responses.__getitem__,
+            fallback_required_capabilities=ordinary_required,
+        )
+
+        self.assertEqual(selection.selected_model, "provider/fallback")
+        self.assertEqual(selection.selected_mode, "ordinary")
         self.assertEqual(selection.secondary_model, "")
 
     def test_discovers_compatible_free_fallback_when_configured_one_is_down(self) -> None:
@@ -282,15 +391,41 @@ class ModelSelectionTest(unittest.TestCase):
         self.assertEqual(selection.secondary_model, "")
 
     def test_rejects_endpoint_missing_required_capabilities(self) -> None:
+        probe = mock.Mock(return_value=(True, "passed"))
         check = preflight.check_model(
             "provider/model",
             REQUIRED,
             lambda _model: payload(endpoint("max_tokens", "tools")),
+            probe,
         )
 
         self.assertFalse(check.ready)
         self.assertIn("response_format", check.reason)
         self.assertIn("structured_outputs", check.reason)
+        probe.assert_not_called()
+
+    def test_limits_live_schema_discovery_to_four_candidates(self) -> None:
+        catalog = {
+            "data": [
+                {
+                    "id": f"provider/candidate-{index}:free",
+                    "supported_parameters": list(REQUIRED),
+                }
+                for index in range(10)
+            ]
+        }
+        probe = mock.Mock(return_value=(False, "probe mismatch"))
+
+        discovered = preflight.discover_free_fallback(
+            REQUIRED,
+            frozenset(),
+            fetch_models=lambda _required: catalog,
+            fetch_model=lambda _model: payload(endpoint(*REQUIRED)),
+            probe_model=probe,
+        )
+
+        self.assertIsNone(discovered)
+        self.assertEqual(probe.call_count, preflight.MAX_FREE_SCHEMA_PROBES)
 
     def test_rejects_metadata_compatible_model_when_live_schema_probe_fails(self) -> None:
         check = preflight.check_model(
@@ -419,6 +554,7 @@ class ModelSelectionTest(unittest.TestCase):
         self.assertEqual(values["primary_ready"], "true")
         self.assertEqual(values["fallback_ready"], "true")
         self.assertEqual(values["selected_model"], "provider/primary")
+        self.assertEqual(values["selected_mode"], "strict")
 
 
 if __name__ == "__main__":

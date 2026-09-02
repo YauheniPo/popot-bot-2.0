@@ -40,6 +40,12 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 GITHUB_API_URL = "https://api.github.com"
 REVIEW_RULES_PATH = Path(".github/REVIEWER.md")
 REVIEWER_LABEL = "OpenRouterAPI"
+AZURE_REVIEWER_LABEL = "Azure DevOps · OpenRouterAPI"
+DEFAULT_REVIEW_ORIGIN = "github-actions"
+AZURE_REVIEW_ORIGIN = "azure-devops"
+STRICT_MODEL_MODE = "strict"
+ORDINARY_MODEL_MODE = "ordinary"
+MODEL_MODES = frozenset({STRICT_MODEL_MODE, ORDINARY_MODEL_MODE})
 EXCLUDED_REVIEW_PATHS = frozenset(
     {
         ".github/workflows/pr-ai-review.yml",
@@ -224,6 +230,13 @@ def required_env(name: str) -> str:
     value = os.environ.get(name)
     if not value:
         raise RuntimeError(f"Required environment variable {name} is missing")
+    return value
+
+
+def configured_model_mode(name: str, default: str = STRICT_MODEL_MODE) -> str:
+    value = os.environ.get(name, default).strip()
+    if value not in MODEL_MODES:
+        raise RuntimeError(f"{name} must be strict or ordinary")
     return value
 
 
@@ -445,16 +458,24 @@ def read_review_rules() -> str:
 
 
 def openrouter_system_prompt() -> str:
+    schema = json.dumps(
+        REVIEW_RESPONSE_SCHEMA["schema"],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
     return f"""{read_review_rules()}
 
 OpenRouter adapter instructions:
 
 Perform static analysis only on the supplied authoritative diff chunk. Return
-only the structured object required by the supplied JSON schema, with a
+only the structured object required by the JSON schema below, with a
 one-sentence chunk summary and at most three independent findings. If no valid
 finding exists in this chunk, return an empty `findings` array. Keep each title
 under 120 characters and each impact/fix value under 400 characters so the
 complete JSON envelope fits the bounded response budget.
+
+REQUIRED_JSON_SCHEMA:
+{schema}
 
 The annotated diff supplies exact GitHub anchors. Only `RIGHT n|+` and
 `LEFT n|-` labels are eligible; never anchor to CONTEXT or META. Treat
@@ -580,12 +601,22 @@ def request_fallback_review(
     fallback_model: str,
     headers: dict[str, str],
     primary_body: dict[str, object],
+    fallback_mode: str = STRICT_MODEL_MODE,
 ) -> dict[str, object]:
+    if fallback_mode not in MODEL_MODES:
+        raise RuntimeError("fallback model mode must be strict or ordinary")
     strict_body = {**primary_body, "model": fallback_model}
     print(
         f"  primary exhausted; retrying with fallback: {fallback_model}",
         file=sys.stderr,
     )
+    if fallback_mode == ORDINARY_MODEL_MODE:
+        ordinary_body = ordinary_json_body(strict_body, fallback_model)
+        return request_ordinary_review(
+            headers,
+            ordinary_body,
+            "ordinary JSON fallback",
+        )
     try:
         return request_valid_review(headers, strict_body, "fallback")
     except RequestError as error:
@@ -612,16 +643,63 @@ def request_fallback_review(
             or PARAMETER_ROUTING_ERROR not in str(error).lower()
         ):
             raise
-        relaxed_body = {
-            **strict_body,
-            "provider": {"require_parameters": False},
-        }
+        relaxed_body = ordinary_json_body(
+            strict_body,
+            fallback_model,
+            require_parameters=False,
+        )
         print(
             "  fallback has no structured-output endpoint; "
             "retrying with locally validated JSON and bounded reasoning",
             file=sys.stderr,
         )
-        return request_valid_review(headers, relaxed_body, "fallback compatibility request")
+        return request_ordinary_review(
+            headers,
+            relaxed_body,
+            "fallback compatibility request",
+        )
+
+
+def ordinary_json_body(
+    source_body: dict[str, object],
+    model: str,
+    require_parameters: bool = True,
+) -> dict[str, object]:
+    """Build a plain completion whose JSON is validated locally."""
+    body = {
+        key: value
+        for key, value in source_body.items()
+        if key not in {"response_format", "plugins"}
+    }
+    body["model"] = model
+    body["provider"] = {"require_parameters": require_parameters}
+    return body
+
+
+def request_ordinary_review(
+    headers: dict[str, str],
+    body: dict[str, object],
+    model_label: str,
+) -> dict[str, object]:
+    """Request ordinary JSON and accommodate providers that require reasoning."""
+    try:
+        return request_valid_review(headers, body, model_label)
+    except RequestError as error:
+        if error.status != 400 or MANDATORY_REASONING_ERROR not in str(error).lower():
+            raise
+        reasoning_body = {
+            **body,
+            "reasoning": {"effort": "low", "exclude": True},
+        }
+        print(
+            f"  {model_label} requires reasoning; retrying with low hidden reasoning",
+            file=sys.stderr,
+        )
+        return request_valid_review(
+            headers,
+            reasoning_body,
+            f"{model_label} reasoning-compatible request",
+        )
 
 
 def review_chunk(
@@ -674,7 +752,12 @@ UNRESOLVED_REVIEW_THREADS:
             {"role": "user", "content": user_prompt},
         ],
     }
+    primary_mode = configured_model_mode("OPENROUTER_REVIEW_MODEL_MODE")
+    if primary_mode == ORDINARY_MODEL_MODE:
+        body = ordinary_json_body(body, model)
     try:
+        if primary_mode == ORDINARY_MODEL_MODE:
+            return request_ordinary_review(headers, body, "ordinary JSON primary")
         return request_valid_review(headers, body, "primary")
     except (RequestError, ReviewResponseError) as error:
         print(
@@ -684,7 +767,15 @@ UNRESOLVED_REVIEW_THREADS:
         )
         fallback_model = os.environ.get("OPENROUTER_REVIEW_FALLBACK_MODEL")
         if fallback_model and body["model"] != fallback_model:
-            return request_fallback_review(fallback_model, headers, body)
+            fallback_mode = configured_model_mode(
+                "OPENROUTER_REVIEW_FALLBACK_MODE"
+            )
+            return request_fallback_review(
+                fallback_model,
+                headers,
+                body,
+                fallback_mode,
+            )
         raise
 
 
@@ -866,13 +957,47 @@ def _github_headers(token: str) -> dict[str, str]:
     }
 
 
+def configured_review_origin() -> str:
+    origin = os.environ.get("REVIEW_ORIGIN", DEFAULT_REVIEW_ORIGIN).strip()
+    if origin not in {DEFAULT_REVIEW_ORIGIN, AZURE_REVIEW_ORIGIN}:
+        raise RuntimeError("REVIEW_ORIGIN must be github-actions or azure-devops")
+    return origin
+
+
+def reviewer_label() -> str:
+    return (
+        AZURE_REVIEWER_LABEL
+        if configured_review_origin() == AZURE_REVIEW_ORIGIN
+        else REVIEWER_LABEL
+    )
+
+
+def _review_marker(head_sha: str) -> str:
+    if configured_review_origin() == AZURE_REVIEW_ORIGIN:
+        return f"<!-- openrouter-pr-review:azure-devops:{head_sha} -->"
+    return f"<!-- openrouter-pr-review:{head_sha} -->"
+
+
+def _origin_marker() -> str:
+    if configured_review_origin() == AZURE_REVIEW_ORIGIN:
+        return "<!-- review-origin:azure-devops -->"
+    return ""
+
+
+def _follow_up_marker(head_sha: str, thread_id: str) -> str:
+    if configured_review_origin() == AZURE_REVIEW_ORIGIN:
+        return f"<!-- openrouter-thread-followup:azure-devops:{head_sha}:{thread_id} -->"
+    return f"<!-- openrouter-thread-followup:{head_sha}:{thread_id} -->"
+
+
 def _review_body(
     model: str,
     head_sha: str,
     plan: ReviewPlan,
     publication: PublicationPlan,
 ) -> str:
-    marker = f"<!-- openrouter-pr-review:{head_sha} -->"
+    marker = _review_marker(head_sha)
+    label = reviewer_label()
     reviewed_count = len(plan.complete_files)
     if plan.complete:
         coverage = f"complete — {reviewed_count}/{plan.total_files} eligible changed files"
@@ -890,9 +1015,14 @@ def _review_body(
     )
     lines = [
         marker,
-        f"## {REVIEWER_LABEL}",
+        f"## {label}",
         "",
         f"> Provider: OpenRouter · Model: `{model}`",
+        *(
+            ["> Source: Azure DevOps manual review"]
+            if configured_review_origin() == AZURE_REVIEW_ORIGIN
+            else []
+        ),
         f"> Coverage: {coverage}",
         "",
         f"Summary: {summary}",
@@ -935,7 +1065,9 @@ def publish_review(
 ) -> None:
     headers = _github_headers(token)
     reviews_url = f"{GITHUB_API_URL}/repos/{repository}/pulls/{pr_number}/reviews"
-    marker = f"<!-- openrouter-pr-review:{head_sha} -->"
+    marker = _review_marker(head_sha)
+    label = reviewer_label()
+    origin_marker = _origin_marker()
     existing_reviews = request_json(f"{reviews_url}?per_page=100", "GET", headers)
     if not isinstance(existing_reviews, list):
         raise RuntimeError("GitHub returned an invalid pull-request review list")
@@ -948,9 +1080,7 @@ def publish_review(
         comment_id = follow_up.thread.reply_to_comment_id
         assert comment_id is not None
         finding = follow_up.finding
-        follow_up_marker = (
-            f"<!-- openrouter-thread-followup:{head_sha}:{follow_up.thread.node_id} -->"
-        )
+        follow_up_marker = _follow_up_marker(head_sha, follow_up.thread.node_id)
         if any(follow_up_marker in comment.body for comment in follow_up.thread.comments):
             continue
         reply_to_review_thread(
@@ -960,7 +1090,7 @@ def publish_review(
             comment_id,
             (
                 f"{follow_up_marker}\n"
-                f"**[{REVIEWER_LABEL}] Additional evidence — "
+                f"**[{label}] Additional evidence — "
                 f"{finding.severity}: {finding.title}**\n\n"
                 f"Impact: {finding.impact}\n\nProposed fix: {finding.fix}"
             ),
@@ -976,8 +1106,9 @@ def publish_review(
             "body": (
                 "<!-- direct-openrouter-inline:"
                 f"{head_sha}:{finding.path}:{finding.side}:{finding.line} -->\n"
-                f"**[{REVIEWER_LABEL}] {finding.severity} — {finding.title}**\n\n"
-                f"Impact: {finding.impact}\n\nProposed fix: {finding.fix}"
+                + (f"{origin_marker}\n" if origin_marker else "")
+                + f"**[{label}] {finding.severity} — {finding.title}**\n\n"
+                + f"Impact: {finding.impact}\n\nProposed fix: {finding.fix}"
             ),
         }
         for finding in publication.new_findings
@@ -1024,6 +1155,7 @@ def _check_run_summary(
             f"{len(plan.partial_files)} partial, {len(plan.omitted_files)} omitted"
         )
     lines = [
+        f"Source: {'Azure DevOps' if configured_review_origin() == AZURE_REVIEW_ORIGIN else 'GitHub Actions'}",
         f"Provider: OpenRouter · Model: `{model}`",
         f"Reviewed commit: `{head_sha}`",
         f"Coverage: {coverage}",

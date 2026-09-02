@@ -312,6 +312,32 @@ class InlineCommentTest(unittest.TestCase):
                 "b" * 40,
             )
 
+    def test_rejects_empty_impact_and_fix_values(self) -> None:
+        for empty_field in ("impact", "fix"):
+            invalid_review = {
+                "summary": "Found one issue.",
+                "findings": [
+                    {
+                        "severity": "P2",
+                        "path": "app.py",
+                        "side": "RIGHT",
+                        "line": 12,
+                        "title": "Wrong value",
+                        "impact": "The API returns stale data.",
+                        "fix": "Return the current value.",
+                        empty_field: "   ",
+                    }
+                ],
+                "thread_verdicts": [],
+            }
+            with self.subTest(field=empty_field):
+                with self.assertRaisesRegex(RuntimeError, "invalid finding value"):
+                    context._normalized_claude_result(
+                        context.json.dumps(invalid_review),
+                        "a" * 40,
+                        "b" * 40,
+                    )
+
     def test_publisher_posts_validated_inline_and_summary_comments(self) -> None:
         result = {
             "summary": "Found one issue.",

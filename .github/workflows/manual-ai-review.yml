@@ -1,5 +1,9 @@
 name: Manual AI branch review
 
+run-name: >-
+  ${{ startsWith(inputs.request_id, 'ado-') && 'Azure DevOps' || 'GitHub' }}
+  · ${{ inputs.target_ref }} → ${{ inputs.base_ref }} · ${{ inputs.scope }}
+
 on:
   workflow_dispatch:
     inputs:
@@ -274,6 +278,7 @@ jobs:
             --fallback "${FALLBACK_MODEL}" \
             --discover-free-fallback \
             --probe-schema \
+            --allow-ordinary-json-fallback \
             --require max_tokens \
             --require temperature \
             --require reasoning \
@@ -284,18 +289,21 @@ jobs:
         working-directory: target
         env:
           BASE_SHA: ${{ steps.context.outputs.base_sha }}
-          CHECK_RUN_NAME: Manual AI code review
+          CHECK_RUN_NAME: ${{ startsWith(inputs.request_id, 'ado-') && 'Azure DevOps · Manual AI code review' || 'Manual AI code review' }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HEAD_SHA: ${{ steps.context.outputs.head_sha }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_REVIEW_FALLBACK_MODEL: ${{ steps.models.outputs.secondary_model }}
+          OPENROUTER_REVIEW_FALLBACK_MODE: ${{ steps.models.outputs.secondary_mode }}
           OPENROUTER_MAX_REVIEW_CHUNKS: ${{ vars.MANUAL_REVIEW_MAX_CHUNKS || '60' }}
           OPENROUTER_REVIEW_MODEL: ${{ steps.models.outputs.selected_model }}
+          OPENROUTER_REVIEW_MODEL_MODE: ${{ steps.models.outputs.selected_mode }}
           OPENROUTER_REVIEW_RPM: ${{ vars.OPENROUTER_REVIEW_RPM || '8' }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           REQUIRE_COMPLETE_REVIEW: ${{ inputs.scope == 'full_branch' && 'true' || 'false' }}
           REQUIRE_REVIEW_RESULT: "true"
           REVIEW_INCLUDE_REVIEWER_FILES: ${{ inputs.scope == 'full_branch' && 'true' || 'false' }}
+          REVIEW_ORIGIN: ${{ startsWith(inputs.request_id, 'ado-') && 'azure-devops' || 'github-actions' }}
           REVIEW_REQUEST_ID: ${{ inputs.request_id }}
         run: python3 ../reviewer/.github/scripts/openrouter_pr_review.py
 
@@ -308,6 +316,7 @@ jobs:
           MODEL: ${{ steps.models.outputs.selected_model }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           PUBLISH_TARGET: ${{ steps.context.outputs.publish_target }}
+          REVIEW_SOURCE: ${{ startsWith(inputs.request_id, 'ado-') && 'Azure DevOps' || 'GitHub' }}
           TARGET_REF: ${{ inputs.target_ref }}
         run: |
           {
@@ -316,6 +325,7 @@ jobs:
             echo "- Target: \`${TARGET_REF}\`"
             echo "- Range: \`${BASE_SHA}..${HEAD_SHA}\`"
             echo "- Model: \`${MODEL}\`"
+            echo "- Source: \`${REVIEW_SOURCE}\`"
             echo "- Publication: \`${PUBLISH_TARGET}\`"
             if [[ -n "${PR_NUMBER}" ]]; then
               echo "- Pull request: #${PR_NUMBER}"

@@ -18,16 +18,30 @@ import urllib.request
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_ANTHROPIC_MESSAGES_URL = "https://openrouter.ai/api/v1/messages"
 MODEL_ID = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$")
 REQUEST_TIMEOUT_SECONDS = 15
 MAX_METADATA_ATTEMPTS = 3
 MAX_FREE_CANDIDATES = 12
 MAX_FREE_SCHEMA_PROBES = 4
 RETRYABLE_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+ORDINARY_JSON_OMITTED_CAPABILITIES = frozenset(
+    {"response_format", "structured_outputs"}
+)
 SCHEMA_PROBE = {
     "name": "review_model_preflight",
     "strict": True,
     "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["status"],
+        "properties": {"status": {"type": "string", "enum": ["ok"]}},
+    },
+}
+TOOL_PROBE = {
+    "name": "review_model_preflight",
+    "description": "Confirm that the review model can call tools.",
+    "input_schema": {
         "type": "object",
         "additionalProperties": False,
         "required": ["status"],
@@ -50,6 +64,8 @@ class ModelSelection:
     fallback: ModelCheck
     selected_model: str
     secondary_model: str
+    selected_mode: str = "strict"
+    secondary_mode: str = ""
 
 
 def _safe_message(value: object) -> str:
@@ -129,9 +145,62 @@ def _fetch_free_models(required_capabilities: frozenset[str]) -> object:
     raise AssertionError("unreachable")
 
 
+def _request_probe(
+    model: str,
+    api_key: str,
+    body: dict[str, object],
+    label: str,
+    url: str = OPENROUTER_CHAT_COMPLETIONS_URL,
+) -> tuple[object | None, tuple[bool | None, str] | None]:
+    _model_url(model)
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(body, separators=(",", ":")).encode("utf-8"),
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com",
+            "User-Agent": f"popot-bot-pr-review-{label}-probe/1",
+            "X-Title": "popot-bot-2.0 PR review model preflight",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as error:
+        if error.code in RETRYABLE_HTTP_STATUSES:
+            return None, (
+                None,
+                f"live {label} probe was inconclusive after HTTP {error.code}",
+            )
+        return None, (False, f"live {label} probe returned HTTP {error.code}")
+    except urllib.error.URLError:
+        return None, (
+            None,
+            f"live {label} probe was inconclusive because OpenRouter was unreachable",
+        )
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None, (False, f"live {label} probe returned invalid response JSON")
+
+    return payload, None
+
+
+def _completion_message(payload: object, label: str) -> tuple[dict | None, str | None]:
+    if not isinstance(payload, dict):
+        return None, f"live {label} probe returned an invalid response shape"
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return None, f"live {label} probe returned no completion"
+    message = choices[0].get("message")
+    if not isinstance(message, dict):
+        return None, f"live {label} probe returned no completion message"
+    return message, None
+
+
 def _probe_json_schema(model: str, api_key: str) -> tuple[bool | None, str]:
     """Make a live structured-output request and validate its exact result."""
-    _model_url(model)
     body = {
         "model": model,
         "temperature": 0,
@@ -146,39 +215,13 @@ def _probe_json_schema(model: str, api_key: str) -> tuple[bool | None, str]:
             {"role": "user", "content": "Report status ok."},
         ],
     }
-    request = urllib.request.Request(
-        OPENROUTER_CHAT_COMPLETIONS_URL,
-        data=json.dumps(body, separators=(",", ":")).encode("utf-8"),
-        headers={
-            "Accept": "application/json",
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com",
-            "User-Agent": "popot-bot-pr-review-schema-probe/1",
-            "X-Title": "popot-bot-2.0 PR review model preflight",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-            payload = json.load(response)
-    except urllib.error.HTTPError as error:
-        if error.code in RETRYABLE_HTTP_STATUSES:
-            return None, f"live JSON-schema probe was inconclusive after HTTP {error.code}"
-        return False, f"live JSON-schema probe returned HTTP {error.code}"
-    except urllib.error.URLError:
-        return None, "live JSON-schema probe was inconclusive because OpenRouter was unreachable"
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return False, "live JSON-schema probe returned invalid response JSON"
+    payload, failure = _request_probe(model, api_key, body, "JSON-schema")
+    if failure is not None:
+        return failure
 
-    if not isinstance(payload, dict):
-        return False, "live JSON-schema probe returned an invalid response shape"
-    choices = payload.get("choices")
-    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-        return False, "live JSON-schema probe returned no completion"
-    message = choices[0].get("message")
-    if not isinstance(message, dict):
-        return False, "live JSON-schema probe returned no completion message"
+    message, message_error = _completion_message(payload, "JSON-schema")
+    if message_error is not None or message is None:
+        return False, message_error or "live JSON-schema probe returned no message"
     content = message.get("content")
     if isinstance(content, dict):
         result = content
@@ -201,6 +244,52 @@ def _probe_json_schema(model: str, api_key: str) -> tuple[bool | None, str]:
     if result != {"status": "ok"}:
         return False, "live JSON-schema probe did not satisfy the requested schema"
     return True, "passed the live JSON-schema probe"
+
+
+def _probe_tool_call(model: str, api_key: str) -> tuple[bool | None, str]:
+    """Make a live forced tool call and validate its name and arguments."""
+    body = {
+        "model": model,
+        "temperature": 0,
+        "max_tokens": 128,
+        "provider": {"require_parameters": True},
+        "tools": [TOOL_PROBE],
+        "tool_choice": {
+            "type": "tool",
+            "name": "review_model_preflight",
+        },
+        "messages": [
+            {
+                "role": "user",
+                "content": "Call review_model_preflight with status ok.",
+            }
+        ],
+    }
+    payload, failure = _request_probe(
+        model,
+        api_key,
+        body,
+        "Claude-tool-call",
+        OPENROUTER_ANTHROPIC_MESSAGES_URL,
+    )
+    if failure is not None:
+        return failure
+    if not isinstance(payload, dict) or not isinstance(payload.get("content"), list):
+        return False, "live Claude tool-call probe returned no content blocks"
+    tool_uses = [
+        block
+        for block in payload["content"]
+        if isinstance(block, dict) and block.get("type") == "tool_use"
+    ]
+    if not tool_uses:
+        return False, "live Claude tool-call probe returned no tool call"
+    tool_use = tool_uses[0]
+    if tool_use.get("name") != "review_model_preflight":
+        return False, "live tool-call probe invoked the wrong tool"
+    arguments = tool_use.get("input")
+    if arguments != {"status": "ok"}:
+        return False, "live tool-call probe returned incorrect tool arguments"
+    return True, "passed the live tool-call probe"
 
 
 def discover_free_fallback(
@@ -312,8 +401,16 @@ def select_models(
     discover_free: bool = False,
     fetch_models: Callable[[frozenset[str]], object] = _fetch_free_models,
     probe_model: Callable[[str], tuple[bool | None, str]] | None = None,
+    fallback_required_capabilities: frozenset[str] | None = None,
+    fallback_probe_model: Callable[[str], tuple[bool | None, str]] | None = None,
 ) -> ModelSelection:
     primary = check_model(primary_model, required_capabilities, fetch_model, probe_model)
+    fallback_capabilities = (
+        required_capabilities
+        if fallback_required_capabilities is None
+        else fallback_required_capabilities
+    )
+    fallback_mode = "strict"
     if fallback_model == primary_model:
         fallback = ModelCheck(
             fallback_model,
@@ -322,7 +419,20 @@ def select_models(
             "duplicates the primary model and cannot provide fallback isolation",
         )
     else:
-        fallback = check_model(fallback_model, required_capabilities, fetch_model, probe_model)
+        fallback = check_model(
+            fallback_model,
+            required_capabilities,
+            fetch_model,
+            probe_model,
+        )
+        if not fallback.ready and fallback_required_capabilities is not None:
+            fallback = check_model(
+                fallback_model,
+                fallback_capabilities,
+                fetch_model,
+                fallback_probe_model,
+            )
+            fallback_mode = "ordinary"
 
     if not fallback.ready and discover_free:
         discovered = discover_free_fallback(
@@ -332,15 +442,28 @@ def select_models(
             fetch_model,
             probe_model,
         )
+        if discovered is None and fallback_required_capabilities is not None:
+            discovered = discover_free_fallback(
+                fallback_capabilities,
+                frozenset({primary_model, fallback_model}),
+                fetch_models,
+                fetch_model,
+                fallback_probe_model,
+            )
+            fallback_mode = "ordinary"
         if discovered is not None:
             fallback = discovered
 
     if primary.ready:
         selected_model = primary.model
         secondary_model = fallback.model if fallback.ready else ""
+        selected_mode = "strict"
+        secondary_mode = fallback_mode if fallback.ready else ""
     elif fallback.ready:
         selected_model = fallback.model
         secondary_model = ""
+        selected_mode = fallback_mode
+        secondary_mode = ""
     else:
         raise RuntimeError(
             "no usable OpenRouter review model: "
@@ -348,7 +471,14 @@ def select_models(
             f"fallback {fallback.model} {fallback.reason}"
         )
 
-    return ModelSelection(primary, fallback, selected_model, secondary_model)
+    return ModelSelection(
+        primary,
+        fallback,
+        selected_model,
+        secondary_model,
+        selected_mode,
+        secondary_mode,
+    )
 
 
 def _write_github_outputs(selection: ModelSelection, output_path: str) -> None:
@@ -359,6 +489,8 @@ def _write_github_outputs(selection: ModelSelection, output_path: str) -> None:
         "fallback_ready": str(selection.fallback.ready).lower(),
         "selected_model": selection.selected_model,
         "secondary_model": selection.secondary_model,
+        "selected_mode": selection.selected_mode,
+        "secondary_mode": selection.secondary_mode,
     }
     with open(output_path, "a", encoding="utf-8") as output:
         for key, value in values.items():
@@ -381,10 +513,24 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Select another compatible :free model when the configured fallback is unavailable.",
     )
-    parser.add_argument(
+    probe_group = parser.add_mutually_exclusive_group()
+    probe_group.add_argument(
         "--probe-schema",
         action="store_true",
         help="Require a live OpenRouter completion that satisfies a strict JSON schema.",
+    )
+    probe_group.add_argument(
+        "--probe-tools",
+        action="store_true",
+        help="Require a live OpenRouter completion that performs a forced tool call.",
+    )
+    parser.add_argument(
+        "--allow-ordinary-json-fallback",
+        action="store_true",
+        help=(
+            "Allow the configured/discovered fallback to omit response_format and "
+            "structured_outputs; its ordinary response is validated locally."
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -395,15 +541,27 @@ def main(argv: list[str] | None = None) -> int:
         raise RuntimeError("required capabilities must use lowercase API parameter names")
 
     probe_model: Callable[[str], tuple[bool | None, str]] | None = None
-    if args.probe_schema:
+    if args.allow_ordinary_json_fallback and not args.probe_schema:
+        raise RuntimeError(
+            "--allow-ordinary-json-fallback requires --probe-schema for the primary"
+        )
+    if args.probe_schema or args.probe_tools:
         api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
         if not api_key:
-            raise RuntimeError("OPENROUTER_API_KEY is required for --probe-schema")
+            raise RuntimeError("OPENROUTER_API_KEY is required for live model probes")
 
         def live_probe(model: str) -> tuple[bool | None, str]:
+            if args.probe_tools:
+                return _probe_tool_call(model, api_key)
             return _probe_json_schema(model, api_key)
 
         probe_model = live_probe
+
+    fallback_required_capabilities = None
+    if args.allow_ordinary_json_fallback:
+        fallback_required_capabilities = (
+            required_capabilities - ORDINARY_JSON_OMITTED_CAPABILITIES
+        )
 
     selection = select_models(
         args.primary.strip(),
@@ -411,6 +569,7 @@ def main(argv: list[str] | None = None) -> int:
         required_capabilities,
         discover_free=args.discover_free_fallback,
         probe_model=probe_model,
+        fallback_required_capabilities=fallback_required_capabilities,
     )
     for label, check in (("primary", selection.primary), ("fallback", selection.fallback)):
         state = "ready" if check.ready else "unavailable"

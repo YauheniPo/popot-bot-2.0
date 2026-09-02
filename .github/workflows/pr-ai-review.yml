@@ -15,8 +15,8 @@ env:
   # Select reviewers through the PR_REVIEWER repository variable:
   # 0/unset = both sequentially, 1 = direct API, 2 = Claude Code.
   PR_REVIEWER: ${{ vars.PR_REVIEWER || '0' }}
-  # Direct API reviewer models. Keep the older variable names stable; both
-  # defaults have active free endpoints with tools and structured output.
+  # Direct API reviewer models. The primary is schema-probed; a fallback that
+  # lacks structured output may return ordinary JSON for local validation.
   OPENROUTER_REVIEW_MODEL: ${{ vars.OPENROUTER_REVIEW_MODEL || 'z-ai/glm-5.2:free' }}
   OPENROUTER_REVIEW_FALLBACK_MODEL: ${{ vars.OPENROUTER_REVIEW_FALLBACK_MODEL || 'nvidia/nemotron-3-super-120b-a12b:free' }}
   # Claude Code can be pinned independently because agent/tool compatibility
@@ -77,11 +77,14 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           set -euo pipefail
+          # Prefer strict structured output, but retain coding-oriented models
+          # that return ordinary JSON; the reviewer validates it locally.
           python3 .github/scripts/openrouter_model_preflight.py \
             --primary "${PRIMARY_MODEL}" \
             --fallback "${FALLBACK_MODEL}" \
             --discover-free-fallback \
             --probe-schema \
+            --allow-ordinary-json-fallback \
             --require max_tokens \
             --require temperature \
             --require reasoning \
@@ -91,7 +94,9 @@ jobs:
       - name: OpenRouterAPI — direct review and publication
         env:
           OPENROUTER_REVIEW_MODEL: ${{ steps.direct_models.outputs.selected_model }}
+          OPENROUTER_REVIEW_MODEL_MODE: ${{ steps.direct_models.outputs.selected_mode }}
           OPENROUTER_REVIEW_FALLBACK_MODEL: ${{ steps.direct_models.outputs.secondary_model }}
+          OPENROUTER_REVIEW_FALLBACK_MODE: ${{ steps.direct_models.outputs.secondary_mode }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -149,10 +154,8 @@ jobs:
             --primary "${PRIMARY_MODEL}" \
             --fallback "${FALLBACK_MODEL}" \
             --discover-free-fallback \
-            --probe-schema \
+            --probe-tools \
             --require max_tokens \
-            --require response_format \
-            --require structured_outputs \
             --require tools \
             --require tool_choice
 
