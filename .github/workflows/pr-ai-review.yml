@@ -41,8 +41,11 @@ jobs:
     # for an invalid selector, so a typo cannot silently skip the workflow.
     if: >-
       vars.PR_REVIEWER != '2' &&
+      github.actor == github.repository_owner &&
+      github.triggering_actor == github.repository_owner &&
       github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login == github.repository_owner
     runs-on: ubuntu-latest
     # The direct reviewer covers the full eligible diff in bounded, rate-limited
     # chunks. Leave enough time for provider retries on large pull requests.
@@ -59,7 +62,7 @@ jobs:
           fi
 
       - name: Check out pull request
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -113,15 +116,18 @@ jobs:
     if: >-
       always() &&
       !cancelled() &&
+      github.actor == github.repository_owner &&
+      github.triggering_actor == github.repository_owner &&
       (vars.PR_REVIEWER == '' || vars.PR_REVIEWER == '0' || vars.PR_REVIEWER == '2') &&
       github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login == github.repository_owner
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
       - name: Check out pull request with history for review context
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           persist-credentials: false

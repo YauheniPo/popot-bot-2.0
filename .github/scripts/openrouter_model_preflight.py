@@ -21,10 +21,14 @@ OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions
 OPENROUTER_ANTHROPIC_MESSAGES_URL = "https://openrouter.ai/api/v1/messages"
 MODEL_ID = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$")
 REQUEST_TIMEOUT_SECONDS = 15
+SCHEMA_PROBE_MAX_TOKENS = 1024
 MAX_METADATA_ATTEMPTS = 3
 MAX_FREE_CANDIDATES = 12
 MAX_FREE_SCHEMA_PROBES = 4
 RETRYABLE_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+MANDATORY_REASONING_ERROR = "reasoning is mandatory"
+NO_STRUCTURED_CONTENT_REASON = "live JSON-schema probe returned no structured content"
+REQUIRES_REASONING_REASON = "live JSON-schema probe requires reasoning"
 ORDINARY_JSON_OMITTED_CAPABILITIES = frozenset(
     {"response_format", "structured_outputs"}
 )
@@ -175,6 +179,20 @@ def _request_probe(
                 None,
                 f"live {label} probe was inconclusive after HTTP {error.code}",
             )
+        if error.code == 400:
+            provider_message = ""
+            try:
+                error_payload = json.loads(error.read(8192).decode("utf-8"))
+                if isinstance(error_payload, dict):
+                    error_details = error_payload.get("error")
+                    if isinstance(error_details, dict):
+                        raw_message = error_details.get("message")
+                        if isinstance(raw_message, str):
+                            provider_message = raw_message.lower()
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError, ValueError):
+                pass
+            if MANDATORY_REASONING_ERROR in provider_message:
+                return None, (False, REQUIRES_REASONING_REASON)
         return None, (False, f"live {label} probe returned HTTP {error.code}")
     except urllib.error.URLError:
         return None, (
@@ -199,26 +217,7 @@ def _completion_message(payload: object, label: str) -> tuple[dict | None, str |
     return message, None
 
 
-def _probe_json_schema(model: str, api_key: str) -> tuple[bool | None, str]:
-    """Make a live structured-output request and validate its exact result."""
-    body = {
-        "model": model,
-        "temperature": 0,
-        "max_tokens": 128,
-        "provider": {"require_parameters": True},
-        "response_format": {"type": "json_schema", "json_schema": SCHEMA_PROBE},
-        "messages": [
-            {
-                "role": "system",
-                "content": "Return only the JSON object required by the response schema.",
-            },
-            {"role": "user", "content": "Report status ok."},
-        ],
-    }
-    payload, failure = _request_probe(model, api_key, body, "JSON-schema")
-    if failure is not None:
-        return failure
-
+def _validate_schema_probe_payload(payload: object) -> tuple[bool, str]:
     message, message_error = _completion_message(payload, "JSON-schema")
     if message_error is not None or message is None:
         return False, message_error or "live JSON-schema probe returned no message"
@@ -240,10 +239,55 @@ def _probe_json_schema(model: str, api_key: str) -> tuple[bool | None, str]:
         else:
             result = message.get("parsed")
             if not isinstance(result, dict):
-                return False, "live JSON-schema probe returned no structured content"
+                return False, NO_STRUCTURED_CONTENT_REASON
     if result != {"status": "ok"}:
         return False, "live JSON-schema probe did not satisfy the requested schema"
     return True, "passed the live JSON-schema probe"
+
+
+def _probe_json_schema(model: str, api_key: str) -> tuple[bool | None, str]:
+    """Make a live structured-output request and validate its exact result."""
+    body = {
+        "model": model,
+        "temperature": 0,
+        "max_tokens": SCHEMA_PROBE_MAX_TOKENS,
+        "reasoning": {"effort": "none", "exclude": True},
+        "provider": {"require_parameters": True},
+        "response_format": {"type": "json_schema", "json_schema": SCHEMA_PROBE},
+        "messages": [
+            {
+                "role": "system",
+                "content": "Return only the JSON object required by the response schema.",
+            },
+            {"role": "user", "content": "Report status ok."},
+        ],
+    }
+    payload, failure = _request_probe(model, api_key, body, "JSON-schema")
+    retry_with_reasoning = failure == (False, REQUIRES_REASONING_REASON)
+    if failure is not None and not retry_with_reasoning:
+        return failure
+    if failure is None:
+        ready, reason = _validate_schema_probe_payload(payload)
+        retry_with_reasoning = not ready and reason == NO_STRUCTURED_CONTENT_REASON
+        if not retry_with_reasoning:
+            return ready, reason
+
+    reasoning_body = {
+        **body,
+        "reasoning": {"effort": "low", "exclude": True},
+    }
+    payload, failure = _request_probe(
+        model,
+        api_key,
+        reasoning_body,
+        "JSON-schema reasoning-compatible",
+    )
+    if failure is not None:
+        return failure
+    ready, reason = _validate_schema_probe_payload(payload)
+    if ready:
+        return True, "passed the live JSON-schema probe with low reasoning"
+    return ready, reason
 
 
 def _probe_tool_call(model: str, api_key: str) -> tuple[bool | None, str]:

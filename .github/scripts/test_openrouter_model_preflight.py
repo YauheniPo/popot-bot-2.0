@@ -83,8 +83,96 @@ class ModelSelectionTest(unittest.TestCase):
         request = urlopen.call_args.args[0]
         request_body = json.loads(request.data)
         self.assertEqual(request_body["model"], "provider/model")
+        self.assertEqual(request_body["max_tokens"], preflight.SCHEMA_PROBE_MAX_TOKENS)
+        self.assertEqual(
+            request_body["reasoning"],
+            {"effort": "none", "exclude": True},
+        )
         self.assertEqual(request_body["response_format"]["type"], "json_schema")
         self.assertEqual(request.get_header("Authorization"), "Bearer secret")
+
+    def test_live_schema_probe_retries_empty_content_with_low_reasoning(self) -> None:
+        empty_response = mock.MagicMock()
+        empty_response.__enter__.return_value = io.StringIO(
+            json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {"content": None},
+                            "finish_reason": "length",
+                        }
+                    ]
+                }
+            )
+        )
+        valid_response = mock.MagicMock()
+        valid_response.__enter__.return_value = io.StringIO(
+            json.dumps(
+                {
+                    "choices": [
+                        {"message": {"content": json.dumps({"status": "ok"})}}
+                    ]
+                }
+            )
+        )
+        with mock.patch.object(
+            preflight.urllib.request,
+            "urlopen",
+            side_effect=[empty_response, valid_response],
+        ) as urlopen:
+            ready, reason = preflight._probe_json_schema("provider/model", "secret")
+
+        self.assertTrue(ready)
+        self.assertIn("low reasoning", reason)
+        self.assertEqual(urlopen.call_count, 2)
+        first_body = json.loads(urlopen.call_args_list[0].args[0].data)
+        retry_body = json.loads(urlopen.call_args_list[1].args[0].data)
+        self.assertEqual(first_body["reasoning"]["effort"], "none")
+        self.assertEqual(retry_body["reasoning"]["effort"], "low")
+        self.assertEqual(retry_body["max_tokens"], preflight.SCHEMA_PROBE_MAX_TOKENS)
+
+    def test_live_schema_probe_retries_mandatory_reasoning_error(self) -> None:
+        http_error = urllib.error.HTTPError(
+            "https://openrouter.ai",
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(
+                json.dumps(
+                    {
+                        "error": {
+                            "message": (
+                                "Reasoning is mandatory for this endpoint and "
+                                "cannot be disabled."
+                            )
+                        }
+                    }
+                ).encode("utf-8")
+            ),
+        )
+        self.addCleanup(http_error.close)
+        valid_response = mock.MagicMock()
+        valid_response.__enter__.return_value = io.StringIO(
+            json.dumps(
+                {
+                    "choices": [
+                        {"message": {"content": json.dumps({"status": "ok"})}}
+                    ]
+                }
+            )
+        )
+        with mock.patch.object(
+            preflight.urllib.request,
+            "urlopen",
+            side_effect=[http_error, valid_response],
+        ) as urlopen:
+            ready, reason = preflight._probe_json_schema("provider/model", "secret")
+
+        self.assertTrue(ready)
+        self.assertIn("low reasoning", reason)
+        self.assertEqual(urlopen.call_count, 2)
+        retry_body = json.loads(urlopen.call_args_list[1].args[0].data)
+        self.assertEqual(retry_body["reasoning"]["effort"], "low")
 
     def test_live_schema_probe_accepts_block_content(self) -> None:
         response = mock.MagicMock()

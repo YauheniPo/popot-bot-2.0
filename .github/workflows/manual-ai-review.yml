@@ -59,6 +59,11 @@ concurrency:
 
 jobs:
   review:
+    # A workflow_dispatch can be requested through the UI or an external API.
+    # Only the repository owner may release the trusted reviewer secrets.
+    if: >-
+      github.actor == github.repository_owner &&
+      github.triggering_actor == github.repository_owner
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
@@ -90,7 +95,7 @@ jobs:
       # Keep executable review tooling on the trusted default branch. The
       # selected target is checked out separately and treated only as data.
       - name: Check out trusted reviewer tooling
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 1
           path: reviewer
@@ -98,7 +103,7 @@ jobs:
           ref: main
 
       - name: Check out the selected review target
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           path: target
