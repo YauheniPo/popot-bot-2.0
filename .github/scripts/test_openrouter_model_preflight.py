@@ -60,6 +60,266 @@ class ModelSelectionTest(unittest.TestCase):
         self.assertEqual(urlopen.call_count, 2)
         sleep.assert_called_once_with(1.0)
 
+    def test_live_schema_probe_sends_and_validates_a_real_completion(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value = io.StringIO(
+            json.dumps(
+                {
+                    "choices": [
+                        {"message": {"content": json.dumps({"status": "ok"})}}
+                    ]
+                }
+            )
+        )
+        with mock.patch.object(
+            preflight.urllib.request,
+            "urlopen",
+            return_value=response,
+        ) as urlopen:
+            ready, reason = preflight._probe_json_schema("provider/model", "secret")
+
+        self.assertTrue(ready)
+        self.assertIn("passed", reason)
+        request = urlopen.call_args.args[0]
+        request_body = json.loads(request.data)
+        self.assertEqual(request_body["model"], "provider/model")
+        self.assertEqual(request_body["max_tokens"], preflight.SCHEMA_PROBE_MAX_TOKENS)
+        self.assertEqual(
+            request_body["reasoning"],
+            {"effort": "none", "exclude": True},
+        )
+        self.assertEqual(request_body["response_format"]["type"], "json_schema")
+        self.assertEqual(request.get_header("Authorization"), "Bearer secret")
+
+    def test_live_schema_probe_retries_empty_content_with_low_reasoning(self) -> None:
+        empty_response = mock.MagicMock()
+        empty_response.__enter__.return_value = io.StringIO(
+            json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {"content": None},
+                            "finish_reason": "length",
+                        }
+                    ]
+                }
+            )
+        )
+        valid_response = mock.MagicMock()
+        valid_response.__enter__.return_value = io.StringIO(
+            json.dumps(
+                {
+                    "choices": [
+                        {"message": {"content": json.dumps({"status": "ok"})}}
+                    ]
+                }
+            )
+        )
+        with mock.patch.object(
+            preflight.urllib.request,
+            "urlopen",
+            side_effect=[empty_response, valid_response],
+        ) as urlopen:
+            ready, reason = preflight._probe_json_schema("provider/model", "secret")
+
+        self.assertTrue(ready)
+        self.assertIn("low reasoning", reason)
+        self.assertEqual(urlopen.call_count, 2)
+        first_body = json.loads(urlopen.call_args_list[0].args[0].data)
+        retry_body = json.loads(urlopen.call_args_list[1].args[0].data)
+        self.assertEqual(first_body["reasoning"]["effort"], "none")
+        self.assertEqual(retry_body["reasoning"]["effort"], "low")
+        self.assertEqual(retry_body["max_tokens"], preflight.SCHEMA_PROBE_MAX_TOKENS)
+
+    def test_live_schema_probe_retries_mandatory_reasoning_error(self) -> None:
+        http_error = urllib.error.HTTPError(
+            "https://openrouter.ai",
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(
+                json.dumps(
+                    {
+                        "error": {
+                            "message": (
+                                "Reasoning is mandatory for this endpoint and "
+                                "cannot be disabled."
+                            )
+                        }
+                    }
+                ).encode("utf-8")
+            ),
+        )
+        self.addCleanup(http_error.close)
+        valid_response = mock.MagicMock()
+        valid_response.__enter__.return_value = io.StringIO(
+            json.dumps(
+                {
+                    "choices": [
+                        {"message": {"content": json.dumps({"status": "ok"})}}
+                    ]
+                }
+            )
+        )
+        with mock.patch.object(
+            preflight.urllib.request,
+            "urlopen",
+            side_effect=[http_error, valid_response],
+        ) as urlopen:
+            ready, reason = preflight._probe_json_schema("provider/model", "secret")
+
+        self.assertTrue(ready)
+        self.assertIn("low reasoning", reason)
+        self.assertEqual(urlopen.call_count, 2)
+        retry_body = json.loads(urlopen.call_args_list[1].args[0].data)
+        self.assertEqual(retry_body["reasoning"]["effort"], "low")
+
+    def test_live_schema_probe_accepts_block_content(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value = io.StringIO(
+            json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": [
+                                    {"type": "text", "text": '{"status":'},
+                                    {"type": "text", "text": '"ok"}'},
+                                ]
+                            }
+                        }
+                    ]
+                }
+            )
+        )
+        with mock.patch.object(
+            preflight.urllib.request,
+            "urlopen",
+            return_value=response,
+        ):
+            ready, reason = preflight._probe_json_schema("provider/model", "secret")
+
+        self.assertTrue(ready)
+        self.assertIn("passed", reason)
+
+    def test_live_schema_probe_accepts_parsed_content(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value = io.StringIO(
+            json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": None,
+                                "parsed": {"status": "ok"},
+                            }
+                        }
+                    ]
+                }
+            )
+        )
+        with mock.patch.object(
+            preflight.urllib.request,
+            "urlopen",
+            return_value=response,
+        ):
+            ready, reason = preflight._probe_json_schema("provider/model", "secret")
+
+        self.assertTrue(ready)
+        self.assertIn("passed", reason)
+
+    def test_live_schema_probe_rejects_schema_mismatch(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value = io.StringIO(
+            json.dumps(
+                {
+                    "choices": [
+                        {"message": {"content": json.dumps({"status": "wrong"})}}
+                    ]
+                }
+            )
+        )
+        with mock.patch.object(
+            preflight.urllib.request,
+            "urlopen",
+            return_value=response,
+        ):
+            ready, reason = preflight._probe_json_schema("provider/model", "secret")
+
+        self.assertFalse(ready)
+        self.assertIn("did not satisfy", reason)
+
+    def test_live_schema_probe_treats_rate_limit_as_inconclusive(self) -> None:
+        http_error = urllib.error.HTTPError(
+            "https://openrouter.ai",
+            429,
+            "Too Many Requests",
+            {},
+            io.BytesIO(b"{}"),
+        )
+        self.addCleanup(http_error.close)
+        with mock.patch.object(
+            preflight.urllib.request,
+            "urlopen",
+            side_effect=http_error,
+        ):
+            ready, reason = preflight._probe_json_schema("provider/model", "secret")
+
+        self.assertIsNone(ready)
+        self.assertIn("inconclusive", reason)
+        self.assertIn("HTTP 429", reason)
+
+    def test_live_tool_probe_sends_and_validates_forced_tool_call(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value = io.StringIO(
+            json.dumps(
+                {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "review_model_preflight",
+                            "input": {"status": "ok"},
+                        }
+                    ]
+                }
+            )
+        )
+        with mock.patch.object(
+            preflight.urllib.request,
+            "urlopen",
+            return_value=response,
+        ) as urlopen:
+            ready, reason = preflight._probe_tool_call("provider/model", "secret")
+
+        self.assertTrue(ready)
+        self.assertIn("passed", reason)
+        request_body = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(request_body["model"], "provider/model")
+        self.assertEqual(
+            request_body["tool_choice"]["name"],
+            "review_model_preflight",
+        )
+        self.assertEqual(
+            urlopen.call_args.args[0].full_url,
+            preflight.OPENROUTER_ANTHROPIC_MESSAGES_URL,
+        )
+        self.assertNotIn("response_format", request_body)
+
+    def test_live_tool_probe_rejects_plain_text_response(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value = io.StringIO(
+            json.dumps({"content": [{"type": "text", "text": "ok"}]})
+        )
+        with mock.patch.object(
+            preflight.urllib.request,
+            "urlopen",
+            return_value=response,
+        ):
+            ready, reason = preflight._probe_tool_call("provider/model", "secret")
+
+        self.assertFalse(ready)
+        self.assertIn("no tool call", reason)
+
     def test_selects_compatible_primary_and_keeps_compatible_fallback(self) -> None:
         responses = {
             "provider/primary": payload(endpoint(*REQUIRED)),
@@ -96,16 +356,267 @@ class ModelSelectionTest(unittest.TestCase):
         self.assertEqual(selection.selected_model, "provider/fallback")
         self.assertEqual(selection.secondary_model, "")
 
+    def test_keeps_ordinary_json_fallback_without_schema_capabilities(self) -> None:
+        ordinary_required = REQUIRED - preflight.ORDINARY_JSON_OMITTED_CAPABILITIES
+        responses = {
+            "provider/primary": payload(endpoint(*REQUIRED)),
+            "provider/fallback": payload(endpoint(*ordinary_required)),
+        }
+
+        selection = preflight.select_models(
+            "provider/primary",
+            "provider/fallback",
+            REQUIRED,
+            responses.__getitem__,
+            fallback_required_capabilities=ordinary_required,
+        )
+
+        self.assertTrue(selection.primary.ready)
+        self.assertTrue(selection.fallback.ready)
+        self.assertEqual(selection.selected_mode, "strict")
+        self.assertEqual(selection.secondary_mode, "ordinary")
+
+    def test_keeps_structured_fallback_in_strict_mode_when_ordinary_is_allowed(self) -> None:
+        ordinary_required = REQUIRED - preflight.ORDINARY_JSON_OMITTED_CAPABILITIES
+        responses = {
+            "provider/primary": payload(endpoint(*REQUIRED)),
+            "provider/fallback": payload(endpoint(*REQUIRED)),
+        }
+
+        selection = preflight.select_models(
+            "provider/primary",
+            "provider/fallback",
+            REQUIRED,
+            responses.__getitem__,
+            fallback_required_capabilities=ordinary_required,
+        )
+
+        self.assertTrue(selection.fallback.ready)
+        self.assertEqual(selection.secondary_model, "provider/fallback")
+        self.assertEqual(selection.secondary_mode, "strict")
+
+    def test_selects_ordinary_json_fallback_when_strict_primary_is_down(self) -> None:
+        ordinary_required = REQUIRED - preflight.ORDINARY_JSON_OMITTED_CAPABILITIES
+        responses = {
+            "provider/primary": payload(),
+            "provider/fallback": payload(endpoint(*ordinary_required)),
+        }
+
+        selection = preflight.select_models(
+            "provider/primary",
+            "provider/fallback",
+            REQUIRED,
+            responses.__getitem__,
+            fallback_required_capabilities=ordinary_required,
+        )
+
+        self.assertEqual(selection.selected_model, "provider/fallback")
+        self.assertEqual(selection.selected_mode, "ordinary")
+        self.assertEqual(selection.secondary_model, "")
+
+    def test_discovers_compatible_free_fallback_when_configured_one_is_down(self) -> None:
+        responses = {
+            "provider/primary": payload(endpoint(*REQUIRED)),
+            "provider/configured:free": payload(),
+            "provider/discovered:free": payload(endpoint(*REQUIRED)),
+        }
+        catalog = {
+            "data": [
+                {
+                    "id": "provider/paid",
+                    "supported_parameters": list(REQUIRED),
+                },
+                {
+                    "id": "provider/incomplete:free",
+                    "supported_parameters": ["tools"],
+                },
+                {
+                    "id": "provider/discovered:free",
+                    "supported_parameters": list(REQUIRED),
+                },
+            ]
+        }
+
+        selection = preflight.select_models(
+            "provider/primary",
+            "provider/configured:free",
+            REQUIRED,
+            responses.__getitem__,
+            discover_free=True,
+            fetch_models=lambda _required: catalog,
+        )
+
+        self.assertTrue(selection.primary.ready)
+        self.assertEqual(selection.fallback.model, "provider/discovered:free")
+        self.assertTrue(selection.fallback.ready)
+        self.assertEqual(selection.secondary_model, "provider/discovered:free")
+
+    def test_marks_strict_discovery_strict_after_ordinary_fallback_fails(self) -> None:
+        ordinary_required = REQUIRED - preflight.ORDINARY_JSON_OMITTED_CAPABILITIES
+        catalog = {
+            "data": [
+                {
+                    "id": "provider/discovered:free",
+                    "supported_parameters": list(REQUIRED),
+                }
+            ]
+        }
+
+        for primary_ready in (True, False):
+            with self.subTest(primary_ready=primary_ready):
+                responses = {
+                    "provider/primary": (
+                        payload(endpoint(*REQUIRED)) if primary_ready else payload()
+                    ),
+                    "provider/configured:free": payload(),
+                    "provider/discovered:free": payload(endpoint(*REQUIRED)),
+                }
+                selection = preflight.select_models(
+                    "provider/primary",
+                    "provider/configured:free",
+                    REQUIRED,
+                    responses.__getitem__,
+                    discover_free=True,
+                    fetch_models=lambda _required: catalog,
+                    fallback_required_capabilities=ordinary_required,
+                )
+
+                self.assertEqual(selection.fallback.model, "provider/discovered:free")
+                self.assertTrue(selection.fallback.ready)
+                if primary_ready:
+                    self.assertEqual(selection.secondary_mode, "strict")
+                else:
+                    self.assertEqual(selection.selected_mode, "strict")
+
+    def test_uses_discovered_free_model_when_primary_and_fallback_are_down(self) -> None:
+        responses = {
+            "provider/primary": payload(),
+            "provider/configured:free": payload(),
+            "provider/discovered:free": payload(endpoint(*REQUIRED)),
+        }
+        catalog = {
+            "data": [
+                {
+                    "id": "provider/discovered:free",
+                    "supported_parameters": list(REQUIRED),
+                }
+            ]
+        }
+
+        selection = preflight.select_models(
+            "provider/primary",
+            "provider/configured:free",
+            REQUIRED,
+            responses.__getitem__,
+            discover_free=True,
+            fetch_models=lambda _required: catalog,
+        )
+
+        self.assertEqual(selection.selected_model, "provider/discovered:free")
+        self.assertEqual(selection.secondary_model, "")
+
     def test_rejects_endpoint_missing_required_capabilities(self) -> None:
+        probe = mock.Mock(return_value=(True, "passed"))
         check = preflight.check_model(
             "provider/model",
             REQUIRED,
             lambda _model: payload(endpoint("max_tokens", "tools")),
+            probe,
         )
 
         self.assertFalse(check.ready)
         self.assertIn("response_format", check.reason)
         self.assertIn("structured_outputs", check.reason)
+        probe.assert_not_called()
+
+    def test_limits_live_schema_discovery_to_four_candidates(self) -> None:
+        catalog = {
+            "data": [
+                {
+                    "id": f"provider/candidate-{index}:free",
+                    "supported_parameters": list(REQUIRED),
+                }
+                for index in range(10)
+            ]
+        }
+        probe = mock.Mock(return_value=(False, "probe mismatch"))
+
+        discovered = preflight.discover_free_fallback(
+            REQUIRED,
+            frozenset(),
+            fetch_models=lambda _required: catalog,
+            fetch_model=lambda _model: payload(endpoint(*REQUIRED)),
+            probe_model=probe,
+        )
+
+        self.assertIsNone(discovered)
+        self.assertEqual(probe.call_count, preflight.MAX_FREE_SCHEMA_PROBES)
+
+    def test_rejects_metadata_compatible_model_when_live_schema_probe_fails(self) -> None:
+        check = preflight.check_model(
+            "provider/model",
+            REQUIRED,
+            lambda _model: payload(endpoint(*REQUIRED)),
+            lambda _model: (False, "live JSON-schema probe did not satisfy the schema"),
+        )
+
+        self.assertFalse(check.ready)
+        self.assertIn("did not satisfy", check.reason)
+
+    def test_keeps_metadata_compatible_model_when_live_probe_is_inconclusive(self) -> None:
+        check = preflight.check_model(
+            "provider/model",
+            REQUIRED,
+            lambda _model: payload(endpoint(*REQUIRED)),
+            lambda _model: (None, "live JSON-schema probe was inconclusive after HTTP 429"),
+        )
+
+        self.assertTrue(check.ready)
+        self.assertIn("inconclusive", check.reason)
+
+    def test_falls_back_when_primary_fails_the_live_schema_probe(self) -> None:
+        responses = {
+            "provider/primary": payload(endpoint(*REQUIRED)),
+            "provider/fallback": payload(endpoint(*REQUIRED)),
+        }
+
+        selection = preflight.select_models(
+            "provider/primary",
+            "provider/fallback",
+            REQUIRED,
+            responses.__getitem__,
+            probe_model=lambda model: (
+                (False, "probe mismatch")
+                if model == "provider/primary"
+                else (True, "passed the live JSON-schema probe")
+            ),
+        )
+
+        self.assertFalse(selection.primary.ready)
+        self.assertTrue(selection.fallback.ready)
+        self.assertEqual(selection.selected_model, "provider/fallback")
+
+    def test_selects_primary_after_transient_probe_when_fallback_is_down(self) -> None:
+        responses = {
+            "provider/primary": payload(endpoint(*REQUIRED)),
+            "provider/fallback": payload(),
+        }
+
+        selection = preflight.select_models(
+            "provider/primary",
+            "provider/fallback",
+            REQUIRED,
+            responses.__getitem__,
+            probe_model=lambda _model: (
+                None,
+                "live JSON-schema probe was inconclusive after HTTP 429",
+            ),
+        )
+
+        self.assertTrue(selection.primary.ready)
+        self.assertFalse(selection.fallback.ready)
+        self.assertEqual(selection.selected_model, "provider/primary")
+        self.assertEqual(selection.secondary_model, "")
 
     def test_ignores_inactive_compatible_endpoint(self) -> None:
         check = preflight.check_model(
@@ -168,6 +679,7 @@ class ModelSelectionTest(unittest.TestCase):
         self.assertEqual(values["primary_ready"], "true")
         self.assertEqual(values["fallback_ready"], "true")
         self.assertEqual(values["selected_model"], "provider/primary")
+        self.assertEqual(values["selected_mode"], "strict")
 
 
 if __name__ == "__main__":

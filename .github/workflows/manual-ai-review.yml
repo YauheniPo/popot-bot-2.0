@@ -1,5 +1,9 @@
 name: Manual AI branch review
 
+run-name: >-
+  ${{ startsWith(inputs.request_id, 'ado-') && 'Azure DevOps' || 'GitHub' }}
+  · ${{ inputs.target_ref }} → ${{ inputs.base_ref }} · ${{ inputs.scope }}
+
 on:
   workflow_dispatch:
     inputs:
@@ -55,6 +59,11 @@ concurrency:
 
 jobs:
   review:
+    # A workflow_dispatch can be requested through the UI or an external API.
+    # Only the repository owner may release the trusted reviewer secrets.
+    if: >-
+      github.actor == github.repository_owner &&
+      github.triggering_actor == github.repository_owner
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
@@ -86,7 +95,7 @@ jobs:
       # Keep executable review tooling on the trusted default branch. The
       # selected target is checked out separately and treated only as data.
       - name: Check out trusted reviewer tooling
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 1
           path: reviewer
@@ -94,7 +103,7 @@ jobs:
           ref: main
 
       - name: Check out the selected review target
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           path: target
@@ -265,12 +274,16 @@ jobs:
         shell: bash
         env:
           FALLBACK_MODEL: ${{ steps.requested_model.outputs.fallback }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PRIMARY_MODEL: ${{ steps.requested_model.outputs.primary }}
         run: |
           set -euo pipefail
           python3 reviewer/.github/scripts/openrouter_model_preflight.py \
             --primary "${PRIMARY_MODEL}" \
             --fallback "${FALLBACK_MODEL}" \
+            --discover-free-fallback \
+            --probe-schema \
+            --allow-ordinary-json-fallback \
             --require max_tokens \
             --require temperature \
             --require reasoning \
@@ -281,18 +294,21 @@ jobs:
         working-directory: target
         env:
           BASE_SHA: ${{ steps.context.outputs.base_sha }}
-          CHECK_RUN_NAME: Manual AI code review
+          CHECK_RUN_NAME: ${{ startsWith(inputs.request_id, 'ado-') && 'Azure DevOps · Manual AI code review' || 'Manual AI code review' }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HEAD_SHA: ${{ steps.context.outputs.head_sha }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_REVIEW_FALLBACK_MODEL: ${{ steps.models.outputs.secondary_model }}
+          OPENROUTER_REVIEW_FALLBACK_MODE: ${{ steps.models.outputs.secondary_mode }}
           OPENROUTER_MAX_REVIEW_CHUNKS: ${{ vars.MANUAL_REVIEW_MAX_CHUNKS || '60' }}
           OPENROUTER_REVIEW_MODEL: ${{ steps.models.outputs.selected_model }}
+          OPENROUTER_REVIEW_MODEL_MODE: ${{ steps.models.outputs.selected_mode }}
           OPENROUTER_REVIEW_RPM: ${{ vars.OPENROUTER_REVIEW_RPM || '8' }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           REQUIRE_COMPLETE_REVIEW: ${{ inputs.scope == 'full_branch' && 'true' || 'false' }}
           REQUIRE_REVIEW_RESULT: "true"
           REVIEW_INCLUDE_REVIEWER_FILES: ${{ inputs.scope == 'full_branch' && 'true' || 'false' }}
+          REVIEW_ORIGIN: ${{ startsWith(inputs.request_id, 'ado-') && 'azure-devops' || 'github-actions' }}
           REVIEW_REQUEST_ID: ${{ inputs.request_id }}
         run: python3 ../reviewer/.github/scripts/openrouter_pr_review.py
 
@@ -305,6 +321,7 @@ jobs:
           MODEL: ${{ steps.models.outputs.selected_model }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           PUBLISH_TARGET: ${{ steps.context.outputs.publish_target }}
+          REVIEW_SOURCE: ${{ startsWith(inputs.request_id, 'ado-') && 'Azure DevOps' || 'GitHub' }}
           TARGET_REF: ${{ inputs.target_ref }}
         run: |
           {
@@ -313,6 +330,7 @@ jobs:
             echo "- Target: \`${TARGET_REF}\`"
             echo "- Range: \`${BASE_SHA}..${HEAD_SHA}\`"
             echo "- Model: \`${MODEL}\`"
+            echo "- Source: \`${REVIEW_SOURCE}\`"
             echo "- Publication: \`${PUBLISH_TARGET}\`"
             if [[ -n "${PR_NUMBER}" ]]; then
               echo "- Pull request: #${PR_NUMBER}"

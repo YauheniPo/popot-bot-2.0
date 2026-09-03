@@ -18,6 +18,7 @@ Ansible Vault и `.env` исключены из Git.
 | Готово | Данные | Имя/формат | Где получить | Где хранить |
 |---|---|---|---|---|
 | [ ] | OpenRouter API key | `OPENROUTER_API_KEY` | [OpenRouter Keys](https://openrouter.ai/keys) | `hermes_secret_env` в Ansible Vault |
+| [ ] | NVIDIA NIM API key | `NVIDIA_API_KEY` | [NVIDIA Build](https://build.nvidia.com/) | `hermes_secret_env` в Ansible Vault; альтернативный provider `nvidia` |
 | [ ] | OpenRouter model policy | `vps_hermes.config.managed_overlay` | каталог моделей OpenRouter или `hermes model` | versioned `config/vps-defaults.yml`; не хранить в Vault |
 | [ ] | Brave Search API key | `BRAVE_SEARCH_API_KEY` | кабинет Brave Search API | `hermes_secret_env` в Ansible Vault; нужен для Brave `web_search` |
 | [ ] | Firecrawl API key | `FIRECRAWL_API_KEY` | Firecrawl dashboard | `hermes_secret_env` в Ansible Vault; извлечение HTML/PDF и browser-backed web |
@@ -30,6 +31,18 @@ Ansible Vault и `.env` исключены из Git.
 добавляйте в authoritative overlay, если она должна переживать deploy. Минимальный фрагмент и правила
 замены placeholders находятся в
 [`ansible/group_vars/all/VAULT.md`](ansible/group_vars/all/VAULT.md).
+
+Для NVIDIA NIM добавьте `NVIDIA_API_KEY` в Vault. Переключение provider не
+требует изменения секретов или переустановки:
+
+```text
+/model nvidia:nvidia/nemotron-3-super-120b-a12b
+```
+
+NVIDIA и OpenRouter имеют отдельные квоты. Бесплатный NVIDIA key может иметь
+rate limits и временную недоступность; наличие ключа не означает безлимитный
+доступ. Для Nous Portal используется OAuth (`hermes auth add nous`), а не API
+key в `hermes_secret_env`.
 
 ## Web search и браузер
 

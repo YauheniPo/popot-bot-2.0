@@ -54,6 +54,16 @@ steps:
 
   - bash: |
       set -euo pipefail
+      if [[ "${PIPELINE_DEFINITION_REF}" != "refs/heads/main" ]]; then
+        echo "##vso[task.logissue type=error]Run this launcher from main; pass the review target through targetRef."
+        exit 1
+      fi
+    displayName: Validate trusted pipeline definition
+    env:
+      PIPELINE_DEFINITION_REF: $(Build.SourceBranch)
+
+  - bash: |
+      set -euo pipefail
 
       payload="$(
         jq -n \

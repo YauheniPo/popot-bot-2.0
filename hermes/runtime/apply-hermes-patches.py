@@ -2,10 +2,11 @@
 """Apply small, version-checked local patches to the installed Hermes code.
 
 Each patch is a marker plus an exact old/new source pair. The script is safe
-to run on every deploy: when the marker is already present it is a no-op. A
+to run on every deploy: it records the installed patch fingerprint and
+replaces a previously installed block when its implementation changes. A
 missing target or changed upstream source fails the deployment so a required
-command cannot silently disappear. Nothing is written unless the old code
-matches exactly.
+command cannot silently disappear. Nothing is written unless the old code or
+the recorded previous patch matches exactly.
 
 Covered customizations (not yet upstream):
  * gateway commands: /gw-restart (canonical, with /restart and /gw_restart
@@ -20,6 +21,8 @@ touched here.
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 from pathlib import Path
 import re
 import sys
@@ -34,6 +37,7 @@ _PREFIX = "# Local Hermes:"
 # command. It is needed only to migrate files patched by earlier deployments.
 _RETIRED_MODEL_GLOBAL = "model" + chr(45) + "global"
 _GW_RESTART = "gw" + chr(45) + "restart"
+_STATE_FILE = ".local-hermes-patches.json"
 
 
 class PatchMigrationError(RuntimeError):
@@ -44,6 +48,27 @@ def _replace_required(source: str, old: str, new: str, label: str) -> str:
     if old not in source:
         raise PatchMigrationError(f"cannot migrate {label}: expected code is missing")
     return source.replace(old, new, 1)
+
+
+def _patch_digest(new: str) -> str:
+    return hashlib.sha256(new.encode("utf-8")).hexdigest()
+
+
+def _load_patch_state() -> dict[str, dict[str, str]]:
+    state_path = HERMES_AGENT_DIR / _STATE_FILE
+    try:
+        raw = json.loads(state_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _save_patch_state(state: dict[str, dict[str, str]]) -> None:
+    state_path = HERMES_AGENT_DIR / _STATE_FILE
+    state_path.write_text(
+        json.dumps(state, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _migrate_model_global_source(relative_path: str, source: str) -> tuple[str, bool]:
@@ -416,6 +441,45 @@ _PATCHES: list[tuple[str, str, str, str]] = [
 ''',
     ),
     (
+        "gateway/slash_commands.py",
+        _PREFIX + " portal info",
+        '''            lines.append(f"**Topic model:** {topic_model}" + (" *(override)*" if session_model else ""))
+        except Exception:
+            pass
+''',
+        '''            lines.append(f"**Topic model:** {topic_model}" + (" *(override)*" if session_model else ""))
+        except Exception:
+            pass
+        # Local Hermes: portal info
+        try:
+            from gateway.run import _resolve_hermes_bin
+
+            portal_process = await asyncio.create_subprocess_exec(
+                *_resolve_hermes_bin(),
+                "portal",
+                "info",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            try:
+                portal_bytes, _ = await asyncio.wait_for(
+                    portal_process.communicate(), timeout=10
+                )
+            except asyncio.TimeoutError:
+                try:
+                    portal_process.kill()
+                except ProcessLookupError:
+                    pass
+                await portal_process.communicate()
+                raise
+            portal_info = portal_bytes.decode("utf-8", errors="replace").strip()
+            if portal_info:
+                lines.append("**Provider and tools:**\\n```\\n" + portal_info[:3500] + "\\n```")
+        except Exception:
+            lines.append("**Provider and tools:** unavailable")
+''',
+    ),
+    (
         "hermes_cli/commands.py",
         _PREFIX + " doctor CommandDef",
         '''    CommandDef("status", "Show session, model, token, and context info", "Session",
@@ -741,6 +805,34 @@ def _clamp_command_names(
 ]
 
 
+def _migrate_installed_portal_info() -> int:
+    """Repair the first portal-info rollout, which used invalid multiline literals."""
+    target = HERMES_AGENT_DIR / "gateway/slash_commands.py"
+    if not target.is_file():
+        return 0
+    source = target.read_text(encoding="utf-8")
+    marker = _PREFIX + " portal info"
+    if marker not in source:
+        return 0
+    portal_patch = next(new for path, patch_marker, _old, new in _PATCHES
+                        if path == "gateway/slash_commands.py" and patch_marker == marker)
+    replacement = portal_patch[portal_patch.index("        # Local Hermes: portal info"):]
+    if replacement in source:
+        return 0
+    pattern = re.compile(
+        r"        # Local Hermes: portal info\n"
+        r"        try:\n.*?"
+        r"        except Exception:\n"
+        r"            lines\.append\(\"\*\*Provider and tools:\*\* unavailable\"\)\n",
+        re.DOTALL,
+    )
+    repaired, count = pattern.subn(lambda _match: replacement, source, count=1)
+    if count:
+        target.write_text(repaired, encoding="utf-8")
+        print(f"[hermes-patch] migrated {target.relative_to(HERMES_AGENT_DIR)} portal info")
+    return count
+
+
 def main() -> int:
     if not HERMES_AGENT_DIR.is_dir():
         print(
@@ -754,12 +846,15 @@ def main() -> int:
             + _migrate_installed_gw_restart()
             + _migrate_installed_doctor_handler()
             + _migrate_installed_telegram_usage_ranking()
+            + _migrate_installed_portal_info()
         )
     except PatchMigrationError as exc:
         print(f"[hermes-patch] ERROR: {exc}", file=sys.stderr)
         return 1
     applied = 0
     failures: list[str] = []
+    patch_state = _load_patch_state()
+    state_changed = False
     for relative_path, marker, old, new in _PATCHES:
         target = HERMES_AGENT_DIR / relative_path
         if not target.is_file():
@@ -767,8 +862,36 @@ def main() -> int:
             failures.append(relative_path)
             continue
         source = target.read_text(encoding="utf-8")
+        digest = _patch_digest(new)
         if marker in source:
-            print(f"[hermes-patch] {relative_path}: already applied")
+            previous = patch_state.get(marker)
+            if previous and previous.get("digest") != digest:
+                previous_source = previous.get("source", "")
+                if new in source:
+                    # The new implementation is already present (for example
+                    # after a one-off repair); only refresh the local metadata.
+                    patch_state[marker] = {"digest": digest, "source": new}
+                    state_changed = True
+                    print(f"[hermes-patch] {relative_path}: patch metadata refreshed")
+                    continue
+                if not previous_source or previous_source not in source:
+                    print(
+                        f"[hermes-patch] ERROR: {relative_path}: existing patch "
+                        f"{marker!r} changed locally and cannot be upgraded safely",
+                        file=sys.stderr,
+                    )
+                    failures.append(relative_path)
+                    continue
+                target.write_text(source.replace(previous_source, new, 1), encoding="utf-8")
+                patch_state[marker] = {"digest": digest, "source": new}
+                print(f"[hermes-patch] updated {relative_path}")
+                applied += 1
+                state_changed = True
+            else:
+                if not previous:
+                    patch_state[marker] = {"digest": digest, "source": new}
+                    state_changed = True
+                print(f"[hermes-patch] {relative_path}: already applied")
             continue
         if old not in source:
             print(
@@ -780,10 +903,14 @@ def main() -> int:
             failures.append(relative_path)
             continue
         target.write_text(source.replace(old, new, 1), encoding="utf-8")
+        patch_state[marker] = {"digest": digest, "source": new}
+        state_changed = True
         print(f"[hermes-patch] applied {relative_path}")
         applied += 1
     if applied or migrated:
         print("[hermes-patch] changed")
+    if state_changed:
+        _save_patch_state(patch_state)
     if failures:
         print(
             "[hermes-patch] ERROR: required patches were not applied to: "

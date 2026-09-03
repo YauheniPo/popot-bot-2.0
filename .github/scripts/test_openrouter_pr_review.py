@@ -226,6 +226,116 @@ class OpenRouterRequestTest(unittest.TestCase):
         self.assertIn("chunk 1 of 2", request_body["messages"][1]["content"])
         self.assertIn("UNRESOLVED_REVIEW_THREADS", request_body["messages"][1]["content"])
 
+    def test_enables_low_reasoning_for_strict_primary_when_required(self) -> None:
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps({"summary": "Reviewed.", "findings": []})
+                    }
+                }
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        with (
+            mock.patch.object(
+                reviewer,
+                "request_json",
+                side_effect=[
+                    reviewer.RequestError(
+                        "Reasoning is mandatory for this endpoint and cannot be disabled.",
+                        status=400,
+                    ),
+                    response,
+                ],
+            ) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch("builtins.print"),
+        ):
+            result = reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
+
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(request.call_count, 2)
+        retry_body = request.call_args_list[1].args[3]
+        self.assertEqual(
+            retry_body["reasoning"],
+            {"effort": "low", "exclude": True},
+        )
+        self.assertEqual(retry_body["response_format"]["type"], "json_schema")
+        self.assertTrue(retry_body["provider"]["require_parameters"])
+
+    def test_requests_ordinary_json_for_selected_ordinary_model(self) -> None:
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps({"summary": "Reviewed.", "findings": []})
+                    }
+                }
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        with (
+            mock.patch.dict(
+                reviewer.os.environ,
+                {"OPENROUTER_REVIEW_MODEL_MODE": "ordinary"},
+            ),
+            mock.patch.object(reviewer, "request_json", return_value=response) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+        ):
+            result = reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
+
+        self.assertEqual(result["findings"], [])
+        request_body = request.call_args.args[3]
+        self.assertEqual(request_body["model"], "review-model")
+        self.assertTrue(request_body["provider"]["require_parameters"])
+        self.assertNotIn("response_format", request_body)
+        self.assertNotIn("plugins", request_body)
+        self.assertIn("REQUIRED_JSON_SCHEMA", request_body["messages"][0]["content"])
+        self.assertIn('"required":["summary","findings"]', request_body["messages"][0]["content"])
+
+    def test_enables_low_reasoning_for_ordinary_model_when_required(self) -> None:
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps({"summary": "Reviewed.", "findings": []})
+                    }
+                }
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        with (
+            mock.patch.dict(
+                reviewer.os.environ,
+                {"OPENROUTER_REVIEW_MODEL_MODE": "ordinary"},
+            ),
+            mock.patch.object(
+                reviewer,
+                "request_json",
+                side_effect=[
+                    reviewer.RequestError(
+                        "Reasoning is mandatory for this endpoint and cannot be disabled.",
+                        status=400,
+                    ),
+                    response,
+                ],
+            ) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch("builtins.print"),
+        ):
+            result = reviewer.review_chunk("api-key", "ordinary-model", (), chunk, 1, 1)
+
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(request.call_count, 2)
+        retry_body = request.call_args_list[1].args[3]
+        self.assertNotIn("response_format", retry_body)
+        self.assertNotIn("plugins", retry_body)
+        self.assertEqual(
+            retry_body["reasoning"],
+            {"effort": "low", "exclude": True},
+        )
+
     def test_retries_transient_provider_failures(self) -> None:
         response = {
             "choices": [
@@ -367,7 +477,8 @@ class OpenRouterRequestTest(unittest.TestCase):
         self.assertTrue(strict_fallback_body["provider"]["require_parameters"])
         self.assertEqual(relaxed_fallback_body["model"], "fallback-model")
         self.assertFalse(relaxed_fallback_body["provider"]["require_parameters"])
-        self.assertEqual(relaxed_fallback_body["response_format"]["type"], "json_schema")
+        self.assertNotIn("response_format", relaxed_fallback_body)
+        self.assertNotIn("plugins", relaxed_fallback_body)
         self.assertEqual(
             relaxed_fallback_body["max_tokens"],
             reviewer.MAX_OUTPUT_TOKENS,
@@ -376,6 +487,93 @@ class OpenRouterRequestTest(unittest.TestCase):
             relaxed_fallback_body["reasoning"],
             {"effort": "none", "exclude": True},
         )
+
+    def test_uses_declared_ordinary_fallback_without_strict_request(self) -> None:
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps({"summary": "Reviewed.", "findings": []})
+                    }
+                }
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        with (
+            mock.patch.dict(
+                reviewer.os.environ,
+                {
+                    "OPENROUTER_REVIEW_FALLBACK_MODEL": "fallback-model",
+                    "OPENROUTER_REVIEW_FALLBACK_MODE": "ordinary",
+                },
+            ),
+            mock.patch.object(
+                reviewer,
+                "request_json",
+                side_effect=[
+                    reviewer.RequestError("primary rejected request", status=400),
+                    response,
+                ],
+            ) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch("builtins.print"),
+        ):
+            result = reviewer.review_chunk("api-key", "primary-model", (), chunk, 1, 1)
+
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(request.call_count, 2)
+        fallback_body = request.call_args_list[1].args[3]
+        self.assertEqual(fallback_body["model"], "fallback-model")
+        self.assertNotIn("response_format", fallback_body)
+        self.assertNotIn("plugins", fallback_body)
+
+    def test_rejects_unknown_model_mode(self) -> None:
+        with mock.patch.dict(
+            reviewer.os.environ,
+            {"OPENROUTER_REVIEW_MODEL_MODE": "unknown"},
+        ):
+            with self.assertRaisesRegex(RuntimeError, "must be strict or ordinary"):
+                reviewer.configured_model_mode("OPENROUTER_REVIEW_MODEL_MODE")
+
+    def test_enables_low_reasoning_when_fallback_requires_it(self) -> None:
+        response = {
+            "choices": [
+                {"message": {"content": json.dumps({"summary": "Reviewed.", "findings": []})}}
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        with (
+            mock.patch.dict(
+                reviewer.os.environ,
+                {"OPENROUTER_REVIEW_FALLBACK_MODEL": "fallback-model"},
+            ),
+            mock.patch.object(
+                reviewer,
+                "request_json",
+                side_effect=[
+                    reviewer.RequestError("primary rejected request", status=400),
+                    reviewer.RequestError(
+                        "Reasoning is mandatory for this endpoint and cannot be disabled.",
+                        status=400,
+                    ),
+                    response,
+                ],
+            ) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch("builtins.print"),
+        ):
+            result = reviewer.review_chunk("api-key", "primary-model", (), chunk, 1, 1)
+
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(request.call_count, 3)
+        reasoning_body = request.call_args_list[2].args[3]
+        self.assertEqual(reasoning_body["model"], "fallback-model")
+        self.assertEqual(
+            reasoning_body["reasoning"],
+            {"effort": "low", "exclude": True},
+        )
+        self.assertTrue(reasoning_body["provider"]["require_parameters"])
+        self.assertEqual(reasoning_body["response_format"]["type"], "json_schema")
 
     def test_does_not_relax_unrelated_fallback_404(self) -> None:
         chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
@@ -610,6 +808,59 @@ class GitHubReviewTest(unittest.TestCase):
 
         request.assert_called_once()
 
+    def test_marks_azure_review_and_keeps_its_deduplication_separate(self) -> None:
+        existing_default_review = [
+            {"body": "<!-- openrouter-pr-review:head-sha -->\nExisting GitHub review"}
+        ]
+        with (
+            mock.patch.object(
+                reviewer,
+                "request_json",
+                side_effect=[existing_default_review, {}],
+            ) as request,
+            mock.patch.dict(
+                reviewer.os.environ,
+                {"REVIEW_ORIGIN": "azure-devops"},
+                clear=False,
+            ),
+            mock.patch("builtins.print"),
+        ):
+            reviewer.publish_review(
+                "owner/repository",
+                "2",
+                "token",
+                "review-model",
+                "head-sha",
+                self.plan,
+                self.publication(),
+            )
+
+        self.assertEqual(request.call_count, 2)
+        payload = request.call_args_list[1].args[3]
+        self.assertIn(
+            "<!-- openrouter-pr-review:azure-devops:head-sha -->",
+            payload["body"],
+        )
+        self.assertIn("## Azure DevOps · OpenRouterAPI", payload["body"])
+        self.assertIn("> Source: Azure DevOps manual review", payload["body"])
+        self.assertIn(
+            "<!-- review-origin:azure-devops -->",
+            payload["comments"][0]["body"],
+        )
+        self.assertIn(
+            "[Azure DevOps · OpenRouterAPI]",
+            payload["comments"][0]["body"],
+        )
+
+    def test_rejects_unknown_review_origin(self) -> None:
+        with mock.patch.dict(
+            reviewer.os.environ,
+            {"REVIEW_ORIGIN": "untrusted"},
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "REVIEW_ORIGIN"):
+                reviewer.configured_review_origin()
+
     def test_replies_to_existing_thread_without_duplicate_inline_comment(self) -> None:
         follow_up = reviewer.FindingFollowUp(self.finding, self.review_thread())
         publication = reviewer.PublicationPlan((), (follow_up,), ())
@@ -751,6 +1002,33 @@ class GitHubReviewTest(unittest.TestCase):
         self.assertEqual(payload["conclusion"], "success")
         self.assertEqual(payload["output"]["annotations"], [])
         self.assertNotIn("details_url", payload)
+
+    def test_marks_azure_check_run_summary(self) -> None:
+        with (
+            mock.patch.object(reviewer, "request_json", return_value={}) as request,
+            mock.patch.dict(
+                reviewer.os.environ,
+                {
+                    "CHECK_RUN_NAME": "Azure DevOps · Manual AI code review",
+                    "REVIEW_ORIGIN": "azure-devops",
+                },
+                clear=False,
+            ),
+            mock.patch("builtins.print"),
+        ):
+            reviewer.publish_check_run(
+                "owner/repository",
+                "token",
+                "review-model",
+                "b" * 40,
+                self.plan,
+                [],
+                "ado-42",
+            )
+
+        payload = request.call_args.args[3]
+        self.assertEqual(payload["name"], "Azure DevOps · Manual AI code review")
+        self.assertIn("Source: Azure DevOps", payload["output"]["summary"])
 
 
 class PublicationPlanTest(unittest.TestCase):
