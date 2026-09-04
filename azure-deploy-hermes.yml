@@ -1,0 +1,194 @@
+# Manual Azure DevOps deployment of Hermes to the production VPS through
+# Ansible. This pipeline is intentionally separate from azure-ai-code-review.yml,
+# which only launches GitHub AI code reviews.
+#
+# Azure setup required before the first run:
+#   1. Create an environment named `hermes-vps` and require an owner
+#      approval, branch control for refs/heads/main, and an exclusive lock.
+#   2. Upload the four files referenced by DownloadSecureFile tasks below to
+#      Pipelines > Library > Secure files.
+#   3. Authorize only this pipeline to use those files. On every secure file,
+#      add branch control for refs/heads/main and an owner approval. Do not use
+#      "Open access".
+#   4. Restrict the pipeline's Queue builds permission to the repository owner.
+#
+# The encrypted Vault file supplies ansible_host, ansible_user, and Hermes
+# secrets. Secure files are never copied into the repository checkout.
+
+trigger: none
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+parameters:
+  - name: confirmProduction
+    displayName: Confirm production deployment
+    type: boolean
+    default: false
+
+stages:
+  - stage: ValidateRequest
+    displayName: Validate deployment request
+    jobs:
+      - job: ValidateTrustedSource
+        displayName: Require trusted main pipeline
+        steps:
+          - checkout: none
+
+          - template: azure-templates/validate-trusted-branch.yml
+            parameters:
+              errorMessage: Run the production deployment pipeline from main.
+
+          - bash: |
+              set -euo pipefail
+
+              if [[ "${CONFIRM_PRODUCTION,,}" != "true" ]]; then
+                echo "##vso[task.logissue type=error]Set 'Confirm production deployment' to true."
+                exit 1
+              fi
+            displayName: Validate production confirmation
+            env:
+              CONFIRM_PRODUCTION: ${{ parameters.confirmProduction }}
+
+  - stage: DeployProduction
+    displayName: Deploy Hermes to production VPS
+    dependsOn: ValidateRequest
+    condition: succeeded()
+    lockBehavior: sequential
+    jobs:
+      - deployment: DeployHermes
+        displayName: Run Hermes Ansible playbook
+        environment: hermes-vps
+        workspace:
+          clean: all
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: none
+
+                - checkout: self
+                  clean: true
+                  fetchDepth: 1
+                  persistCredentials: false
+
+                - task: DownloadSecureFile@1
+                  name: hermesVault
+                  displayName: Download encrypted Hermes Vault
+                  inputs:
+                    secureFile: vault.yml
+
+                - task: DownloadSecureFile@1
+                  name: hermesVaultPassword
+                  displayName: Download Hermes Vault password
+                  inputs:
+                    secureFile: hermes-vault-password
+
+                - task: DownloadSecureFile@1
+                  name: hermesSshKey
+                  displayName: Download VPS deployment SSH key
+                  inputs:
+                    secureFile: hermes-vps-ssh-key
+
+                - task: DownloadSecureFile@1
+                  name: hermesKnownHosts
+                  displayName: Download trusted VPS host keys
+                  inputs:
+                    secureFile: hermes-vps-known-hosts
+
+                - bash: |
+                    set -euo pipefail
+
+                    for required_file in \
+                      "${HERMES_VAULT_FILE}" \
+                      "${HERMES_VAULT_PASSWORD_FILE}" \
+                      "${HERMES_SSH_KEY_FILE}" \
+                      "${HERMES_KNOWN_HOSTS_FILE}"; do
+                      if [[ ! -s "${required_file}" ]]; then
+                        echo "##vso[task.logissue type=error]A required Azure Secure File is empty."
+                        exit 1
+                      fi
+                    done
+
+                    if ! head -n 1 "${HERMES_VAULT_FILE}" | grep -q '^\$ANSIBLE_VAULT;'; then
+                      echo "##vso[task.logissue type=error]vault.yml is not Ansible Vault encrypted."
+                      exit 1
+                    fi
+
+                    chmod 600 \
+                      "${HERMES_VAULT_FILE}" \
+                      "${HERMES_VAULT_PASSWORD_FILE}" \
+                      "${HERMES_SSH_KEY_FILE}" \
+                      "${HERMES_KNOWN_HOSTS_FILE}"
+
+                    if ! ssh-keygen -y -P "" -f "${HERMES_SSH_KEY_FILE}" >/dev/null; then
+                      echo "##vso[task.logissue type=error]The deployment SSH key is invalid or requires an interactive passphrase."
+                      exit 1
+                    fi
+                  displayName: Validate protected deployment inputs
+                  env:
+                    HERMES_VAULT_FILE: $(hermesVault.secureFilePath)
+                    HERMES_VAULT_PASSWORD_FILE: $(hermesVaultPassword.secureFilePath)
+                    HERMES_SSH_KEY_FILE: $(hermesSshKey.secureFilePath)
+                    HERMES_KNOWN_HOSTS_FILE: $(hermesKnownHosts.secureFilePath)
+
+                - task: UsePythonVersion@0
+                  displayName: Use Python 3.12
+                  inputs:
+                    versionSpec: "3.12"
+
+                - bash: |
+                    set -euo pipefail
+                    python3 -m pip install \
+                      --disable-pip-version-check \
+                      --requirement hermes/requirements-dev.txt
+                  displayName: Install Ansible dependencies
+
+                - bash: |
+                    set -euo pipefail
+                    mkdir -p "${ANSIBLE_LOCAL_TEMP}" "${ANSIBLE_REMOTE_TEMP}"
+
+                    # --syntax-check only parses the playbook; it never runs
+                    # pre_tasks or tasks, so it cannot catch a bad vault value
+                    # (e.g. a placeholder secret left unset). Those `assert`
+                    # checks (grafana/vscode passwords, hermes_secret_env
+                    # placeholders, etc.) only run for real during the Deploy
+                    # stage below, some of them close to the end of the
+                    # playbook. This step only proves the YAML/module syntax
+                    # is valid and that the vault decrypts with the supplied
+                    # password. It never opens an SSH connection, so it takes
+                    # no --private-key / known_hosts args.
+                    ansible-playbook \
+                      --syntax-check \
+                      --inventory hermes/ansible/inventory.ini \
+                      --vault-password-file "${HERMES_VAULT_PASSWORD_FILE}" \
+                      --extra-vars "@${HERMES_VAULT_FILE}" \
+                      hermes/ansible/playbook.yml
+                  displayName: Syntax-check Hermes Ansible playbook (does not run assert checks)
+                  env:
+                    ANSIBLE_CONFIG: $(Build.SourcesDirectory)/hermes/ansible/ansible.cfg
+                    ANSIBLE_LOCAL_TEMP: $(Agent.TempDirectory)/hermes-ansible-local
+                    ANSIBLE_REMOTE_TEMP: $(Agent.TempDirectory)/hermes-ansible-remote
+                    HERMES_VAULT_FILE: $(hermesVault.secureFilePath)
+                    HERMES_VAULT_PASSWORD_FILE: $(hermesVaultPassword.secureFilePath)
+
+                - bash: |
+                    set -euo pipefail
+                    mkdir -p "${ANSIBLE_LOCAL_TEMP}" "${ANSIBLE_REMOTE_TEMP}"
+
+                    ansible-playbook \
+                      --inventory hermes/ansible/inventory.ini \
+                      --vault-password-file "${HERMES_VAULT_PASSWORD_FILE}" \
+                      --private-key "${HERMES_SSH_KEY_FILE}" \
+                      --extra-vars "@${HERMES_VAULT_FILE}" \
+                      hermes/ansible/playbook.yml
+                  displayName: Deploy Hermes with Ansible
+                  env:
+                    ANSIBLE_CONFIG: $(Build.SourcesDirectory)/hermes/ansible/ansible.cfg
+                    ANSIBLE_LOCAL_TEMP: $(Agent.TempDirectory)/hermes-ansible-local
+                    ANSIBLE_REMOTE_TEMP: $(Agent.TempDirectory)/hermes-ansible-remote
+                    ANSIBLE_SSH_COMMON_ARGS: -o UserKnownHostsFile=$(hermesKnownHosts.secureFilePath) -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes
+                    HERMES_VAULT_FILE: $(hermesVault.secureFilePath)
+                    HERMES_VAULT_PASSWORD_FILE: $(hermesVaultPassword.secureFilePath)
+                    HERMES_SSH_KEY_FILE: $(hermesSshKey.secureFilePath)

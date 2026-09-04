@@ -1,0 +1,24 @@
+# Shared step: fail the pipeline unless Build.SourceBranch is refs/heads/main.
+#
+# This is a defense-in-depth check, not the primary control: the primary
+# control is the native Azure DevOps environment/branch-control and approval
+# configuration on the deployment job (see the setup comments in the
+# pipelines that use this template). Keeping the check in one template
+# instead of copy-pasted per pipeline avoids the two copies drifting apart.
+
+parameters:
+  - name: errorMessage
+    type: string
+    default: Run this pipeline from main.
+
+steps:
+  - bash: |
+      set -euo pipefail
+      if [[ "${PIPELINE_DEFINITION_REF}" != "refs/heads/main" ]]; then
+        echo "##vso[task.logissue type=error]${ERROR_MESSAGE}"
+        exit 1
+      fi
+    displayName: Validate trusted pipeline definition
+    env:
+      PIPELINE_DEFINITION_REF: $(Build.SourceBranch)
+      ERROR_MESSAGE: ${{ parameters.errorMessage }}

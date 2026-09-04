@@ -758,6 +758,61 @@ ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventory.ini \
 Флаг `--ask-pass` нужен при SSH-входе по паролю. При настроенном
 `ansible_ssh_private_key_file` запускайте ту же команду без него.
 
+#### Ручной production deploy из Azure DevOps
+
+Отдельный [`azure-deploy-hermes.yml`](../azure-deploy-hermes.yml) запускает тот
+же playbook вручную из Azure DevOps. Он не заменяет локальный запуск выше:
+`--ask-vault-pass`, `--ask-pass` и локальный `group_vars/all/vault.yml`
+продолжают работать без изменений. Существующий `azure-ai-code-review.yml` также
+остаётся отдельным launcher для AI code review и VPS не изменяет.
+
+Перед первым запуском создайте новый Azure pipeline из существующего YAML-файла
+`azure-deploy-hermes.yml` в ветке `main`. Затем в **Pipelines → Library →
+Secure files** загрузите:
+
+| Secure file | Содержимое |
+|---|---|
+| `vault.yml` | Текущий зашифрованный `ansible/group_vars/all/vault.yml`, загруженный напрямую |
+| `hermes-vault-password` | Только пароль Ansible Vault, одной строкой |
+| `hermes-vps-ssh-key` | Отдельный private key для deployment без интерактивной passphrase |
+| `hermes-vps-known-hosts` | Проверенная запись SSH host key VPS |
+
+Готовые безопасные шаблоны и команды подготовки находятся в
+[`ansible/azure-secure-files`](ansible/azure-secure-files/README.md). Рабочие
+файлы в этом каталоге игнорируются Git; в Azure загружаются версии без суффикса
+`.example`.
+
+Private key не отправляется на VPS: там должен находиться только его public
+key. `known_hosts` создавайте на доверенном компьютере и сверяйте fingerprint
+через консоль VPS-провайдера до загрузки. Не получайте и не принимайте новый
+host key прямо внутри pipeline.
+
+Для каждого Secure File:
+
+1. В **Pipeline permissions** разрешите только production deployment pipeline;
+   не включайте **Open access**.
+2. В **Approvals and checks** добавьте **Branch control** только для
+   `refs/heads/main` и approval владельца репозитория.
+
+Создайте Azure Environment `hermes-vps`. В его **Approvals and checks**
+добавьте approval владельца, **Branch control** для `refs/heads/main` и
+**Exclusive lock**. У самого pipeline оставьте право **Queue builds** только
+владельцу. Эти проверки задаются в Azure UI, а не в YAML, поэтому код из другой
+ветки не может снять их и получить deployment credentials.
+
+При **Run pipeline** выберите ветку `main`, включите **Confirm production
+deployment** и подтвердите environment approval. Pipeline:
+
+1. проверит, что definition запущен из `main`;
+2. проверит наличие и формат защищённых файлов, не выводя их содержимое;
+3. выполнит `ansible-playbook --syntax-check`;
+4. запустит основной `ansible/playbook.yml` с проверкой SSH host key.
+
+Зашифрованный Vault передаётся как защищённый extra-vars файл и не копируется в
+checkout. Azure удаляет скачанные Secure Files после job. Доступ к логам
+pipeline тоже должен оставаться только у доверенных пользователей: SSH-ошибка
+может содержать адрес конечного host, даже если адрес отсутствует в Git.
+
 `vps_hermes.config.managed_overlay` — selective authoritative overlay: каждый явно указанный
 вложенный ключ заменяет соответствующее значение в существующем `config.yaml`,
 а остальные ключи, в том числе в том же разделе, сохраняются. Списки

@@ -1,5 +1,12 @@
 # Manual Azure DevOps launcher for the GitHub AI code-review workflow.
 #
+# This file was renamed from azure-pipelines.yml. Azure DevOps stores the
+# pipeline definition's YAML file path server-side, not in git, so renaming
+# this file does NOT update it automatically. Before merging, or right after,
+# repoint the existing pipeline definition (Pipelines -> this pipeline ->
+# Edit -> ... -> "Path to file") from azure-pipelines.yml to
+# azure-ai-code-review.yml, or the next run fails with "file not found".
+#
 # Prerequisites:
 #   1. `.github/workflows/manual-ai-review.yml` must exist on the GitHub
 #      repository's default branch and accept the inputs sent below.
@@ -52,15 +59,9 @@ parameters:
 steps:
   - checkout: none
 
-  - bash: |
-      set -euo pipefail
-      if [[ "${PIPELINE_DEFINITION_REF}" != "refs/heads/main" ]]; then
-        echo "##vso[task.logissue type=error]Run this launcher from main; pass the review target through targetRef."
-        exit 1
-      fi
-    displayName: Validate trusted pipeline definition
-    env:
-      PIPELINE_DEFINITION_REF: $(Build.SourceBranch)
+  - template: azure-templates/validate-trusted-branch.yml
+    parameters:
+      errorMessage: Run this launcher from main; pass the review target through targetRef.
 
   - bash: |
       set -euo pipefail
