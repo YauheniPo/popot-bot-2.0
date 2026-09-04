@@ -1,0 +1,26 @@
+---
+# Encrypt the working copy before replacing placeholders:
+# ansible-vault encrypt --vault-password-file hermes-vault-password ../group_vars/all/vault.yml
+
+# Private VPS connection details consumed by the neutral inventory alias.
+ansible_host: "replace-with-vps-host"
+ansible_user: "root"
+# ansible_port: 22
+
+# Environment credentials managed by Ansible when
+# vps_deploy.secret_environment.managed is true.
+hermes_secret_env:
+  OPENROUTER_API_KEY: "replace-inside-ansible-vault"
+  # NVIDIA_API_KEY: "replace-inside-ansible-vault"
+  # BRAVE_SEARCH_API_KEY: "replace-inside-ansible-vault"
+  # FIRECRAWL_API_KEY: "replace-inside-ansible-vault"
+  TELEGRAM_BOT_TOKEN: "replace-inside-ansible-vault"
+  TELEGRAM_ALLOWED_USERS: "123456789"
+  # GITHUB_TOKEN: "replace-inside-ansible-vault"
+
+# Required by the enabled managed services.
+hermes_grafana_admin_password: "replace-inside-ansible-vault"
+hermes_code_server_password: "replace-inside-ansible-vault"
+
+# Optional one-use, ephemeral, tagged Tailscale auth key.
+tailscale_auth_key: ""

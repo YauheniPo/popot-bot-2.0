@@ -1,0 +1,3 @@
+# Replace this inert placeholder with the verified host key produced on a
+# trusted computer. For a nonstandard port, use [host]:port.
+replace-with-vps-host ssh-ed25519 replace-with-verified-public-host-key

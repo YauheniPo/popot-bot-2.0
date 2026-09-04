@@ -1,5 +1,13 @@
 # popot-bot-2.0
 
+[![Telegram user info bot CI](https://github.com/YauheniPo/popot-bot-2.0/actions/workflows/telegram-user-info-bot-ci.yml/badge.svg)](https://github.com/YauheniPo/popot-bot-2.0/actions/workflows/telegram-user-info-bot-ci.yml)
+[![Build Status](https://dev.azure.com/YauheniPo/popot-bot-2.0/_apis/build/status%2FYauheniPo.popot-bot-2.0?branchName=main)](https://dev.azure.com/YauheniPo/popot-bot-2.0/_build/latest?definitionId=12&branchName=main)
+
+> **Post-merge step:** `azure-pipelines.yml` was renamed to
+> `azure-ai-code-review.yml`. Azure DevOps pipeline definition 12 still
+> points at the old path server-side; repoint it in Pipelines -> Edit ->
+> "Path to file", or the badge above starts failing with "file not found".
+
 > Self-hosted Telegram automation and a personal AI operator for your own VPS.
 
 This repository contains two independent projects for people who want useful

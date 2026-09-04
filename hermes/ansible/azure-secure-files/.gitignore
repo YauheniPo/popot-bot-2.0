@@ -1,0 +1,7 @@
+# Ignore every working file in this directory. Only documentation and inert
+# examples are versioned; populated Vault, password, and SSH files must never
+# enter Git.
+*
+!.gitignore
+!README.md
+!*.example
