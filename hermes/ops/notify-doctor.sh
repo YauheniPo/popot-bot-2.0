@@ -24,7 +24,13 @@ fi
 # both branches below: a failed run's output can be just as long as a
 # successful one, and it's the one you most need delivered.
 if [[ ${#RESULT} -gt 3800 ]]; then
-    OUTPUT=$(echo "$RESULT" | head -c 3800)
+    # iconv -c drops any trailing byte sequence that head -c split mid-character,
+    # so the cut always ends on a valid UTF-8 boundary. iconv still exits
+    # non-zero for that dropped incomplete tail even with -c (it only
+    # suppresses invalid-sequence errors, not incomplete-sequence ones), so
+    # `|| true` keeps that expected case from aborting the script under
+    # set -e/pipefail.
+    OUTPUT=$(echo "$RESULT" | head -c 3800 | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null) || true
     OUTPUT="${OUTPUT}... (truncated)"
 else
     OUTPUT="$RESULT"

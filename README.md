@@ -4,10 +4,11 @@
 [![Build Status](https://dev.azure.com/YauheniPo/popot-bot-2.0/_apis/build/status%2Fpopot-bot-2.0%20AI%20reviewer?branchName=main)](https://dev.azure.com/YauheniPo/popot-bot-2.0/_build/latest?definitionId=12&branchName=main)
 [![Build Status](https://dev.azure.com/YauheniPo/popot-bot-2.0/_apis/build/status%2Fpopot-bot-2.0%20Deploy?branchName=main)](https://dev.azure.com/YauheniPo/popot-bot-2.0/_build/latest?definitionId=13&branchName=main)
 
-> **Post-merge step:** `azure-pipelines.yml` was renamed to
-> `azure-ai-code-review.yml`. Azure DevOps pipeline definition 12 still
-> points at the old path server-side; repoint it in Pipelines -> Edit ->
-> "Path to file", or the badge above starts failing with "file not found".
+> **Post-merge step:** the Azure pipelines moved into `azure-ci/`. Azure
+> DevOps pipeline definitions 12 and 13 still point at the old root-level
+> paths server-side; repoint both in Pipelines -> Edit -> "Path to file" to
+> `azure-ci/azure-ai-code-review.yml` and `azure-ci/azure-deploy-hermes.yml`,
+> or the next run fails with "file not found".
 
 > Self-hosted Telegram automation and a personal AI operator for your own VPS.
 
@@ -58,8 +59,9 @@ open hermes/SECRETS-CHECKLIST.md
 
 For a reproducible deployment, follow the Ansible flow in this order:
 
-1. Create a local ignored inventory from
-   [`inventory.example.ini`](hermes/ansible/inventory.example.ini).
+1. Review the neutral, git-tracked
+   [`inventory.ini`](hermes/ansible/inventory.ini) (connection details load
+   from the encrypted Vault, not this file).
 2. Create and encrypt the local Vault as described in
    [`VAULT.md`](hermes/ansible/group_vars/all/VAULT.md).
 3. Run the command in [the Hermes quick-start guide](hermes/README.md).
@@ -104,9 +106,11 @@ do not add credentials the agent should never be able to use.
 
 ## Security and privacy
 
-- Never commit `.env`, `inventory.ini`, `vault.yml`, OAuth files, private keys,
-  or backup archives. The repository includes ignored local-file paths and
-  safe `*.example` templates only.
+- Never commit `.env`, `vault.yml`, OAuth files, private keys, or backup
+  archives. The repository includes ignored local-file paths and safe
+  `*.example` templates only. `inventory.ini` itself is a neutral, tracked
+  alias with no secrets — just don't commit a local edit that adds a real
+  `ansible_ssh_private_key_file` path.
 - Keep VPS credentials and provider keys in encrypted Ansible Vault. The
   exact workflow is in [`hermes/ansible/group_vars/all/VAULT.md`](hermes/ansible/group_vars/all/VAULT.md).
 - The User Info Bot does not obtain a phone number, location, private message
@@ -120,6 +124,7 @@ do not add credentials the agent should never be able to use.
 
 ```text
 .
+├── azure-ci/                # Azure DevOps pipeline definitions and shared templates
 ├── hermes/                  # VPS deployment, operations, observability and docs
 │   ├── ansible/             # repeatable provision/restore workflow
 │   ├── docker/              # local verification environment
