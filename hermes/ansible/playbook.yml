@@ -405,6 +405,10 @@
             path: "{{ hermes_config_backup_archive }}"
           register: hermes_config_backup_file
 
+        - name: Show the Hermes backup command output for diagnosis
+          ansible.builtin.debug:
+            var: hermes_config_backup_result.stdout_lines
+
         - name: Require Hermes to report a complete config-only deployment backup
           ansible.builtin.assert:
             that:
