@@ -760,7 +760,7 @@ ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventory.ini \
 
 #### Ручной production deploy из Azure DevOps
 
-Отдельный [`azure-deploy-hermes.yml`](../azure-deploy-hermes.yml) запускает тот
+Отдельный [`azure-deploy-hermes.yml`](../azure-ci/azure-deploy-hermes.yml) запускает тот
 же playbook вручную из Azure DevOps. Он не заменяет локальный запуск выше:
 `--ask-vault-pass`, `--ask-pass` и локальный `group_vars/all/vault.yml`
 продолжают работать без изменений. Существующий `azure-ai-code-review.yml` также

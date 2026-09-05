@@ -4,10 +4,11 @@
 [![Build Status](https://dev.azure.com/YauheniPo/popot-bot-2.0/_apis/build/status%2Fpopot-bot-2.0%20AI%20reviewer?branchName=main)](https://dev.azure.com/YauheniPo/popot-bot-2.0/_build/latest?definitionId=12&branchName=main)
 [![Build Status](https://dev.azure.com/YauheniPo/popot-bot-2.0/_apis/build/status%2Fpopot-bot-2.0%20Deploy?branchName=main)](https://dev.azure.com/YauheniPo/popot-bot-2.0/_build/latest?definitionId=13&branchName=main)
 
-> **Post-merge step:** `azure-pipelines.yml` was renamed to
-> `azure-ai-code-review.yml`. Azure DevOps pipeline definition 12 still
-> points at the old path server-side; repoint it in Pipelines -> Edit ->
-> "Path to file", or the badge above starts failing with "file not found".
+> **Post-merge step:** the Azure pipelines moved into `azure-ci/`. Azure
+> DevOps pipeline definitions 12 and 13 still point at the old root-level
+> paths server-side; repoint both in Pipelines -> Edit -> "Path to file" to
+> `azure-ci/azure-ai-code-review.yml` and `azure-ci/azure-deploy-hermes.yml`,
+> or the next run fails with "file not found".
 
 > Self-hosted Telegram automation and a personal AI operator for your own VPS.
 
