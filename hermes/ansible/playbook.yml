@@ -373,6 +373,19 @@
             state: stopped
           when: hermes_config_backup_gateway.rc == 0
 
+        - name: Normalize Hermes home ownership before backup
+          # The upstream Hermes installer occasionally leaves some files
+          # (e.g. bundled marketplace skill assets) root-owned, which makes
+          # `hermes backup` (running as hermes_user) skip them and report an
+          # incomplete backup. Force ownership back to hermes_user so the
+          # mandatory backup below can read everything.
+          ansible.builtin.file:
+            path: "{{ hermes_home }}"
+            state: directory
+            owner: "{{ hermes_user }}"
+            group: "{{ hermes_user }}"
+            recurse: true
+
         - name: Snapshot Hermes state before a config-only deployment
           ansible.builtin.command:
             argv:
