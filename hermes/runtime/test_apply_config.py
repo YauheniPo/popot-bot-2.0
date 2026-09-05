@@ -55,9 +55,15 @@ class ApplyConfigTests(unittest.TestCase):
                 "user_char_limit": 3000,
                 "memory_char_limit": 4000,
                 "compression": {"threshold": 0.70},
+                "auxiliary": {
+                    "compression": {
+                        "provider": "nous",
+                        "model": "upstage/solar-pro4:free",
+                    },
+                },
                 "cron": {
-                    "model_provider": "nous",
-                    "model": "upstage/solar-pro4:free",
+                    "model_provider": "openrouter",
+                    "model": "z-ai/glm-5.3-flash",
                     "model_drift_guard": True,
                 },
                 "web": {
@@ -69,7 +75,13 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertEqual(settings["vps_runtime"]["set"]["approvals.mode"], "manual")
         self.assertEqual(settings["vps_runtime"]["set"]["browser.backend"], "off")
         self.assertEqual(settings["vps_runtime"]["set"]["display.tool_progress"], "off")
-        self.assertIn("agent.max_turns", settings["vps_runtime"]["unset"])
+        self.assertEqual(settings["vps_runtime"]["set"]["agent.max_turns"], 200)
+        self.assertEqual(settings["vps_runtime"]["set"]["goals.max_turns"], 50)
+        self.assertEqual(settings["vps_runtime"]["set"]["proactive_prune_tokens"], 20000)
+        self.assertEqual(
+            settings["vps_runtime"]["set"]["agent.agent_cache.idle_ttl_secs"], 172800
+        )
+        self.assertNotIn("unset", settings["vps_runtime"])
         self.assertTrue(settings["vps_github"]["enabled"])
         self.assertTrue(settings["vps_github"]["require_auth"])
         self.assertEqual(settings["vps_github"]["expected_login"], "YauheniPo")

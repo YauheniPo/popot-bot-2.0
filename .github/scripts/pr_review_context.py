@@ -911,14 +911,24 @@ def _command_publish() -> None:
         raise RuntimeError("CLAUDE_REVIEW_RUN_ID must be numeric")
     marker = f"<!-- claude-pr-review:{head_sha}:{run_id} -->"
     comments_url = f"{GITHUB_API_URL}/repos/{repository}/issues/{pr_number}/comments"
-    existing_comments = _request_json(f"{comments_url}?per_page=100", "GET", token)
-    if not isinstance(existing_comments, list):
-        raise GitHubRequestError("GitHub returned an invalid issue-comment list")
-    if any(
-        marker in (comment.get("body") or "")
-        for comment in existing_comments
-        if isinstance(comment, dict)
-    ):
+    marker_already_posted = False
+    # Page through every issue comment rather than trusting the marker to be
+    # on the first 100: a busy PR can have far more comments than that, and
+    # missing the marker on an older page would post a duplicate review.
+    for page in range(1, 51):
+        page_comments = _request_json(f"{comments_url}?per_page=100&page={page}", "GET", token)
+        if not isinstance(page_comments, list):
+            raise GitHubRequestError("GitHub returned an invalid issue-comment list")
+        if any(
+            marker in (comment.get("body") or "")
+            for comment in page_comments
+            if isinstance(comment, dict)
+        ):
+            marker_already_posted = True
+            break
+        if len(page_comments) < 100:
+            break
+    if marker_already_posted:
         print("The Claude review already exists for this run; skipping duplicate.")
         return
 

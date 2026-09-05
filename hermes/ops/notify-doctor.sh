@@ -20,17 +20,20 @@ else
     EXIT_CODE=$?
 fi
 
+# Truncate output to avoid Telegram message limits (4096 chars). Applies to
+# both branches below: a failed run's output can be just as long as a
+# successful one, and it's the one you most need delivered.
+if [[ ${#RESULT} -gt 3800 ]]; then
+    OUTPUT=$(echo "$RESULT" | head -c 3800)
+    OUTPUT="${OUTPUT}... (truncated)"
+else
+    OUTPUT="$RESULT"
+fi
+
 if [[ $EXIT_CODE -ne 0 ]]; then
     MESSAGE=$'❌ Hermes Doctor failed\n'
-    MESSAGE+="${RESULT}"
+    MESSAGE+="${OUTPUT}"
 else
-    # Truncate output to avoid Telegram message limits (4096 chars)
-    if [[ ${#RESULT} -gt 3800 ]]; then
-        OUTPUT=$(echo "$RESULT" | head -c 3800)
-        OUTPUT="${OUTPUT}... (truncated)"
-    else
-        OUTPUT="$RESULT"
-    fi
     MESSAGE=$'✅ Hermes Doctor\n\n'
     MESSAGE+="${OUTPUT}"
 fi

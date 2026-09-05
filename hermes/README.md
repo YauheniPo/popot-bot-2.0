@@ -1238,12 +1238,13 @@ Model IDs не закреплены в репозитории: каталоги 
 
 ### Надёжные cron-задачи
 
-Для cron задан отдельный fleet-default: `cron.model_provider: nous` и
-`cron.model: upstage/solar-pro4:free`. Поэтому задачи без собственного pin не
+Для cron задан отдельный fleet-default: `cron.model_provider: openrouter` и
+`cron.model: z-ai/glm-5.3-flash`. Поэтому задачи без собственного pin не
 зависят от переключения основной модели чата и не получают `drift_skip` при
 изменении интерактивного provider. Личный pin конкретной задачи имеет
-приоритет над этим default. Если Nous недоступен или не авторизован, preflight
-переведёт задачу в `blocked_config` без скрытого запуска на другой модели.
+приоритет над этим default. Если OpenRouter недоступен или не авторизован,
+preflight переведёт задачу в `blocked_config` без скрытого запуска на другой
+модели.
 
 Для другой модели измените только эти два значения в
 `vps_hermes.config.managed_overlay` и примените Ansible-деплой. Для разовой
@@ -1251,7 +1252,7 @@ Model IDs не закреплены в репозитории: каталоги 
 
 ```text
 cronjob(action="create", schedule="every 2h", prompt="Check server status",
-        provider="nous", model="upstage/solar-pro4:free", deliver="origin")
+        provider="openrouter", model="z-ai/glm-5.3-flash", deliver="origin")
 ```
 
 Проверить существующие задачи можно командами:
