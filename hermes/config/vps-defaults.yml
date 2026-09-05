@@ -54,11 +54,17 @@ vps_hermes:
       # Compact long sessions after 70% of the active model context is used.
       compression:
         threshold: 0.70
+      # Run context compaction on a cheap free model instead of the main
+      # (expensive) model handling the conversation.
+      auxiliary:
+        compression:
+          provider: nous
+          model: upstage/solar-pro4:free
       # Keep scheduled jobs independent from interactive model changes.
       # A per-job provider/model pin still takes precedence.
       cron:
-        model_provider: nous
-        model: upstage/solar-pro4:free
+        model_provider: openrouter
+        model: z-ai/glm-5.3-flash
         model_drift_guard: true
       # Let Hermes select only providers whose credentials/capabilities are
       # available. Managed Vault keys still enable Brave and Firecrawl through
@@ -118,9 +124,18 @@ vps_runtime:
     session_reset.mode: idle
     session_reset.idle_minutes: 2880
     model.max_tokens: 4096
-  unset:
-    - agent.max_turns
-    - goals.max_turns
+    # Prune stale tool-call output from context without an extra LLM call.
+    # Starting value; tune based on observed context growth.
+    proactive_prune_tokens: 20000
+    # Bounded instead of unlimited, so a stuck run fails instead of burning
+    # tokens indefinitely. Above the 20-turn default since this agent runs
+    # unattended VPS/ops tasks that can legitimately need more steps.
+    agent.max_turns: 200
+    goals.max_turns: 50
+    # Match the agent-cache TTL to how long sessions actually stay idle
+    # (session_reset.idle_minutes above) so a live session isn't evicted from
+    # memory and cold-started again mid-conversation. Default is 3600s (1h).
+    agent.agent_cache.idle_ttl_secs: 172800
   capabilities:
     brave_search:
       set:

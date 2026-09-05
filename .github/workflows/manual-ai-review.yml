@@ -291,6 +291,7 @@ jobs:
             --require structured_outputs
 
       - name: Review selected revision and publish findings
+        id: review
         working-directory: target
         env:
           BASE_SHA: ${{ steps.context.outputs.base_sha }}
@@ -317,6 +318,7 @@ jobs:
         shell: bash
         env:
           BASE_SHA: ${{ steps.context.outputs.base_sha }}
+          CHECK_RUN_URL: ${{ steps.review.outputs.check_run_url }}
           HEAD_SHA: ${{ steps.context.outputs.head_sha }}
           MODEL: ${{ steps.models.outputs.selected_model }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
@@ -334,5 +336,11 @@ jobs:
             echo "- Publication: \`${PUBLISH_TARGET}\`"
             if [[ -n "${PR_NUMBER}" ]]; then
               echo "- Pull request: #${PR_NUMBER}"
+            fi
+            if [[ -n "${CHECK_RUN_URL}" ]]; then
+              # GitHub can file this check run under an unrelated check suite
+              # for the same commit SHA, so link it directly here instead of
+              # sending people to hunt through the Checks sidebar.
+              echo "- Findings: ${CHECK_RUN_URL}"
             fi
           } >>"${GITHUB_STEP_SUMMARY}"

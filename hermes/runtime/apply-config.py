@@ -51,11 +51,18 @@ def nested_value(data: dict[str, Any], dotted_key: str) -> tuple[bool, Any]:
     return True, current
 
 
+_UNRESOLVED_PLACEHOLDER = re.compile(r"\$\{|\$[A-Za-z_][A-Za-z0-9_]*")
+
+
 def render_value(value: Any, variables: dict[str, str]) -> Any:
     if not isinstance(value, str):
         return value
     rendered = Template(value).safe_substitute(variables)
-    if "${" in rendered:
+    # safe_substitute() leaves an unresolved reference untouched instead of
+    # raising, in both the ${NAME} and the bare $NAME form. Catch both, not
+    # just braces, or a typo'd placeholder is silently written out as a
+    # literal "$..." string instead of failing loudly.
+    if _UNRESOLVED_PLACEHOLDER.search(rendered):
         raise ValueError(f"unresolved placeholder in VPS setting: {value}")
     return rendered
 

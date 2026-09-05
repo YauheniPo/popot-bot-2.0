@@ -343,8 +343,11 @@ def annotate_diff(path: str, diff: str) -> ReviewFile:
 def read_review_files(base_sha: str, head_sha: str) -> list[ReviewFile]:
     review_files: list[ReviewFile] = []
     for path in changed_paths(base_sha, head_sha):
-        diff = run_git("diff", "--unified=3", "--no-ext-diff", base_sha, head_sha, "--", path)
-        assert isinstance(diff, str)
+        raw_diff = run_git(
+            "diff", "--unified=3", "--no-ext-diff", base_sha, head_sha, "--", path, text=False
+        )
+        assert isinstance(raw_diff, bytes)
+        diff = raw_diff.decode("utf-8", errors="surrogateescape")
         if diff:
             review_files.append(annotate_diff(path, diff))
     return review_files
@@ -1216,7 +1219,7 @@ def publish_check_run(
     }
     if run_id:
         payload["details_url"] = f"{server_url}/{repository}/actions/runs/{run_id}"
-    request_json(
+    created_check_run = request_json(
         f"{GITHUB_API_URL}/repos/{repository}/check-runs",
         "POST",
         _github_headers(token),
@@ -1226,6 +1229,22 @@ def publish_check_run(
         "Created a GitHub Check Run with "
         f"{len(annotations)} inline annotation(s) and {len(findings)} total finding(s)."
     )
+    # A check run created through this raw API call, rather than by an Actions
+    # job, can be filed by GitHub's UI under an unrelated check suite for the
+    # same commit SHA (whichever workflow already has one there), making it
+    # hard to find by browsing suite names. Surface a direct, working link
+    # here instead of relying on that grouping.
+    check_run_url = (
+        created_check_run.get("html_url")
+        if isinstance(created_check_run, dict)
+        else None
+    )
+    if check_run_url:
+        print(f"Check run URL: {check_run_url}")
+        github_output = os.environ.get("GITHUB_OUTPUT")
+        if github_output:
+            with open(github_output, "a", encoding="utf-8") as handle:
+                handle.write(f"check_run_url={check_run_url}\n")
 
 
 def main() -> None:
