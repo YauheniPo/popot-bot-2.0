@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,7 @@ from typing import Any
 import zipfile
 
 
-SNAPSHOT_SCHEMA_VERSION = 2
+SNAPSHOT_SCHEMA_VERSION = 3
 BACKUP_MARKERS = {".env", "config.yaml", "state.db"}
 EXCLUDED_DIRECTORIES = {
     "hermes-agent",
@@ -73,6 +74,14 @@ def discover_backup_files(hermes_home: Path) -> list[Path]:
     except OSError as exc:
         raise VerificationError(f"cannot inventory HERMES_HOME for backup: {exc}") from exc
     return sorted(set(files), key=lambda item: item.relative_to(root).as_posix())
+
+
+def _hash_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def discover_kanban_databases(hermes_home: Path) -> list[Path]:
@@ -150,13 +159,18 @@ def create_snapshot(hermes_home: Path) -> dict[str, Any]:
         relative_path = path.relative_to(root).as_posix()
         databases[relative_path] = inspect_kanban_database(path)
 
-    files = [path.relative_to(root).as_posix() for path in discover_backup_files(root)]
+    backup_files = discover_backup_files(root)
+    files = [path.relative_to(root).as_posix() for path in backup_files]
+    file_hashes = {
+        path.relative_to(root).as_posix(): _hash_file(path) for path in backup_files
+    }
 
     return {
         "schema_version": SNAPSHOT_SCHEMA_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "databases": databases,
         "files": files,
+        "file_hashes": file_hashes,
     }
 
 
@@ -199,6 +213,13 @@ def load_snapshot(path: Path) -> dict[str, Any]:
         or len(files) != len(set(files))
     ):
         raise VerificationError(f"Hermes state snapshot has an invalid file inventory: {path}")
+    file_hashes = value.get("file_hashes")
+    if (
+        not isinstance(file_hashes, dict)
+        or set(file_hashes) != set(files)
+        or any(not isinstance(digest, str) or not digest for digest in file_hashes.values())
+    ):
+        raise VerificationError(f"Hermes state snapshot has an invalid file hash map: {path}")
     return value
 
 
@@ -301,7 +322,18 @@ def compare_snapshots(before: dict[str, Any], after: dict[str, Any]) -> None:
         after["databases"],
         actual_label="post-update state",
     )
-    missing_files = sorted(set(before["files"]) - set(after["files"]))
+    # A file missing at its old path is only a real loss if its content is
+    # gone too. Hermes's own bundled-skill sync renames/recategorizes
+    # official skill files on every update (e.g. skills/github/foo/SKILL.md
+    # -> skills/web/foo/SKILL.md) -- same bytes, new path, not data loss.
+    # A genuinely deleted file's hash won't reappear anywhere in `after`.
+    after_hashes = set(after.get("file_hashes", {}).values())
+    before_hashes = before.get("file_hashes", {})
+    missing_files = sorted(
+        path
+        for path in set(before["files"]) - set(after["files"])
+        if before_hashes.get(path) not in after_hashes
+    )
     if missing_files:
         raise VerificationError(
             "live Hermes files disappeared during the update; "

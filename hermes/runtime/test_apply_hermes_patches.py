@@ -175,6 +175,26 @@ class ApplyHermesPatchesTests(unittest.TestCase):
         self.assertIn('aliases=("restart", "gw_restart")', migrated)
 
     def test_main_recovers_from_partially_migrated_legacy_patch_set(self) -> None:
+        # Look patches up by marker: index-based lookups silently rot whenever
+        # an upstream refactor adds, drops, or reorders a patch.
+        replacements = {
+            marker: new for _path, marker, _old, new in apply_hermes_patches._PATCHES
+        }
+        legacy_markers = [
+            "# Local Hermes: model_global CommandDef",
+            "# Local Hermes: gw-restart canonical",
+            "# Local Hermes: model_global handler",
+            "# Local Hermes: model_global route",
+            "# Local Hermes: gw-restart route",
+            "# Local Hermes: status reasoning",
+        ]
+        legacy_patches = [
+            patch
+            for patch in apply_hermes_patches._PATCHES
+            if patch[1] in legacy_markers
+        ]
+        self.assertEqual(len(legacy_patches), len(legacy_markers))
+
         with tempfile.TemporaryDirectory() as temp_directory:
             install_dir = Path(temp_directory)
             commands = install_dir / "hermes_cli" / "commands.py"
@@ -183,31 +203,30 @@ class ApplyHermesPatchesTests(unittest.TestCase):
             commands.parent.mkdir(parents=True)
             slash_commands.parent.mkdir(parents=True)
             commands.write_text(
-                apply_hermes_patches._PATCHES[0][3]
+                replacements["# Local Hermes: model_global CommandDef"]
                 + '''    CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True, busy_policy="dispatch", aliases=("gw-restart",)),
 ''',
                 encoding="utf-8",
             )
             slash_commands.write_text(
-                apply_hermes_patches._PATCHES[2][3]
-                + apply_hermes_patches._PATCHES[6][3],
+                replacements["# Local Hermes: model_global handler"]
+                + replacements["# Local Hermes: status reasoning"],
                 encoding="utf-8",
             )
             run.write_text(
-                apply_hermes_patches._PATCHES[3][3]
+                replacements["# Local Hermes: model_global route"]
                 + '''        if canonical in ("restart", "gw-restart"):
             # /gw-restart is the user-facing alias; /restart is kept for
             # backward compatibility with scripts that already use it.
             return await self._handle_restart_command(event)
-'''
-                + apply_hermes_patches._PATCHES[5][3],
+''',
                 encoding="utf-8",
             )
 
             with (
                 mock.patch.object(apply_hermes_patches, "HERMES_AGENT_DIR", install_dir),
-                mock.patch.object(apply_hermes_patches, "_PATCHES", apply_hermes_patches._PATCHES[:7]),
+                mock.patch.object(apply_hermes_patches, "_PATCHES", legacy_patches),
             ):
                 self.assertEqual(apply_hermes_patches.main(), 0)
 
@@ -255,8 +274,11 @@ class ApplyHermesPatchesTests(unittest.TestCase):
             "str(_resolve_hermes_bin())", patches["# Local Hermes: doctor handler"]
         )
         self.assertNotIn("shell=True", patches["# Local Hermes: doctor handler"])
+        # v0.21.0 dispatches ordinary slash commands from the shared
+        # _gateway_plain_command_handlers() map instead of per-command routes.
         self.assertIn(
-            'if canonical == "doctor":', patches["# Local Hermes: doctor route"]
+            '"doctor": self._handle_doctor_command,',
+            patches["# Local Hermes: doctor route"],
         )
 
     def test_doctor_handler_migration_expands_the_resolved_command_argv(self) -> None:
@@ -285,14 +307,32 @@ class ApplyHermesPatchesTests(unittest.TestCase):
         refresh = patches["# Local Hermes: telegram usage refresh"]
         record = patches["# Local Hermes: telegram usage record"]
 
-        self.assertIn("pinned_indexes", ranking)
-        self.assertIn("absolute first tier", ranking)
-        self.assertIn("-usage_counts.get(name, 0)", ranking)
+        # Usage ordering applies only to the last-resort tier: upstream's
+        # configured-priority and default tiers stay above it, so a pinned
+        # command can never be pushed below an unpinned one by usage counts.
+        self.assertIn("return (1, default_index, stable_index)", ranking)
+        self.assertIn("-_telegram_command_usage_count(final_name)", ranking)
+        self.assertIn("def _telegram_command_usage_count", state)
         self.assertIn("telegram-command-usage.json", state)
         self.assertIn("record_telegram_command_usage", state)
         self.assertIn("refresh_every", state)
         self.assertIn("set_my_commands", refresh)
         self.assertIn("_record_telegram_command_usage(event.text)", record)
+
+    def test_status_topic_model_never_renders_the_override_credentials(self) -> None:
+        status = next(
+            new
+            for _path, marker, _old, new in apply_hermes_patches._PATCHES
+            if marker == "# Local Hermes: status reasoning"
+        )
+
+        # _session_model_overrides[key] is a provider config mapping holding
+        # api_key/base_url. /status must render only the model name from it.
+        self.assertIn('session_override.get("model")', status)
+        self.assertIn("isinstance(session_override, dict)", status)
+        self.assertNotIn(
+            'session_model = (getattr(self, "_session_model_overrides"', status
+        )
 
     def test_status_includes_portal_provider_and_tool_info(self) -> None:
         patches = {

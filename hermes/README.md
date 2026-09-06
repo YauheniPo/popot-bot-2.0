@@ -1035,9 +1035,9 @@ Docs/Sheets.
 
 ### GitHub: clone, файлы, commit, push и PR
 
-Hermes использует встроенный terminal и bundled skills `github-auth`,
-`github-code-review`, `github-issue-to-pr`, `github-issues`,
-`github-pr-workflow` и `github-repo-management`. Отдельный GitHub MCP не нужен.
+Hermes использует встроенный terminal и bundled skill `github` (auth, PR
+review, issues, workflow, repo management — с v0.21.0 объединены в один
+скилл вместо прежних шести отдельных). Отдельный GitHub MCP не нужен.
 `git` выполняет локальные операции, а `gh` — PR, unresolved review threads,
 issues, Actions и API-запросы.
 

@@ -16,13 +16,13 @@ vps_deploy:
     # Upstream branch passed to the installer; commit remains the exact pin.
     branch: main
     # Expected pyproject.toml version verified after installation.
-    version: "0.20.5"
+    version: "0.21.0"
     # Human-readable upstream release label shown in deployment logs.
-    release: v2026.8.19
+    release: v2026.8.31
     # Exact source revision; Ansible updates Hermes only when this differs.
-    commit: f293e7206b4ddd66042329442c6afebc19a8808d
+    commit: 29112bef099274229cadff79cdff7bf7b99c4b77
     # Expected checksum of install.sh downloaded from that exact commit.
-    installer_sha256: d5558cd419c8d46bdc958064cb97f963d1ea793866414c025906ec15033512ed
+    installer_sha256: 85ef536d455e51ab67aa74d79272efd49fe717597dbaadfd3cca179a905f4706
   # Local directory for this repository's managed deployment files. It is not
   # part of the upstream Hermes Agent checkout.
   bundle:
@@ -72,6 +72,61 @@ vps_hermes:
       web:
         search_backend: auto
         extract_backend: auto
+      # Skills irrelevant to this profile (headless Linux VPS, Telegram
+      # gateway, QA/ops work). Disabling is by skill name from SKILL.md
+      # frontmatter — renaming or moving a skill directory does NOT disable
+      # it, and the bundled-skill sync restores such directories on every
+      # update. This list is authoritative (list_merge=replace), so a
+      # deployment always re-asserts it.
+      skills:
+        disabled:
+          # macOS-only integrations
+          - apple-notes
+          - apple-reminders
+          - findmy
+          - imessage
+          # Consumer/social integrations
+          - openhue
+          - xurl
+          - songsee
+          - gif-search
+          - grilling
+          - product-price-monitor
+          # Office suites and SaaS this deployment does not use
+          - airtable
+          - box
+          - notion
+          - maps
+          - powerpoint
+          # Heavy creative tooling (architecture-diagram, excalidraw,
+          # claude-design and design-md stay: useful for QA docs).
+          - comfyui
+          - touchdesigner-mcp
+          - manim-video
+          - ascii-video
+          - ascii-art
+          - songwriting-and-ai-music
+          - p5js
+          - sketch
+          - pretext
+          - baoyu-infographic
+          - popular-web-designs
+          - humanizer
+          - svg-graphics
+          # ML infrastructure — not this stack
+          - huggingface-hub
+          - evaluating-llms-harness
+          - weights-and-biases
+          - llama-cpp
+          - serving-llms-vllm
+          # Superseded in v0.21.0 by the consolidated `github` skill; the
+          # old per-task copies still sit on disk from the 0.20.x catalog.
+          - github-auth
+          - github-code-review
+          - github-issue-to-pr
+          - github-issues
+          - github-pr-workflow
+          - github-repo-management
 
 vps_tools:
   google_workspace_cli:

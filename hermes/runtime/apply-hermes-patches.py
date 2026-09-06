@@ -14,6 +14,10 @@ Covered customizations (not yet upstream):
  * /status shows reasoning effort, visibility, global + topic model
  * busy-session dispatch handles /gw-restart like /restart
  * Telegram command-menu usage ranking, with explicit user priorities pinned
+ * /update is CLI-only: chat/gateway surfaces cannot trigger Hermes's own
+   git-rebase-based self-update, which is fragile against this VPS's shallow
+   clone and pinned commit. vps-defaults.yml + Ansible remain the sole update
+   path.
 The existing Edge TTS retry lives in ops/apply-edge-tts-retry.py and is not
 touched here.
 """
@@ -306,11 +310,11 @@ _PATCHES: list[tuple[str, str, str, str]] = [
         _PREFIX + " model_global CommandDef",
         '''    CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
                args_hint="[model] [--provider name] [--global|--session] [--refresh]",
-               busy_policy="reject", busy_handler="model"),
+               busy_policy="reject", busy_handler="model", desktop="hidden"),
 ''',
         '''    CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
                args_hint="[model] [--provider name] [--global|--session] [--refresh]",
-               busy_policy="reject", busy_handler="model"),
+               busy_policy="reject", busy_handler="model", desktop="hidden"),
     # Local Hermes: model_global CommandDef
     CommandDef("model_global", "Set the global default model for all topics/sessions", "Configuration",
                args_hint="[model] [--provider name]",
@@ -321,11 +325,12 @@ _PATCHES: list[tuple[str, str, str, str]] = [
         "hermes_cli/commands.py",
         _PREFIX + " gw-restart canonical",
         '''    CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
-               gateway_only=True, busy_policy="dispatch"),
+               gateway_only=True, busy_policy="dispatch", desktop="terminal"),
 ''',
         '''    # Local Hermes: gw-restart canonical
     CommandDef("gw-restart", "Gracefully restart the gateway after draining active runs", "Session",
-               gateway_only=True, busy_policy="dispatch", aliases=("restart", "gw_restart")),
+               gateway_only=True, busy_policy="dispatch", desktop="terminal",
+               aliases=("restart", "gw_restart")),
 ''',
     ),
     (
@@ -379,23 +384,16 @@ _PATCHES: list[tuple[str, str, str, str]] = [
 ''',
     ),
     (
+        # v0.21.0 merged the separate idle/busy restart routes into the shared
+        # _gateway_plain_command_handlers() map, so one dict entry now covers
+        # what used to need both a canonical route and a busy-map patch.
         "gateway/run.py",
         _PREFIX + " gw-restart route",
-        '''        if canonical == "restart":
-            return await self._handle_restart_command(event)
+        '''            "restart": self._handle_restart_command,
 ''',
-        '''        if canonical in ("restart", "gw-restart"):
+        '''            "restart": self._handle_restart_command,
             # Local Hermes: gw-restart route
-            return await self._handle_restart_command(event)
-''',
-    ),
-    (
-        "gateway/run.py",
-        _PREFIX + " gw-restart busy map",
-        '''                "restart": self._handle_restart_command,
-''',
-        '''                "restart": self._handle_restart_command,
-                "gw-restart": self._handle_restart_command,  # Local Hermes: gw-restart busy map
+            "gw-restart": self._handle_restart_command,
 ''',
     ),
     (
@@ -424,9 +422,17 @@ _PATCHES: list[tuple[str, str, str, str]] = [
             # Global default = config.yaml model.default (single source of truth).
             global_model = _resolve_gateway_model(user_config) if user_config else _resolve_gateway_model()
             # Session override = /model <name> stored for this topic (if any).
-            session_model = (getattr(self, "_session_model_overrides", None) or {}).get(
+            # The stored value is a full provider config mapping (model,
+            # provider, api_key, base_url, ...), so read only the model name
+            # out of it — rendering the mapping itself leaks the provider API
+            # key into /status output. Upstream reads it the same way.
+            session_override = (getattr(self, "_session_model_overrides", None) or {}).get(
                 str(session_key or "")
             )
+            if isinstance(session_override, dict):
+                session_model = _clean_str(session_override.get("model") or "")
+            else:
+                session_model = _clean_str(session_override or "")
             # Topic model = what this topic actually runs with right now:
             # the /model override if set, otherwise the live/cached agent's
             # runtime model, otherwise the global default.
@@ -544,87 +550,37 @@ _PATCHES: list[tuple[str, str, str, str]] = [
     (
         "gateway/run.py",
         _PREFIX + " doctor route",
-        '''        if canonical == "version":
-            return await self._handle_version_command(event)
-
-        if canonical == "debug":
+        # /version moved into _gateway_plain_command_handlers() in v0.21.0;
+        # /doctor rides the same shared map instead of its own route.
+        '''            "version": self._handle_version_command,
 ''',
-        '''        if canonical == "version":
-            return await self._handle_version_command(event)
-
-        if canonical == "doctor":
+        '''            "version": self._handle_version_command,
             # Local Hermes: doctor route
-            return await self._handle_doctor_command(event)
-
-        if canonical == "debug":
+            "doctor": self._handle_doctor_command,
 ''',
     ),
     (
         "hermes_cli/commands.py",
         _PREFIX + " telegram usage ranking",
-        '''def _prioritize_telegram_menu_commands(
-    commands: list[tuple[str, str]],
-) -> list[tuple[str, str]]:
-    priority = {
-        name: index
-        for index, name in enumerate(_telegram_effective_priority())
-    }
-    return [
-        command
-        for _index, command in sorted(
-            enumerate(commands),
-            key=lambda item: (
-                0,
-                priority[item[1][0]],
-                item[0],
-            )
-            if item[1][0] in priority
-            else (
-                1,
-                item[0],
-            ),
-        )
-    ]
-
+        # v0.21.0 moved menu ordering into _prioritize_telegram_menu_candidates
+        # and gave it native configured/default priority tiers. Only the final
+        # "everything else" tier needs our usage ordering now, so this patch is
+        # one line instead of a copy of the whole ranking function.
+        '''        if default_index is not None:
+            return (1, default_index, stable_index)
+        return (2, 0, stable_index)
 ''',
-        '''def _prioritize_telegram_menu_commands(
-    commands: list[tuple[str, str]],
-) -> list[tuple[str, str]]:
-    # Local Hermes: telegram usage ranking
-    menu_cfg = _telegram_command_menu_config()
-    configured_priority = _dedupe_sanitized_names(menu_cfg["priority"])
-    pinned_indexes = {
-        name: index for index, name in enumerate(configured_priority)
-    }
-    default_indexes = {
-        name: index
-        for index, name in enumerate(_telegram_effective_priority())
-    }
-    usage_ranking_enabled, _refresh_every = _telegram_usage_ranking_config()
-    usage_counts = _telegram_command_usage_counts() if usage_ranking_enabled else {}
-
-    def sort_key(item: tuple[int, tuple[str, str]]) -> tuple[int, int, int]:
-        original_index, command = item
-        name = command[0]
-        # Explicit user priority is an absolute first tier. Usage counts can
-        # never move a pinned command below an unpinned command.
-        if name in pinned_indexes:
-            return (0, pinned_indexes[name], original_index)
-        if usage_ranking_enabled:
-            return (1, -usage_counts.get(name, 0), original_index)
-        if name in default_indexes:
-            return (1, default_indexes[name], original_index)
-        return (2, original_index, original_index)
-
-    return [command for _index, command in sorted(enumerate(commands), key=sort_key)]
-
+        '''        if default_index is not None:
+            return (1, default_index, stable_index)
+        # Local Hermes: telegram usage ranking
+        return (2, -_telegram_command_usage_count(final_name), stable_index)
 ''',
     ),
     (
         "hermes_cli/commands.py",
         _PREFIX + " telegram usage state",
         '''def _clamp_command_names(
-    entries: list[tuple[str, ...]],
+    entries: Sequence[tuple[str, ...]],
     reserved: set[str],
 ) -> list[tuple[str, ...]]:
 ''',
@@ -694,9 +650,27 @@ def _write_telegram_usage_state(counts: Mapping[str, int], pending_refresh: int)
     os.replace(temporary_path, state_path)
 
 
+_telegram_usage_cache: tuple[float, dict[str, int]] | None = None
+
+
 def _telegram_command_usage_counts() -> dict[str, int]:
+    """Return persisted usage counts, re-reading only after the state changes."""
+    global _telegram_usage_cache
     enabled, _refresh_every = _telegram_usage_ranking_config()
-    return _telegram_usage_state()[0] if enabled else {}
+    if not enabled:
+        return {}
+    try:
+        modified_at = os.path.getmtime(_telegram_usage_state_path())
+    except OSError:
+        return {}
+    if _telegram_usage_cache is None or _telegram_usage_cache[0] != modified_at:
+        _telegram_usage_cache = (modified_at, _telegram_usage_state()[0])
+    return _telegram_usage_cache[1]
+
+
+def _telegram_command_usage_count(name: str) -> int:
+    """Usage count for one command name, used as a menu sort key."""
+    return _telegram_command_usage_counts().get(name, 0)
 
 
 def record_telegram_command_usage(raw_command: str) -> bool:
@@ -800,6 +774,17 @@ def _clamp_command_names(
         self._record_telegram_command_usage(event.text)
         await self._cache_replied_media(msg, event)
         # Local Hermes: telegram usage record
+''',
+    ),
+    (
+        "hermes_cli/commands.py",
+        _PREFIX + " update cli_only",
+        '''    CommandDef("update", "Update Hermes Agent to the latest version", "Info",
+               busy_policy="dispatch", desktop="terminal"),
+''',
+        '''    # Local Hermes: update cli_only
+    CommandDef("update", "Update Hermes Agent to the latest version", "Info",
+               busy_policy="dispatch", desktop="terminal", cli_only=True),
 ''',
     ),
 ]

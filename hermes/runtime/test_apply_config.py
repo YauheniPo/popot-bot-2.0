@@ -23,15 +23,15 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertEqual(settings["vps_deploy"]["identity"]["user"], "hermes")
         source = settings["vps_deploy"]["hermes_source"]
         self.assertEqual(source["branch"], "main")
-        self.assertEqual(source["version"], "0.20.5")
-        self.assertEqual(source["release"], "v2026.8.19")
+        self.assertEqual(source["version"], "0.21.0")
+        self.assertEqual(source["release"], "v2026.8.31")
         self.assertEqual(
             source["commit"],
-            "f293e7206b4ddd66042329442c6afebc19a8808d",
+            "29112bef099274229cadff79cdff7bf7b99c4b77",
         )
         self.assertEqual(
             source["installer_sha256"],
-            "d5558cd419c8d46bdc958064cb97f963d1ea793866414c025906ec15033512ed",
+            "85ef536d455e51ab67aa74d79272efd49fe717597dbaadfd3cca179a905f4706",
         )
         self.assertTrue(settings["vps_deploy"]["features"]["observability"])
         self.assertTrue(settings["vps_deploy"]["features"]["browser_automation"])
@@ -70,8 +70,71 @@ class ApplyConfigTests(unittest.TestCase):
                     "search_backend": "auto",
                     "extract_backend": "auto",
                 },
+                "skills": {
+                    "disabled": [
+                        "apple-notes",
+                        "apple-reminders",
+                        "findmy",
+                        "imessage",
+                        "openhue",
+                        "xurl",
+                        "songsee",
+                        "gif-search",
+                        "grilling",
+                        "product-price-monitor",
+                        "airtable",
+                        "box",
+                        "notion",
+                        "maps",
+                        "powerpoint",
+                        "comfyui",
+                        "touchdesigner-mcp",
+                        "manim-video",
+                        "ascii-video",
+                        "ascii-art",
+                        "songwriting-and-ai-music",
+                        "p5js",
+                        "sketch",
+                        "pretext",
+                        "baoyu-infographic",
+                        "popular-web-designs",
+                        "humanizer",
+                        "svg-graphics",
+                        "huggingface-hub",
+                        "evaluating-llms-harness",
+                        "weights-and-biases",
+                        "llama-cpp",
+                        "serving-llms-vllm",
+                        "github-auth",
+                        "github-code-review",
+                        "github-issue-to-pr",
+                        "github-issues",
+                        "github-pr-workflow",
+                        "github-repo-management",
+                    ],
+                },
             },
         )
+
+    def test_disabled_skills_are_unique_and_never_essential(self) -> None:
+        settings_path = MODULE_PATH.parent.parent / "config" / "vps-defaults.yml"
+
+        settings = apply_config.load_settings(settings_path)
+        disabled = settings["vps_hermes"]["config"]["managed_overlay"]["skills"]["disabled"]
+
+        self.assertEqual(len(disabled), len(set(disabled)))
+        # hermes-agent is an ESSENTIAL_SKILL upstream drops from the list;
+        # the local skills this deployment relies on must stay enabled.
+        for kept in (
+            "hermes-agent",
+            "github",
+            "codebase-inspection",
+            "hermes-vps-ops",
+            "telegram-logs-parser",
+            "architecture-diagram",
+            "excalidraw",
+        ):
+            self.assertNotIn(kept, disabled)
         self.assertEqual(settings["vps_runtime"]["set"]["approvals.mode"], "manual")
         self.assertEqual(settings["vps_runtime"]["set"]["browser.backend"], "off")
         self.assertEqual(settings["vps_runtime"]["set"]["display.tool_progress"], "off")
