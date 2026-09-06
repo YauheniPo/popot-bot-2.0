@@ -1,0 +1,28 @@
+# Mirrors main to the Azure DevOps Repos repo (dev.azure.com/YauheniPo/popot-bot-2.0)
+# so its Overview page shows a README instead of "file not found". The ADO
+# pipelines do not read from this repo (they dispatch GitHub workflows
+# directly, see azure-ci/*.yml) — this push is cosmetic only.
+#
+# Requires a repository secret ADO_PAT: an Azure DevOps PAT with
+# "Code (Read & write)" scope on this project, added manually in
+# GitHub -> Settings -> Secrets and variables -> Actions.
+name: Mirror to Azure DevOps
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push main to ADO
+        env:
+          ADO_PAT: ${{ secrets.ADO_PAT }}
+        run: |
+          git config --global credential.helper '!f() { echo "username=YauheniPo"; echo "password=$ADO_PAT"; }; f'
+          git push https://dev.azure.com/YauheniPo/popot-bot-2.0/_git/popot-bot-2.0 main
