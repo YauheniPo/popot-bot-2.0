@@ -1,8 +1,11 @@
 name: Manual AI branch review
 
+# The request id is part of the run name on purpose: a workflow_dispatch API
+# call returns 204 with no run id, so an external caller can only find its own
+# run by matching this string in the run list.
 run-name: >-
   ${{ startsWith(inputs.request_id, 'ado-') && 'Azure DevOps' || 'GitHub' }}
-  · ${{ inputs.target_ref }} → ${{ inputs.base_ref }} · ${{ inputs.scope }}
+  · ${{ inputs.target_ref }} → ${{ inputs.base_ref }} · ${{ inputs.scope }}${{ inputs.request_id && format(' · {0}', inputs.request_id) || '' }}
 
 on:
   workflow_dispatch:
@@ -302,6 +305,10 @@ jobs:
           OPENROUTER_REVIEW_FALLBACK_MODEL: ${{ steps.models.outputs.secondary_model }}
           OPENROUTER_REVIEW_FALLBACK_MODE: ${{ steps.models.outputs.secondary_mode }}
           OPENROUTER_MAX_REVIEW_CHUNKS: ${{ vars.MANUAL_REVIEW_MAX_CHUNKS || '60' }}
+          # This job allows 90 minutes and up to 60 chunks. Without an explicit
+          # budget the script would stop after the 12-minute default meant for
+          # the automatic PR review and fail a large manual or Azure DevOps run.
+          OPENROUTER_REVIEW_BUDGET_SECONDS: ${{ vars.MANUAL_REVIEW_BUDGET_SECONDS || '4800' }}
           OPENROUTER_REVIEW_MODEL: ${{ steps.models.outputs.selected_model }}
           OPENROUTER_REVIEW_MODEL_MODE: ${{ steps.models.outputs.selected_mode }}
           OPENROUTER_REVIEW_RPM: ${{ vars.OPENROUTER_REVIEW_RPM || '8' }}
@@ -344,3 +351,46 @@ jobs:
               echo "- Findings: ${CHECK_RUN_URL}"
             fi
           } >>"${GITHUB_STEP_SUMMARY}"
+
+      # A job step summary has no REST API, so an external caller cannot read
+      # it back. Republish the same text plus the links as an artifact, which
+      # is the only machine-readable channel out of a workflow run.
+      - name: Package the review report for the caller
+        if: always()
+        shell: bash
+        env:
+          BASE_SHA: ${{ steps.context.outputs.base_sha }}
+          CHECK_RUN_URL: ${{ steps.review.outputs.check_run_url }}
+          HEAD_SHA: ${{ steps.context.outputs.head_sha }}
+          JOB_STATUS: ${{ job.status }}
+          MODEL: ${{ steps.models.outputs.selected_model }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          PUBLISH_TARGET: ${{ steps.context.outputs.publish_target }}
+          REPORT_DIR: ${{ github.workspace }}/review-report
+          REQUEST_ID: ${{ inputs.request_id }}
+          TARGET_REF: ${{ inputs.target_ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${REPORT_DIR}"
+          cp "${GITHUB_STEP_SUMMARY}" "${REPORT_DIR}/summary.md"
+          jq -n \
+            --arg request_id "${REQUEST_ID}" \
+            --arg run_url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --arg job_status "${JOB_STATUS}" \
+            --arg target_ref "${TARGET_REF}" \
+            --arg base_sha "${BASE_SHA}" \
+            --arg head_sha "${HEAD_SHA}" \
+            --arg model "${MODEL}" \
+            --arg publish_target "${PUBLISH_TARGET}" \
+            --arg pr_number "${PR_NUMBER}" \
+            --arg check_run_url "${CHECK_RUN_URL}" \
+            '$ARGS.named' >"${REPORT_DIR}/report.json"
+
+      - name: Upload the review report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ai-review-report
+          path: ${{ github.workspace }}/review-report
+          if-no-files-found: error
+          retention-days: 7

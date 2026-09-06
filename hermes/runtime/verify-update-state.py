@@ -326,14 +326,23 @@ def compare_snapshots(before: dict[str, Any], after: dict[str, Any]) -> None:
     # gone too. Hermes's own bundled-skill sync renames/recategorizes
     # official skill files on every update (e.g. skills/github/foo/SKILL.md
     # -> skills/web/foo/SKILL.md) -- same bytes, new path, not data loss.
-    # A genuinely deleted file's hash won't reappear anywhere in `after`.
-    after_hashes = set(after.get("file_hashes", {}).values())
+    after_hashes = after.get("file_hashes", {})
     before_hashes = before.get("file_hashes", {})
-    missing_files = sorted(
-        path
-        for path in set(before["files"]) - set(after["files"])
-        if before_hashes.get(path) not in after_hashes
+    survivors = set(before["files"]) & set(after["files"])
+    # Only content at a path the pre-update snapshot did not already have can
+    # be where a moved file landed, and each such copy accounts for exactly
+    # one move. Counting them keeps a deleted duplicate visible: an identical
+    # file surviving elsewhere must not absolve a file that really vanished.
+    relocated = Counter(
+        digest for path, digest in after_hashes.items() if path not in survivors
     )
+    missing_files: list[str] = []
+    for path in sorted(set(before["files"]) - set(after["files"])):
+        digest = before_hashes.get(path)
+        if digest is not None and relocated[digest] > 0:
+            relocated[digest] -= 1
+            continue
+        missing_files.append(path)
     if missing_files:
         raise VerificationError(
             "live Hermes files disappeared during the update; "

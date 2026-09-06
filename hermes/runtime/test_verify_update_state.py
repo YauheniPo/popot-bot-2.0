@@ -197,6 +197,18 @@ class VerifyUpdateStateTests(unittest.TestCase):
 
         verify_update_state.compare_snapshots(before, after)  # must not raise
 
+    def test_deleting_one_of_two_identical_files_still_fails_closed(self) -> None:
+        # Matching content alone must not excuse a deletion: every surviving
+        # copy accounts for at most one moved file.
+        duplicate = self.home / "skills" / "custom-review" / "SKILL.copy.md"
+        duplicate.write_bytes((self.home / "skills" / "custom-review" / "SKILL.md").read_bytes())
+        before = verify_update_state.create_snapshot(self.home)
+        duplicate.unlink()
+        after = verify_update_state.create_snapshot(self.home)
+
+        with self.assertRaisesRegex(verify_update_state.VerificationError, "files disappeared"):
+            verify_update_state.compare_snapshots(before, after)
+
     def test_snapshot_file_round_trip(self) -> None:
         snapshot_path = self.root / "snapshot.json"
         snapshot = verify_update_state.create_snapshot(self.home)

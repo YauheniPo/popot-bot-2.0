@@ -65,6 +65,73 @@ class ReviewThreadFetchTest(unittest.TestCase):
         self.assertEqual(len(threads), 1)
         self.assertEqual(threads[0].reply_to_comment_id, 101)
         self.assertEqual(threads[0].line, 48)
+        self.assertFalse(threads[0].resolved)
+
+    def test_fetches_only_resolved_threads_opened_by_a_reviewer_bot(self) -> None:
+        machine_body = f"<!-- claude-inline:{'c' * 40}:0123456789abcdef -->\nFinding"
+        nodes = [
+            thread(thread_id="unresolved-machine", body=machine_body),
+            thread(thread_id="resolved-human", resolved=True),
+            thread(thread_id="resolved-machine", resolved=True, body=machine_body),
+        ]
+        nodes[2]["comments"]["nodes"][0]["author"] = {"login": context.AUTOMATED_REVIEW_AUTHOR}
+        response = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "nodes": nodes,
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        }
+                    }
+                }
+            }
+        }
+        with mock.patch.object(context, "_request_json", return_value=response):
+            threads = context.fetch_resolved_machine_threads("owner/repo", "2", "token")
+
+        self.assertEqual([item.node_id for item in threads], ["resolved-machine"])
+
+
+class MachineThreadTest(unittest.TestCase):
+    @staticmethod
+    def _thread(body: str, *, author: str = context.AUTOMATED_REVIEW_AUTHOR) -> object:
+        return context.ReviewThread(
+            node_id="thread",
+            path="app.py",
+            side="RIGHT",
+            line=12,
+            original_line=12,
+            outdated=False,
+            viewer_can_reply=True,
+            comments=(context.ReviewComment("node", 1, author, body),),
+        )
+
+    def test_accepts_either_reviewer_marker_from_an_earlier_revision(self) -> None:
+        older_sha = "a" * 40
+        for prefix in ("<!-- direct-openrouter-inline:", "<!-- claude-inline:"):
+            with self.subTest(prefix=prefix):
+                self.assertTrue(
+                    context.is_machine_thread(self._thread(f"{prefix}{older_sha}:app.py -->\nx"))
+                )
+
+    def test_rejects_a_bot_thread_without_a_reviewer_marker(self) -> None:
+        self.assertFalse(context.is_machine_thread(self._thread("A plain bot comment")))
+
+    def test_a_fix_claim_needs_a_changed_file_and_an_earlier_revision(self) -> None:
+        head_sha = "b" * 40
+        stale = self._thread(f"<!-- claude-inline:{'a' * 40}:app.py -->")
+        current = self._thread(f"<!-- claude-inline:{head_sha}:app.py -->")
+
+        self.assertTrue(context.may_be_auto_fixed(stale, head_sha, {"app.py"}))
+        # Nothing has changed since a thread opened against this same revision.
+        self.assertFalse(context.may_be_auto_fixed(current, head_sha, {"app.py"}))
+        # The revision does not touch the file the thread is about.
+        self.assertFalse(context.may_be_auto_fixed(stale, head_sha, {"other.py"}))
+
+    def test_rejects_a_human_authored_thread(self) -> None:
+        marker = f"<!-- claude-inline:{'a' * 40}:app.py -->"
+        self.assertFalse(context.is_machine_thread(self._thread(marker, author="owner")))
 
 
 class ReviewContextRenderTest(unittest.TestCase):
@@ -373,6 +440,7 @@ class InlineCommentTest(unittest.TestCase):
                 return_value={"LEFT": set(), "RIGHT": {12}},
             ),
             mock.patch.object(context, "fetch_unresolved_review_threads", return_value=[]),
+            mock.patch.object(context, "fetch_resolved_machine_threads", return_value=[]),
             mock.patch.object(context, "create_inline_comment") as create,
             mock.patch.object(context, "_request_json", side_effect=[[], {}]) as request,
             mock.patch("builtins.print"),
@@ -425,6 +493,7 @@ class InlineCommentTest(unittest.TestCase):
                 return_value={"LEFT": set(), "RIGHT": {12}},
             ),
             mock.patch.object(context, "fetch_unresolved_review_threads", return_value=[]),
+            mock.patch.object(context, "fetch_resolved_machine_threads", return_value=[]),
             mock.patch.object(context, "create_inline_comment", side_effect=anchor_error),
             mock.patch.object(context, "_request_json", side_effect=[[], {}]) as request,
             mock.patch("builtins.print"),
@@ -436,7 +505,7 @@ class InlineCommentTest(unittest.TestCase):
         self.assertIn("Findings without inline anchors:", summary_payload["body"])
         self.assertIn("`app.py:12`", summary_payload["body"])
 
-    def test_publisher_rejects_and_resolves_only_a_current_machine_thread(self) -> None:
+    def test_publisher_rejects_and_resolves_an_untouched_machine_thread(self) -> None:
         head_sha = "b" * 40
         result = {
             "summary": "The first reviewer has one false positive.",
@@ -480,6 +549,7 @@ class InlineCommentTest(unittest.TestCase):
             mock.patch.dict(context.os.environ, environment, clear=True),
             mock.patch.object(context, "_changed_paths", return_value={"playbook.yml"}),
             mock.patch.object(context, "fetch_unresolved_review_threads", return_value=[thread]),
+            mock.patch.object(context, "fetch_resolved_machine_threads", return_value=[]),
             mock.patch.object(context, "reply_to_review_thread") as reply,
             mock.patch.object(context, "resolve_review_thread") as resolve,
             mock.patch.object(context, "_request_json", side_effect=[[], {}]) as request,
@@ -488,12 +558,165 @@ class InlineCommentTest(unittest.TestCase):
             context._command_publish()
 
         reply.assert_called_once()
-        self.assertIn("Rejected OpenRouterAPI finding", reply.call_args.args[4])
+        self.assertIn("Rejected finding", reply.call_args.args[4])
         resolve.assert_called_once_with("token", "direct-thread")
         summary_payload = request.call_args_list[1].args[3]
         self.assertIn("rejected and auto-resolved: 1", summary_payload["body"])
 
-    def test_direct_machine_thread_never_auto_resolves_after_human_reply(self) -> None:
+    def _stale_machine_thread(self) -> object:
+        """A reviewer thread opened on an older revision, with no human reply."""
+        return context.ReviewThread(
+            node_id="stale-thread",
+            path="playbook.yml",
+            side="RIGHT",
+            line=42,
+            original_line=42,
+            outdated=True,
+            viewer_can_reply=True,
+            comments=(
+                context.ReviewComment(
+                    "comment-node",
+                    101,
+                    context.AUTOMATED_REVIEW_AUTHOR,
+                    f"{context.DIRECT_REVIEWER_INLINE_PREFIX}{'a' * 40}:playbook.yml:RIGHT:42 -->",
+                ),
+            ),
+        )
+
+    def _publish_verdict(
+        self,
+        verdict: str,
+        *,
+        changed_paths: set[str],
+    ) -> tuple[mock.Mock, mock.Mock, mock.Mock]:
+        result = {
+            "summary": "Checked the earlier finding against this revision.",
+            "findings": [],
+            "thread_verdicts": [
+                {
+                    "thread_id": "stale-thread",
+                    "verdict": verdict,
+                    "reason": "playbook.yml:383 now passes follow: false.",
+                }
+            ],
+        }
+        environment = {
+            "GITHUB_REPOSITORY": "owner/repo",
+            "PR_NUMBER": "2",
+            "GITHUB_TOKEN": "token",
+            "BASE_SHA": "a" * 40,
+            "HEAD_SHA": "b" * 40,
+            "CLAUDE_REVIEW_MODEL": "review-model",
+            "CLAUDE_REVIEW_RUN_ID": "123",
+            "CLAUDE_REVIEW_RESULT": context.json.dumps(result),
+        }
+        with (
+            mock.patch.dict(context.os.environ, environment, clear=True),
+            mock.patch.object(context, "_changed_paths", return_value=changed_paths),
+            mock.patch.object(
+                context,
+                "fetch_unresolved_review_threads",
+                return_value=[self._stale_machine_thread()],
+            ),
+            mock.patch.object(context, "fetch_resolved_machine_threads", return_value=[]),
+            mock.patch.object(context, "reply_to_review_thread") as reply,
+            mock.patch.object(context, "resolve_review_thread") as resolve,
+            mock.patch.object(context, "_request_json", side_effect=[[], {}]) as request,
+            mock.patch("builtins.print"),
+        ):
+            context._command_publish()
+        return reply, resolve, request
+
+    def test_publisher_resolves_a_fixed_thread_from_an_earlier_revision(self) -> None:
+        reply, resolve, request = self._publish_verdict(
+            "fixed",
+            changed_paths={"playbook.yml"},
+        )
+
+        reply.assert_called_once()
+        self.assertIn("the requested change is present", reply.call_args.args[4])
+        resolve.assert_called_once_with("token", "stale-thread")
+        self.assertIn("fixed and auto-resolved: 1", request.call_args_list[1].args[3]["body"])
+
+    def test_publisher_downgrades_fixed_when_the_file_is_untouched(self) -> None:
+        reply, resolve, request = self._publish_verdict(
+            "fixed",
+            changed_paths={"other.py"},
+        )
+
+        reply.assert_not_called()
+        resolve.assert_not_called()
+        summary_payload = request.call_args_list[1].args[3]
+        self.assertIn("left for human review: 1", summary_payload["body"])
+        self.assertIn("fixed and auto-resolved: 0", summary_payload["body"])
+
+    def test_publisher_suppresses_a_finding_that_repeats_a_resolved_thread(self) -> None:
+        result = {
+            "summary": "Found one issue.",
+            "thread_verdicts": [],
+            "findings": [
+                {
+                    "severity": "P2",
+                    "path": "app.py",
+                    "side": "RIGHT",
+                    "line": 12,
+                    "title": "Wrong value",
+                    "impact": "The API returns stale data.",
+                    "fix": "Return the current value.",
+                }
+            ],
+        }
+        settled = context.ReviewThread(
+            node_id="settled-thread",
+            path="app.py",
+            side="RIGHT",
+            line=12,
+            original_line=12,
+            outdated=False,
+            viewer_can_reply=True,
+            comments=(
+                context.ReviewComment(
+                    "comment-node",
+                    101,
+                    context.AUTOMATED_REVIEW_AUTHOR,
+                    f"<!-- claude-inline:{'a' * 40}:0123456789abcdef -->\n"
+                    "Wrong value. The API returns stale data. Return the current value.",
+                ),
+            ),
+            resolved=True,
+        )
+        environment = {
+            "GITHUB_REPOSITORY": "owner/repo",
+            "PR_NUMBER": "2",
+            "GITHUB_TOKEN": "token",
+            "BASE_SHA": "a" * 40,
+            "HEAD_SHA": "b" * 40,
+            "CLAUDE_REVIEW_MODEL": "review-model",
+            "CLAUDE_REVIEW_RUN_ID": "123",
+            "CLAUDE_REVIEW_RESULT": context.json.dumps(result),
+        }
+        with (
+            mock.patch.dict(context.os.environ, environment, clear=True),
+            mock.patch.object(context, "_changed_paths", return_value={"app.py"}),
+            mock.patch.object(
+                context,
+                "changed_diff_lines",
+                return_value={"LEFT": set(), "RIGHT": {12}},
+            ),
+            mock.patch.object(context, "fetch_unresolved_review_threads", return_value=[]),
+            mock.patch.object(context, "fetch_resolved_machine_threads", return_value=[settled]),
+            mock.patch.object(context, "create_inline_comment") as create,
+            mock.patch.object(context, "_request_json", side_effect=[[], {}]) as request,
+            mock.patch("builtins.print"),
+        ):
+            context._command_publish()
+
+        create.assert_not_called()
+        summary_payload = request.call_args_list[1].args[3]
+        self.assertIn("Previously resolved findings not re-raised: 1.", summary_payload["body"])
+        self.assertIn("Repeats of already-resolved threads, suppressed:", summary_payload["body"])
+
+    def test_machine_thread_never_auto_resolves_after_a_human_reply(self) -> None:
         head_sha = "b" * 40
         thread = context.ReviewThread(
             node_id="direct-thread",
@@ -514,7 +737,7 @@ class InlineCommentTest(unittest.TestCase):
             ),
         )
 
-        self.assertFalse(context._is_direct_machine_thread(thread, head_sha))
+        self.assertFalse(context.is_machine_thread(thread))
 
 
 if __name__ == "__main__":

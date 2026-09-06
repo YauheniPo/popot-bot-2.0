@@ -36,6 +36,11 @@ stages:
         steps:
           - checkout: none
 
+          # REVIEWED: this relative path is correct after the move to azure-ci/.
+          # Azure Pipelines resolves a template path without a leading `/`
+          # relative to the file that includes it, so this reads
+          # azure-ci/azure-templates/... — the template moved here together
+          # with the pipelines. Do not rewrite it as a root-relative path.
           - template: azure-templates/validate-trusted-branch.yml
             parameters:
               errorMessage: Run the production deployment pipeline from main.
@@ -177,6 +182,13 @@ stages:
                     set -euo pipefail
                     mkdir -p "${ANSIBLE_LOCAL_TEMP}" "${ANSIBLE_REMOTE_TEMP}"
 
+                    # REVIEWED: intentionally no --check/--diff dry run. The
+                    # deployment runs through command/shell tasks (installer,
+                    # deploy-hermes.sh, service probes), which --check skips
+                    # rather than validates, so it would report a clean run
+                    # that proves nothing. The real gate is the mandatory
+                    # verified backup and the block/rescue around it in
+                    # playbook.yml. Do not add a --check pass here.
                     ansible-playbook \
                       --inventory hermes/ansible/inventory.ini \
                       --vault-password-file "${HERMES_VAULT_PASSWORD_FILE}" \
