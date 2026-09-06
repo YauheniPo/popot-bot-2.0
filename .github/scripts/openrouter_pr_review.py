@@ -39,7 +39,7 @@ DEFAULT_REQUESTS_PER_MINUTE = 8
 DEFAULT_RATE_LIMIT_RETRY_SECONDS = 15.0
 MAX_REQUEST_ATTEMPTS = 5
 MAX_RETRY_DELAY_SECONDS = 90.0
-MAX_OUTPUT_TOKENS = 6_000
+MAX_OUTPUT_TOKENS = 10_000
 # Hidden reasoning is billed against max_tokens, so a reasoning-required
 # endpoint needs headroom the schema-only budget does not have; without it the
 # model spends the whole budget thinking and returns an empty message.
