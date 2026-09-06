@@ -1024,13 +1024,19 @@ def _command_publish() -> None:
     closed_thread_ids: set[str] = set()
     for verdict in verdicts:
         thread = threads_by_id.get(verdict.thread_id)
+        print(
+            f"Thread verdict: id={verdict.thread_id} verdict={verdict.verdict} "
+            f"reason={verdict.reason!r}"
+        )
         # Only a reviewer-authored thread that no human has joined may be closed
         # automatically. Threads from earlier revisions qualify on purpose:
         # closing them after the fix lands is the point of this pass.
         if thread is None or not is_machine_thread(thread):
+            print(f"  -> skipped: thread {verdict.thread_id} not a machine thread")
             continue
         if verdict.verdict == "confirmed":
             confirmed_direct_findings += 1
+            print("  -> left open: confirmed still valid")
             continue
         if verdict.verdict == "fixed" and not may_be_auto_fixed(
             thread,
@@ -1038,15 +1044,19 @@ def _command_publish() -> None:
             changed_paths,
         ):
             direct_findings_needing_human += 1
+            print("  -> downgraded to human review: fixed verdict not eligible for auto-resolve")
             continue
         if verdict.verdict == "needs_human":
             direct_findings_needing_human += 1
+            print("  -> left for human review: needs_human")
             continue
         verdict_marker = f"<!-- claude-thread-verdict:{head_sha}:{thread.node_id} -->"
         if any(verdict_marker in comment.body for comment in thread.comments):
+            print("  -> skipped: verdict already posted for this head SHA")
             continue
         comment_id = thread.reply_to_comment_id
         if comment_id is None or not thread.viewer_can_reply:
+            print("  -> skipped: thread has no repliable comment")
             continue
         heading = (
             "Resolved — the requested change is present in this revision"
@@ -1066,6 +1076,7 @@ def _command_publish() -> None:
             fixed_direct_findings += 1
         else:
             rejected_direct_findings += 1
+        print(f"  -> auto-resolved: {verdict.verdict}")
     new_findings: list[ReviewFinding] = []
     follow_ups: list[tuple[ReviewFinding, ReviewThread]] = []
     duplicates: list[ReviewFinding] = []
