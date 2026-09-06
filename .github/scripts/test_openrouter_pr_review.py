@@ -171,6 +171,45 @@ class FindingValidationTest(unittest.TestCase):
             reviewer.validate_findings([], (chunk,), [review_file])
 
 
+class ReviewDeadlineTest(unittest.TestCase):
+    def test_require_refuses_to_start_a_request_without_time(self) -> None:
+        deadline = reviewer.ReviewDeadline(0.0)
+
+        with self.assertRaises(reviewer.ReviewBudgetExhausted):
+            deadline.require()
+
+    def test_reserved_withholds_part_of_the_budget(self) -> None:
+        deadline = reviewer.ReviewDeadline(100.0)
+
+        with deadline.reserved(95.0):
+            self.assertLess(deadline.remaining(), reviewer.MIN_ATTEMPT_SECONDS)
+            with self.assertRaises(reviewer.ReviewBudgetExhausted):
+                deadline.require()
+
+        self.assertGreater(deadline.remaining(), reviewer.MIN_ATTEMPT_SECONDS)
+
+    def test_bounded_sleep_never_outlives_the_budget(self) -> None:
+        deadline = reviewer.ReviewDeadline(10.0)
+
+        with mock.patch.object(reviewer.time, "sleep") as sleep:
+            deadline.bounded_sleep(90.0)
+
+        self.assertLessEqual(sleep.call_args.args[0], 10.0)
+
+    def test_budget_must_be_a_usable_number(self) -> None:
+        with mock.patch.dict(
+            reviewer.os.environ, {"OPENROUTER_REVIEW_BUDGET_SECONDS": "soon"}
+        ):
+            with self.assertRaises(RuntimeError):
+                reviewer.configured_review_budget()
+
+        with mock.patch.dict(
+            reviewer.os.environ, {"OPENROUTER_REVIEW_BUDGET_SECONDS": "5"}
+        ):
+            with self.assertRaises(RuntimeError):
+                reviewer.configured_review_budget()
+
+
 class OpenRouterRequestTest(unittest.TestCase):
     def test_extracts_review_json_from_mixed_provider_text(self) -> None:
         response = {
@@ -335,6 +374,78 @@ class OpenRouterRequestTest(unittest.TestCase):
             retry_body["reasoning"],
             {"effort": "low", "exclude": True},
         )
+
+    def test_reasoning_retry_raises_the_output_token_budget(self) -> None:
+        # Hidden reasoning is billed against max_tokens: keeping the
+        # schema-only cap made the model spend the budget thinking and return
+        # an empty message.
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps({"summary": "Reviewed.", "findings": []})
+                    }
+                }
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        with (
+            mock.patch.object(
+                reviewer,
+                "request_json",
+                side_effect=[
+                    reviewer.RequestError(
+                        "Reasoning is mandatory for this endpoint and cannot be disabled.",
+                        status=400,
+                    ),
+                    response,
+                ],
+            ) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch("builtins.print"),
+        ):
+            reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
+
+        first_body = request.call_args_list[0].args[3]
+        retry_body = request.call_args_list[1].args[3]
+        self.assertEqual(first_body["max_tokens"], reviewer.MAX_OUTPUT_TOKENS)
+        self.assertEqual(retry_body["max_tokens"], reviewer.REASONING_OUTPUT_TOKENS)
+        self.assertGreater(
+            reviewer.REASONING_OUTPUT_TOKENS, reviewer.MAX_OUTPUT_TOKENS
+        )
+
+    def test_reserves_budget_so_an_exhausted_primary_still_reaches_fallback(
+        self,
+    ) -> None:
+        # The primary retry ladder used to outlive the workflow job timeout,
+        # so the fallback model never got a request at all.
+        response = {
+            "choices": [
+                {"message": {"content": '{"summary":"Reviewed.","findings":[]}'}}
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        budget = reviewer.FALLBACK_RESERVE_SECONDS + 5.0
+        with (
+            mock.patch.dict(
+                reviewer.os.environ,
+                {"OPENROUTER_REVIEW_FALLBACK_MODEL": "fallback-model"},
+            ),
+            mock.patch.object(
+                reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(budget)
+            ),
+            mock.patch.object(
+                reviewer, "request_json", return_value=response
+            ) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch("builtins.print"),
+        ):
+            result = reviewer.review_chunk("api-key", "primary-model", (), chunk, 1, 1)
+
+        self.assertEqual(result["findings"], [])
+        # The primary never starts: its reserved slot is below the floor.
+        self.assertEqual(request.call_count, 1)
+        self.assertEqual(request.call_args.args[3]["model"], "fallback-model")
 
     def test_retries_transient_provider_failures(self) -> None:
         response = {
@@ -1076,6 +1187,179 @@ class PublicationPlanTest(unittest.TestCase):
         self.assertEqual(publication.new_findings, ())
         self.assertEqual(publication.follow_ups[0].finding, self.finding)
         self.assertEqual(publication.duplicates, ())
+
+    def test_suppresses_a_repeat_of_an_already_resolved_thread(self) -> None:
+        settled = self.review_thread("Tailscale auth key exposed in argv")
+
+        publication = reviewer.build_publication_plan([self.finding], (), (settled,))
+
+        self.assertEqual(publication.new_findings, ())
+        self.assertEqual(publication.follow_ups, ())
+        self.assertEqual(publication.duplicates, ())
+        self.assertEqual(publication.previously_settled, (self.finding,))
+
+    def test_a_resolved_thread_about_something_else_does_not_suppress(self) -> None:
+        settled = self.review_thread("This command resets previously advertised routes")
+
+        publication = reviewer.build_publication_plan([self.finding], (), (settled,))
+
+        self.assertEqual(publication.new_findings, (self.finding,))
+        self.assertEqual(publication.previously_settled, ())
+
+
+class ThreadTriageTest(unittest.TestCase):
+    HEAD_SHA = "b" * 40
+    OLDER_SHA = "a" * 40
+
+    def machine_thread(
+        self,
+        *,
+        marked_sha: str | None = None,
+        author: str = pr_review_context.AUTOMATED_REVIEW_AUTHOR,
+        extra_comments: tuple[object, ...] = (),
+    ) -> reviewer.ReviewThread:
+        marker = f"<!-- direct-openrouter-inline:{marked_sha or self.OLDER_SHA}:app.py:RIGHT:5 -->"
+        return reviewer.ReviewThread(
+            node_id="thread-1",
+            path="app.py",
+            side="RIGHT",
+            line=5,
+            original_line=5,
+            outdated=False,
+            viewer_can_reply=True,
+            comments=(
+                pr_review_context.ReviewComment("comment-node", 101, author, marker),
+                *extra_comments,
+            ),
+        )
+
+    def apply(
+        self,
+        verdict: str,
+        thread: reviewer.ReviewThread,
+        *,
+        changed_paths: set[str] | None = None,
+    ) -> tuple[reviewer.TriageOutcome, mock.Mock, mock.Mock]:
+        verdicts = [reviewer.ThreadVerdict(thread.node_id, verdict, "app.py:5 now guards the call.")]
+        with (
+            mock.patch.object(reviewer, "reply_to_review_thread") as reply,
+            mock.patch.object(reviewer, "resolve_review_thread") as resolve,
+        ):
+            outcome = reviewer.apply_thread_verdicts(
+                "owner/repository",
+                "2",
+                "token",
+                self.HEAD_SHA,
+                verdicts,
+                (thread,),
+                {"app.py"} if changed_paths is None else changed_paths,
+            )
+        return outcome, reply, resolve
+
+    def test_resolves_a_fixed_thread_from_an_earlier_revision(self) -> None:
+        outcome, reply, resolve = self.apply("fixed", self.machine_thread())
+
+        self.assertEqual(outcome.fixed, 1)
+        self.assertEqual(outcome.closed_thread_ids, frozenset({"thread-1"}))
+        self.assertIn("the requested change is present", reply.call_args.args[4])
+        self.assertIn("openrouter-thread-verdict:", reply.call_args.args[4])
+        resolve.assert_called_once_with("token", "thread-1")
+
+    def test_downgrades_fixed_on_a_thread_from_this_same_revision(self) -> None:
+        outcome, reply, resolve = self.apply(
+            "fixed",
+            self.machine_thread(marked_sha=self.HEAD_SHA),
+        )
+
+        self.assertEqual(outcome.fixed, 0)
+        self.assertEqual(outcome.left_for_human, 1)
+        reply.assert_not_called()
+        resolve.assert_not_called()
+
+    def test_downgrades_fixed_when_the_revision_does_not_touch_the_file(self) -> None:
+        outcome, reply, resolve = self.apply(
+            "fixed",
+            self.machine_thread(),
+            changed_paths={"other.py"},
+        )
+
+        self.assertEqual(outcome.left_for_human, 1)
+        reply.assert_not_called()
+        resolve.assert_not_called()
+
+    def test_never_closes_a_thread_a_human_replied_to(self) -> None:
+        human_reply = pr_review_context.ReviewComment(
+            "human-node",
+            102,
+            "owner",
+            "Keep this open.",
+        )
+        outcome, reply, resolve = self.apply(
+            "rejected",
+            self.machine_thread(extra_comments=(human_reply,)),
+        )
+
+        self.assertEqual(outcome.assessed, 0)
+        reply.assert_not_called()
+        resolve.assert_not_called()
+
+    def test_confirmed_leaves_the_thread_open(self) -> None:
+        outcome, reply, resolve = self.apply("confirmed", self.machine_thread())
+
+        self.assertEqual(outcome.still_open, 1)
+        reply.assert_not_called()
+        resolve.assert_not_called()
+
+    def test_skips_a_thread_already_carrying_this_revision_verdict(self) -> None:
+        marker = reviewer._verdict_marker(self.HEAD_SHA, "thread-1")
+        existing = pr_review_context.ReviewComment(
+            "verdict-node",
+            102,
+            pr_review_context.AUTOMATED_REVIEW_AUTHOR,
+            f"{marker}\nAlready answered",
+        )
+        outcome, reply, resolve = self.apply(
+            "rejected",
+            self.machine_thread(extra_comments=(existing,)),
+        )
+
+        self.assertEqual(outcome.rejected, 0)
+        reply.assert_not_called()
+        resolve.assert_not_called()
+
+    def test_triage_candidates_keep_only_reviewer_threads(self) -> None:
+        human_thread = self.machine_thread(author="owner")
+
+        self.assertEqual(reviewer.triage_candidates((human_thread,)), ())
+        self.assertEqual(len(reviewer.triage_candidates((self.machine_thread(),))), 1)
+
+    def test_validates_verdicts_against_the_supplied_threads(self) -> None:
+        thread = self.machine_thread()
+        response = {
+            "summary": "Re-checked one thread.",
+            "verdicts": [
+                {"thread_id": "thread-1", "verdict": "fixed", "reason": "app.py:5 guards it."},
+                {"thread_id": "thread-1", "verdict": "rejected", "reason": "duplicate id"},
+                {"thread_id": "unknown", "verdict": "fixed", "reason": "not in the snapshot"},
+                {"thread_id": "thread-1", "verdict": "invented", "reason": "bad enum"},
+                {"thread_id": "thread-1", "verdict": "fixed", "reason": ""},
+            ],
+        }
+
+        verdicts = reviewer.validate_thread_verdicts(response, (thread,))
+
+        self.assertEqual(len(verdicts), 1)
+        self.assertEqual(verdicts[0].verdict, "fixed")
+
+    def test_azure_origin_uses_its_own_verdict_marker(self) -> None:
+        with mock.patch.dict(
+            reviewer.os.environ,
+            {"REVIEW_ORIGIN": reviewer.AZURE_REVIEW_ORIGIN},
+            clear=False,
+        ):
+            marker = reviewer._verdict_marker(self.HEAD_SHA, "thread-1")
+
+        self.assertIn("azure-devops", marker)
 
 
 if __name__ == "__main__":

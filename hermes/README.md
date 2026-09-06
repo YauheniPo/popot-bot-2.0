@@ -760,7 +760,7 @@ ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventory.ini \
 
 #### Ручной production deploy из Azure DevOps
 
-Отдельный [`azure-deploy-hermes.yml`](../azure-deploy-hermes.yml) запускает тот
+Отдельный [`azure-deploy-hermes.yml`](../azure-ci/azure-deploy-hermes.yml) запускает тот
 же playbook вручную из Azure DevOps. Он не заменяет локальный запуск выше:
 `--ask-vault-pass`, `--ask-pass` и локальный `group_vars/all/vault.yml`
 продолжают работать без изменений. Существующий `azure-ai-code-review.yml` также
@@ -1035,9 +1035,9 @@ Docs/Sheets.
 
 ### GitHub: clone, файлы, commit, push и PR
 
-Hermes использует встроенный terminal и bundled skills `github-auth`,
-`github-code-review`, `github-issue-to-pr`, `github-issues`,
-`github-pr-workflow` и `github-repo-management`. Отдельный GitHub MCP не нужен.
+Hermes использует встроенный terminal и bundled skill `github` (auth, PR
+review, issues, workflow, repo management — с v0.21.0 объединены в один
+скилл вместо прежних шести отдельных). Отдельный GitHub MCP не нужен.
 `git` выполняет локальные операции, а `gh` — PR, unresolved review threads,
 issues, Actions и API-запросы.
 

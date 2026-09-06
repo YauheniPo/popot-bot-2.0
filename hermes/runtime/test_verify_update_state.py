@@ -183,6 +183,32 @@ class VerifyUpdateStateTests(unittest.TestCase):
         with self.assertRaisesRegex(verify_update_state.VerificationError, "files disappeared"):
             verify_update_state.compare_snapshots(before, after)
 
+    def test_post_update_bundled_skill_rename_is_not_a_loss(self) -> None:
+        # Hermes's own skill-sync renames/recategorizes bundled skills on
+        # every update (e.g. skills/github/foo -> skills/web/foo). Same
+        # content at a new path must not trip the missing-files guard.
+        before = verify_update_state.create_snapshot(self.home)
+        old_path = self.home / "skills" / "custom-review" / "SKILL.md"
+        new_path = self.home / "skills" / "renamed-category" / "custom-review" / "SKILL.md"
+        new_path.parent.mkdir(parents=True)
+        new_path.write_bytes(old_path.read_bytes())
+        old_path.unlink()
+        after = verify_update_state.create_snapshot(self.home)
+
+        verify_update_state.compare_snapshots(before, after)  # must not raise
+
+    def test_deleting_one_of_two_identical_files_still_fails_closed(self) -> None:
+        # Matching content alone must not excuse a deletion: every surviving
+        # copy accounts for at most one moved file.
+        duplicate = self.home / "skills" / "custom-review" / "SKILL.copy.md"
+        duplicate.write_bytes((self.home / "skills" / "custom-review" / "SKILL.md").read_bytes())
+        before = verify_update_state.create_snapshot(self.home)
+        duplicate.unlink()
+        after = verify_update_state.create_snapshot(self.home)
+
+        with self.assertRaisesRegex(verify_update_state.VerificationError, "files disappeared"):
+            verify_update_state.compare_snapshots(before, after)
+
     def test_snapshot_file_round_trip(self) -> None:
         snapshot_path = self.root / "snapshot.json"
         snapshot = verify_update_state.create_snapshot(self.home)

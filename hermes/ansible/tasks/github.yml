@@ -211,16 +211,14 @@
     - hermes_github_token_configured | bool
 
 - name: Locate bundled Hermes GitHub skills
+  # v0.21.0 consolidated the six separate github-* skills into one
+  # software-development/github skill and moved codebase-inspection out of
+  # the github/ category into software-development/ too.
   ansible.builtin.stat:
-    path: "{{ hermes_home }}/hermes-agent/skills/github/{{ item }}/SKILL.md"
+    path: "{{ hermes_home }}/hermes-agent/skills/{{ item.category }}/{{ item.name }}/SKILL.md"
   loop:
-    - codebase-inspection
-    - github-auth
-    - github-code-review
-    - github-issue-to-pr
-    - github-issues
-    - github-pr-workflow
-    - github-repo-management
+    - { category: software-development, name: codebase-inspection }
+    - { category: software-development, name: github }
   register: hermes_github_skill_files
   changed_when: false
   when: hermes_github_enabled | bool

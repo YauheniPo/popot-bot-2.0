@@ -30,6 +30,10 @@ env:
   OPENROUTER_REVIEW_RPM: ${{ vars.OPENROUTER_REVIEW_RPM || '8' }}
   # Used only in mode 0, between the two reviewers sharing one API key.
   OPENROUTER_REVIEW_COOLDOWN_SECONDS: ${{ vars.OPENROUTER_REVIEW_COOLDOWN_SECONDS || '60' }}
+  # Wall clock the direct reviewer may spend on model traffic. Keep it below
+  # the job's timeout-minutes so a slow provider ends in a warning from the
+  # script instead of the runner cancelling the job mid-request.
+  OPENROUTER_REVIEW_BUDGET_SECONDS: ${{ vars.OPENROUTER_REVIEW_BUDGET_SECONDS || '600' }}
 
 concurrency:
   group: pr-ai-review-${{ github.event.pull_request.number }}
@@ -272,16 +276,25 @@ jobs:
             ${{ steps.review_threads.outputs.context }}
             --- END UNRESOLVED REVIEW THREADS ---
 
-            OpenRouterAPI marks its initial inline findings with
-            `<!-- direct-openrouter-inline:<head-sha>:... -->`. For every such
-            thread in the snapshot, return one `thread_verdicts` item:
-            `confirmed` only when its claim remains demonstrably valid;
-            `rejected` only when the exact diff and repository context prove it
-            false or obsolete; otherwise `needs_human`. Give a short evidence-
-            based reason. Do not assess human-authored or unmarked threads.
-            A deterministic publisher will auto-resolve only rejected, current-
-            head, untouched machine threads; uncertainty is deliberately left
-            open for the owner.
+            Both automated reviewers mark their initial inline findings with
+            `<!-- direct-openrouter-inline:<head-sha>:... -->` or
+            `<!-- claude-inline:<head-sha>:... -->`. The marked head SHA is
+            often an earlier revision; that is expected, and such threads are
+            exactly the ones this pass can close. For every marked thread in the
+            snapshot, return one `thread_verdicts` item:
+            `fixed` only when the current file contents demonstrably contain the
+            change the thread asked for — read the file to confirm it, never
+            infer it from the thread text; `rejected` only when the exact diff
+            and repository context prove the claim false or obsolete;
+            `confirmed` only when the claim remains demonstrably valid;
+            otherwise `needs_human`. Give a short evidence-based reason naming
+            the file and line you checked. Do not assess human-authored or
+            unmarked threads: a thread any human replied to is off limits.
+            A deterministic publisher auto-resolves only `fixed` and `rejected`
+            verdicts on untouched machine threads, and downgrades `fixed` to
+            human review when this revision does not change that file or when
+            the thread was opened against this very revision.
+            Uncertainty is deliberately left open for the owner.
 
             Inspect all changed files systematically. Perform correctness/security,
             deployment/operations, and tests/API-contract passes, then validate every
@@ -320,7 +333,7 @@ jobs:
               "thread_verdicts": [
                 {
                   "thread_id": "review thread node id",
-                  "verdict": "confirmed, rejected, or needs_human",
+                  "verdict": "confirmed, fixed, rejected, or needs_human",
                   "reason": "short evidence-based reason"
                 }
               ]

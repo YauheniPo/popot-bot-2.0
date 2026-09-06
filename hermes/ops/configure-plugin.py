@@ -52,8 +52,8 @@ def configure(
     status_command = {
         "type": "exec",
         "command": (
-            f"HERMES_HOME={hermes_home} "
-            f"HERMES_GATEWAY_SERVICE={gateway_service} "
+            f"HERMES_HOME={shlex.quote(str(hermes_home))} "
+            f"HERMES_GATEWAY_SERVICE={shlex.quote(gateway_service)} "
             "/usr/local/lib/hermes-ops/status-report.py"
         ),
     }

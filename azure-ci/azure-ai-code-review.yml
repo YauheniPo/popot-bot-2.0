@@ -1,0 +1,269 @@
+# Manual Azure DevOps launcher for the GitHub AI code-review workflow.
+#
+# The launcher dispatches the GitHub workflow, waits for it, and republishes its
+# report in this build's results (Summary tab) plus a `github-review` build
+# artifact. The GitHub side must keep publishing the `ai-review-report`
+# artifact; without it this pipeline can only report the run link, because a
+# GitHub job step summary has no REST API.
+#
+# This file moved to azure-ci/azure-ai-code-review.yml. Azure DevOps stores the
+# pipeline definition's YAML file path server-side, not in git, so moving
+# this file does NOT update it automatically. Before merging, or right after,
+# repoint the existing pipeline definition (Pipelines -> this pipeline ->
+# Edit -> ... -> "Path to file") to azure-ci/azure-ai-code-review.yml,
+# or the next run fails with "file not found".
+#
+# Prerequisites:
+#   1. `.github/workflows/manual-ai-review.yml` must exist on the GitHub
+#      repository's default branch and accept the inputs sent below.
+#   2. Add `GITHUB_ACTIONS_TOKEN` as a secret variable in this Azure pipeline.
+#      Use a fine-grained GitHub token restricted to this repository with the
+#      repository permission Actions: Read and write. Read alone cannot start
+#      the workflow; write alone cannot list runs or download the report.
+#   3. The wait is bounded by the waitMinutes parameter and by this job's
+#      timeout. A Microsoft-hosted agent in a private project stops at 60
+#      minutes while the GitHub job may run for 90, so a long full-branch
+#      review can outlive the wait. That ends the build with a warning and the
+#      run link, never with a failure: the review still finishes on GitHub.
+#      Set waitMinutes to 0 to dispatch without waiting at all.
+
+trigger: none
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+parameters:
+  - name: targetRef
+    displayName: Branch, tag, or commit to review
+    type: string
+    default: main
+
+  - name: baseRef
+    displayName: Compare against (ignored for full_branch)
+    type: string
+    default: main
+
+  - name: scope
+    displayName: Review scope
+    type: string
+    default: branch_diff
+    values:
+      - branch_diff
+      - last_commit
+      - commit_range
+      - full_branch
+
+  - name: model
+    displayName: Model name
+    type: string
+    default: auto
+
+  - name: publishMode
+    displayName: Result publication
+    type: string
+    default: auto
+    values:
+      - auto
+      - existing_pr
+      - check_annotations
+      - draft_pr
+
+  - name: waitMinutes
+    displayName: Minutes to wait for the GitHub review report (0 = do not wait)
+    type: number
+    default: 45
+
+variables:
+  # The GitHub run cannot be located by the dispatch response, which is 204
+  # with no body. Both sides match on this string instead.
+  reviewRequestId: ado-$(Build.BuildId)
+  githubRepository: YauheniPo/popot-bot-2.0
+  githubWorkflowFile: manual-ai-review.yml
+
+jobs:
+  - job: RequestReview
+    displayName: Request and collect the GitHub AI code review
+    # The GitHub job allows up to 90 minutes, but a Microsoft-hosted agent in a
+    # private project is capped at 60. Waiting is therefore bounded and always
+    # ends with the run link, never with a lost review.
+    timeoutInMinutes: 60
+    steps:
+      - checkout: none
+
+      # REVIEWED: correct after the move to azure-ci/. A template path without a
+      # leading `/` resolves relative to the including file, so this reads
+      # azure-ci/azure-templates/... — the template lives beside this pipeline.
+      # Do not rewrite it as a root-relative path.
+      - template: azure-templates/validate-trusted-branch.yml
+        parameters:
+          errorMessage: Run this launcher from main; pass the review target through targetRef.
+
+      - bash: |
+          set -euo pipefail
+
+          payload="$(
+            jq -n \
+              --arg target_ref "${TARGET_REF}" \
+              --arg base_ref "${BASE_REF}" \
+              --arg scope "${REVIEW_SCOPE}" \
+              --arg model "${REVIEW_MODEL}" \
+              --arg publish "${PUBLISH_MODE}" \
+              --arg request_id "${REQUEST_ID}" \
+              '{
+                ref: "main",
+                inputs: {
+                  target_ref: $target_ref,
+                  base_ref: $base_ref,
+                  scope: $scope,
+                  model: $model,
+                  publish: $publish,
+                  request_id: $request_id
+                }
+              }'
+          )"
+
+          # REVIEWED: this call already fails closed. `--fail-with-body` is on the
+          # continuation line below, not on the `curl` line, so a line-scoped
+          # reviewer reads it as a bare curl. Do not "add --fail" here.
+          curl \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --request POST \
+            --header "Authorization: Bearer ${GITHUB_ACTIONS_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --header "Content-Type: application/json" \
+            --data "${payload}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/${GITHUB_WORKFLOW_FILE}/dispatches"
+
+          echo "GitHub code review requested for ${TARGET_REF} against ${BASE_REF} as ${REQUEST_ID}."
+        displayName: Start GitHub AI code review
+        env:
+          GITHUB_ACTIONS_TOKEN: $(GITHUB_ACTIONS_TOKEN)
+          GITHUB_REPOSITORY: $(githubRepository)
+          GITHUB_WORKFLOW_FILE: $(githubWorkflowFile)
+          REQUEST_ID: $(reviewRequestId)
+          TARGET_REF: ${{ parameters.targetRef }}
+          BASE_REF: ${{ parameters.baseRef }}
+          REVIEW_SCOPE: ${{ parameters.scope }}
+          REVIEW_MODEL: ${{ parameters.model }}
+          PUBLISH_MODE: ${{ parameters.publishMode }}
+
+      - bash: |
+          set -euo pipefail
+
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          # Polling runs for many minutes, so let curl absorb a transient 5xx or
+          # a timeout instead of failing the whole collection step.
+          auth=(
+            --fail-with-body
+            --silent
+            --show-error
+            --max-time 60
+            --retry 3
+            --retry-delay 2
+            --retry-connrefused
+            --header "Authorization: Bearer ${GITHUB_ACTIONS_TOKEN}"
+            --header "Accept: application/vnd.github+json"
+            --header "X-GitHub-Api-Version: 2022-11-28"
+          )
+          deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
+          report_dir="${AGENT_TEMPDIRECTORY}/github-review-report"
+          summary_file="${AGENT_TEMPDIRECTORY}/azure-review-summary.md"
+          rm -rf "${report_dir}"
+          mkdir -p "${report_dir}"
+
+          fail_open() {
+            # A lost report must never hide the review itself: report a warning
+            # with whatever link is known and leave the build green-with-issues.
+            echo "##vso[task.logissue type=warning]$1"
+            echo "##vso[task.complete result=SucceededWithIssues]"
+            exit 0
+          }
+
+          # The dispatch response carries no run id, so match this build's
+          # request id inside the run name GitHub evaluated for the run.
+          run_id=""
+          while [[ -z "${run_id}" && "$(date +%s)" -lt "${deadline}" ]]; do
+            sleep 10
+            run_id="$(
+              curl "${auth[@]}" \
+                "${api}/actions/workflows/${GITHUB_WORKFLOW_FILE}/runs?event=workflow_dispatch&per_page=50" \
+              | jq -r --arg id "${REQUEST_ID}" '
+                  [ .workflow_runs[]
+                    | select((((.display_title // "") + " " + (.name // "")) | contains($id)))
+                  ] | first | .id // empty'
+            )"
+          done
+          if [[ -z "${run_id}" ]]; then
+            fail_open "No GitHub run matched ${REQUEST_ID} within ${WAIT_MINUTES} minute(s)."
+          fi
+
+          run_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${run_id}"
+          echo "##vso[build.addbuildtag]github-run-${run_id}"
+          echo "GitHub run: ${run_url}"
+
+          status=""
+          conclusion=""
+          while [[ "$(date +%s)" -lt "${deadline}" ]]; do
+            # Command substitution, not a process substitution: with pipefail
+            # an authentication or permission error must stop the step loudly
+            # instead of spinning silently until the deadline.
+            run_state="$(
+              curl "${auth[@]}" "${api}/actions/runs/${run_id}" \
+              | jq -r '[.status, (.conclusion // "")] | @tsv'
+            )"
+            status="${run_state%%$'\t'*}"
+            conclusion="${run_state#*$'\t'}"
+            [[ "${status}" == "completed" ]] && break
+            sleep 20
+          done
+          if [[ "${status}" != "completed" ]]; then
+            fail_open "The GitHub review was still ${status:-pending} after ${WAIT_MINUTES} minute(s): ${run_url}"
+          fi
+
+          archive_url="$(
+            curl "${auth[@]}" "${api}/actions/runs/${run_id}/artifacts" \
+            | jq -r '[.artifacts[] | select(.name == "ai-review-report")] | first | .archive_download_url // empty'
+          )"
+          if [[ -z "${archive_url}" ]]; then
+            fail_open "The GitHub run published no review report: ${run_url}"
+          fi
+          curl "${auth[@]}" --location --output "${report_dir}/report.zip" "${archive_url}"
+          unzip -o -q "${report_dir}/report.zip" -d "${report_dir}"
+
+          {
+            echo "## GitHub AI code review"
+            echo
+            echo "- Run: [${run_id}](${run_url})"
+            echo "- Conclusion: \`${conclusion:-unknown}\`"
+            echo "- Request id: \`${REQUEST_ID}\`"
+            if [[ -s "${report_dir}/report.json" ]]; then
+              check_run_url="$(jq -r '.check_run_url // ""' "${report_dir}/report.json")"
+              pr_number="$(jq -r '.pr_number // ""' "${report_dir}/report.json")"
+              [[ -n "${check_run_url}" ]] && echo "- Findings: ${check_run_url}"
+              [[ -n "${pr_number}" ]] &&
+                echo "- Pull request: [#${pr_number}](https://github.com/${GITHUB_REPOSITORY}/pull/${pr_number})"
+            fi
+            echo
+            if [[ -s "${report_dir}/summary.md" ]]; then
+              cat "${report_dir}/summary.md"
+            fi
+          } >"${summary_file}"
+
+          echo "##vso[task.uploadsummary]${summary_file}"
+          echo "##vso[artifact.upload containerfolder=github-review;artifactname=github-review]${report_dir}"
+          if [[ "${conclusion}" != "success" ]]; then
+            echo "##vso[task.logissue type=error]The GitHub review run concluded ${conclusion:-unknown}: ${run_url}"
+            exit 1
+          fi
+        displayName: Wait for the GitHub review and publish its report
+        condition: and(succeeded(), gt(${{ parameters.waitMinutes }}, 0))
+        env:
+          GITHUB_ACTIONS_TOKEN: $(GITHUB_ACTIONS_TOKEN)
+          GITHUB_REPOSITORY: $(githubRepository)
+          GITHUB_WORKFLOW_FILE: $(githubWorkflowFile)
+          REQUEST_ID: $(reviewRequestId)
+          WAIT_MINUTES: ${{ parameters.waitMinutes }}

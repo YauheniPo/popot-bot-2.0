@@ -20,7 +20,16 @@ GITHUB_API_URL = "https://api.github.com"
 CLAUDE_REVIEWER_LABEL = "ClaudeCodePlugin"
 DIRECT_REVIEWER_INLINE_PREFIX = "<!-- direct-openrouter-inline:"
 AUTOMATED_REVIEW_AUTHOR = "github-actions[bot]"
+# Both reviewers stamp their initial inline comment with their own marker and
+# the head SHA they reviewed. The SHA is captured but deliberately not pinned to
+# the current revision: a thread opened on an earlier push is exactly the thread
+# a later push can close.
+MACHINE_INLINE_MARKER = re.compile(
+    r"<!--\s*(?:direct-openrouter-inline|claude-inline):([0-9a-f]{40}):",
+    re.IGNORECASE,
+)
 MAX_THREADS = 200
+MAX_RESOLVED_THREADS = 200
 MAX_CONTEXT_CHARACTERS = 24_000
 MAX_RENDERED_COMMENTS_PER_THREAD = 3
 MAX_RENDERED_COMMENT_CHARACTERS = 1_000
@@ -77,6 +86,7 @@ class ReviewThread:
     outdated: bool
     viewer_can_reply: bool
     comments: tuple[ReviewComment, ...]
+    resolved: bool = False
 
     @property
     def reply_to_comment_id(self) -> int | None:
@@ -186,7 +196,10 @@ def _optional_int(value: object) -> int | None:
 
 
 def _parse_thread(raw: object) -> ReviewThread | None:
-    if not isinstance(raw, dict) or raw.get("isResolved") is not False:
+    if not isinstance(raw, dict):
+        return None
+    resolved = raw.get("isResolved")
+    if not isinstance(resolved, bool):
         return None
     comments_connection = raw.get("comments")
     raw_comments = (
@@ -227,13 +240,17 @@ def _parse_thread(raw: object) -> ReviewThread | None:
         outdated=raw.get("isOutdated") is True,
         viewer_can_reply=raw.get("viewerCanReply") is True,
         comments=tuple(comments),
+        resolved=resolved,
     )
 
 
-def fetch_unresolved_review_threads(
+def _fetch_review_threads(
     repository: str,
     pr_number: str | int,
     token: str,
+    *,
+    resolved: bool,
+    limit: int,
 ) -> list[ReviewThread]:
     owner, name = _repository_parts(repository)
     try:
@@ -272,7 +289,7 @@ query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: Str
 """
     cursor: str | None = None
     threads: list[ReviewThread] = []
-    while len(threads) < MAX_THREADS:
+    while len(threads) < limit:
         response = _request_json(
             f"{GITHUB_API_URL}/graphql",
             "POST",
@@ -302,9 +319,9 @@ query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: Str
             raise GitHubRequestError("GitHub GraphQL returned invalid reviewThreads data")
         for raw_thread in nodes:
             thread = _parse_thread(raw_thread)
-            if thread is not None:
+            if thread is not None and thread.resolved is resolved:
                 threads.append(thread)
-                if len(threads) == MAX_THREADS:
+                if len(threads) == limit:
                     break
         if page_info.get("hasNextPage") is not True:
             break
@@ -313,6 +330,41 @@ query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: Str
             raise GitHubRequestError("GitHub GraphQL pagination omitted endCursor")
         cursor = next_cursor
     return threads
+
+
+def fetch_unresolved_review_threads(
+    repository: str,
+    pr_number: str | int,
+    token: str,
+) -> list[ReviewThread]:
+    return _fetch_review_threads(
+        repository,
+        pr_number,
+        token,
+        resolved=False,
+        limit=MAX_THREADS,
+    )
+
+
+def fetch_resolved_machine_threads(
+    repository: str,
+    pr_number: str | int,
+    token: str,
+) -> list[ReviewThread]:
+    """Return already-resolved reviewer threads, used only to suppress repeats.
+
+    These never reach a model prompt. A finding that duplicates one of them was
+    settled on an earlier revision, so re-posting it would reopen a decision the
+    owner already made.
+    """
+    threads = _fetch_review_threads(
+        repository,
+        pr_number,
+        token,
+        resolved=True,
+        limit=MAX_RESOLVED_THREADS,
+    )
+    return [thread for thread in threads if is_machine_thread(thread)]
 
 
 def _rendered_comments(thread: ReviewThread) -> list[dict[str, object]]:
@@ -442,16 +494,40 @@ def resolve_review_thread(token: str, thread_id: str) -> None:
         raise GitHubRequestError("GitHub did not resolve the review thread")
 
 
-def _is_direct_machine_thread(thread: ReviewThread, head_sha: str) -> bool:
-    """Limit auto-resolution to the first reviewer's untouched current-head threads."""
+def machine_thread_head_sha(thread: ReviewThread) -> str | None:
+    """Return the head SHA a reviewer bot stamped on the thread's first comment."""
+    if not thread.comments:
+        return None
+    match = MACHINE_INLINE_MARKER.search(thread.comments[0].body)
+    return match.group(1).lower() if match else None
+
+
+def is_machine_thread(thread: ReviewThread) -> bool:
+    """Whether a thread was opened by a reviewer bot and nobody else joined it.
+
+    Human participation is the opt-out that matters: it means someone is using
+    the thread, so no automated verdict may close it. The thread's own head SHA
+    is not compared against the current one — auto-resolution exists precisely
+    to close findings raised on an earlier revision.
+    """
     if not thread.comments:
         return False
-    first = thread.comments[0]
     return (
-        first.author == AUTOMATED_REVIEW_AUTHOR
-        and f"{DIRECT_REVIEWER_INLINE_PREFIX}{head_sha}:" in first.body
+        thread.comments[0].author == AUTOMATED_REVIEW_AUTHOR
+        and machine_thread_head_sha(thread) is not None
         and all(comment.author == AUTOMATED_REVIEW_AUTHOR for comment in thread.comments)
     )
+
+
+def may_be_auto_fixed(thread: ReviewThread, head_sha: str, changed_paths: set[str]) -> bool:
+    """Whether a `fixed` verdict on this thread can be true of this revision.
+
+    Two deterministic conditions rule out the claim regardless of what a model
+    asserts: the revision does not touch the file at all, or the thread was
+    opened against this very revision, so nothing has changed since.
+    """
+    marked_head_sha = machine_thread_head_sha(thread)
+    return thread.path in changed_paths and marked_head_sha != head_sha.lower()
 
 
 def _required_commit_sha(name: str) -> str:
@@ -635,7 +711,7 @@ def _validate_claude_result_contract(result: object) -> dict:
     for raw in verdicts:
         verdict = _require_exact_keys(raw, verdict_keys, "thread verdict")
         if (
-            verdict["verdict"] not in {"confirmed", "rejected", "needs_human"}
+            verdict["verdict"] not in {"confirmed", "fixed", "rejected", "needs_human"}
             or not isinstance(verdict["thread_id"], str)
             or not verdict["thread_id"].strip()
             or len(verdict["thread_id"]) > 200
@@ -714,7 +790,7 @@ def _validated_claude_result(
             or not thread_id
             or len(thread_id) > 200
             or thread_id in seen_thread_ids
-            or verdict not in {"confirmed", "rejected", "needs_human"}
+            or verdict not in {"confirmed", "fixed", "rejected", "needs_human"}
             or not reason
         ):
             continue
@@ -938,19 +1014,30 @@ def _command_publish() -> None:
         head_sha,
     )
     threads = fetch_unresolved_review_threads(repository, pr_number, token)
+    settled_threads = fetch_resolved_machine_threads(repository, pr_number, token)
+    changed_paths = _changed_paths(base_sha, head_sha)
     threads_by_id = {thread.node_id: thread for thread in threads}
     confirmed_direct_findings = 0
+    fixed_direct_findings = 0
     rejected_direct_findings = 0
     direct_findings_needing_human = 0
-    rejected_thread_ids: set[str] = set()
+    closed_thread_ids: set[str] = set()
     for verdict in verdicts:
         thread = threads_by_id.get(verdict.thread_id)
-        # A model may only resolve a clearly marked OpenRouterAPI thread for the
-        # current revision. Human participation or a stale thread opts out.
-        if thread is None or not _is_direct_machine_thread(thread, head_sha):
+        # Only a reviewer-authored thread that no human has joined may be closed
+        # automatically. Threads from earlier revisions qualify on purpose:
+        # closing them after the fix lands is the point of this pass.
+        if thread is None or not is_machine_thread(thread):
             continue
         if verdict.verdict == "confirmed":
             confirmed_direct_findings += 1
+            continue
+        if verdict.verdict == "fixed" and not may_be_auto_fixed(
+            thread,
+            head_sha,
+            changed_paths,
+        ):
+            direct_findings_needing_human += 1
             continue
         if verdict.verdict == "needs_human":
             direct_findings_needing_human += 1
@@ -961,29 +1048,45 @@ def _command_publish() -> None:
         comment_id = thread.reply_to_comment_id
         if comment_id is None or not thread.viewer_can_reply:
             continue
+        heading = (
+            "Resolved — the requested change is present in this revision"
+            if verdict.verdict == "fixed"
+            else "Rejected finding"
+        )
         reply_to_review_thread(
             repository,
             pr_number,
             token,
             comment_id,
-            (
-                f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] Rejected "
-                f"OpenRouterAPI finding**\n\nReason: {verdict.reason}"
-            ),
+            f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] {heading}**\n\nReason: {verdict.reason}",
         )
         resolve_review_thread(token, thread.node_id)
-        rejected_thread_ids.add(thread.node_id)
-        rejected_direct_findings += 1
+        closed_thread_ids.add(thread.node_id)
+        if verdict.verdict == "fixed":
+            fixed_direct_findings += 1
+        else:
+            rejected_direct_findings += 1
     new_findings: list[ReviewFinding] = []
     follow_ups: list[tuple[ReviewFinding, ReviewThread]] = []
     duplicates: list[ReviewFinding] = []
+    previously_settled: list[ReviewFinding] = []
     for finding in findings:
+        settled = match_existing_thread(
+            finding.path,
+            finding.side,
+            finding.line,
+            _finding_text(finding),
+            settled_threads,
+        )
+        if settled is not None and settled.relationship == "duplicate":
+            previously_settled.append(finding)
+            continue
         match = match_existing_thread(
             finding.path,
             finding.side,
             finding.line,
             _finding_text(finding),
-            [thread for thread in threads if thread.node_id not in rejected_thread_ids],
+            [thread for thread in threads if thread.node_id not in closed_thread_ids],
         )
         if match is None:
             new_findings.append(finding)
@@ -1059,9 +1162,11 @@ def _command_publish() -> None:
         f"New inline findings: {len(new_findings) - len(unanchored_findings)}.",
         f"Material thread follow-ups: {len(posted_follow_ups)}.",
         f"Existing unresolved findings not repeated: {len(duplicates)}.",
-        f"OpenRouterAPI findings confirmed: {confirmed_direct_findings}.",
-        f"OpenRouterAPI findings rejected and auto-resolved: {rejected_direct_findings}.",
-        f"OpenRouterAPI findings left for human review: {direct_findings_needing_human}.",
+        f"Previously resolved findings not re-raised: {len(previously_settled)}.",
+        f"Earlier machine findings confirmed as still open: {confirmed_direct_findings}.",
+        f"Earlier machine findings fixed and auto-resolved: {fixed_direct_findings}.",
+        f"Earlier machine findings rejected and auto-resolved: {rejected_direct_findings}.",
+        f"Earlier machine findings left for human review: {direct_findings_needing_human}.",
     ]
     if not new_findings and not posted_follow_ups:
         lines.extend(["", "Findings: No new actionable findings."])
@@ -1078,6 +1183,14 @@ def _command_publish() -> None:
             f"{finding.title}. GitHub rejected this diff anchor."
             for finding in unanchored_findings
         )
+    if previously_settled:
+        # Listed, not just counted: an identical finding on an already-resolved
+        # thread is either noise or a regression, and only the owner can tell.
+        lines.extend(["", "Repeats of already-resolved threads, suppressed:"])
+        lines.extend(
+            f"- **{finding.severity} — `{finding.path}:{finding.line}`**: {finding.title}."
+            for finding in previously_settled
+        )
     if posted_follow_ups:
         lines.extend(["", "Material additions to existing threads:"])
         lines.extend(
@@ -1089,7 +1202,9 @@ def _command_publish() -> None:
     print(
         "Published the validated Claude review with "
         f"{len(new_findings)} inline finding(s), {len(posted_follow_ups)} follow-up(s), "
-        f"and {len(duplicates)} duplicate(s) suppressed."
+        f"{len(duplicates)} duplicate(s) suppressed, "
+        f"{len(previously_settled)} repeat(s) of resolved threads suppressed, and "
+        f"{fixed_direct_findings + rejected_direct_findings} thread(s) auto-resolved."
     )
 
 

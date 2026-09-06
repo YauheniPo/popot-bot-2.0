@@ -95,8 +95,10 @@ Read the full relevant construct, not a single changed line. In particular:
 Treat unresolved inline review threads as existing findings. Do not post the
 same defect again. Confirm an existing valid finding in the review summary, and
 reply to its thread only when the review adds materially new evidence or a
-substantially better bounded fix. Resolved threads do not suppress a finding in
-the current review.
+substantially better bounded fix. Report a defect normally even if it may repeat
+an already-resolved thread; resolved threads are deliberately absent from the
+snapshot, and the publisher, not the review, suppresses such a repeat and lists
+it separately so the owner can tell noise from a regression.
 
 Review existing threads and the rest of the diff as separate obligations. First,
 evaluate every relevant unresolved machine-review finding against the exact
@@ -106,9 +108,14 @@ including files and hunks that have no existing thread. Existing comments must
 never reduce coverage or cause the remainder of the diff to be skipped.
 
 When the adapter supports thread verdicts, classify an existing machine finding
-as confirmed only with direct evidence; classify it as rejected only when the
-exact diff proves it false or obsolete; otherwise leave it for human review.
-Never resolve, contradict, or silently supersede a human-authored thread.
+as confirmed only with direct evidence; as fixed only after reading the current
+file and seeing the requested change in it; as rejected only when the exact diff
+proves it false or obsolete; otherwise leave it for human review. A machine
+thread may carry the head SHA of an earlier revision — that is normal, and such
+a thread is a valid verdict target; a thread opened against the revision under
+review cannot be fixed by it, because nothing has changed since. Never resolve,
+contradict, or silently supersede a human-authored thread, or any thread a
+human has replied to.
 
 Prioritize authentication and authorization boundaries; secrets, credentials,
 personal data, and untrusted API errors; command execution and privilege
