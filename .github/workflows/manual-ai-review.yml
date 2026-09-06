@@ -330,9 +330,15 @@ jobs:
           MODEL: ${{ steps.models.outputs.selected_model }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           PUBLISH_TARGET: ${{ steps.context.outputs.publish_target }}
+          # GITHUB_STEP_SUMMARY is a distinct file per step, so a later step
+          # cannot re-read what this step wrote there. Write the same text to
+          # a fixed path too, for "Package the review report" to pick up.
+          REPORT_DIR: ${{ github.workspace }}/review-report
           REVIEW_SOURCE: ${{ startsWith(inputs.request_id, 'ado-') && 'Azure DevOps' || 'GitHub' }}
           TARGET_REF: ${{ inputs.target_ref }}
         run: |
+          set -euo pipefail
+          mkdir -p "${REPORT_DIR}"
           {
             echo '## Manual AI code review'
             echo
@@ -350,7 +356,7 @@ jobs:
               # sending people to hunt through the Checks sidebar.
               echo "- Findings: ${CHECK_RUN_URL}"
             fi
-          } >>"${GITHUB_STEP_SUMMARY}"
+          } | tee -a "${GITHUB_STEP_SUMMARY}" "${REPORT_DIR}/summary.md" >/dev/null
 
       # A job step summary has no REST API, so an external caller cannot read
       # it back. Republish the same text plus the links as an artifact, which
@@ -372,7 +378,6 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "${REPORT_DIR}"
-          cp "${GITHUB_STEP_SUMMARY}" "${REPORT_DIR}/summary.md"
           jq -n \
             --arg request_id "${REQUEST_ID}" \
             --arg run_url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
