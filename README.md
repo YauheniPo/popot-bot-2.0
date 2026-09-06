@@ -4,11 +4,7 @@
 [![Build Status](https://dev.azure.com/YauheniPo/popot-bot-2.0/_apis/build/status%2Fpopot-bot-2.0%20AI%20reviewer?branchName=main)](https://dev.azure.com/YauheniPo/popot-bot-2.0/_build/latest?definitionId=12&branchName=main)
 [![Build Status](https://dev.azure.com/YauheniPo/popot-bot-2.0/_apis/build/status%2Fpopot-bot-2.0%20Deploy?branchName=main)](https://dev.azure.com/YauheniPo/popot-bot-2.0/_build/latest?definitionId=13&branchName=main)
 
-> **Post-merge step:** the Azure pipelines moved into `azure-ci/`. Azure
-> DevOps pipeline definitions 12 and 13 still point at the old root-level
-> paths server-side; repoint both in Pipelines -> Edit -> "Path to file" to
-> `azure-ci/azure-ai-code-review.yml` and `azure-ci/azure-deploy-hermes.yml`,
-> or the next run fails with "file not found".
+[![SonarQube Cloud](https://sonarcloud.io/images/project_badges/sonarcloud-light.svg)](https://sonarcloud.io/summary/new_code?id=YauheniPo_popot-bot-2.0) [![Quality gate status](https://sonarcloud.io/api/project_badges/measure?project=YauheniPo_popot-bot-2.0&metric=alert_status&token=40fc41cdb5b33c4ee2f1069fad34271d1c1ae61d)](https://sonarcloud.io/summary/new_code?id=YauheniPo_popot-bot-2.0) [![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=YauheniPo_popot-bot-2.0&metric=reliability_rating&token=40fc41cdb5b33c4ee2f1069fad34271d1c1ae61d)](https://sonarcloud.io/summary/new_code?id=YauheniPo_popot-bot-2.0) [![Lines of Code](https://sonarcloud.io/api/project_badges/measure?project=YauheniPo_popot-bot-2.0&metric=ncloc&token=40fc41cdb5b33c4ee2f1069fad34271d1c1ae61d)](https://sonarcloud.io/summary/new_code?id=YauheniPo_popot-bot-2.0) [![Duplicated Lines (%)](https://sonarcloud.io/api/project_badges/measure?project=YauheniPo_popot-bot-2.0&metric=duplicated_lines_density&token=40fc41cdb5b33c4ee2f1069fad34271d1c1ae61d)](https://sonarcloud.io/summary/new_code?id=YauheniPo_popot-bot-2.0)
 
 > Self-hosted Telegram automation and a personal AI operator for your own VPS.
 
