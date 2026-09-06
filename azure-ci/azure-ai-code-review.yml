@@ -57,7 +57,7 @@ parameters:
   - name: model
     displayName: Model name
     type: string
-    default: auto
+    default: xiaomi/mimo-v2.5
 
   - name: publishMode
     displayName: Result publication
