@@ -1,10 +1,21 @@
 # popot-bot-2.0
 
 [![Telegram user info bot CI](https://github.com/YauheniPo/popot-bot-2.0/actions/workflows/telegram-user-info-bot-ci.yml/badge.svg)](https://github.com/YauheniPo/popot-bot-2.0/actions/workflows/telegram-user-info-bot-ci.yml)
+[![Mirror to Azure DevOps](https://github.com/YauheniPo/popot-bot-2.0/actions/workflows/mirror-to-ado.yml/badge.svg)](https://github.com/YauheniPo/popot-bot-2.0/actions/workflows/mirror-to-ado.yml)
 [![Build Status](https://dev.azure.com/YauheniPo/popot-bot-2.0/_apis/build/status%2Fpopot-bot-2.0%20AI%20reviewer?branchName=main)](https://dev.azure.com/YauheniPo/popot-bot-2.0/_build/latest?definitionId=12&branchName=main)
 [![Build Status](https://dev.azure.com/YauheniPo/popot-bot-2.0/_apis/build/status%2Fpopot-bot-2.0%20Deploy?branchName=main)](https://dev.azure.com/YauheniPo/popot-bot-2.0/_build/latest?definitionId=13&branchName=main)
+[![Secured by GitGuardian](https://img.shields.io/badge/Secured%20by-GitGuardian-0b1e39?logo=gitguardian&logoColor=white)](https://www.gitguardian.com/)
 
-[![SonarQube Cloud](https://sonarcloud.io/images/project_badges/sonarcloud-light.svg)](https://sonarcloud.io/summary/new_code?id=YauheniPo_popot-bot-2.0) [![Quality gate status](https://sonarcloud.io/api/project_badges/measure?project=YauheniPo_popot-bot-2.0&metric=alert_status&token=40fc41cdb5b33c4ee2f1069fad34271d1c1ae61d)](https://sonarcloud.io/summary/new_code?id=YauheniPo_popot-bot-2.0) [![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=YauheniPo_popot-bot-2.0&metric=reliability_rating&token=40fc41cdb5b33c4ee2f1069fad34271d1c1ae61d)](https://sonarcloud.io/summary/new_code?id=YauheniPo_popot-bot-2.0) [![Lines of Code](https://sonarcloud.io/api/project_badges/measure?project=YauheniPo_popot-bot-2.0&metric=ncloc&token=40fc41cdb5b33c4ee2f1069fad34271d1c1ae61d)](https://sonarcloud.io/summary/new_code?id=YauheniPo_popot-bot-2.0) [![Duplicated Lines (%)](https://sonarcloud.io/api/project_badges/measure?project=YauheniPo_popot-bot-2.0&metric=duplicated_lines_density&token=40fc41cdb5b33c4ee2f1069fad34271d1c1ae61d)](https://sonarcloud.io/summary/new_code?id=YauheniPo_popot-bot-2.0)
+[![SonarQube Cloud](https://sonarcloud.io/images/project_badges/sonarcloud-light.svg)](https://sonarcloud.io/summary/new_code?id=YauheniPo_popot-bot-2.0)
+[![Quality gate status](https://sonarcloud.io/api/project_badges/measure?project=YauheniPo_popot-bot-2.0&metric=alert_status&token=40fc41cdb5b33c4ee2f1069fad34271d1c1ae61d)](https://sonarcloud.io/summary/new_code?id=YauheniPo_popot-bot-2.0)
+[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=YauheniPo_popot-bot-2.0&metric=bugs&token=40fc41cdb5b33c4ee2f1069fad34271d1c1ae61d)](https://sonarcloud.io/summary/new_code?id=YauheniPo_popot-bot-2.0)
+[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=YauheniPo_popot-bot-2.0&metric=vulnerabilities&token=40fc41cdb5b33c4ee2f1069fad34271d1c1ae61d)](https://sonarcloud.io/summary/new_code?id=YauheniPo_popot-bot-2.0)
+[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=YauheniPo_popot-bot-2.0&metric=code_smells&token=40fc41cdb5b33c4ee2f1069fad34271d1c1ae61d)](https://sonarcloud.io/summary/new_code?id=YauheniPo_popot-bot-2.0)
+[![Duplicated Lines (%)](https://sonarcloud.io/api/project_badges/measure?project=YauheniPo_popot-bot-2.0&metric=duplicated_lines_density&token=40fc41cdb5b33c4ee2f1069fad34271d1c1ae61d)](https://sonarcloud.io/summary/new_code?id=YauheniPo_popot-bot-2.0)
+[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=YauheniPo_popot-bot-2.0&metric=sqale_rating&token=40fc41cdb5b33c4ee2f1069fad34271d1c1ae61d)](https://sonarcloud.io/summary/new_code?id=YauheniPo_popot-bot-2.0)
+[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=YauheniPo_popot-bot-2.0&metric=reliability_rating&token=40fc41cdb5b33c4ee2f1069fad34271d1c1ae61d)](https://sonarcloud.io/summary/new_code?id=YauheniPo_popot-bot-2.0)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=YauheniPo_popot-bot-2.0&metric=security_rating&token=40fc41cdb5b33c4ee2f1069fad34271d1c1ae61d)](https://sonarcloud.io/summary/new_code?id=YauheniPo_popot-bot-2.0)
+[![Lines of Code](https://sonarcloud.io/api/project_badges/measure?project=YauheniPo_popot-bot-2.0&metric=ncloc&token=40fc41cdb5b33c4ee2f1069fad34271d1c1ae61d)](https://sonarcloud.io/summary/new_code?id=YauheniPo_popot-bot-2.0)
 
 > Self-hosted Telegram automation and a personal AI operator for your own VPS.
 
