@@ -86,6 +86,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    args.target = args.target.expanduser().resolve()
+    if args.backup_copy is not None:
+        args.backup_copy = args.backup_copy.expanduser().resolve()
     managed_source = args.managed_source.read_text(encoding="utf-8")
     if args.target.exists():
         existing = args.target.read_text(encoding="utf-8")
@@ -95,10 +98,7 @@ def main() -> int:
         existing = ""
     updated = reconcile(existing, managed_source, present=args.state == "present")
     changed = False
-    if updated != existing:
-        write_atomic(args.target, updated)
-        changed = True
-    elif updated and not args.target.exists():
+    if updated != existing or (updated and not args.target.exists()):
         write_atomic(args.target, updated)
         changed = True
     if args.backup_copy is not None:

@@ -37,6 +37,11 @@ HERMES_AGENT_DIR = Path(
 )
 
 _PREFIX = "# Local Hermes:"
+# Relative paths patched by multiple migrations/patches below; named once so
+# the literal isn't duplicated across the file (SonarCloud: duplicated string).
+_HERMES_CLI_COMMANDS_PATH = "hermes_cli/commands.py"
+_GATEWAY_SLASH_COMMANDS_PATH = "gateway/slash_commands.py"
+_GATEWAY_RUN_PATH = "gateway/run.py"
 # Construct the retired spelling without advertising it as a supported slash
 # command. It is needed only to migrate files patched by earlier deployments.
 _RETIRED_MODEL_GLOBAL = "model" + chr(45) + "global"
@@ -82,7 +87,7 @@ def _migrate_model_global_source(relative_path: str, source: str) -> tuple[str, 
     if retired_marker not in source:
         return source, False
 
-    if relative_path == "hermes_cli/commands.py":
+    if relative_path == _HERMES_CLI_COMMANDS_PATH:
         old = f'''    # Local Hermes: {retired} CommandDef
     CommandDef("{retired}", "Set the global default model for all topics/sessions", "Configuration",
                aliases=("model_global",),
@@ -95,7 +100,7 @@ def _migrate_model_global_source(relative_path: str, source: str) -> tuple[str, 
                busy_policy="reject", busy_handler="model"),
 '''
         migrated = _replace_required(source, old, new, "model_global CommandDef")
-    elif relative_path == "gateway/slash_commands.py":
+    elif relative_path == _GATEWAY_SLASH_COMMANDS_PATH:
         legacy_usage = f'''        if not raw_args:
             return (
                 "Usage: /{retired} <model> [--provider <provider>]\\n"
@@ -129,7 +134,7 @@ def _migrate_model_global_source(relative_path: str, source: str) -> tuple[str, 
             "# Local Hermes: model_global handler",
             "model_global handler marker",
         )
-    elif relative_path == "gateway/run.py":
+    elif relative_path == _GATEWAY_RUN_PATH:
         old = f'''        if canonical in ("{retired}", "model_global"):
             # Local Hermes: {retired} route
             return await self._handle_model_global_command(event)
@@ -152,9 +157,9 @@ def _migrate_model_global_source(relative_path: str, source: str) -> tuple[str, 
 def _migrate_installed_model_global() -> int:
     planned_writes: list[tuple[Path, str]] = []
     for relative_path in (
-        "hermes_cli/commands.py",
-        "gateway/slash_commands.py",
-        "gateway/run.py",
+        _HERMES_CLI_COMMANDS_PATH,
+        _GATEWAY_SLASH_COMMANDS_PATH,
+        _GATEWAY_RUN_PATH,
     ):
         target = HERMES_AGENT_DIR / relative_path
         if not target.is_file():
@@ -172,7 +177,7 @@ def _migrate_installed_model_global() -> int:
 
 def _migrate_gw_restart_source(relative_path: str, source: str) -> tuple[str, bool]:
     """Migrate the unmarked /gw-restart blocks produced by an earlier patch."""
-    if relative_path == "hermes_cli/commands.py":
+    if relative_path == _HERMES_CLI_COMMANDS_PATH:
         legacy = re.compile(
             r'^    CommandDef\("(?P<command>restart|gw-restart)", "Gracefully restart the gateway after draining active runs", "Session",\n'
             r'               gateway_only=True, busy_policy="dispatch", aliases=\((?P<aliases>[^)]*)\)\),\n',
@@ -197,7 +202,7 @@ def _migrate_gw_restart_source(relative_path: str, source: str) -> tuple[str, bo
         if not known_legacy_shape:
             return source, False
         return source[:match.start()] + new + source[match.end():], True
-    elif relative_path == "gateway/run.py":
+    elif relative_path == _GATEWAY_RUN_PATH:
         legacy = re.compile(
             r'^        if canonical in \((?P<aliases>[^)]*)\):\n'
             r'(?:            #[^\n]*\n)*'
@@ -222,7 +227,7 @@ def _migrate_gw_restart_source(relative_path: str, source: str) -> tuple[str, bo
 
 def _migrate_installed_gw_restart() -> int:
     planned_writes: list[tuple[Path, str]] = []
-    for relative_path in ("hermes_cli/commands.py", "gateway/run.py"):
+    for relative_path in (_HERMES_CLI_COMMANDS_PATH, _GATEWAY_RUN_PATH):
         target = HERMES_AGENT_DIR / relative_path
         if not target.is_file():
             continue
@@ -240,7 +245,7 @@ def _migrate_installed_gw_restart() -> int:
 
 def _migrate_doctor_handler_source(relative_path: str, source: str) -> tuple[str, bool]:
     """Migrate the first /doctor patch to pass the resolved command as argv."""
-    if relative_path != "gateway/slash_commands.py":
+    if relative_path != _GATEWAY_SLASH_COMMANDS_PATH:
         return source, False
 
     marker = _PREFIX + " doctor handler"
@@ -266,7 +271,7 @@ def _migrate_installed_doctor_handler() -> int:
     if not target.is_file():
         return 0
     migrated, changed = _migrate_doctor_handler_source(
-        "gateway/slash_commands.py", target.read_text(encoding="utf-8")
+        _GATEWAY_SLASH_COMMANDS_PATH, target.read_text(encoding="utf-8")
     )
     if not changed:
         return 0
@@ -277,7 +282,7 @@ def _migrate_installed_doctor_handler() -> int:
 
 def _migrate_telegram_usage_ranking_source(relative_path: str, source: str) -> tuple[str, bool]:
     """Mark the first usage-ranking patch, which predated its idempotency marker."""
-    if relative_path != "hermes_cli/commands.py":
+    if relative_path != _HERMES_CLI_COMMANDS_PATH:
         return source, False
     marker = _PREFIX + " telegram usage ranking"
     if marker in source:
@@ -293,7 +298,7 @@ def _migrate_installed_telegram_usage_ranking() -> int:
     if not target.is_file():
         return 0
     migrated, changed = _migrate_telegram_usage_ranking_source(
-        "hermes_cli/commands.py", target.read_text(encoding="utf-8")
+        _HERMES_CLI_COMMANDS_PATH, target.read_text(encoding="utf-8")
     )
     if not changed:
         return 0
@@ -306,7 +311,7 @@ _PATCHES: list[tuple[str, str, str, str]] = [
     # NOTE: every ``new`` block MUST include its marker as a comment line so
     # the idempotency check (marker already present -> skip) works on re-run.
     (
-        "hermes_cli/commands.py",
+        _HERMES_CLI_COMMANDS_PATH,
         _PREFIX + " model_global CommandDef",
         '''    CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
                args_hint="[model] [--provider name] [--global|--session] [--refresh]",
@@ -322,7 +327,7 @@ _PATCHES: list[tuple[str, str, str, str]] = [
 ''',
     ),
     (
-        "hermes_cli/commands.py",
+        _HERMES_CLI_COMMANDS_PATH,
         _PREFIX + " gw-restart canonical",
         '''    CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True, busy_policy="dispatch", desktop="terminal"),
@@ -334,7 +339,7 @@ _PATCHES: list[tuple[str, str, str, str]] = [
 ''',
     ),
     (
-        "gateway/slash_commands.py",
+        _GATEWAY_SLASH_COMMANDS_PATH,
         _PREFIX + " model_global handler",
         '''    async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model.
@@ -370,7 +375,7 @@ _PATCHES: list[tuple[str, str, str, str]] = [
 ''',
     ),
     (
-        "gateway/run.py",
+        _GATEWAY_RUN_PATH,
         _PREFIX + " model_global route",
         '''        if canonical == "model":
             return await self._handle_model_command(event)
@@ -387,7 +392,7 @@ _PATCHES: list[tuple[str, str, str, str]] = [
         # v0.21.0 merged the separate idle/busy restart routes into the shared
         # _gateway_plain_command_handlers() map, so one dict entry now covers
         # what used to need both a canonical route and a busy-map patch.
-        "gateway/run.py",
+        _GATEWAY_RUN_PATH,
         _PREFIX + " gw-restart route",
         '''            "restart": self._handle_restart_command,
 ''',
@@ -397,7 +402,7 @@ _PATCHES: list[tuple[str, str, str, str]] = [
 ''',
     ),
     (
-        "gateway/slash_commands.py",
+        _GATEWAY_SLASH_COMMANDS_PATH,
         _PREFIX + " status reasoning",
         '''            t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),
         ])
@@ -447,7 +452,7 @@ _PATCHES: list[tuple[str, str, str, str]] = [
 ''',
     ),
     (
-        "gateway/slash_commands.py",
+        _GATEWAY_SLASH_COMMANDS_PATH,
         _PREFIX + " portal info",
         '''            lines.append(f"**Topic model:** {topic_model}" + (" *(override)*" if session_model else ""))
         except Exception:
@@ -486,7 +491,7 @@ _PATCHES: list[tuple[str, str, str, str]] = [
 ''',
     ),
     (
-        "hermes_cli/commands.py",
+        _HERMES_CLI_COMMANDS_PATH,
         _PREFIX + " doctor CommandDef",
         '''    CommandDef("status", "Show session, model, token, and context info", "Session",
                busy_policy="dispatch"),
@@ -501,7 +506,7 @@ _PATCHES: list[tuple[str, str, str, str]] = [
 ''',
     ),
     (
-        "gateway/slash_commands.py",
+        _GATEWAY_SLASH_COMMANDS_PATH,
         _PREFIX + " doctor handler",
         '''    async def _handle_version_command(self, event: MessageEvent) -> str:
         """Handle /version — show the running Hermes Agent version."""
@@ -548,7 +553,7 @@ _PATCHES: list[tuple[str, str, str, str]] = [
 ''',
     ),
     (
-        "gateway/run.py",
+        _GATEWAY_RUN_PATH,
         _PREFIX + " doctor route",
         # /version moved into _gateway_plain_command_handlers() in v0.21.0;
         # /doctor rides the same shared map instead of its own route.
@@ -560,7 +565,7 @@ _PATCHES: list[tuple[str, str, str, str]] = [
 ''',
     ),
     (
-        "hermes_cli/commands.py",
+        _HERMES_CLI_COMMANDS_PATH,
         _PREFIX + " telegram usage ranking",
         # v0.21.0 moved menu ordering into _prioritize_telegram_menu_candidates
         # and gave it native configured/default priority tiers. Only the final
@@ -577,7 +582,7 @@ _PATCHES: list[tuple[str, str, str, str]] = [
 ''',
     ),
     (
-        "hermes_cli/commands.py",
+        _HERMES_CLI_COMMANDS_PATH,
         _PREFIX + " telegram usage state",
         '''def _clamp_command_names(
     entries: Sequence[tuple[str, ...]],
@@ -777,7 +782,7 @@ def _clamp_command_names(
 ''',
     ),
     (
-        "hermes_cli/commands.py",
+        _HERMES_CLI_COMMANDS_PATH,
         _PREFIX + " update cli_only",
         '''    CommandDef("update", "Update Hermes Agent to the latest version", "Info",
                busy_policy="dispatch", desktop="terminal"),
@@ -792,7 +797,7 @@ def _clamp_command_names(
 
 def _migrate_installed_portal_info() -> int:
     """Repair the first portal-info rollout, which used invalid multiline literals."""
-    target = HERMES_AGENT_DIR / "gateway/slash_commands.py"
+    target = HERMES_AGENT_DIR / _GATEWAY_SLASH_COMMANDS_PATH
     if not target.is_file():
         return 0
     source = target.read_text(encoding="utf-8")
@@ -800,7 +805,7 @@ def _migrate_installed_portal_info() -> int:
     if marker not in source:
         return 0
     portal_patch = next(new for path, patch_marker, _old, new in _PATCHES
-                        if path == "gateway/slash_commands.py" and patch_marker == marker)
+                        if path == _GATEWAY_SLASH_COMMANDS_PATH and patch_marker == marker)
     replacement = portal_patch[portal_patch.index("        # Local Hermes: portal info"):]
     if replacement in source:
         return 0

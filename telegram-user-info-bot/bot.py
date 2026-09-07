@@ -1194,7 +1194,7 @@ def main() -> None:
     except KeyboardInterrupt:
         LOGGER.info("Bot stopped")
     except BotAPIError as error:
-        LOGGER.error("Could not start bot: %s", error)
+        LOGGER.exception("Could not start bot: %s", error)
         raise SystemExit(f"Could not start bot: {error}") from None
 
 
