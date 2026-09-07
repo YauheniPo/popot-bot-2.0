@@ -19,6 +19,7 @@ import zipfile
 
 
 SNAPSHOT_SCHEMA_VERSION = 3
+KANBAN_DB_NAME = "kanban.db"
 BACKUP_MARKERS = {".env", "config.yaml", "state.db"}
 EXCLUDED_DIRECTORIES = {
     "hermes-agent",
@@ -87,10 +88,10 @@ def _hash_file(path: Path) -> str:
 def discover_kanban_databases(hermes_home: Path) -> list[Path]:
     """Return every default, named, and archived Kanban database."""
     root = hermes_home.expanduser().resolve()
-    candidates = [root / "kanban.db"]
+    candidates = [root / KANBAN_DB_NAME]
     boards_root = root / "kanban" / "boards"
     if boards_root.is_dir():
-        candidates.extend(boards_root.rglob("kanban.db"))
+        candidates.extend(boards_root.rglob(KANBAN_DB_NAME))
 
     databases: list[Path] = []
     for path in candidates:
@@ -198,6 +199,7 @@ def write_snapshot(snapshot: dict[str, Any], output: Path) -> None:
 
 
 def load_snapshot(path: Path) -> dict[str, Any]:
+    path = path.expanduser().resolve()
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -224,7 +226,7 @@ def load_snapshot(path: Path) -> dict[str, Any]:
 
 
 def _is_kanban_archive_path(name: str) -> bool:
-    return name == "kanban.db" or (
+    return name == KANBAN_DB_NAME or (
         name.startswith("kanban/boards/") and name.endswith("/kanban.db")
     )
 

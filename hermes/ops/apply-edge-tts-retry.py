@@ -44,7 +44,7 @@ def main() -> int:
     if len(sys.argv) > 2:
         print(f"Usage: {Path(sys.argv[0]).name} [PATH_TO_TTS_TOOL]", file=sys.stderr)
         return 2
-    target = Path(target_arg or os.environ.get("HERMES_TTS_TOOL_PATH", DEFAULT_TARGET))
+    target = Path(target_arg or os.environ.get("HERMES_TTS_TOOL_PATH", DEFAULT_TARGET)).expanduser().resolve()
 
     if not target.is_file():
         print(f"[hermes] Edge TTS retry skipped: {target} is missing", file=sys.stderr)
