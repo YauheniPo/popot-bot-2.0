@@ -47,6 +47,10 @@ jobs:
           coverage xml -o coverage.xml
 
       - name: SonarQube Cloud Scan
+        # GitHub does not expose repository secrets to Dependabot PRs, so the
+        # Sonar token is unavailable there. Keep Sonar strict for pushes and
+        # regular PRs instead of turning its failures into false positives.
+        if: github.event_name != 'pull_request' || github.event.pull_request.user.login != 'dependabot[bot]'
         uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).with_name("configure-plugin.py")
@@ -127,6 +128,30 @@ class ConfigurePluginTests(unittest.TestCase):
     def test_configure_rejects_invalid_plugin_shape(self) -> None:
         with self.assertRaisesRegex(ValueError, "plugins must be"):
             configure_plugin.configure({"plugins": []}, Path("/home/hermes/.hermes"))
+
+    def test_main_rejects_a_config_path_not_named_config_yaml(self) -> None:
+        argv = [
+            "configure-plugin.py",
+            "--config", "/tmp/not-config.yaml",
+            "--hermes-home", "/home/hermes/.hermes",
+        ]
+        with mock.patch("sys.argv", argv):
+            exit_code = configure_plugin.main()
+
+        self.assertEqual(exit_code, 1)
+
+    def test_main_rejects_an_unsafe_vscode_compose_file_path(self) -> None:
+        argv = [
+            "configure-plugin.py",
+            "--config", "/tmp/config.yaml",
+            "--hermes-home", "/home/hermes/.hermes",
+            "--vscode-enabled",
+            "--vscode-compose-file", "/opt/hermes-bootstrap/my compose.yaml",
+        ]
+        with mock.patch("sys.argv", argv):
+            exit_code = configure_plugin.main()
+
+        self.assertEqual(exit_code, 1)
 
 
 if __name__ == "__main__":

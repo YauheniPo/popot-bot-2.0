@@ -20,6 +20,8 @@ def positive_integer(value: str) -> int:
 
 
 def prune_database(database: Path, retention_days: int, *, now: datetime | None = None) -> int:
+    if database.name != "metrics.db":
+        raise ValueError(f"--database must point to a metrics.db file: {database}")
     if not database.exists():
         return 0
     if database.is_symlink() or not database.is_file():

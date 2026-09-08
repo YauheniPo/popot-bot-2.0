@@ -124,6 +124,9 @@ def main() -> int:
     parser.add_argument("--format", choices=("markdown", "json"), default="markdown")
     parser.add_argument("--database", type=Path, default=hermes_home() / "ops" / "metrics.db")
     args = parser.parse_args()
+    if args.database.name != "metrics.db":
+        print(f"--database must point to a metrics.db file: {args.database}", file=sys.stderr)
+        return 2
     if not args.database.exists():
         print(f"No metrics database yet: {args.database}", file=sys.stderr)
         return 2

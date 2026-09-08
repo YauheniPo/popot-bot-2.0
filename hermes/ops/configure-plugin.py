@@ -123,6 +123,19 @@ def main() -> int:
             raise ValueError("invalid --vscode-project-name")
         if re.fullmatch(r"[A-Za-z0-9_.@:-]+[.]service", args.gateway_service) is None:
             raise ValueError("invalid --gateway-service")
+        if args.config.name != "config.yaml":
+            raise ValueError("--config must point to a config.yaml file")
+        # Mirror the safe-path charset install-ops.sh already enforces before
+        # this script can be reached in the shipped flow; keep the same
+        # defense here so a direct invocation cannot smuggle shell metacharacters
+        # into the docker_restart quick command built below.
+        safe_path = re.compile(r"/[A-Za-z0-9._/@+-]+")
+        for label, value in (
+            ("--vscode-compose-file", args.vscode_compose_file),
+            ("--vscode-env-file", args.vscode_env_file),
+        ):
+            if value is not None and safe_path.fullmatch(str(value)) is None:
+                raise ValueError(f"unsafe or unsupported path for {label}: {value}")
         data = load_config(args.config)
         changed = configure(
             data,
