@@ -236,7 +236,7 @@ jobs:
         id: claude_review_primary
         if: steps.claude_models.outputs.primary_ready == 'true'
         continue-on-error: true
-        uses: anthropics/claude-code-action@5ee796a55f92566ecd7e39d70dd613abcbea0d7c # v1
+        uses: anthropics/claude-code-action@d75b94d5ad426cb8546e6628b6f5f19b84e5cce1 # v1
         with:
           # OpenRouter receives the request through ANTHROPIC_BASE_URL and
           # authenticates with the same secret below.
@@ -413,7 +413,7 @@ jobs:
           steps.claude_models.outputs.primary_ready == 'true' &&
           steps.extract_claude_review_primary.outcome != 'success'
         continue-on-error: true
-        uses: anthropics/claude-code-action@5ee796a55f92566ecd7e39d70dd613abcbea0d7c # v1
+        uses: anthropics/claude-code-action@d75b94d5ad426cb8546e6628b6f5f19b84e5cce1 # v1
         with:
           anthropic_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -463,7 +463,7 @@ jobs:
           steps.extract_claude_review_primary.outcome != 'success' &&
           steps.extract_claude_review_primary_retry.outcome != 'success'
         continue-on-error: true
-        uses: anthropics/claude-code-action@5ee796a55f92566ecd7e39d70dd613abcbea0d7c # v1
+        uses: anthropics/claude-code-action@d75b94d5ad426cb8546e6628b6f5f19b84e5cce1 # v1
         with:
           anthropic_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
