@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).with_name("apply-config.py")
@@ -249,6 +251,27 @@ class ApplyConfigTests(unittest.TestCase):
         operations = apply_config.build_operations(settings, current, {}, set())
 
         self.assertEqual(operations, [apply_config.Operation("unset", "web.search_backend")])
+
+    def test_load_settings_rejects_a_path_not_named_vps_defaults_yml(self) -> None:
+        with self.assertRaisesRegex(ValueError, "vps-defaults.yml"):
+            apply_config.load_settings(Path("/tmp/not-vps-defaults.yml"))
+
+    def test_main_apply_rejects_an_unsafe_hermes_bin_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            settings_path = Path(temporary_directory) / "vps-defaults.yml"
+            settings_path.write_text("vps_runtime: {}\n", encoding="utf-8")
+            argv = [
+                "apply-config.py",
+                "apply",
+                "--settings", str(settings_path),
+                "--hermes-home", str(Path(temporary_directory) / "home"),
+                "--hermes-bin", "/opt/hermes-bootstrap/bin/hermes bin",
+                "--workspace", "/home/hermes/workspace",
+            ]
+            with mock.patch("sys.argv", argv):
+                exit_code = apply_config.main()
+
+        self.assertEqual(exit_code, 1)
 
     def test_service_groups_are_deduplicated_in_order(self) -> None:
         settings = {"vps_services": {"gateway": ["gateway.service"], "ops": ["a.service", "gateway.service"]}}

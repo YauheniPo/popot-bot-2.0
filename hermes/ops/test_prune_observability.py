@@ -61,3 +61,7 @@ class PruneObservabilityTests(unittest.TestCase):
 
             self.assertTrue(target.exists())
             self.assertTrue(symlink.is_symlink())
+
+    def test_prune_rejects_a_database_not_named_metrics_db(self) -> None:
+        with self.assertRaisesRegex(ValueError, "metrics.db"):
+            prune_observability.prune_database(Path("/tmp/not-metrics.db"), 90)

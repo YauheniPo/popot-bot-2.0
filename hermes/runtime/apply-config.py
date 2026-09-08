@@ -21,6 +21,8 @@ class Operation(NamedTuple):
 
 
 def load_settings(path: Path) -> dict[str, Any]:
+    if path.name != "vps-defaults.yml":
+        raise ValueError(f"--settings must point to a vps-defaults.yml file: {path}")
     try:
         loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError) as error:
@@ -505,6 +507,12 @@ def main() -> int:
             print(render_asset(template, values), end="")
             return 0
 
+        # Mirror the safe-path charset install-ops.sh already enforces on
+        # HERMES_BIN before this script can be reached in the shipped flow;
+        # keep the same defense here since this is the only branch that
+        # actually executes --hermes-bin as a subprocess.
+        if re.fullmatch(r"/[A-Za-z0-9._/@+-]+", str(args.hermes_bin)) is None:
+            raise ValueError(f"unsafe or unsupported --hermes-bin path: {args.hermes_bin}")
         current = load_config(args.hermes_home / "config.yaml")
         operations = build_operations(
             settings,
