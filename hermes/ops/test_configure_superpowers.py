@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).with_name("configure-superpowers.py")
@@ -66,6 +67,12 @@ class ConfigureSuperpowersTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             configure_superpowers.configure(config)
+
+    def test_main_rejects_a_config_path_not_named_config_yaml(self) -> None:
+        with mock.patch("sys.argv", ["configure-superpowers.py", "--config", "/tmp/not-config.yaml"]):
+            exit_code = configure_superpowers.main()
+
+        self.assertEqual(exit_code, 1)
 
 
 if __name__ == "__main__":
