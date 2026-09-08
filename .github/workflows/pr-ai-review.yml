@@ -6,11 +6,6 @@ on:
     # in-progress review when a newer commit arrives.
     types: [opened, reopened, ready_for_review, synchronize]
 
-permissions:
-  contents: read
-  issues: write
-  pull-requests: write
-
 env:
   # Select reviewers through the PR_REVIEWER repository variable:
   # 0/unset = both sequentially, 1 = direct API, 2 = Claude Code.
@@ -51,6 +46,10 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login == github.repository_owner
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     # The direct reviewer covers the full eligible diff in bounded, rate-limited
     # chunks. Leave enough time for provider retries on large pull requests.
     timeout-minutes: 12
@@ -127,6 +126,10 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login == github.repository_owner
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     timeout-minutes: 45
 
     steps:

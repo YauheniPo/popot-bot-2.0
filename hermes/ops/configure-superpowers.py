@@ -71,6 +71,8 @@ def parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = parser().parse_args()
     try:
+        if args.config.name != "config.yaml":
+            raise ValueError("--config must point to a config.yaml file")
         data = load_config(args.config)
         changed = configure(data)
         if changed:
