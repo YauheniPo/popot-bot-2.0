@@ -67,11 +67,21 @@ class PruneObservabilityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "metrics.db"):
             prune_observability.prune_database(Path("/tmp/not-metrics.db"), 90)
 
-    def test_main_requires_hermes_home(self) -> None:
+    def test_hermes_home_falls_back_to_home_hermes_when_unset(self) -> None:
+        with mock.patch.dict("os.environ", {}, clear=True), \
+                mock.patch("pathlib.Path.home", return_value=Path("/fake/home")):
+            self.assertEqual(prune_observability.hermes_home(), Path("/fake/home") / ".hermes")
+
+    def test_main_rejects_a_database_outside_the_hermes_home_fallback(self) -> None:
         argv = ["prune-observability.py", "--database", "/tmp/metrics.db", "--retention-days", "90"]
-        with mock.patch("sys.argv", argv), mock.patch.dict("os.environ", {}, clear=True):
+        with mock.patch("sys.argv", argv), \
+                mock.patch.dict("os.environ", {}, clear=True), \
+                mock.patch("pathlib.Path.home", return_value=Path("/fake/home")):
             exit_code = prune_observability.main()
 
+        # /tmp/metrics.db does not match the ~/.hermes fallback, but main()
+        # must reach that comparison instead of hard-failing over the
+        # missing HERMES_HOME env var.
         self.assertEqual(exit_code, 2)
 
     def test_main_rejects_a_database_outside_hermes_home(self) -> None:

@@ -14,6 +14,11 @@ from pathlib import Path
 TABLES = ("api_calls", "tool_calls", "sessions", "approvals", "commands")
 
 
+def hermes_home() -> Path:
+    configured = os.environ.get("HERMES_HOME", "").strip()
+    return Path(configured).expanduser() if configured else Path.home() / ".hermes"
+
+
 def positive_integer(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
@@ -66,15 +71,13 @@ def main() -> int:
     parser.add_argument("--database", required=True, type=Path)
     parser.add_argument("--retention-days", required=True, type=positive_integer)
     args = parser.parse_args()
-    # Anchor --database to the caller's own HERMES_HOME instead of trusting
-    # its basename alone: a basename-only check still lets the directory
-    # component point anywhere on the filesystem. The systemd unit that runs
-    # this script always sets HERMES_HOME.
-    hermes_home = os.environ.get("HERMES_HOME", "").strip()
-    if not hermes_home:
-        print("HERMES_HOME environment variable must be set", file=sys.stderr)
-        return 2
-    expected_database = (Path(hermes_home).expanduser() / "ops" / "metrics.db").resolve()
+    # Anchor --database to HERMES_HOME instead of trusting its basename
+    # alone: a basename-only check still lets the directory component point
+    # anywhere on the filesystem. Falls back to ~/.hermes (like hermes_home()
+    # is used elsewhere) so a manual invocation without HERMES_HOME set still
+    # behaves sensibly; the systemd unit that runs this script in production
+    # always sets HERMES_HOME anyway.
+    expected_database = (hermes_home() / "ops" / "metrics.db").resolve()
     if args.database.resolve() != expected_database:
         print(f"--database must be {expected_database}", file=sys.stderr)
         return 2

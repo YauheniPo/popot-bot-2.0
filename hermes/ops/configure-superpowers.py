@@ -71,13 +71,17 @@ def parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = parser().parse_args()
     try:
-        hermes_home = os.environ.get("HERMES_HOME", "").strip()
-        if not hermes_home:
-            raise ValueError("HERMES_HOME environment variable must be set")
         # Anchor --config to the caller's own HERMES_HOME instead of trusting
         # its basename alone: a basename-only check still lets the directory
-        # component point anywhere on the filesystem.
-        expected_config = (Path(hermes_home).expanduser() / "config.yaml").resolve()
+        # component point anywhere on the filesystem. Fall back to ~/.hermes,
+        # matching hermes_home()/_home() in the other ops scripts, so a
+        # manual invocation without HERMES_HOME set still behaves sensibly
+        # instead of hard-failing.
+        hermes_home = os.environ.get("HERMES_HOME", "").strip()
+        expected_config = (
+            Path(hermes_home).expanduser() if hermes_home else Path.home() / ".hermes"
+        ) / "config.yaml"
+        expected_config = expected_config.resolve()
         if args.config.resolve() != expected_config:
             raise ValueError(f"--config must be {expected_config}")
         data = load_config(args.config)
