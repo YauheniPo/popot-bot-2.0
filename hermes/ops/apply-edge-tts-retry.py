@@ -39,15 +39,35 @@ NEW = f'''    {MARKER}
 '''
 
 
+def _trusted_roots() -> list[Path]:
+    # The two roots hermes/ansible/tasks/services.yml's "find" task searches
+    # for tts_tool.py: HERMES_HOME (or its ~/.hermes fallback) and the
+    # Hermes user's own ~/.local. That ansible task already restricts
+    # discovery to files literally named tts_tool.py under these roots; this
+    # is defense in depth, not the primary narrowing.
+    hermes_home = os.environ.get("HERMES_HOME", "").strip()
+    home = os.environ.get("HOME", "").strip()
+    home_path = Path(home).expanduser() if home else Path.home()
+    return [
+        (Path(hermes_home).expanduser() if hermes_home else home_path / ".hermes").resolve(),
+        (home_path / ".local").resolve(),
+    ]
+
+
 def main() -> int:
     target_arg = sys.argv[1] if len(sys.argv) == 2 else None
     if len(sys.argv) > 2:
         print(f"Usage: {Path(sys.argv[0]).name} [PATH_TO_TTS_TOOL]", file=sys.stderr)
         return 2
     target = Path(target_arg or os.environ.get("HERMES_TTS_TOOL_PATH", DEFAULT_TARGET)).expanduser().resolve()
-    if target.name != Path(DEFAULT_TARGET).name:
+    expected_target = Path(DEFAULT_TARGET).resolve()
+    trusted = target == expected_target or (
+        target.name == expected_target.name
+        and any(target.is_relative_to(root) for root in _trusted_roots())
+    )
+    if not trusted:
         print(
-            f"[hermes] Edge TTS retry refused: {target} is not a {Path(DEFAULT_TARGET).name} file",
+            f"[hermes] Edge TTS retry refused: {target} is not a trusted tts_tool.py location",
             file=sys.stderr,
         )
         return 2

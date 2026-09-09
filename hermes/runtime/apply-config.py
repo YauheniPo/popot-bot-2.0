@@ -21,10 +21,17 @@ class Operation(NamedTuple):
 
 
 def load_settings(path: Path) -> dict[str, Any]:
-    if path.name != "vps-defaults.yml":
+    # Resolve before validating: the shipped installer builds this path as
+    # "<script dir>/../config/vps-defaults.yml" (a literal ".." component,
+    # never normalized), so checking the raw path's structure would reject
+    # every real invocation. Resolving first collapses ".." the same way
+    # the OS would when opening the file, and gives a name/absoluteness
+    # check that means something.
+    resolved = path.resolve()
+    if resolved.name != "vps-defaults.yml":
         raise ValueError(f"--settings must point to a vps-defaults.yml file: {path}")
     try:
-        loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        loaded = yaml.safe_load(resolved.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError) as error:
         raise ValueError(f"cannot read VPS settings from {path}: {error}") from error
     if not isinstance(loaded, dict):

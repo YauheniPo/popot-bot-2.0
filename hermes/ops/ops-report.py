@@ -122,9 +122,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Report Hermes model, token, cost, tool, and command activity")
     parser.add_argument("--period", default="24h", help="report window, for example 24h, 7d, or 30d")
     parser.add_argument("--format", choices=("markdown", "json"), default="markdown")
-    parser.add_argument("--database", type=Path, default=hermes_home() / "ops" / "metrics.db")
+    parser.add_argument(
+        "--database", type=Path, default=hermes_home() / "ops" / "metrics.db",
+        help="an absolute path to a metrics.db file, e.g. a backup copied elsewhere for offline analysis",
+    )
     args = parser.parse_args()
-    if args.database.name != "metrics.db":
+    # Unlike the install-time scripts, this report tool is meant to be run
+    # by hand against an arbitrary metrics.db (for example, a downloaded
+    # backup copied elsewhere for offline analysis), so --database is not
+    # anchored to HERMES_HOME. Still require an absolute path with no ".."
+    # component: it stays read-only (mode=ro, SELECT-only) regardless.
+    if args.database.name != "metrics.db" or not args.database.is_absolute() or ".." in args.database.parts:
         print(f"--database must point to a metrics.db file: {args.database}", file=sys.stderr)
         return 2
     if not args.database.exists():

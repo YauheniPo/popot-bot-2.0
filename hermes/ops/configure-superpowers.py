@@ -64,15 +64,29 @@ def write_config(path: Path, data: dict[str, Any]) -> None:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument("--config", required=True, type=Path)
+    result.add_argument(
+        "--config", required=True, type=Path,
+        help="must resolve to $HERMES_HOME/config.yaml (falls back to ~/.hermes); no other location is accepted",
+    )
     return result
 
 
 def main() -> int:
     args = parser().parse_args()
     try:
-        if args.config.name != "config.yaml":
-            raise ValueError("--config must point to a config.yaml file")
+        # Anchor --config to the caller's own HERMES_HOME instead of trusting
+        # its basename alone: a basename-only check still lets the directory
+        # component point anywhere on the filesystem. Fall back to ~/.hermes,
+        # matching hermes_home()/_home() in the other ops scripts, so a
+        # manual invocation without HERMES_HOME set still behaves sensibly
+        # instead of hard-failing.
+        hermes_home = os.environ.get("HERMES_HOME", "").strip()
+        expected_config = (
+            Path(hermes_home).expanduser() if hermes_home else Path.home() / ".hermes"
+        ) / "config.yaml"
+        expected_config = expected_config.resolve()
+        if args.config.resolve() != expected_config:
+            raise ValueError(f"--config must be {expected_config}")
         data = load_config(args.config)
         changed = configure(data)
         if changed:
