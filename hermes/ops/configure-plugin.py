@@ -102,7 +102,10 @@ def write_config(path: Path, data: dict[str, Any]) -> None:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument("--config", required=True, type=Path)
+    result.add_argument(
+        "--config", required=True, type=Path,
+        help="must resolve to <hermes-home>/config.yaml; no other location is accepted",
+    )
     result.add_argument("--hermes-home", required=True, type=Path)
     result.add_argument("--gateway-service", default="hermes-gateway.service")
     result.add_argument("--vscode-enabled", action="store_true")
