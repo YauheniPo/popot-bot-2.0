@@ -139,7 +139,7 @@ class ApplyConfigTests(unittest.TestCase):
             self.assertNotIn(kept, disabled)
         self.assertEqual(settings["vps_runtime"]["set"]["approvals.mode"], "manual")
         self.assertEqual(settings["vps_runtime"]["set"]["browser.backend"], "off")
-        self.assertEqual(settings["vps_runtime"]["set"]["display.tool_progress"], "off")
+        self.assertEqual(settings["vps_runtime"]["set"]["display.tool_progress"], "verbose")
         self.assertEqual(settings["vps_runtime"]["set"]["agent.max_turns"], 200)
         self.assertEqual(settings["vps_runtime"]["set"]["goals.max_turns"], 50)
         self.assertEqual(settings["vps_runtime"]["set"]["proactive_prune_tokens"], 20000)

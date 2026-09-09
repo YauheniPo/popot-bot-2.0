@@ -233,7 +233,7 @@ vps_ops:
     endpoint: http://127.0.0.1:9119/api/execute
     model: poolside/laguna-s-2.1:free
     message: Hello
-    max_attempts: 6
+    max_attempts: 10
     wait_seconds: 30
   backup:
     required: true
