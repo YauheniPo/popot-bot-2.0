@@ -23,6 +23,33 @@ class ApplyEdgeTtsRetryTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 2)
 
+    def test_main_refuses_a_tts_tool_py_outside_every_trusted_root(self) -> None:
+        with mock.patch("sys.argv", ["apply-edge-tts-retry.py", "/tmp/tts_tool.py"]), \
+                mock.patch.dict("os.environ", {"HERMES_HOME": "/home/hermes/.hermes", "HOME": "/home/hermes"}):
+            exit_code = apply_edge_tts_retry.main()
+
+        self.assertEqual(exit_code, 2)
+
+    def test_main_accepts_a_tts_tool_py_discovered_under_hermes_home(self) -> None:
+        # Mirrors hermes/ansible/tasks/services.yml: it "find"s tts_tool.py
+        # under HERMES_HOME/.local and hermes_user_home/.local, then passes
+        # the discovered path as argv[1] with HERMES_HOME/HOME set.
+        argv = ["apply-edge-tts-retry.py", "/home/hermes/.hermes/some/nested/tts_tool.py"]
+        with mock.patch("sys.argv", argv), \
+                mock.patch.dict("os.environ", {"HERMES_HOME": "/home/hermes/.hermes", "HOME": "/home/hermes"}):
+            exit_code = apply_edge_tts_retry.main()
+
+        # 0 ("skipped: missing") not 2 ("refused") -- the guard let it through.
+        self.assertEqual(exit_code, 0)
+
+    def test_main_accepts_a_tts_tool_py_discovered_under_user_local(self) -> None:
+        argv = ["apply-edge-tts-retry.py", "/home/hermes/.local/lib/some-pkg/tts_tool.py"]
+        with mock.patch("sys.argv", argv), \
+                mock.patch.dict("os.environ", {"HERMES_HOME": "/home/hermes/.hermes", "HOME": "/home/hermes"}):
+            exit_code = apply_edge_tts_retry.main()
+
+        self.assertEqual(exit_code, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
