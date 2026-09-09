@@ -114,6 +114,34 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
+def _resolve_vscode_paths(
+    compose_file: Path | None, env_file: Path
+) -> tuple[Path | None, Path]:
+    # Mirror the safe-path charset install-ops.sh already enforces before
+    # this script can be reached in the shipped flow; keep the same
+    # defense here so a direct invocation cannot smuggle shell metacharacters
+    # into the docker_restart quick command built below. Validate the
+    # *resolved* path so a ".."-laden argument cannot slip past the
+    # charset check and still land outside the intended directory.
+    safe_path = re.compile(r"/[A-Za-z0-9._/@+-]+")
+    resolved_compose_file = None
+    resolved_env_file = env_file
+    for label, value in (
+        ("--vscode-compose-file", compose_file),
+        ("--vscode-env-file", env_file),
+    ):
+        if value is None:
+            continue
+        resolved = value.expanduser().resolve()
+        if safe_path.fullmatch(str(resolved)) is None:
+            raise ValueError(f"unsafe or unsupported path for {label}: {value}")
+        if label == "--vscode-compose-file":
+            resolved_compose_file = resolved
+        else:
+            resolved_env_file = resolved
+    return resolved_compose_file, resolved_env_file
+
+
 def main() -> int:
     args = parser().parse_args()
     try:
@@ -129,28 +157,9 @@ def main() -> int:
         expected_config = (args.hermes_home.expanduser() / "config.yaml").resolve()
         if args.config.resolve() != expected_config:
             raise ValueError(f"--config must be {expected_config}")
-        # Mirror the safe-path charset install-ops.sh already enforces before
-        # this script can be reached in the shipped flow; keep the same
-        # defense here so a direct invocation cannot smuggle shell metacharacters
-        # into the docker_restart quick command built below. Validate the
-        # *resolved* path so a ".."-laden argument cannot slip past the
-        # charset check and still land outside the intended directory.
-        safe_path = re.compile(r"/[A-Za-z0-9._/@+-]+")
-        resolved_vscode_compose_file = None
-        resolved_vscode_env_file = args.vscode_env_file
-        for label, value in (
-            ("--vscode-compose-file", args.vscode_compose_file),
-            ("--vscode-env-file", args.vscode_env_file),
-        ):
-            if value is None:
-                continue
-            resolved = value.expanduser().resolve()
-            if safe_path.fullmatch(str(resolved)) is None:
-                raise ValueError(f"unsafe or unsupported path for {label}: {value}")
-            if label == "--vscode-compose-file":
-                resolved_vscode_compose_file = resolved
-            else:
-                resolved_vscode_env_file = resolved
+        resolved_vscode_compose_file, resolved_vscode_env_file = _resolve_vscode_paths(
+            args.vscode_compose_file, args.vscode_env_file
+        )
         data = load_config(args.config)
         changed = configure(
             data,
