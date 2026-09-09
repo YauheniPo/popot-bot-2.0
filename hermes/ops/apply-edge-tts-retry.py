@@ -45,9 +45,10 @@ def main() -> int:
         print(f"Usage: {Path(sys.argv[0]).name} [PATH_TO_TTS_TOOL]", file=sys.stderr)
         return 2
     target = Path(target_arg or os.environ.get("HERMES_TTS_TOOL_PATH", DEFAULT_TARGET)).expanduser().resolve()
-    if target.name != Path(DEFAULT_TARGET).name:
+    expected_target = Path(DEFAULT_TARGET).resolve()
+    if target != expected_target:
         print(
-            f"[hermes] Edge TTS retry refused: {target} is not a {Path(DEFAULT_TARGET).name} file",
+            f"[hermes] Edge TTS retry refused: {target} is not {expected_target}",
             file=sys.stderr,
         )
         return 2

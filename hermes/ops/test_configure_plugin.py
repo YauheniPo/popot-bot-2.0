@@ -141,9 +141,11 @@ class ConfigurePluginTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
 
     def test_main_rejects_an_unsafe_vscode_compose_file_path(self) -> None:
+        # --config must match --hermes-home/config.yaml or main() rejects the
+        # request before ever reaching the vscode-compose-file check below.
         argv = [
             "configure-plugin.py",
-            "--config", "/tmp/config.yaml",
+            "--config", "/home/hermes/.hermes/config.yaml",
             "--hermes-home", "/home/hermes/.hermes",
             "--vscode-enabled",
             "--vscode-compose-file", "/opt/hermes-bootstrap/my compose.yaml",

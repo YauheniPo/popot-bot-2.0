@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -64,6 +66,18 @@ def main() -> int:
     parser.add_argument("--database", required=True, type=Path)
     parser.add_argument("--retention-days", required=True, type=positive_integer)
     args = parser.parse_args()
+    # Anchor --database to the caller's own HERMES_HOME instead of trusting
+    # its basename alone: a basename-only check still lets the directory
+    # component point anywhere on the filesystem. The systemd unit that runs
+    # this script always sets HERMES_HOME.
+    hermes_home = os.environ.get("HERMES_HOME", "").strip()
+    if not hermes_home:
+        print("HERMES_HOME environment variable must be set", file=sys.stderr)
+        return 2
+    expected_database = (Path(hermes_home).expanduser() / "ops" / "metrics.db").resolve()
+    if args.database.resolve() != expected_database:
+        print(f"--database must be {expected_database}", file=sys.stderr)
+        return 2
     removed = prune_database(args.database, args.retention_days)
     print(f"Pruned observability rows: {removed}")
     return 0

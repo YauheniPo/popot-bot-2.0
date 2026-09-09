@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).with_name("prune-observability.py")
@@ -65,3 +66,17 @@ class PruneObservabilityTests(unittest.TestCase):
     def test_prune_rejects_a_database_not_named_metrics_db(self) -> None:
         with self.assertRaisesRegex(ValueError, "metrics.db"):
             prune_observability.prune_database(Path("/tmp/not-metrics.db"), 90)
+
+    def test_main_requires_hermes_home(self) -> None:
+        argv = ["prune-observability.py", "--database", "/tmp/metrics.db", "--retention-days", "90"]
+        with mock.patch("sys.argv", argv), mock.patch.dict("os.environ", {}, clear=True):
+            exit_code = prune_observability.main()
+
+        self.assertEqual(exit_code, 2)
+
+    def test_main_rejects_a_database_outside_hermes_home(self) -> None:
+        argv = ["prune-observability.py", "--database", "/tmp/metrics.db", "--retention-days", "90"]
+        with mock.patch("sys.argv", argv), mock.patch.dict("os.environ", {"HERMES_HOME": "/home/hermes/.hermes"}):
+            exit_code = prune_observability.main()
+
+        self.assertEqual(exit_code, 2)

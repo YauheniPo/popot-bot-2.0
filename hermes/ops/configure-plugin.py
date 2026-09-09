@@ -123,28 +123,43 @@ def main() -> int:
             raise ValueError("invalid --vscode-project-name")
         if re.fullmatch(r"[A-Za-z0-9_.@:-]+[.]service", args.gateway_service) is None:
             raise ValueError("invalid --gateway-service")
-        if args.config.name != "config.yaml":
-            raise ValueError("--config must point to a config.yaml file")
+        # Anchor --config to --hermes-home instead of trusting its basename
+        # alone: a basename-only check still lets the directory component
+        # point anywhere on the filesystem.
+        expected_config = (args.hermes_home.expanduser() / "config.yaml").resolve()
+        if args.config.resolve() != expected_config:
+            raise ValueError(f"--config must be {expected_config}")
         # Mirror the safe-path charset install-ops.sh already enforces before
         # this script can be reached in the shipped flow; keep the same
         # defense here so a direct invocation cannot smuggle shell metacharacters
-        # into the docker_restart quick command built below.
+        # into the docker_restart quick command built below. Validate the
+        # *resolved* path so a ".."-laden argument cannot slip past the
+        # charset check and still land outside the intended directory.
         safe_path = re.compile(r"/[A-Za-z0-9._/@+-]+")
+        resolved_vscode_compose_file = None
+        resolved_vscode_env_file = args.vscode_env_file
         for label, value in (
             ("--vscode-compose-file", args.vscode_compose_file),
             ("--vscode-env-file", args.vscode_env_file),
         ):
-            if value is not None and safe_path.fullmatch(str(value)) is None:
+            if value is None:
+                continue
+            resolved = value.expanduser().resolve()
+            if safe_path.fullmatch(str(resolved)) is None:
                 raise ValueError(f"unsafe or unsupported path for {label}: {value}")
+            if label == "--vscode-compose-file":
+                resolved_vscode_compose_file = resolved
+            else:
+                resolved_vscode_env_file = resolved
         data = load_config(args.config)
         changed = configure(
             data,
             args.hermes_home,
             gateway_service=args.gateway_service,
             vscode_compose_file=(
-                args.vscode_compose_file if args.vscode_enabled else None
+                resolved_vscode_compose_file if args.vscode_enabled else None
             ),
-            vscode_env_file=args.vscode_env_file,
+            vscode_env_file=resolved_vscode_env_file,
             vscode_project_name=args.vscode_project_name,
         )
         if changed:

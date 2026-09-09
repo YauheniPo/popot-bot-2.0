@@ -124,8 +124,12 @@ def main() -> int:
     parser.add_argument("--format", choices=("markdown", "json"), default="markdown")
     parser.add_argument("--database", type=Path, default=hermes_home() / "ops" / "metrics.db")
     args = parser.parse_args()
-    if args.database.name != "metrics.db":
-        print(f"--database must point to a metrics.db file: {args.database}", file=sys.stderr)
+    # Anchor --database to HERMES_HOME instead of trusting its basename
+    # alone: a basename-only check still lets the directory component point
+    # anywhere on the filesystem.
+    expected_database = (hermes_home() / "ops" / "metrics.db").resolve()
+    if args.database.resolve() != expected_database:
+        print(f"--database must be {expected_database}", file=sys.stderr)
         return 2
     if not args.database.exists():
         print(f"No metrics database yet: {args.database}", file=sys.stderr)

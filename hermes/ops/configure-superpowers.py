@@ -71,8 +71,15 @@ def parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = parser().parse_args()
     try:
-        if args.config.name != "config.yaml":
-            raise ValueError("--config must point to a config.yaml file")
+        hermes_home = os.environ.get("HERMES_HOME", "").strip()
+        if not hermes_home:
+            raise ValueError("HERMES_HOME environment variable must be set")
+        # Anchor --config to the caller's own HERMES_HOME instead of trusting
+        # its basename alone: a basename-only check still lets the directory
+        # component point anywhere on the filesystem.
+        expected_config = (Path(hermes_home).expanduser() / "config.yaml").resolve()
+        if args.config.resolve() != expected_config:
+            raise ValueError(f"--config must be {expected_config}")
         data = load_config(args.config)
         changed = configure(data)
         if changed:

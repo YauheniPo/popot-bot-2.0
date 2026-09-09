@@ -21,7 +21,7 @@ class Operation(NamedTuple):
 
 
 def load_settings(path: Path) -> dict[str, Any]:
-    if path.name != "vps-defaults.yml":
+    if path.name != "vps-defaults.yml" or not path.is_absolute() or ".." in path.parts:
         raise ValueError(f"--settings must point to a vps-defaults.yml file: {path}")
     try:
         loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
