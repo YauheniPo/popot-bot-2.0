@@ -256,6 +256,16 @@ class ApplyConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "vps-defaults.yml"):
             apply_config.load_settings(Path("/tmp/not-vps-defaults.yml"))
 
+    def test_load_settings_accepts_a_literal_dotdot_path(self) -> None:
+        # install/common.sh builds --settings as "${SCRIPT_DIR}/../config/
+        # vps-defaults.yml" -- a literal ".." component, never normalized by
+        # the shell. load_settings() must resolve it, not reject it.
+        settings_path = MODULE_PATH.parent / ".." / "config" / "vps-defaults.yml"
+
+        settings = apply_config.load_settings(settings_path)
+
+        self.assertEqual(settings["vps_deploy"]["identity"]["user"], "hermes")
+
     def test_main_apply_rejects_an_unsafe_hermes_bin_path(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             settings_path = Path(temporary_directory) / "vps-defaults.yml"
