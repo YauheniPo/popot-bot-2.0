@@ -27,7 +27,7 @@ def configure(
     # Validate at the command-construction boundary, including direct callers.
     if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", vscode_project_name) is None:
         raise ValueError("invalid --vscode-project-name")
-    if re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.@:-]*[.]service", gateway_service) is None:
+    if re.fullmatch(r"\w[\w.@:-]*\.service", gateway_service, flags=re.ASCII) is None:
         raise ValueError("invalid --gateway-service")
     vscode_compose_file, vscode_env_file = _resolve_vscode_paths(
         vscode_compose_file, vscode_env_file

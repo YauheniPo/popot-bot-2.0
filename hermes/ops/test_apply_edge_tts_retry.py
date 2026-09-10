@@ -6,6 +6,7 @@ import importlib.util
 import contextlib
 import io
 import os
+import runpy
 import stat
 import tempfile
 import unittest
@@ -22,6 +23,31 @@ SPEC.loader.exec_module(apply_edge_tts_retry)
 
 
 class ApplyEdgeTtsRetryTests(unittest.TestCase):
+    def test_main_reports_success_already_patched_and_changed_upstream(self) -> None:
+        for source, message in (
+            (apply_edge_tts_retry.OLD, "installed Edge TTS transient retry"),
+            (apply_edge_tts_retry.NEW, "already installed"),
+            ("# changed upstream\n", "upstream implementation changed"),
+        ):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp).resolve()
+                target = root / "tts_tool.py"
+                target.write_text(source, encoding="utf-8")
+                output = io.StringIO()
+                with mock.patch.dict(os.environ, {"HERMES_HOME": str(root), "HOME": str(root)}), \
+                        mock.patch("sys.argv", ["apply-edge-tts-retry.py", str(target)]), \
+                        contextlib.redirect_stdout(output):
+                    self.assertEqual(apply_edge_tts_retry.main(), 0)
+                self.assertIn(message, output.getvalue())
+
+    def test_script_rejects_extra_arguments(self) -> None:
+        script = str(MODULE_PATH)
+        with mock.patch("sys.argv", [script, "first", "second"]), \
+                contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                runpy.run_path(script, run_name="__main__")
+        self.assertEqual(raised.exception.code, 2)
+
     def test_patch_preserves_mode_and_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             target = Path(temp) / "tts_tool.py"

@@ -33,6 +33,9 @@ class ConfigurePluginTests(unittest.TestCase):
             {"vscode_project_name": "project;id"},
             {"gateway_service": "gateway.service;id"},
             {"gateway_service": "--invalid.service"},
+            {"gateway_service": "гермес.service"},
+            {"gateway_service": "gateway@é.service"},
+            {"gateway_service": "gateway\n.service"},
             {"vscode_env_file": Path("/tmp/env;id")},
             {"vscode_compose_file": Path("/tmp/$(id).yml")},
         ):
@@ -41,6 +44,12 @@ class ConfigurePluginTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     configure_plugin.configure(data, Path("/home/hermes/.hermes"), **options)
                 self.assertEqual(data, {})
+
+    def test_service_names_accept_supported_ascii_forms(self) -> None:
+        for service in ("hermes-gateway.service", "gateway@worker-1.service", "_worker.service", "app:worker.service"):
+            with self.subTest(service=service):
+                data = {}
+                self.assertTrue(configure_plugin.configure(data, Path("/home/hermes"), gateway_service=service))
 
     def test_gateway_drop_in_uses_the_native_self_restart_protocol(self) -> None:
         drop_in = (

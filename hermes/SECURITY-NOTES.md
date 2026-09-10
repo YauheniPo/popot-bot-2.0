@@ -19,6 +19,12 @@ VPS or container. They do not dismiss or suppress scanner alerts.
 - Workspace `AGENTS.md` may include private operator notes; deployment writers
   use `0600`. The host `/etc/code-server` directory is root-only (`0700`); it is
   not the container's separately mounted configuration directory.
+- `manage-workspace-agents.py` rejects links in either destination and in their
+  parent directories, and refuses `..` components. Supply direct filesystem
+  paths for custom workspace/backup layouts, not symlink aliases. Both existing
+  files are checked before updates; directory-descriptor-based atomic replacement
+  prevents a renamed parent from redirecting the write. This remains an operator
+  CLI with explicitly supplied destinations, not an arbitrary-path sandbox.
 
 ## Alerts requiring context or an operator decision
 
