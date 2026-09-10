@@ -17,16 +17,40 @@ configure_plugin = importlib.util.module_from_spec(SPEC)
 with mock.patch.object(sys, "path", [str(MODULE_PATH.parent), *sys.path]):
     SPEC.loader.exec_module(configure_plugin)
 
-MANAGED_COMPOSE = Path("/opt/hermes-bootstrap/vscode-server/docker-compose.yml")
+MANAGED_COMPOSE = Path("/opt/hermes-bootstrap/vscode-server/docker-compose.yml").resolve()
 MANAGED_RESTART = (
     "sudo docker compose --project-name hermes-vscode "
-    "--env-file /etc/code-server.env "
-    "-f /opt/hermes-bootstrap/vscode-server/docker-compose.yml "
+    f"--env-file {Path('/etc/code-server.env').resolve()} "
+    f"-f {MANAGED_COMPOSE} "
     "restart code-server"
 )
 
 
 class ConfigurePluginTests(unittest.TestCase):
+    def test_direct_configure_rejects_unsafe_arguments_before_mutating_config(self) -> None:
+        for options in (
+            {"vscode_project_name": "--help"},
+            {"vscode_project_name": "project;id"},
+            {"gateway_service": "gateway.service;id"},
+            {"gateway_service": "--invalid.service"},
+            {"gateway_service": "гермес.service"},
+            {"gateway_service": "gateway@é.service"},
+            {"gateway_service": "gateway\n.service"},
+            {"vscode_env_file": Path("/tmp/env;id")},
+            {"vscode_compose_file": Path("/tmp/$(id).yml")},
+        ):
+            with self.subTest(options=options):
+                data = {}
+                with self.assertRaises(ValueError):
+                    configure_plugin.configure(data, Path("/home/hermes/.hermes"), **options)
+                self.assertEqual(data, {})
+
+    def test_service_names_accept_supported_ascii_forms(self) -> None:
+        for service in ("hermes-gateway.service", "gateway@worker-1.service", "_worker.service", "app:worker.service"):
+            with self.subTest(service=service):
+                data = {}
+                self.assertTrue(configure_plugin.configure(data, Path("/home/hermes"), gateway_service=service))
+
     def test_gateway_drop_in_uses_the_native_self_restart_protocol(self) -> None:
         drop_in = (
             MODULE_PATH.parent / "systemd" / "hermes-gateway-observability.conf"

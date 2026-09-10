@@ -33,6 +33,7 @@
       - python3
       - "{{ hermes_bundle_dir }}/ops/apply-edge-tts-retry.py"
       - "{{ (hermes_tts_tool_files.files | map(attribute='path') | list | first) }}"
+  become_user: "{{ hermes_user }}"
   environment:
     HERMES_HOME: "{{ hermes_home }}"
     HOME: "{{ hermes_user_home }}"

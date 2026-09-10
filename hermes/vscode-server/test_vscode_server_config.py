@@ -80,6 +80,11 @@ class VscodeServerConfigTests(unittest.TestCase):
             encoding="utf-8"
         )
         task_definitions = yaml.safe_load(tasks)
+        config_directory = next(
+            task["ansible.builtin.file"] for task in task_definitions
+            if task.get("ansible.builtin.file", {}).get("path") == "/etc/code-server"
+        )
+        self.assertEqual(config_directory["mode"], "0700")
         services = (HERMES_DIR / "ansible" / "tasks" / "services.yml").read_text(
             encoding="utf-8"
         )

@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import importlib.util
+import contextlib
+import io
+import os
+import runpy
 from pathlib import Path
 import tempfile
+import stat
 import unittest
 from unittest import mock
 
+import yaml
 
 MODULE_PATH = Path(__file__).with_name("manage-workspace-agents.py")
 SPEC = importlib.util.spec_from_file_location("manage_workspace_agents", MODULE_PATH)
@@ -17,6 +23,188 @@ SPEC.loader.exec_module(manage_workspace_agents)
 
 
 class ManageWorkspaceAgentsTests(unittest.TestCase):
+    def run_cli(self, target, source, backup=None, state="present"):
+        argv = ["manage-workspace-agents.py", "--target", str(target),
+                "--managed-source", str(source), "--state", state]
+        if backup is not None:
+            argv.extend(["--backup-copy", str(backup)])
+        with mock.patch("sys.argv", argv), contextlib.redirect_stderr(io.StringIO()), \
+                contextlib.redirect_stdout(io.StringIO()):
+            return manage_workspace_agents.main()
+
+    def test_linked_destinations_are_rejected_before_either_file_is_changed(self) -> None:
+        for destination in ("target", "backup"):
+            for kind in ("symlink", "dangling", "hardlink"):
+                with self.subTest(destination=destination, kind=kind), tempfile.TemporaryDirectory() as temp:
+                    root = Path(temp).resolve()
+                    outside = root / "outside"
+                    outside.mkdir(mode=0o755)
+                    victim = outside / "notes.md"
+                    victim.write_text("Outside notes\n")
+                    target = root / "AGENTS.md"
+                    backup = root / "backup.md"
+                    source = root / "source.md"
+                    for path in (target, backup, source):
+                        path.write_text("Original\n")
+                    attacked = target if destination == "target" else backup
+                    untouched = backup if destination == "target" else target
+                    attacked.unlink()
+                    if kind == "hardlink":
+                        os.link(victim, attacked)
+                    else:
+                        attacked.symlink_to(victim if kind == "symlink" else outside / "missing.md")
+                    before_mode = stat.S_IMODE(outside.stat().st_mode)
+
+                    self.assertEqual(self.run_cli(target, source, backup), 2)
+
+                    self.assertEqual(untouched.read_text(), "Original\n")
+                    self.assertEqual(victim.read_text(), "Outside notes\n")
+                    self.assertEqual(stat.S_IMODE(outside.stat().st_mode), before_mode)
+                    self.assertFalse((outside / "missing.md").exists())
+
+    def test_symlinked_parent_directories_are_rejected(self) -> None:
+        for destination in ("target", "backup"):
+            with self.subTest(destination=destination), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp).resolve()
+                outside = root / "outside"
+                outside.mkdir(mode=0o755)
+                (outside / "AGENTS.md").write_text("Outside notes\n")
+                alias = root / "alias"
+                alias.symlink_to(outside, target_is_directory=True)
+                target = root / "AGENTS.md"
+                target.write_text("Personal notes\n")
+                source = root / "source.md"
+                source.write_text("Managed rules\n")
+                if destination == "target":
+                    result = self.run_cli(alias / "AGENTS.md", source)
+                else:
+                    result = self.run_cli(target, source, alias / "AGENTS.md")
+                self.assertEqual(result, 2)
+                self.assertEqual((outside / "AGENTS.md").read_text(), "Outside notes\n")
+                self.assertEqual(target.read_text(), "Personal notes\n")
+                self.assertEqual(stat.S_IMODE(outside.stat().st_mode), 0o755)
+
+    def test_dotdot_destination_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            source = root / "source.md"
+            source.write_text("Managed rules\n")
+            self.assertEqual(self.run_cli(root / "subdir/../AGENTS.md", source), 2)
+            self.assertFalse((root / "AGENTS.md").exists())
+
+    def test_atomic_replace_is_not_redirected_by_parent_swap(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            workspace = root / "workspace"
+            workspace.mkdir()
+            target = workspace / "AGENTS.md"
+            target.write_text("Original\n")
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "AGENTS.md").write_text("Outside notes\n")
+            moved = root / "original-workspace"
+            original_replace = os.replace
+
+            def swap_parent(*args, **kwargs):
+                workspace.rename(moved)
+                workspace.symlink_to(outside, target_is_directory=True)
+                return original_replace(*args, **kwargs)
+
+            with mock.patch.object(os, "replace", side_effect=swap_parent):
+                manage_workspace_agents.write_atomic(target, "Updated\n")
+            self.assertEqual((outside / "AGENTS.md").read_text(), "Outside notes\n")
+            self.assertEqual((moved / "AGENTS.md").read_text(), "Updated\n")
+            self.assertEqual(set(moved.iterdir()), {moved / "AGENTS.md"})
+
+    def test_atomic_write_failure_preserves_original_and_removes_temp(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            target = root / "AGENTS.md"
+            target.write_text("Original\n")
+            with mock.patch.object(os, "replace", side_effect=OSError("injected failure")):
+                with self.assertRaises(OSError):
+                    manage_workspace_agents.write_atomic(target, "Updated\n")
+            self.assertEqual(target.read_text(), "Original\n")
+            self.assertEqual(set(root.iterdir()), {target})
+
+    def test_new_files_are_private_and_repeated_run_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            source = root / "source.md"
+            source.write_text("Managed rules\n")
+            target = root / "workspace/AGENTS.md"
+            backup = root / "state/backup.md"
+            self.assertEqual(self.run_cli(target, source, backup), 0)
+            self.assertEqual(target.read_text(), backup.read_text())
+            expected_mtimes = (target.stat().st_mtime_ns, backup.stat().st_mtime_ns)
+            self.assertEqual(self.run_cli(target, source, backup), 0)
+            actual_mtimes = (target.stat().st_mtime_ns, backup.stat().st_mtime_ns)
+            self.assertEqual(actual_mtimes, expected_mtimes)
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(backup.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(backup.parent.stat().st_mode), 0o700)
+
+    def test_absent_state_with_no_personal_content_does_not_create_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            source = root / "source.md"
+            source.write_text("Managed rules\n")
+            target = root / "AGENTS.md"
+            script = str(MODULE_PATH)
+            argv = [script, "--target", str(target), "--managed-source", str(source), "--state", "absent"]
+            with mock.patch("sys.argv", argv), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    runpy.run_path(script, run_name="__main__")
+            self.assertEqual(raised.exception.code, 0)
+            self.assertFalse(target.exists())
+
+    def test_atomic_writer_itself_rejects_linked_destinations(self) -> None:
+        for kind in ("symlink", "hardlink"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp).resolve()
+                victim = root / "victim.md"
+                victim.write_text("Outside\n")
+                target = root / "AGENTS.md"
+                if kind == "symlink":
+                    target.symlink_to(victim)
+                else:
+                    os.link(victim, target)
+                with self.assertRaises(manage_workspace_agents.ManagedBlockError):
+                    manage_workspace_agents.write_atomic(target, "New content\n")
+                self.assertEqual(victim.read_text(), "Outside\n")
+
+    def test_identical_legacy_content_is_replaced_by_managed_block(self) -> None:
+        result = manage_workspace_agents.reconcile("Managed rules\n", "Managed rules\n", present=True)
+        self.assertEqual(result.count("Managed rules"), 1)
+        self.assertIn(manage_workspace_agents.BEGIN_MARKER, result)
+
+
+    def test_all_ansible_writers_keep_workspace_instructions_private(self) -> None:
+        ansible = MODULE_PATH.parents[1] / "ansible"
+        playbook = yaml.safe_load((ansible / "playbook.yml").read_text())
+        tasks = [task for play in playbook for task in play.get("tasks", [])]
+        tasks.extend(yaml.safe_load((ansible / "tasks/github.yml").read_text()))
+        checked = []
+        for task in tasks:
+            for action in ("ansible.builtin.copy", "ansible.builtin.file", "ansible.builtin.blockinfile"):
+                options = task.get(action, {})
+                if options.get("path", options.get("dest")) == "{{ hermes_workspace }}/AGENTS.md":
+                    self.assertEqual(options["mode"], "0600", task["name"])
+                    checked.append(task["name"])
+        self.assertTrue(checked)
+
+    def test_tts_patch_runs_as_the_service_account(self) -> None:
+        tasks = yaml.safe_load((MODULE_PATH.parents[1] / "ansible/tasks/services.yml").read_text())
+        task = next(task for task in tasks if task["name"] == "Install transient Edge TTS retry when the upstream tool is found")
+        self.assertEqual(task["become_user"], "{{ hermes_user }}")
+
+    def test_atomic_write_keeps_workspace_instructions_private(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            target = Path(temp).resolve() / "AGENTS.md"
+            manage_workspace_agents.write_atomic(target, "Private operator notes\n")
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+            self.assertEqual(target.read_text(), "Private operator notes\n")
+
     def test_new_managed_block_keeps_personal_instructions(self) -> None:
         result = manage_workspace_agents.reconcile(
             "# Personal\n\nRemember my repositories.\n",
@@ -72,7 +260,7 @@ class ManageWorkspaceAgentsTests(unittest.TestCase):
 
     def test_backup_copy_restores_personal_instructions_when_target_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
+            root = Path(temporary_directory).resolve()
             target = root / "workspace" / "AGENTS.md"
             managed_source = root / "managed.md"
             backup_copy = root / ".hermes" / "operator-state" / "workspace-AGENTS.md"

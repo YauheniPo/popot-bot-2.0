@@ -127,6 +127,37 @@ do not add credentials the agent should never be able to use.
   losing the VPS. The planned encrypted offsite-backup work is tracked in
   [`hermes/VPS-BACKLOG.md`](hermes/VPS-BACKLOG.md).
 
+## Coverage quality gate
+
+The project's SonarQube Cloud gate is
+`popot-bot-2.0: coverage 100% new / 75% overall`:
+
+- New/changed code: **100%** coverage.
+- Overall code (old and new combined): **at least 75%** coverage.
+- The other Sonar way conditions on reliability, security, maintainability,
+  reviewed security hotspots, and duplication remain enabled.
+
+These thresholds are configured in the project's server-side **Quality Gate**,
+not as scanner properties. **Ignore duplication and coverage on small changes**
+is disabled for this project, so changes below 20 new lines are checked too.
+The organization-wide default gate is unchanged.
+
+The [Sonar workflow](.github/workflows/sonarcloud.yml) uploads both Python coverage
+reports and waits up to 300 seconds for the gate result. A failed gate or timeout
+fails the scan job. Dependabot PRs still run tests but skip the authenticated scan
+because the Sonar token is unavailable to them.
+
+Sonar checks only new-code conditions in pull requests; both new-code and overall
+conditions apply on `main`. Thus the 75% overall threshold is not a pre-merge PR
+check. On PRs, new code means changes against the target branch; on `main`, it
+uses the project's configured new-code period. See
+[Sonar's gate semantics](https://docs.sonarsource.com/sonarqube-cloud/standards/managing-quality-gates/introduction-to-quality-gates).
+
+To block merges, configure the Sonar quality-gate check as a required check in
+GitHub branch protection/rulesets. A failing workflow alone does not enforce
+branch protection; account for the Dependabot scan exception when choosing
+required checks.
+
 ## Repository map
 
 ```text
