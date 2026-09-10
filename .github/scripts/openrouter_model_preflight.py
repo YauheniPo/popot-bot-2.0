@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from http.client import IncompleteRead
 import json
 import os
 import re
@@ -26,6 +27,8 @@ MAX_METADATA_ATTEMPTS = 3
 MAX_FREE_CANDIDATES = 12
 MAX_FREE_SCHEMA_PROBES = 4
 RETRYABLE_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+# urlopen and response.read can raise these directly, without a URLError wrapper.
+TRANSIENT_NETWORK_ERRORS = (urllib.error.URLError, TimeoutError, ConnectionError, IncompleteRead)
 MANDATORY_REASONING_ERROR = "reasoning is mandatory"
 NO_STRUCTURED_CONTENT_REASON = "live JSON-schema probe returned no structured content"
 REQUIRES_REASONING_REASON = "live JSON-schema probe requires reasoning"
@@ -103,7 +106,7 @@ def _fetch_model(model: str) -> object:
                 raise RuntimeError(
                     f"OpenRouter endpoint metadata returned HTTP {error.code}"
                 ) from error
-        except urllib.error.URLError as error:
+        except TRANSIENT_NETWORK_ERRORS as error:
             if attempt == MAX_METADATA_ATTEMPTS:
                 raise RuntimeError(
                     "OpenRouter endpoint metadata is temporarily unavailable"
@@ -138,7 +141,7 @@ def _fetch_free_models(required_capabilities: frozenset[str]) -> object:
                 raise RuntimeError(
                     f"OpenRouter model catalog returned HTTP {error.code}"
                 ) from error
-        except urllib.error.URLError as error:
+        except TRANSIENT_NETWORK_ERRORS as error:
             if attempt == MAX_METADATA_ATTEMPTS:
                 raise RuntimeError(
                     "OpenRouter model catalog is temporarily unavailable"
@@ -194,10 +197,10 @@ def _request_probe(
             if MANDATORY_REASONING_ERROR in provider_message:
                 return None, (False, REQUIRES_REASONING_REASON)
         return None, (False, f"live {label} probe returned HTTP {error.code}")
-    except urllib.error.URLError:
+    except TRANSIENT_NETWORK_ERRORS:
         return None, (
             None,
-            f"live {label} probe was inconclusive because OpenRouter was unreachable",
+            f"live {label} probe was inconclusive because the OpenRouter request failed or timed out",
         )
     except (json.JSONDecodeError, UnicodeDecodeError):
         return None, (False, f"live {label} probe returned invalid response JSON")
@@ -481,27 +484,37 @@ def select_models(
                 fallback_mode = "ordinary"
 
     if not fallback.ready and discover_free:
-        discovered = discover_free_fallback(
-            required_capabilities,
-            frozenset({primary_model, fallback_model}),
-            fetch_models,
-            fetch_model,
-            probe_model,
-        )
-        if discovered is not None:
-            fallback = discovered
-            fallback_mode = "strict"
-        elif fallback_required_capabilities is not None:
-            ordinary_discovered = discover_free_fallback(
-                fallback_capabilities,
+        try:
+            discovered = discover_free_fallback(
+                required_capabilities,
                 frozenset({primary_model, fallback_model}),
                 fetch_models,
                 fetch_model,
-                fallback_probe_model,
+                probe_model,
             )
-            if ordinary_discovered is not None:
-                fallback = ordinary_discovered
-                fallback_mode = "ordinary"
+            if discovered is not None:
+                fallback = discovered
+                fallback_mode = "strict"
+            elif fallback_required_capabilities is not None:
+                ordinary_discovered = discover_free_fallback(
+                    fallback_capabilities,
+                    frozenset({primary_model, fallback_model}),
+                    fetch_models,
+                    fetch_model,
+                    fallback_probe_model,
+                )
+                if ordinary_discovered is not None:
+                    fallback = ordinary_discovered
+                    fallback_mode = "ordinary"
+        except RuntimeError as error:
+            # Optional fallback discovery must not discard a usable primary.
+            # With no usable model, the normal selection failure below remains fatal.
+            fallback = ModelCheck(
+                fallback.model,
+                False,
+                0,
+                _safe_message(f"{fallback.reason}; fallback discovery failed: {error}"),
+            )
 
     if primary.ready:
         selected_model = primary.model

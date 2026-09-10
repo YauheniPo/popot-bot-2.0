@@ -11,14 +11,7 @@ from typing import Any
 
 import yaml
 
-
-def load_config(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    if not isinstance(loaded, dict):
-        raise ValueError("Hermes config.yaml must contain a YAML mapping")
-    return loaded
+from hermes_config_io import load_config, write_config
 
 
 def configure(data: dict[str, Any]) -> bool:
@@ -51,17 +44,6 @@ def configure(data: dict[str, Any]) -> bool:
     return changed
 
 
-def write_config(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.sp.tmp")
-    temporary.write_text(
-        yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
-    )
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, path)
-
-
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument(
@@ -87,10 +69,10 @@ def main() -> int:
         expected_config = expected_config.resolve()
         if args.config.resolve() != expected_config:
             raise ValueError(f"--config must be {expected_config}")
-        data = load_config(args.config)
+        data = load_config(expected_config)
         changed = configure(data)
         if changed:
-            write_config(args.config, data)
+            write_config(expected_config, data)
         print("changed" if changed else "unchanged")
         return 0
     except (OSError, ValueError, yaml.YAMLError) as error:

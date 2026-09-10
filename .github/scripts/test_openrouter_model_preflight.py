@@ -34,6 +34,108 @@ def endpoint(*capabilities: str, status: int = 0) -> object:
 
 
 class ModelSelectionTest(unittest.TestCase):
+    def test_metadata_retries_transport_errors_during_open_and_read(self) -> None:
+        for fetch, argument in (
+            (preflight._fetch_model, "provider/model"),
+            (preflight._fetch_free_models, REQUIRED),
+        ):
+            for error_type in (TimeoutError, ConnectionResetError, preflight.IncompleteRead):
+                for stage in ("open", "read"):
+                    with self.subTest(fetch=fetch.__name__, error=error_type, stage=stage):
+                        error = error_type(b"partial response")
+                        broken = mock.MagicMock()
+                        broken.__enter__.return_value.read.side_effect = error
+                        good = mock.MagicMock()
+                        good.__enter__.return_value = io.StringIO('{"data": []}')
+                        with (
+                            mock.patch.object(preflight.urllib.request, "urlopen",
+                                              side_effect=[error if stage == "open" else broken, good]) as request,
+                            mock.patch.object(preflight.time, "sleep") as sleep,
+                        ):
+                            self.assertEqual(fetch(argument), {"data": []})
+                        self.assertEqual(request.call_count, 2)
+                        sleep.assert_called_once_with(1.0)
+
+    def test_metadata_timeout_exhaustion_is_bounded(self) -> None:
+        for fetch, argument in (
+            (preflight._fetch_model, "provider/model"),
+            (preflight._fetch_free_models, REQUIRED),
+        ):
+            with self.subTest(fetch=fetch.__name__):
+                with (
+                    mock.patch.object(preflight.urllib.request, "urlopen",
+                                      side_effect=TimeoutError("The read operation timed out")) as request,
+                    mock.patch.object(preflight.time, "sleep") as sleep,
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "temporarily unavailable"):
+                        fetch(argument)
+                self.assertEqual(request.call_count, preflight.MAX_METADATA_ATTEMPTS)
+                self.assertEqual(sleep.call_args_list, [mock.call(1.0), mock.call(2.0)])
+
+    def test_live_probes_treat_transport_errors_as_inconclusive(self) -> None:
+        for probe in (preflight._probe_tool_call, preflight._probe_json_schema):
+            for error_type in (TimeoutError, ConnectionResetError, preflight.IncompleteRead):
+                for stage in ("open", "read"):
+                    with self.subTest(probe=probe.__name__, error=error_type, stage=stage):
+                        error = error_type(b"partial response")
+                        response = mock.MagicMock()
+                        response.__enter__.return_value.read.side_effect = error
+                        with mock.patch.object(preflight.urllib.request, "urlopen",
+                                               side_effect=[error if stage == "open" else response]):
+                            ready, reason = probe("provider/model", "test-key")
+                        self.assertIsNone(ready)
+                        self.assertIn("inconclusive", reason)
+
+    def test_tool_probe_timeout_keeps_compatible_primary_available_for_review(self) -> None:
+        with mock.patch.object(preflight.urllib.request, "urlopen",
+                               side_effect=TimeoutError("The read operation timed out")):
+            selection = preflight.select_models(
+                "provider/primary", "provider/fallback", REQUIRED,
+                fetch_model=lambda _model: payload(endpoint(*REQUIRED)),
+                probe_model=lambda model: preflight._probe_tool_call(model, "test-key"),
+            )
+        self.assertEqual(selection.selected_model, "provider/primary")
+        self.assertTrue(selection.primary.ready)
+        self.assertTrue(selection.fallback.ready)
+        self.assertIn("inconclusive", selection.primary.reason)
+
+    def test_primary_metadata_timeout_still_allows_fallback_selection(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value = io.StringIO(json.dumps(payload(endpoint(*REQUIRED))))
+        failures = [TimeoutError("timed out")] * preflight.MAX_METADATA_ATTEMPTS
+        with (
+            mock.patch.object(preflight.urllib.request, "urlopen", side_effect=[*failures, response]),
+            mock.patch.object(preflight.time, "sleep"),
+        ):
+            selection = preflight.select_models("provider/primary", "provider/fallback", REQUIRED)
+        self.assertFalse(selection.primary.ready)
+        self.assertEqual(selection.selected_model, "provider/fallback")
+
+    def test_catalog_timeout_does_not_discard_usable_primary(self) -> None:
+        responses = {"provider/primary": payload(endpoint(*REQUIRED)), "provider/fallback": payload()}
+        with (
+            mock.patch.object(preflight.urllib.request, "urlopen", side_effect=TimeoutError("timed out")),
+            mock.patch.object(preflight.time, "sleep"),
+        ):
+            selection = preflight.select_models(
+                "provider/primary", "provider/fallback", REQUIRED,
+                fetch_model=responses.__getitem__, discover_free=True,
+            )
+        self.assertEqual(selection.selected_model, "provider/primary")
+        self.assertFalse(selection.fallback.ready)
+        self.assertIn("discovery failed", selection.fallback.reason)
+
+    def test_catalog_timeout_with_no_usable_models_remains_fatal(self) -> None:
+        with (
+            mock.patch.object(preflight.urllib.request, "urlopen", side_effect=TimeoutError("timed out")),
+            mock.patch.object(preflight.time, "sleep"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "no usable OpenRouter review model"):
+                preflight.select_models(
+                    "provider/primary", "provider/fallback", REQUIRED,
+                    fetch_model=lambda _model: payload(), discover_free=True,
+                )
+
     def test_retries_transient_metadata_failure(self) -> None:
         expected = payload(endpoint(*REQUIRED))
         http_error = urllib.error.HTTPError(

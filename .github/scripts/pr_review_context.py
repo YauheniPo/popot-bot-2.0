@@ -1191,7 +1191,8 @@ def _command_publish() -> None:
         lines.extend(["", "Findings without inline anchors:"])
         lines.extend(
             f"- **{finding.severity} — `{finding.path}:{finding.line}`**: "
-            f"{finding.title}. GitHub rejected this diff anchor."
+            f"{finding.title}. GitHub rejected this diff anchor. "
+            f"Impact: {finding.impact} Proposed fix: {finding.fix}"
             for finding in unanchored_findings
         )
     if previously_settled:

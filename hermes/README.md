@@ -1211,13 +1211,17 @@ cd /root/hermes # замените путь, если repository находит�
 
 ### 1. Модели и экономия токенов
 
-Deploy не фиксирует inference provider или model. Hermes поддерживает built-in
-providers с API key/OAuth, named custom providers и локальные
-OpenAI-compatible endpoints. Для Ansible укажите любые нужные ENV keys в
-`hermes_secret_env`, а non-secret provider/fallback policy — в
-`vps_hermes.config.managed_overlay`. Не фиксируйте там `model.default`, если
-выбор `/model_global` должен переживать deploy. Добавление нового custom endpoint не требует изменения
-playbook.
+Deploy фиксирует основную модель из `vps_hermes.config.managed_overlay`:
+`google/gemini-3.8-flash` через OpenRouter. Запасная модель —
+`deepseek/deepseek-v4-flash-0731` через тот же OpenRouter, в
+`fallback_providers`. Она используется при сбоях основной модели; общий
+сбой OpenRouter или его авторизации затронет обе модели. Поэтому выбор через
+`/model_global` действует до следующего deploy, который вновь применит
+репозиторный default. Hermes также поддерживает built-in providers с API
+key/OAuth, named custom providers и локальные OpenAI-compatible endpoints.
+Для Ansible укажите нужные ENV keys в `hermes_secret_env`, а non-secret
+provider/fallback policy — в `vps_hermes.config.managed_overlay`. Добавление
+нового custom endpoint не требует изменения playbook.
 
 Без Ansible либо для OAuth provider запустите официальный мастер один раз для
 каждого нужного provider:
@@ -1228,12 +1232,12 @@ sudo -u hermes -H /home/hermes/.local/bin/hermes model
 
 При Vault workflow API keys уже находятся в закрытом `.env`, а named custom
 providers могут быть описаны в `vps_hermes.config.managed_overlay`; выбранная
-модель остаётся live-state. Мастер автоматически увидит built-in credentials; повторно
+модель сохраняется до следующего deploy. Мастер автоматически увидит built-in credentials; повторно
 вставлять их не нужно. OAuth flows по-прежнему выполняются через `hermes model`,
 поскольку их нельзя безопасно заменить статическим API key в Vault.
 
 Для основной работы выбирайте tool-capable модель с достаточным context window.
-Model IDs не закреплены в репозитории: каталоги и доступность меняются. Не
+Model IDs задаются в `config/vps-defaults.yml`; каталоги и доступность меняются. Не
 присылайте ключи в Telegram или в чат агенту.
 
 ### Надёжные cron-задачи
@@ -1330,7 +1334,7 @@ Prompt caching в Hermes работает автоматически. Skills з�
 `goals.max_turns`, поэтому обычные запросы и `/goal` используют полноценные
 встроенные бюджеты текущей версии Hermes. Hard-stop по-прежнему останавливает
 только повторяющиеся ошибки после трёх неудач; один turn ограничен 20 web
-searches и 10 subagents. Для компактного Telegram отключён tool-progress, о
+searches и 10 subagents. Для Telegram включён подробный tool-progress, о
 background process приходит только итог, а сессия автоматически сбрасывается
 после 48 часов простоя. Метрики, health checks, backups и `/ops` работают без
 LLM; автоматический анализ запускается только по вашему запросу.

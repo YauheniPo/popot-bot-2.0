@@ -504,6 +504,8 @@ class InlineCommentTest(unittest.TestCase):
         self.assertIn("New inline findings: 0.", summary_payload["body"])
         self.assertIn("Findings without inline anchors:", summary_payload["body"])
         self.assertIn("`app.py:12`", summary_payload["body"])
+        self.assertIn("The API returns stale data.", summary_payload["body"])
+        self.assertIn("Return the current value.", summary_payload["body"])
 
     def test_publisher_rejects_and_resolves_an_untouched_machine_thread(self) -> None:
         head_sha = "b" * 40

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+from http.client import IncompleteRead
 import json
 from pathlib import Path
 import sys
@@ -211,6 +212,49 @@ class ReviewDeadlineTest(unittest.TestCase):
 
 
 class OpenRouterRequestTest(unittest.TestCase):
+    def test_transport_errors_retry_and_eventually_use_fallback(self) -> None:
+        result = {"summary": "Reviewed.", "findings": []}
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        for error_type in (TimeoutError, ConnectionResetError, IncompleteRead):
+            for stage in ("open", "read"):
+                for failures in (1, reviewer.MAX_REQUEST_ATTEMPTS):
+                    with self.subTest(error=error_type, stage=stage, failures=failures):
+                        error = error_type(b"interrupted response")
+                        broken = mock.MagicMock()
+                        broken.__enter__.return_value.read.side_effect = error
+                        good = mock.MagicMock()
+                        good.__enter__.return_value = io.BytesIO(json.dumps({
+                            "choices": [{"message": {"content": json.dumps(result)}}]
+                        }).encode())
+                        responses = [error if stage == "open" else broken] * failures + [good]
+                        with (
+                            mock.patch.dict(reviewer.os.environ, {
+                                "OPENROUTER_REVIEW_FALLBACK_MODEL": "fallback-model",
+                                "OPENROUTER_REVIEW_MODEL_MODE": "strict",
+                                "OPENROUTER_REVIEW_FALLBACK_MODE": "strict",
+                            }),
+                            mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(600)),
+                            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+                            mock.patch.object(reviewer.urllib.request, "urlopen", side_effect=responses) as request,
+                            mock.patch.object(reviewer.time, "sleep"),
+                            mock.patch("builtins.print"),
+                        ):
+                            actual = reviewer.review_chunk("test-key", "primary-model", (), chunk, 1, 1)
+                        self.assertEqual(actual, result)
+                        models = [json.loads(call.args[0].data)["model"] for call in request.call_args_list]
+                        expected_last = "fallback-model" if failures == reviewer.MAX_REQUEST_ATTEMPTS else "primary-model"
+                        self.assertEqual(models, ["primary-model"] * failures + [expected_last])
+
+    def test_http_error_body_timeout_preserves_status(self) -> None:
+        body = mock.Mock()
+        body.read.side_effect = TimeoutError("read timeout")
+        error = urllib.error.HTTPError(reviewer.OPENROUTER_URL, 429, "rate limited", {}, body)
+        self.addCleanup(error.close)
+        with mock.patch.object(reviewer.urllib.request, "urlopen", side_effect=error):
+            with self.assertRaises(reviewer.RequestError) as caught:
+                reviewer.request_json(reviewer.OPENROUTER_URL, "POST", {})
+        self.assertEqual(caught.exception.status, 429)
+
     def test_extracts_review_json_from_mixed_provider_text(self) -> None:
         response = {
             "choices": [
