@@ -5,6 +5,8 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import sqlite3
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -19,6 +21,37 @@ SPEC.loader.exec_module(ops_report)
 
 
 class OpsReportTests(unittest.TestCase):
+    def test_database_paths_are_literal_and_connections_are_read_only(self) -> None:
+        for directory in ("backup", "other.db?mode=rwc#", "backup#fragment", "backup%2f with spaces"):
+            with self.subTest(directory=directory), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                database = root / directory / "metrics.db"
+                database.parent.mkdir()
+                connection = sqlite3.connect(database)
+                try:
+                    connection.execute("CREATE TABLE marker (value TEXT)")
+                    connection.execute("INSERT INTO marker VALUES ('expected database')")
+                    connection.commit()
+                finally:
+                    connection.close()
+                before = set(root.rglob("*"))
+
+                def inspect_connection(connection, since, label):
+                    self.assertEqual(
+                        connection.execute("SELECT value FROM marker").fetchone()[0],
+                        "expected database",
+                    )
+                    with self.assertRaisesRegex(sqlite3.OperationalError, "readonly"):
+                        connection.execute("CREATE TABLE unexpected (value TEXT)")
+                    return {}
+
+                argv = ["ops-report.py", "--database", str(database), "--format", "json"]
+                with mock.patch("sys.argv", argv), \
+                        mock.patch.object(ops_report, "report", side_effect=inspect_connection), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(ops_report.main(), 0)
+                self.assertEqual(set(root.rglob("*")), before)
+
     def test_main_rejects_a_database_not_named_metrics_db(self) -> None:
         with mock.patch("sys.argv", ["ops-report.py", "--database", "/tmp/not-metrics.db"]):
             exit_code = ops_report.main()

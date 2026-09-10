@@ -142,7 +142,10 @@ def main() -> int:
         since, label = cutoff(args.period)
     except ValueError as error:
         parser.error(str(error))
-    connection = sqlite3.connect(f"file:{args.database}?mode=ro", uri=True, timeout=3)
+    # Encode filename characters such as ?, # and % before adding URI options,
+    # so the supplied path cannot override read-only mode or select another DB.
+    database_uri = args.database.resolve().as_uri() + "?mode=ro"
+    connection = sqlite3.connect(database_uri, uri=True, timeout=3)
     connection.row_factory = sqlite3.Row
     try:
         data = report(connection, since, label)
@@ -154,4 +157,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

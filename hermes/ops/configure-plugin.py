@@ -8,6 +8,7 @@ import os
 import re
 import shlex
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -91,13 +92,20 @@ def configure(
 
 def write_config(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.ops.tmp")
-    temporary.write_text(
-        yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
-    )
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, path)
+    temporary = None
+    try:
+        # Create exclusively with private permissions before writing any data.
+        # Stay in the destination directory so replacement remains atomic.
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent,
+            prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            yaml.safe_dump(data, stream, allow_unicode=True, sort_keys=False)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -163,7 +171,7 @@ def main() -> int:
         resolved_vscode_compose_file, resolved_vscode_env_file = _resolve_vscode_paths(
             args.vscode_compose_file, args.vscode_env_file
         )
-        data = load_config(args.config)
+        data = load_config(expected_config)
         changed = configure(
             data,
             args.hermes_home,
@@ -175,7 +183,7 @@ def main() -> int:
             vscode_project_name=args.vscode_project_name,
         )
         if changed:
-            write_config(args.config, data)
+            write_config(expected_config, data)
         print("changed" if changed else "unchanged")
         return 0
     except (OSError, ValueError, yaml.YAMLError) as error:
