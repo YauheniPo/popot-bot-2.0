@@ -136,9 +136,10 @@ class ManageWorkspaceAgentsTests(unittest.TestCase):
             backup = root / "state/backup.md"
             self.assertEqual(self.run_cli(target, source, backup), 0)
             self.assertEqual(target.read_text(), backup.read_text())
-            times = (target.stat().st_mtime_ns, backup.stat().st_mtime_ns)
+            expected_mtimes = (target.stat().st_mtime_ns, backup.stat().st_mtime_ns)
             self.assertEqual(self.run_cli(target, source, backup), 0)
-            self.assertEqual((target.stat().st_mtime_ns, backup.stat().st_mtime_ns), times)
+            actual_mtimes = (target.stat().st_mtime_ns, backup.stat().st_mtime_ns)
+            self.assertEqual(actual_mtimes, expected_mtimes)
             self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE(backup.stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE(backup.parent.stat().st_mode), 0o700)
