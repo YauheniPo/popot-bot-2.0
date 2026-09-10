@@ -181,25 +181,27 @@ class RunBotTest(unittest.TestCase):
                         FakeHTTPResponse({"ok": True, "result": [update]}),
                         KeyboardInterrupt,
                     ]
+                    api = bot.TelegramBotAPI("test-token")
                     with (
                         patch("bot.urlopen", side_effect=responses) as request,
                         patch("bot.time.sleep") as sleep,
                         patch("bot.process_update") as process,
                     ):
                         with self.assertRaises(KeyboardInterrupt):
-                            run_bot(bot.TelegramBotAPI("test-token"), poll_timeout=1)
+                            run_bot(api, poll_timeout=1)
                     process.assert_called_once_with(ANY, update)
                     sleep.assert_called_once_with(1)
-                    self.assertEqual(json.loads(request.call_args.args[0].data)["offset"], 13)
+                    self.assertEqual(13, json.loads(request.call_args.args[0].data)["offset"])
 
     def test_http_error_body_timeout_still_becomes_bot_api_error(self) -> None:
         body = MagicMock()
         body.read.side_effect = TimeoutError("read timeout")
         error = HTTPError("https://api.telegram.org", 429, "rate limited", {}, body)
         self.addCleanup(error.close)
+        api = bot.TelegramBotAPI("test-token")
         with patch("bot.urlopen", side_effect=error):
             with self.assertRaisesRegex(BotAPIError, "getUpdates: HTTP 429"):
-                bot.TelegramBotAPI("test-token").call("getUpdates")
+                api.call("getUpdates")
 
     def test_deletes_webhook_after_polling_conflict(self) -> None:
         class ConflictAPI(FakeAPI):
