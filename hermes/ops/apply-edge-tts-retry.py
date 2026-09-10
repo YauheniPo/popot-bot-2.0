@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import stat
 import sys
 
 
@@ -54,13 +55,33 @@ def _trusted_roots() -> list[Path]:
     ]
 
 
+def patch_target(target: Path) -> str:
+    # Do not reopen the pathname after reading: a swapped symlink must not
+    # redirect the write. Reject hardlinks so another pathname is not modified.
+    descriptor = os.open(target, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "r+", encoding="utf-8") as handle:
+        metadata = os.fstat(handle.fileno())
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise ValueError("TTS target must be a regular file with no hardlinks")
+        source = handle.read()
+        if MARKER in source:
+            return "Edge TTS transient retry already installed"
+        if OLD not in source:
+            return "Edge TTS retry skipped: upstream implementation changed"
+        handle.seek(0)
+        handle.write(source.replace(OLD, NEW, 1))
+        handle.truncate()
+    return "installed Edge TTS transient retry"
+
+
 def main() -> int:
     target_arg = sys.argv[1] if len(sys.argv) == 2 else None
     if len(sys.argv) > 2:
         print(f"Usage: {Path(sys.argv[0]).name} [PATH_TO_TTS_TOOL]", file=sys.stderr)
         return 2
     target = Path(target_arg or os.environ.get("HERMES_TTS_TOOL_PATH", DEFAULT_TARGET)).expanduser().resolve()
-    expected_target = Path(DEFAULT_TARGET).resolve()
+    # Do not follow a symlink at the default path to whitelist its destination.
+    expected_target = Path(DEFAULT_TARGET)
     trusted = target == expected_target or (
         target.name == expected_target.name
         and any(target.is_relative_to(root) for root in _trusted_roots())
@@ -76,19 +97,12 @@ def main() -> int:
         print(f"[hermes] Edge TTS retry skipped: {target} is missing", file=sys.stderr)
         return 0
 
-    source = target.read_text(encoding="utf-8")
-    if MARKER in source:
-        print("[hermes] Edge TTS transient retry already installed")
-        return 0
-    if OLD not in source:
-        print(
-            "[hermes] Edge TTS retry skipped: upstream implementation changed",
-            file=sys.stderr,
-        )
-        return 0
-
-    target.write_text(source.replace(OLD, NEW, 1), encoding="utf-8")
-    print("[hermes] installed Edge TTS transient retry")
+    try:
+        result = patch_target(target)
+    except (OSError, ValueError) as error:
+        print(f"[hermes] Edge TTS retry refused: {error}", file=sys.stderr)
+        return 2
+    print(f"[hermes] {result}")
     return 0
 
 

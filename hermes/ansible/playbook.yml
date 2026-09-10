@@ -688,7 +688,7 @@
         dest: "{{ hermes_workspace }}/AGENTS.md"
         owner: "{{ hermes_user }}"
         group: "{{ hermes_user }}"
-        mode: "0644"
+        mode: "0600"
       when:
         - hermes_backup_archive | length > 0
         - hermes_restorable_workspace_agents.stat.exists
@@ -720,7 +720,7 @@
         state: file
         owner: "{{ hermes_user }}"
         group: "{{ hermes_user }}"
-        mode: "0644"
+        mode: "0600"
       when: hermes_workspace_agents_file.stat.exists
 
     - name: Protect the restorable operator-state directory
@@ -751,7 +751,7 @@
           {% endif %}
         owner: "{{ hermes_user }}"
         group: "{{ hermes_user }}"
-        mode: "0644"
+        mode: "0600"
       no_log: true
 
     - name: Mirror the final workspace instructions into Hermes backup state

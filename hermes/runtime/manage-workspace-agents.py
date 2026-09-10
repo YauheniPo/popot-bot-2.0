@@ -54,7 +54,7 @@ def reconcile(existing: str, managed_source: str, *, present: bool) -> str:
     return "\n\n".join(parts).rstrip() + "\n" if parts else ""
 
 
-def write_atomic(path: Path, content: str, *, mode: int = 0o644) -> None:
+def write_atomic(path: Path, content: str, *, mode: int = 0o600) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
     try:

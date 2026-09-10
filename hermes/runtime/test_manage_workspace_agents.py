@@ -5,9 +5,11 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import tempfile
+import stat
 import unittest
 from unittest import mock
 
+import yaml
 
 MODULE_PATH = Path(__file__).with_name("manage-workspace-agents.py")
 SPEC = importlib.util.spec_from_file_location("manage_workspace_agents", MODULE_PATH)
@@ -17,6 +19,32 @@ SPEC.loader.exec_module(manage_workspace_agents)
 
 
 class ManageWorkspaceAgentsTests(unittest.TestCase):
+    def test_all_ansible_writers_keep_workspace_instructions_private(self) -> None:
+        ansible = MODULE_PATH.parents[1] / "ansible"
+        playbook = yaml.safe_load((ansible / "playbook.yml").read_text())
+        tasks = [task for play in playbook for task in play.get("tasks", [])]
+        tasks.extend(yaml.safe_load((ansible / "tasks/github.yml").read_text()))
+        checked = []
+        for task in tasks:
+            for action in ("ansible.builtin.copy", "ansible.builtin.file", "ansible.builtin.blockinfile"):
+                options = task.get(action, {})
+                if options.get("path", options.get("dest")) == "{{ hermes_workspace }}/AGENTS.md":
+                    self.assertEqual(options["mode"], "0600", task["name"])
+                    checked.append(task["name"])
+        self.assertTrue(checked)
+
+    def test_tts_patch_runs_as_the_service_account(self) -> None:
+        tasks = yaml.safe_load((MODULE_PATH.parents[1] / "ansible/tasks/services.yml").read_text())
+        task = next(task for task in tasks if task["name"] == "Install transient Edge TTS retry when the upstream tool is found")
+        self.assertEqual(task["become_user"], "{{ hermes_user }}")
+
+    def test_atomic_write_keeps_workspace_instructions_private(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            target = Path(temp) / "AGENTS.md"
+            manage_workspace_agents.write_atomic(target, "Private operator notes\n")
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+            self.assertEqual(target.read_text(), "Private operator notes\n")
+
     def test_new_managed_block_keeps_personal_instructions(self) -> None:
         result = manage_workspace_agents.reconcile(
             "# Personal\n\nRemember my repositories.\n",

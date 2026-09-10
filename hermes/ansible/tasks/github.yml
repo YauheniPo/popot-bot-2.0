@@ -242,7 +242,7 @@
     create: true
     owner: "{{ hermes_user }}"
     group: "{{ hermes_user }}"
-    mode: "0644"
+    mode: "0600"
     marker: "<!-- {mark} MANAGED GITHUB WORKFLOW -->"
     insertafter: EOF
     block: |

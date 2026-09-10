@@ -41,7 +41,10 @@ def prune_database(database: Path, retention_days: int, *, now: datetime | None 
         timespec="milliseconds"
     )
 
-    connection = sqlite3.connect(str(database), timeout=30)
+    # Encode literal filename characters; rw must not create a fresh database
+    # if the file disappears between validation and opening the connection.
+    database_uri = database.resolve().as_uri() + "?mode=rw"
+    connection = sqlite3.connect(database_uri, uri=True, timeout=30)
     try:
         connection.execute("PRAGMA busy_timeout=30000")
         integrity = connection.execute("PRAGMA quick_check").fetchone()
@@ -77,11 +80,12 @@ def main() -> int:
     # is used elsewhere) so a manual invocation without HERMES_HOME set still
     # behaves sensibly; the systemd unit that runs this script in production
     # always sets HERMES_HOME anyway.
-    expected_database = (hermes_home() / "ops" / "metrics.db").resolve()
-    if args.database.resolve() != expected_database:
+    # Resolve the directory, not the leaf: a symlinked database is not allowed.
+    expected_database = (hermes_home() / "ops").resolve() / "metrics.db"
+    if args.database.is_symlink() or args.database.resolve() != expected_database:
         print(f"--database must be {expected_database}", file=sys.stderr)
         return 2
-    removed = prune_database(args.database, args.retention_days)
+    removed = prune_database(expected_database, args.retention_days)
     print(f"Pruned observability rows: {removed}")
     return 0
 

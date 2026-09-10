@@ -58,7 +58,7 @@
     state: directory
     owner: root
     group: root
-    mode: "0755"
+    mode: "0700"
 
 - name: Materialize the code-server password from Vault
   ansible.builtin.template:

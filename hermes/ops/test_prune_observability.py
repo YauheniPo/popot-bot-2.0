@@ -19,6 +19,50 @@ SPEC.loader.exec_module(prune_observability)
 
 
 class PruneObservabilityTests(unittest.TestCase):
+    def test_main_passes_only_the_canonical_managed_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = root / "home"
+            home.mkdir()
+            alias = root / "alias"
+            alias.symlink_to(home, target_is_directory=True)
+            database = alias / "ops" / "metrics.db"
+            argv = ["prune-observability.py", "--database", str(database), "--retention-days", "90"]
+            with mock.patch.dict("os.environ", {"HERMES_HOME": str(home)}), \
+                    mock.patch("sys.argv", argv), \
+                    mock.patch.object(prune_observability, "prune_database", return_value=0) as prune:
+                self.assertEqual(prune_observability.main(), 0)
+            prune.assert_called_once_with((home / "ops").resolve() / "metrics.db", 90)
+
+    def test_database_disappearing_before_connect_is_not_recreated(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            database = Path(temp) / "metrics.db"
+            sqlite3.connect(database).close()
+            original_connect = sqlite3.connect
+
+            def remove_before_connect(*args, **kwargs):
+                database.unlink()
+                return original_connect(*args, **kwargs)
+
+            with mock.patch.object(sqlite3, "connect", side_effect=remove_before_connect):
+                with self.assertRaises(sqlite3.OperationalError):
+                    prune_observability.prune_database(database, 90)
+            self.assertFalse(database.exists())
+
+    def test_uri_characters_cannot_redirect_database_access(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            database = root / "other.db?mode=rwc#%" / "metrics.db"
+            database.parent.mkdir()
+            connection = sqlite3.connect(database)
+            connection.execute("CREATE TABLE commands (ts TEXT)")
+            connection.execute("INSERT INTO commands VALUES ('2000-01-01')")
+            connection.commit()
+            connection.close()
+            before = set(root.rglob("*"))
+            self.assertEqual(prune_observability.prune_database(database, 90), 1)
+            self.assertEqual(set(root.rglob("*")), before)
+
     def test_prune_removes_only_expired_rows_from_known_tables(self) -> None:
         now = datetime(2026, 8, 25, tzinfo=timezone.utc)
         with tempfile.TemporaryDirectory() as temporary_directory:

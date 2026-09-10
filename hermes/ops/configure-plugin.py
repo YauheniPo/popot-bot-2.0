@@ -24,6 +24,14 @@ def configure(
     vscode_env_file: Path = Path("/etc/code-server.env"),
     vscode_project_name: str = "hermes-vscode",
 ) -> bool:
+    # Validate at the command-construction boundary, including direct callers.
+    if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", vscode_project_name) is None:
+        raise ValueError("invalid --vscode-project-name")
+    if re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.@:-]*[.]service", gateway_service) is None:
+        raise ValueError("invalid --gateway-service")
+    vscode_compose_file, vscode_env_file = _resolve_vscode_paths(
+        vscode_compose_file, vscode_env_file
+    )
     plugins = data.setdefault("plugins", {})
     if not isinstance(plugins, dict):
         raise ValueError("Hermes config.yaml plugins must be a YAML mapping")
@@ -98,32 +106,27 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
-def _resolve_vscode_paths(
-    compose_file: Path | None, env_file: Path
-) -> tuple[Path | None, Path]:
+def _resolve_vscode_path(value: Path, label: str) -> Path:
     # Mirror the safe-path charset install-ops.sh already enforces before
     # this script can be reached in the shipped flow; keep the same
     # defense here so a direct invocation cannot smuggle shell metacharacters
     # into the docker_restart quick command built below. Validate the
     # *resolved* path so a ".."-laden argument cannot slip past the
     # charset check and still land outside the intended directory.
-    safe_path = re.compile(r"/[A-Za-z0-9._/@+-]+")
-    resolved_compose_file = None
-    resolved_env_file = env_file
-    for label, value in (
-        ("--vscode-compose-file", compose_file),
-        ("--vscode-env-file", env_file),
-    ):
-        if value is None:
-            continue
-        resolved = value.expanduser().resolve()
-        if safe_path.fullmatch(str(resolved)) is None:
-            raise ValueError(f"unsafe or unsupported path for {label}: {value}")
-        if label == "--vscode-compose-file":
-            resolved_compose_file = resolved
-        else:
-            resolved_env_file = resolved
-    return resolved_compose_file, resolved_env_file
+    resolved = value.expanduser().resolve()
+    if re.fullmatch(r"/[A-Za-z0-9._/@+-]+", str(resolved)) is None:
+        raise ValueError(f"unsafe or unsupported path for {label}: {value}")
+    return resolved
+
+
+def _resolve_vscode_paths(
+    compose_file: Path | None, env_file: Path
+) -> tuple[Path | None, Path]:
+    return (
+        _resolve_vscode_path(compose_file, "--vscode-compose-file")
+        if compose_file is not None else None,
+        _resolve_vscode_path(env_file, "--vscode-env-file"),
+    )
 
 
 def main() -> int:
@@ -131,10 +134,6 @@ def main() -> int:
     try:
         if args.vscode_enabled and args.vscode_compose_file is None:
             raise ValueError("--vscode-enabled requires --vscode-compose-file")
-        if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", args.vscode_project_name) is None:
-            raise ValueError("invalid --vscode-project-name")
-        if re.fullmatch(r"[A-Za-z0-9_.@:-]+[.]service", args.gateway_service) is None:
-            raise ValueError("invalid --gateway-service")
         # Anchor --config to --hermes-home instead of trusting its basename
         # alone: a basename-only check still lets the directory component
         # point anywhere on the filesystem.
