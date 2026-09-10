@@ -8,6 +8,7 @@ from collections.abc import Callable
 import contextlib
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
+from http.client import IncompleteRead
 import json
 import os
 from pathlib import Path
@@ -32,6 +33,13 @@ from pr_review_context import (
 )
 
 
+# urllib may raise transport failures directly while opening or reading a response.
+TRANSIENT_NETWORK_ERRORS = (
+    urllib.error.URLError,
+    TimeoutError,
+    ConnectionError,
+    IncompleteRead,
+)
 MAX_CHUNK_CHARACTERS = 48_000
 MAX_REVIEW_CHUNKS = 12
 MAX_CONFIGURED_REVIEW_CHUNKS = 100
@@ -398,14 +406,17 @@ def request_json(
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.load(response)
     except urllib.error.HTTPError as error:
-        details = error.read().decode("utf-8", errors="replace")
+        try:
+            details = error.read().decode("utf-8", errors="replace")
+        except TRANSIENT_NETWORK_ERRORS:
+            details = "response body could not be read"
         raise RequestError(
             f"{method} {url} failed with HTTP {error.code}: {details[:500]}",
             status=error.code,
             retry_after_seconds=_retry_after_seconds(error.headers, details),
         ) from error
-    except urllib.error.URLError as error:
-        raise RequestError(f"{method} {url} failed before receiving a response") from error
+    except TRANSIENT_NETWORK_ERRORS as error:
+        raise RequestError(f"{method} {url} failed while opening or reading the response") from error
 
 
 def run_git(*arguments: str, text: bool = True) -> str | bytes:

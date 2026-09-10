@@ -11,6 +11,7 @@ import secrets
 import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from http.client import IncompleteRead
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -40,6 +41,7 @@ NOMINATIM_MIN_INTERVAL_SECONDS = 1.0
 NOMINATIM_REQUEST_TIMEOUT = 10
 DEFAULT_NOMINATIM_LANGUAGE = "en"
 DEFAULT_NOMINATIM_USER_AGENT = "telegram-user-info-bot/1.0"
+TRANSIENT_NETWORK_ERRORS = (URLError, TimeoutError, ConnectionError, IncompleteRead)
 
 _last_nominatim_request_at = 0.0
 _timezone_finder: Any = None
@@ -249,10 +251,13 @@ class TelegramBotAPI:
             ) as response:
                 raw_response = response.read()
         except HTTPError as error:
-            description = _telegram_error_description(error.read(), f"HTTP {error.code}")
+            try:
+                description = _telegram_error_description(error.read(), f"HTTP {error.code}")
+            except TRANSIENT_NETWORK_ERRORS:
+                description = f"HTTP {error.code}"
             raise BotAPIError(f"{method}: {description}") from None
-        except (URLError, TimeoutError) as error:
-            reason = getattr(error, "reason", "network timeout")
+        except TRANSIENT_NETWORK_ERRORS as error:
+            reason = getattr(error, "reason", "connection failed or timed out")
             raise BotAPIError(f"{method}: network error ({reason})") from None
 
         try:
@@ -620,7 +625,7 @@ def reverse_geocode_location(latitude: float, longitude: float) -> dict[str, Any
         raise LocationLookupError(
             f"OpenStreetMap Nominatim returned HTTP {error.code}."
         ) from None
-    except (URLError, TimeoutError):
+    except TRANSIENT_NETWORK_ERRORS:
         raise LocationLookupError(
             "OpenStreetMap Nominatim is unavailable or did not respond in time."
         ) from None

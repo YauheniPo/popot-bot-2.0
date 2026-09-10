@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from http.client import IncompleteRead
 import sys
 import unittest
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import ANY, MagicMock, patch
+from urllib.error import HTTPError
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -165,6 +167,40 @@ class CollectUserReportTest(unittest.TestCase):
 
 
 class RunBotTest(unittest.TestCase):
+    def test_polling_recovers_from_transport_errors_during_open_and_read(self) -> None:
+        for error_type in (TimeoutError, ConnectionResetError, IncompleteRead):
+            for stage in ("open", "read"):
+                with self.subTest(error=error_type, stage=stage):
+                    error = error_type(b"interrupted response")
+                    broken = MagicMock()
+                    broken.__enter__.return_value.read.side_effect = error
+                    update = {"update_id": 12, "message": {"text": "hello"}}
+                    responses = [
+                        FakeHTTPResponse({"ok": True, "result": {"username": "test_bot"}}),
+                        error if stage == "open" else broken,
+                        FakeHTTPResponse({"ok": True, "result": [update]}),
+                        KeyboardInterrupt,
+                    ]
+                    with (
+                        patch("bot.urlopen", side_effect=responses) as request,
+                        patch("bot.time.sleep") as sleep,
+                        patch("bot.process_update") as process,
+                    ):
+                        with self.assertRaises(KeyboardInterrupt):
+                            run_bot(bot.TelegramBotAPI("test-token"), poll_timeout=1)
+                    process.assert_called_once_with(ANY, update)
+                    sleep.assert_called_once_with(1)
+                    self.assertEqual(json.loads(request.call_args.args[0].data)["offset"], 13)
+
+    def test_http_error_body_timeout_still_becomes_bot_api_error(self) -> None:
+        body = MagicMock()
+        body.read.side_effect = TimeoutError("read timeout")
+        error = HTTPError("https://api.telegram.org", 429, "rate limited", {}, body)
+        self.addCleanup(error.close)
+        with patch("bot.urlopen", side_effect=error):
+            with self.assertRaisesRegex(BotAPIError, "getUpdates: HTTP 429"):
+                bot.TelegramBotAPI("test-token").call("getUpdates")
+
     def test_deletes_webhook_after_polling_conflict(self) -> None:
         class ConflictAPI(FakeAPI):
             def __init__(self) -> None:
@@ -434,6 +470,18 @@ class HandleUpdateTest(unittest.TestCase):
 
 
 class LocationLookupTest(unittest.TestCase):
+    def test_transport_error_keeps_partial_location_result(self) -> None:
+        for error_type in (ConnectionResetError, IncompleteRead):
+            with self.subTest(error=error_type):
+                with (
+                    patch("bot._wait_for_nominatim_slot"),
+                    patch("bot.urlopen", side_effect=error_type(b"interrupted response")),
+                    patch("bot.find_timezone_details", return_value={"iana_name": "Europe/Warsaw"}),
+                ):
+                    result = bot.enrich_location(52.2297, 21.0122)
+                self.assertFalse(result["reverse_geocoding"]["ok"])
+                self.assertTrue(result["timezone"]["ok"])
+
     def test_reverse_geocoding_returns_extracted_and_raw_data(self) -> None:
         response = FakeHTTPResponse(
             {
