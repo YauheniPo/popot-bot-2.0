@@ -44,11 +44,18 @@ vps_deploy:
     managed: false
 
 # Non-secret nested Hermes config.yaml values can be managed here. Repository
-# policy wins over the deprecated hermes_llm_config Vault variable. Keep
-# model.default/provider out of this block when /model_global must persist.
+# policy wins over the deprecated hermes_llm_config Vault variable. The main
+# model is deliberately authoritative here, so a /model_global override is
+# reset to this default on the next deploy.
 vps_hermes:
   config:
     managed_overlay:
+      model:
+        default: google/gemini-3.8-flash
+        provider: openrouter
+      fallback_providers:
+        - provider: openrouter
+          model: deepseek/deepseek-v4-flash-0731
       user_char_limit: 3000
       memory_char_limit: 4000
       # Compact long sessions after 70% of the active model context is used.
