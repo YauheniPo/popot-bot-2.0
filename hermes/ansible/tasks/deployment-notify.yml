@@ -12,7 +12,7 @@
     timeout: 15
     return_content: false
     status_code: 200
-  loop: "{{ hermes_secret_env.TELEGRAM_ALLOWED_USERS.split(',') }}"
+  loop: "{{ ((hermes_secret_env | default({}, true)).get('TELEGRAM_ALLOWED_USERS', '') | string).split(',') }}"
   when:
     - hermes_manage_secret_env | bool
     - hermes_secret_env is mapping

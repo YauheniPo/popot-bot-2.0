@@ -10,7 +10,8 @@ from unittest import mock
 
 SCRIPT_PATH = Path(__file__).with_name("pr_review_context.py")
 SPEC = importlib.util.spec_from_file_location("pr_review_context", SCRIPT_PATH)
-assert SPEC is not None and SPEC.loader is not None
+assert SPEC is not None
+assert SPEC.loader is not None
 context = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = context
 SPEC.loader.exec_module(context)
@@ -46,6 +47,17 @@ def thread(
 
 
 class ReviewThreadFetchTest(unittest.TestCase):
+    def test_review_thread_page_rejects_invalid_graphql_shapes(self) -> None:
+        cases = [
+            object(),
+            {"errors": ["boom"]},
+            {"data": {}},
+            {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": {}, "pageInfo": {}}}}}},
+        ]
+        for response in cases:
+            with self.subTest(response=response), self.assertRaises(context.GitHubRequestError):
+                context._review_thread_page(response)
+
     def test_fetches_only_unresolved_threads_and_parses_reply_id(self) -> None:
         response = {
             "data": {
@@ -178,6 +190,16 @@ class ReviewContextRenderTest(unittest.TestCase):
 
 
 class ReviewThreadReplyTest(unittest.TestCase):
+    def test_resolves_thread_after_github_confirms_it(self) -> None:
+        with mock.patch.object(
+            context,
+            "_request_json",
+            return_value={"data": {"resolveReviewThread": {"thread": {"isResolved": True}}}},
+        ) as request:
+            context.resolve_review_thread("token", "thread-1")
+
+        self.assertEqual(request.call_args.args[1], "POST")
+
     def test_posts_reply_to_the_rest_thread_endpoint(self) -> None:
         with mock.patch.object(context, "_request_json", return_value={}) as request:
             context.reply_to_review_thread("owner/repo", "2", "token", 101, "Additional evidence")
@@ -213,6 +235,27 @@ class ReviewThreadReplyTest(unittest.TestCase):
 
 
 class InlineCommentTest(unittest.TestCase):
+    def test_decode_execution_document_supports_legacy_and_rejects_invalid_data(self) -> None:
+        self.assertEqual(context._decode_execution_document('{"event": "one"}'), [{"event": "one"}])
+        self.assertEqual(context._decode_execution_document('{"events": []}'), [])
+        self.assertEqual(context._decode_execution_document('{"messages": []}'), [])
+        with self.assertRaises(RuntimeError):
+            context._decode_execution_document("\n")
+        with self.assertRaises(RuntimeError):
+            context._decode_execution_document("null")
+        with self.assertRaises(context.json.JSONDecodeError):
+            context._decode_execution_document("not-json")
+
+    def test_validate_cli_path_rejects_relative_and_traversal_paths(self) -> None:
+        for path in (Path("relative.json"), Path("/tmp/../etc/passwd")):
+            with self.subTest(path=path), self.assertRaises(RuntimeError):
+                context._validate_cli_path(path, "test path")
+
+    def test_validate_cli_path_maps_resolution_errors(self) -> None:
+        with mock.patch.object(Path, "resolve", side_effect=OSError("denied")), \
+                self.assertRaisesRegex(RuntimeError, "unavailable"):
+            context._validate_cli_path(Path("/tmp/output.json"), "test path")
+
     def test_tracks_changed_lines_on_both_sides(self) -> None:
         with (
             mock.patch.object(context, "_changed_paths", return_value={"app.py"}),
@@ -284,6 +327,39 @@ class InlineCommentTest(unittest.TestCase):
         self.assertEqual(findings[0].line, 12)
         self.assertEqual(verdicts[0].verdict, "rejected")
 
+    def test_processes_all_validated_thread_verdicts_up_to_contract_limit(self) -> None:
+        result = {
+            "summary": "Re-checked all threads.",
+            "findings": [],
+            "thread_verdicts": [
+                {"thread_id": f"thread-{index}", "verdict": "confirmed", "reason": "Still applies."}
+                for index in range(200)
+            ],
+        }
+        with mock.patch.object(context, "_changed_paths", return_value=set()):
+            _, _, verdicts = context._validated_claude_result(
+                context.json.dumps(result), "a" * 40, "b" * 40
+            )
+
+        self.assertEqual(len(verdicts), 200)
+
+    def test_discards_invalid_findings_without_crashing(self) -> None:
+        raw_findings = [
+                None,
+                {"severity": "P3", "path": "app.py", "side": "RIGHT", "line": 1},
+                {"severity": "P2", "path": "app.py", "side": "RIGHT", "line": True},
+                {"severity": "P2", "path": "other.py", "side": "RIGHT", "line": 1},
+                {"severity": "P2", "path": "app.py", "side": "RIGHT", "line": 99},
+            ]
+        raw_verdicts = [None, {"thread_id": "", "verdict": "confirmed", "reason": "x"},
+                        {"thread_id": "t", "verdict": "unknown", "reason": "x"}]
+        with mock.patch.object(context, "_changed_paths", return_value={"app.py"}), \
+                mock.patch.object(context, "changed_diff_lines", return_value={"LEFT": set(), "RIGHT": {1}}):
+            findings = context._parse_review_findings(raw_findings, "a" * 40, "b" * 40)
+            verdicts = context._parse_thread_verdicts(raw_verdicts)
+        self.assertEqual(findings, [])
+        self.assertEqual(verdicts, [])
+
     def test_extracts_and_validates_plain_json_from_claude_execution_file(self) -> None:
         review = {
             "summary": "No actionable findings.",
@@ -313,6 +389,12 @@ class InlineCommentTest(unittest.TestCase):
             extracted = context.json.loads(output_file.read_text(encoding="utf-8"))
 
         self.assertEqual(extracted, review)
+
+    def test_decodes_json_lines_execution_output(self) -> None:
+        self.assertEqual(
+            context._decode_execution_document('{"type":"system"}\n{"type":"result"}'),
+            [{"type": "system"}, {"type": "result"}],
+        )
 
     def test_extracts_json_fence_from_last_assistant_event(self) -> None:
         review = {
@@ -372,9 +454,10 @@ class InlineCommentTest(unittest.TestCase):
             ],
             "thread_verdicts": [],
         }
+        invalid_payload = context.json.dumps(invalid_review)
         with self.assertRaisesRegex(RuntimeError, "invalid finding value"):
             context._normalized_claude_result(
-                context.json.dumps(invalid_review),
+                invalid_payload,
                 "a" * 40,
                 "b" * 40,
             )
@@ -398,9 +481,10 @@ class InlineCommentTest(unittest.TestCase):
                 "thread_verdicts": [],
             }
             with self.subTest(field=empty_field):
+                invalid_payload = context.json.dumps(invalid_review)
                 with self.assertRaisesRegex(RuntimeError, "invalid finding value"):
                     context._normalized_claude_result(
-                        context.json.dumps(invalid_review),
+                        invalid_payload,
                         "a" * 40,
                         "b" * 40,
                     )
@@ -564,6 +648,47 @@ class InlineCommentTest(unittest.TestCase):
         resolve.assert_called_once_with("token", "direct-thread")
         summary_payload = request.call_args_list[1].args[3]
         self.assertIn("rejected and auto-resolved: 1", summary_payload["body"])
+
+    def test_publisher_replies_to_confirmed_machine_thread(self) -> None:
+        self._publish_thread_verdict("confirmed")
+
+    def test_publisher_replies_to_needs_human_machine_thread(self) -> None:
+        self._publish_thread_verdict("needs_human")
+
+    def _publish_thread_verdict(self, verdict: str) -> None:
+        head_sha = "b" * 40
+        result = {
+            "summary": "Thread review.",
+            "findings": [],
+            "thread_verdicts": [{"thread_id": "direct-thread", "verdict": verdict, "reason": "Evidence."}],
+        }
+        thread = context.ReviewThread(
+            node_id="direct-thread", path="playbook.yml", side="RIGHT", line=42,
+            original_line=42, outdated=False, viewer_can_reply=True,
+            comments=(context.ReviewComment(
+                "comment-node", 101, context.AUTOMATED_REVIEW_AUTHOR,
+                f"{context.DIRECT_REVIEWER_INLINE_PREFIX}{'a' * 40}:playbook.yml:RIGHT:42 -->",
+            ),),
+        )
+        environment = {
+            "GITHUB_REPOSITORY": "owner/repo", "PR_NUMBER": "2", "GITHUB_TOKEN": "token",
+            "BASE_SHA": "a" * 40, "HEAD_SHA": head_sha, "CLAUDE_REVIEW_MODEL": "review-model",
+            "CLAUDE_REVIEW_RUN_ID": "123", "CLAUDE_REVIEW_RESULT": context.json.dumps(result),
+        }
+        with (
+            mock.patch.dict(context.os.environ, environment, clear=True),
+            mock.patch.object(context, "_changed_paths", return_value={"playbook.yml"}),
+            mock.patch.object(context, "fetch_unresolved_review_threads", return_value=[thread]),
+            mock.patch.object(context, "fetch_resolved_machine_threads", return_value=[]),
+            mock.patch.object(context, "reply_to_review_thread") as reply,
+            mock.patch.object(context, "resolve_review_thread") as resolve,
+            mock.patch.object(context, "_request_json", side_effect=[[], {}]),
+            mock.patch("builtins.print"),
+        ):
+            context._command_publish()
+        reply.assert_called_once()
+        self.assertIn("Evidence: Evidence.", reply.call_args.args[4])
+        resolve.assert_not_called()
 
     def _stale_machine_thread(self) -> object:
         """A reviewer thread opened on an older revision, with no human reply."""

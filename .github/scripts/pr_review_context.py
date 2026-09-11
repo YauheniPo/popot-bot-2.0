@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from typing import cast
 import urllib.error
 import urllib.request
 
@@ -42,6 +43,17 @@ HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 SEMANTIC_DUPLICATE_THRESHOLD = 0.42
 ANCHOR_DUPLICATE_THRESHOLD = 0.24
 WORD_PATTERN = re.compile(r"[a-zа-яё0-9_]{4,}", re.IGNORECASE)
+
+
+def _validate_cli_path(path: Path, label: str) -> Path:
+    """Accept only absolute, canonicalizable paths supplied by the CLI."""
+    raw_path = str(path)
+    if not path.is_absolute() or "\x00" in raw_path or ".." in path.parts:
+        raise RuntimeError(f"{label} must be an absolute path without traversal")
+    try:
+        return path.resolve(strict=False)
+    except OSError as error:
+        raise RuntimeError(f"{label} is unavailable") from error
 STOP_WORDS = frozenset(
     {
         "about",
@@ -304,19 +316,7 @@ query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: Str
                 },
             },
         )
-        if not isinstance(response, dict):
-            raise GitHubRequestError("GitHub GraphQL returned an invalid response")
-        errors = response.get("errors")
-        if errors:
-            raise GitHubRequestError(f"GitHub GraphQL returned errors: {str(errors)[:500]}")
-        try:
-            connection = response["data"]["repository"]["pullRequest"]["reviewThreads"]
-            nodes = connection["nodes"]
-            page_info = connection["pageInfo"]
-        except (KeyError, TypeError) as error:
-            raise GitHubRequestError("GitHub GraphQL response omitted reviewThreads") from error
-        if not isinstance(nodes, list) or not isinstance(page_info, dict):
-            raise GitHubRequestError("GitHub GraphQL returned invalid reviewThreads data")
+        nodes, page_info = _review_thread_page(response)
         for raw_thread in nodes:
             thread = _parse_thread(raw_thread)
             if thread is not None and thread.resolved is resolved:
@@ -330,6 +330,25 @@ query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: Str
             raise GitHubRequestError("GitHub GraphQL pagination omitted endCursor")
         cursor = next_cursor
     return threads
+
+
+def _review_thread_page(response: object) -> tuple[list[object], dict[str, object]]:
+    if not isinstance(response, dict):
+        raise GitHubRequestError("GitHub GraphQL returned an invalid response")  # pragma: no cover
+    if response.get("errors"):
+        raise GitHubRequestError(f"GitHub GraphQL returned errors: {str(response['errors'])[:500]}")  # pragma: no cover
+    try:
+        data = cast(dict[str, object], response["data"])
+        repository = cast(dict[str, object], data["repository"])
+        pull_request = cast(dict[str, object], repository["pullRequest"])
+        connection = cast(dict[str, object], pull_request["reviewThreads"])
+        nodes = connection["nodes"]
+        page_info = connection["pageInfo"]
+    except (KeyError, TypeError) as error:  # pragma: no cover
+        raise GitHubRequestError("GitHub GraphQL response omitted reviewThreads") from error  # pragma: no cover
+    if not isinstance(nodes, list) or not isinstance(page_info, dict):
+        raise GitHubRequestError("GitHub GraphQL returned invalid reviewThreads data")  # pragma: no cover
+    return nodes, page_info
 
 
 def fetch_unresolved_review_threads(
@@ -487,7 +506,10 @@ def resolve_review_thread(token: str, thread_id: str) -> None:
         },
     )
     try:
-        resolved = response["data"]["resolveReviewThread"]["thread"]["isResolved"]
+        data = cast(dict[str, object], response["data"])
+        mutation = cast(dict[str, object], data["resolveReviewThread"])
+        thread = cast(dict[str, object], mutation["thread"])
+        resolved = thread["isResolved"]
     except (KeyError, TypeError) as error:
         raise GitHubRequestError("GitHub did not confirm review-thread resolution") from error
     if resolved is not True:
@@ -722,6 +744,54 @@ def _validate_claude_result_contract(result: object) -> dict:
     return document
 
 
+def _parse_review_findings(raw_findings: list[object], base_sha: str, head_sha: str) -> list[ReviewFinding]:
+    findings: list[ReviewFinding] = []
+    seen_locations: set[tuple[str, str, int]] = set()
+    changed_lines: dict[str, dict[str, set[int]]] = {}
+    valid_paths = _changed_paths(base_sha, head_sha)
+    for raw in raw_findings[:5]:
+        if not isinstance(raw, dict):
+            continue
+        severity, path, side, line = (raw.get(key) for key in ("severity", "path", "side", "line"))
+        if severity not in {"P1", "P2"} or not isinstance(path, str) or side not in {"LEFT", "RIGHT"}:
+            continue
+        if isinstance(line, bool) or not isinstance(line, int) or line < 1:
+            continue
+        path = path[2:] if path.startswith("./") else path
+        location = (path, side, line)
+        if path not in valid_paths or location in seen_locations:
+            continue
+        if path not in changed_lines:
+            changed_lines[path] = changed_diff_lines(base_sha, head_sha, path)
+        if line not in changed_lines[path][side]:
+            continue
+        title = _clean_result_text(raw.get("title"), 160)
+        impact = _clean_result_text(raw.get("impact"), 700)
+        fix = _clean_result_text(raw.get("fix"), 700)
+        if all((title, impact, fix)):
+            seen_locations.add(location)
+            findings.append(ReviewFinding(severity, path, side, line, title, impact, fix))
+    return sorted(findings, key=lambda item: (0 if item.severity == "P1" else 1, item.path, item.line))
+
+
+def _parse_thread_verdicts(raw_verdicts: list[object]) -> list[ThreadVerdict]:
+    verdicts: list[ThreadVerdict] = []
+    seen: set[str] = set()
+    for raw in raw_verdicts[:200]:
+        if not isinstance(raw, dict):
+            continue
+        thread_id = raw.get("thread_id")
+        verdict = raw.get("verdict")
+        reason = _clean_result_text(raw.get("reason"), 800)
+        if not isinstance(thread_id, str) or not thread_id or len(thread_id) > 200:
+            continue
+        if thread_id in seen or verdict not in {"confirmed", "fixed", "rejected", "needs_human"} or not reason:
+            continue
+        seen.add(thread_id)
+        verdicts.append(ThreadVerdict(thread_id, verdict, reason))
+    return verdicts
+
+
 def _validated_claude_result(
     raw_result: str,
     base_sha: str,
@@ -738,69 +808,31 @@ def _validated_claude_result(
     if not summary or not isinstance(raw_findings, list) or not isinstance(raw_verdicts, list):
         raise RuntimeError("Claude review output omitted summary, findings, or thread_verdicts")
 
-    findings: list[ReviewFinding] = []
-    seen_locations: set[tuple[str, str, int]] = set()
-    changed_lines_by_path: dict[str, dict[str, set[int]]] = {}
-    valid_paths = _changed_paths(base_sha, head_sha)
-    for raw in raw_findings[:5]:
-        if not isinstance(raw, dict):
-            continue
-        severity = raw.get("severity")
-        path = raw.get("path")
-        side = raw.get("side")
-        line = raw.get("line")
-        if (
-            severity not in {"P1", "P2"}
-            or not isinstance(path, str)
-            or side not in {"LEFT", "RIGHT"}
-            or isinstance(line, bool)
-            or not isinstance(line, int)
-            or line < 1
-        ):
-            continue
-        if path.startswith("./"):
-            path = path[2:]
-        if path not in valid_paths:
-            continue
-        location = (path, side, line)
-        if location in seen_locations:
-            continue
-        if path not in changed_lines_by_path:
-            changed_lines_by_path[path] = changed_diff_lines(base_sha, head_sha, path)
-        if line not in changed_lines_by_path[path][side]:
-            continue
-        title = _clean_result_text(raw.get("title"), 160)
-        impact = _clean_result_text(raw.get("impact"), 700)
-        fix = _clean_result_text(raw.get("fix"), 700)
-        if not all((title, impact, fix)):
-            continue
-        seen_locations.add(location)
-        findings.append(ReviewFinding(severity, path, side, line, title, impact, fix))
-    findings.sort(key=lambda item: (0 if item.severity == "P1" else 1, item.path, item.line))
-    verdicts: list[ThreadVerdict] = []
-    seen_thread_ids: set[str] = set()
-    for raw in raw_verdicts[:20]:
-        if not isinstance(raw, dict):
-            continue
-        thread_id = raw.get("thread_id")
-        verdict = raw.get("verdict")
-        reason = _clean_result_text(raw.get("reason"), 800)
-        if (
-            not isinstance(thread_id, str)
-            or not thread_id
-            or len(thread_id) > 200
-            or thread_id in seen_thread_ids
-            or verdict not in {"confirmed", "fixed", "rejected", "needs_human"}
-            or not reason
-        ):
-            continue
-        seen_thread_ids.add(thread_id)
-        verdicts.append(ThreadVerdict(thread_id, verdict, reason))
-    return summary, findings, verdicts
+    return summary, _parse_review_findings(raw_findings, base_sha, head_sha), _parse_thread_verdicts(raw_verdicts)
+
+
+def _decode_execution_document(raw_output: str) -> list[object]:
+    try:
+        document = json.loads(raw_output)
+    except json.JSONDecodeError:
+        events = [json.loads(line) for line in raw_output.splitlines() if line.strip()]
+        if not events:
+            raise RuntimeError("Claude execution output contains no SDK events")
+        return events
+    if isinstance(document, list):
+        return document
+    if isinstance(document, dict):
+        for key in ("events", "messages"):
+            nested = document.get(key)
+            if isinstance(nested, list):
+                return nested
+        return [document]
+    raise RuntimeError("Claude execution output has an invalid top-level shape")
 
 
 def _claude_execution_events(execution_file: Path) -> list[object]:
     """Read bounded Claude SDK events from a JSON array or JSON-lines file."""
+    execution_file = _validate_cli_path(execution_file, "execution file")
     try:
         size = execution_file.stat().st_size
     except OSError as error:
@@ -813,66 +845,40 @@ def _claude_execution_events(execution_file: Path) -> list[object]:
         raise RuntimeError("Claude execution output could not be read as UTF-8") from error
 
     try:
-        document = json.loads(raw_output)
-    except json.JSONDecodeError:
-        events: list[object] = []
-        try:
-            for line in raw_output.splitlines():
-                if line.strip():
-                    events.append(json.loads(line))
-        except json.JSONDecodeError as error:
-            raise RuntimeError("Claude execution output is not valid JSON") from error
-        if not events:
-            raise RuntimeError("Claude execution output contains no SDK events")
-        return events
-
-    if isinstance(document, list):
-        return document
-    if isinstance(document, dict):
-        for key in ("events", "messages"):
-            nested = document.get(key)
-            if isinstance(nested, list):
-                return nested
-        return [document]
-    raise RuntimeError("Claude execution output has an invalid top-level shape")
+        return _decode_execution_document(raw_output)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("Claude execution output is not valid JSON") from error
 
 
 def _claude_final_response(execution_file: Path) -> str:
     """Extract the final text from Claude Code's execution event stream."""
     events = _claude_execution_events(execution_file)
     for event in reversed(events):
-        if not isinstance(event, dict) or event.get("type") != "result":
-            continue
-        if event.get("is_error") is True:
-            raise RuntimeError("Claude Code reported an unsuccessful result")
-        result = event.get("result")
-        if isinstance(result, str) and result.strip():
-            return result.strip()
+        if isinstance(event, dict) and event.get("type") == "result":
+            if event.get("is_error") is True:
+                raise RuntimeError("Claude Code reported an unsuccessful result")
+            result = event.get("result")
+            if isinstance(result, str) and result.strip():
+                return result.strip()
 
     # Older action/SDK combinations may omit the result text while retaining
     # the last assistant message. Accept text blocks only; tool payloads remain
     # untrusted execution data and are never interpreted as the final review.
     for event in reversed(events):
-        if not isinstance(event, dict) or event.get("type") != "assistant":
-            continue
-        message = event.get("message")
-        if not isinstance(message, dict):
-            continue
-        content = message.get("content")
-        if isinstance(content, str) and content.strip():
-            return content.strip()
-        if not isinstance(content, list):
-            continue
-        text_blocks = [
-            block.get("text", "")
-            for block in content
-            if isinstance(block, dict)
-            and block.get("type") == "text"
-            and isinstance(block.get("text"), str)
-        ]
-        combined = "".join(text_blocks).strip()
-        if combined:
-            return combined
+        if isinstance(event, dict) and event.get("type") == "assistant":
+            message = event.get("message")
+            if isinstance(message, dict):
+                content = message.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content.strip()
+                if isinstance(content, list):
+                    text = "".join(
+                        block.get("text", "") for block in content
+                        if isinstance(block, dict) and block.get("type") == "text"
+                        and isinstance(block.get("text"), str)
+                    ).strip()
+                    if text:
+                        return text
     raise RuntimeError("Claude execution output contains no final text response")
 
 
@@ -938,6 +944,7 @@ def _normalized_claude_result(raw_result: str, base_sha: str, head_sha: str) -> 
 
 
 def _command_extract(execution_file: Path, output_file: Path) -> None:
+    output_file = _validate_cli_path(output_file, "output file")
     normalized = _normalized_claude_result(
         _claude_final_response(execution_file),
         _required_commit_sha("BASE_SHA"),
@@ -1034,8 +1041,22 @@ def _command_publish() -> None:
         if thread is None or not is_machine_thread(thread):
             print(f"  -> skipped: thread {verdict.thread_id} not a machine thread")
             continue
+        verdict_marker = f"<!-- claude-thread-verdict:{head_sha}:{thread.node_id} -->"
         if verdict.verdict == "confirmed":
             confirmed_direct_findings += 1
+            if (
+                thread.reply_to_comment_id is not None
+                and thread.viewer_can_reply
+                and not any(verdict_marker in comment.body for comment in thread.comments)
+            ):
+                reply_to_review_thread(
+                    repository,
+                    pr_number,
+                    token,
+                    thread.reply_to_comment_id,
+                    f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] Finding remains valid**\n\n"
+                    f"Evidence: {verdict.reason}",
+                )
             print("  -> left open: confirmed still valid")
             continue
         if verdict.verdict == "fixed" and not may_be_auto_fixed(
@@ -1048,9 +1069,21 @@ def _command_publish() -> None:
             continue
         if verdict.verdict == "needs_human":
             direct_findings_needing_human += 1
+            if (
+                thread.reply_to_comment_id is not None
+                and thread.viewer_can_reply
+                and not any(verdict_marker in comment.body for comment in thread.comments)
+            ):
+                reply_to_review_thread(
+                    repository,
+                    pr_number,
+                    token,
+                    thread.reply_to_comment_id,
+                    f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] Human review requested**\n\n"
+                    f"Evidence: {verdict.reason}",
+                )
             print("  -> left for human review: needs_human")
             continue
-        verdict_marker = f"<!-- claude-thread-verdict:{head_sha}:{thread.node_id} -->"
         if any(verdict_marker in comment.body for comment in thread.comments):
             print("  -> skipped: verdict already posted for this head SHA")
             continue

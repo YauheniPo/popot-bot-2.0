@@ -16,7 +16,8 @@ sys.path.insert(0, str(SCRIPT_PATH.parent))
 import pr_review_context
 
 SPEC = importlib.util.spec_from_file_location("openrouter_pr_review", SCRIPT_PATH)
-assert SPEC is not None and SPEC.loader is not None
+assert SPEC is not None
+assert SPEC.loader is not None
 reviewer = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = reviewer
 SPEC.loader.exec_module(reviewer)
@@ -34,7 +35,7 @@ class AnnotatedDiffTest(unittest.TestCase):
 -old_value
 +new_value
 +second_value
- trailing
+        trailing
 """,
         )
 
@@ -42,7 +43,14 @@ class AnnotatedDiffTest(unittest.TestCase):
         self.assertEqual(review_file.right_lines, frozenset({11, 12}))
         self.assertIn("LEFT 11|-old_value", review_file.rendered_diff)
         self.assertIn("RIGHT 12|+second_value", review_file.rendered_diff)
-        self.assertIn("CONTEXT L12/R13| trailing", review_file.rendered_diff)
+        self.assertIn("CONTEXT L12/R13|        trailing", review_file.rendered_diff)
+
+    def test_parses_json_fenced_response_without_regex(self) -> None:
+        response = {"summary": "ok", "findings": []}
+        parsed = reviewer.parse_review_response(
+            {"choices": [{"message": {"content": f"```json\n{json.dumps(response)}\n```"}}]}
+        )
+        self.assertEqual(parsed, response)
 
 
 class ReviewPlanTest(unittest.TestCase):
@@ -85,6 +93,9 @@ class ReviewPlanTest(unittest.TestCase):
             clear=False,
         ):
             with self.assertRaisesRegex(RuntimeError, "full-branch review exceeds"):
+                reviewer.ensure_required_coverage(plan)
+
+            with self.assertRaisesRegex(RuntimeError, "OPENROUTER_MAX_REVIEW_CHUNKS"):
                 reviewer.ensure_required_coverage(plan)
 
     def test_normal_review_allows_partial_coverage(self) -> None:
@@ -1331,6 +1342,18 @@ class ThreadTriageTest(unittest.TestCase):
         reply.assert_not_called()
         resolve.assert_not_called()
 
+    def test_downgrades_rejected_when_the_revision_does_not_touch_the_file(self) -> None:
+        outcome, reply, resolve = self.apply(
+            "rejected",
+            self.machine_thread(),
+            changed_paths={"other.py"},
+        )
+
+        self.assertEqual(outcome.left_for_human, 1)
+        self.assertEqual(outcome.rejected, 0)
+        reply.assert_not_called()
+        resolve.assert_not_called()
+
     def test_never_closes_a_thread_a_human_replied_to(self) -> None:
         human_reply = pr_review_context.ReviewComment(
             "human-node",
@@ -1351,7 +1374,16 @@ class ThreadTriageTest(unittest.TestCase):
         outcome, reply, resolve = self.apply("confirmed", self.machine_thread())
 
         self.assertEqual(outcome.still_open, 1)
-        reply.assert_not_called()
+        reply.assert_called_once()
+        self.assertIn("Finding remains valid", reply.call_args.args[-1])
+        resolve.assert_not_called()
+
+    def test_needs_human_posts_evidence_and_leaves_thread_open(self) -> None:
+        outcome, reply, resolve = self.apply("needs_human", self.machine_thread())
+
+        self.assertEqual(outcome.left_for_human, 1)
+        reply.assert_called_once()
+        self.assertIn("Human review requested", reply.call_args.args[-1])
         resolve.assert_not_called()
 
     def test_skips_a_thread_already_carrying_this_revision_verdict(self) -> None:

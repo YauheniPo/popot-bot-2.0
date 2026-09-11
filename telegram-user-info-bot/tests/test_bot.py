@@ -166,6 +166,54 @@ class CollectUserReportTest(unittest.TestCase):
         self.assertTrue(report["chat_full_info"]["ok"])
 
 
+class MainTest(unittest.TestCase):
+    def setUp(self) -> None:
+        # Never load the developer's .env or contact Telegram from entrypoint tests.
+        self.env_loader = self.enterContext(patch("bot.load_env_file"))
+        self.enterContext(patch.dict("bot.os.environ", {"TELEGRAM_BOT_TOKEN": "test-token"}, clear=True))
+        self.api = self.enterContext(patch("bot.TelegramBotAPI"))
+        self.poll_timeout = self.enterContext(patch("bot._poll_timeout", return_value=17))
+        self.run_bot = self.enterContext(patch("bot.run_bot"))
+
+    def test_main_starts_with_configured_token_and_poll_timeout(self) -> None:
+        bot.main()
+
+        self.env_loader.assert_called_once_with(PROJECT_DIR / ".env")
+        self.api.assert_called_once_with("test-token")
+        self.run_bot.assert_called_once_with(self.api.return_value, self.poll_timeout.return_value)
+
+    def test_main_logs_startup_failure_and_exits(self) -> None:
+        error = BotAPIError("getMe: unavailable")
+        self.run_bot.side_effect = error
+
+        with self.assertLogs(bot.LOGGER, level="ERROR") as logs:
+            with self.assertRaises(SystemExit) as raised:
+                bot.main()
+
+        self.assertEqual(f"Could not start bot: {error}", raised.exception.code)
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertTrue(raised.exception.__suppress_context__)
+        self.assertEqual(1, len(logs.records))
+        self.assertIn(str(error), logs.records[0].getMessage())
+        self.assertIs(error, logs.records[0].exc_info[1])
+
+    def test_main_stops_cleanly_on_keyboard_interrupt(self) -> None:
+        self.run_bot.side_effect = KeyboardInterrupt
+
+        with self.assertLogs(bot.LOGGER, level="INFO") as logs:
+            bot.main()
+
+        self.assertIn("Bot stopped", logs.records[0].getMessage())
+
+    def test_main_rejects_missing_token_before_starting(self) -> None:
+        with patch.dict("bot.os.environ", {"TELEGRAM_BOT_TOKEN": "  "}, clear=True):
+            with self.assertRaisesRegex(SystemExit, "TELEGRAM_BOT_TOKEN is not configured"):
+                bot.main()
+
+        self.api.assert_not_called()
+        self.run_bot.assert_not_called()
+
+
 class RunBotTest(unittest.TestCase):
     def test_polling_recovers_from_transport_errors_during_open_and_read(self) -> None:
         for error_type in (TimeoutError, ConnectionResetError, IncompleteRead):
