@@ -15,6 +15,7 @@ Debian/Ubuntu VPS. Hermes работает от отдельного непри�
 |---|---|---|
 | [Hermes Agent](https://hermes-agent.nousresearch.com/docs/) | Основной AI-агент, gateway, terminal tools, skills и dashboard. | Обязателен. |
 | [Ollama Cloud](https://docs.ollama.com/cloud) | Основной provider этой сборки: модель `kimi-k3` через `ollama-cloud`. | Нужен `OLLAMA_API_KEY` в Vault. |
+| [SearXNG](https://docs.searxng.org/) | Приватный Docker metasearch для cron без передачи provider keys в sandbox. | Включён при `vps_deploy.features.searxng: true`. |
 | [Nous Portal](https://portal.nousresearch.com/) | Альтернатива отдельным ключам: models и Tool Gateway для web, image, TTS и browser. | Опционально, для `deploy-hermes.sh --portal`. |
 | [Telegram Bot API](https://core.telegram.org/bots) | Личный chat gateway и alerts Hermes. | Опционально, если нужен Telegram. |
 | [Tailscale](https://tailscale.com/) | Приватная сеть и Tailscale SSH; позволяет закрыть публичный SSH. | Рекомендуется для VPS. |
@@ -1568,6 +1569,29 @@ Build: Read & execute; для чтения репозиториев — Code: Re
 [Azure REST API](https://learn.microsoft.com/en-us/rest/api/azure/devops/),
 [Sonar tokens](https://docs.sonarsource.com/sonarqube-cloud/managing-your-account/managing-tokens),
 [Sonar Web API](https://docs.sonarsource.com/sonarqube-cloud/appendices/web-api).
+
+### Private SearXNG для cron
+
+Ansible запускает официальный контейнер `docker.io/searxng/searxng` с
+loopback-only адресом `http://127.0.0.1:8888`. Входящие порты наружу не
+открываются, API keys поисковых провайдеров не нужны. Встроенный limiter
+включён и хранит состояние в приватном Valkey-контейнере без опубликованного
+порта; кэш и состояние Valkey сохраняются в Docker volumes
+`hermes-searxng_cache` и `hermes-searxng_valkey`.
+
+Cron или другой sandboxed subprocess может сделать JSON-поиск через:
+
+```bash
+curl --fail --silent --show-error --get \
+  --data-urlencode 'q=Hermes Agent' \
+  --data 'format=json' \
+  http://127.0.0.1:8888/search
+```
+
+SearXNG возвращает результаты и ссылки, но не заменяет extractor/browser для
+чтения сложных страниц. Сервис не получает `BRAVE_SEARCH_API_KEY` и другие
+provider secrets. Docker installation управляется через
+`vps_deploy.features.searxng`; путь и порт описаны в `vps_searxng`.
 
 ### 8. CLI только под конкретные проекты
 

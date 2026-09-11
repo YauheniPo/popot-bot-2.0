@@ -19,6 +19,7 @@ Ansible Vault и `.env` исключены из Git.
 |---|---|---|---|---|
 | [ ] | Ollama Cloud API key | `OLLAMA_API_KEY` | [Ollama Keys](https://ollama.com/settings/keys) | `hermes_secret_env` в Ansible Vault; основной provider `ollama-cloud` |
 | [ ] | OpenRouter API key (optional) | `OPENROUTER_API_KEY` | [OpenRouter Keys](https://openrouter.ai/keys) | `hermes_secret_env` в Ansible Vault; ручная альтернатива и fallback `openrouter/free` |
+| [x] | SearXNG credentials | не нужны | локальный Docker endpoint `127.0.0.1:8888` | не хранить ключи; cron использует private search |
 | [ ] | NVIDIA NIM API key | `NVIDIA_API_KEY` | [NVIDIA Build](https://build.nvidia.com/) | `hermes_secret_env` в Ansible Vault; альтернативный provider `nvidia` |
 | [ ] | Ollama model policy | `vps_hermes.config.managed_overlay` | `kimi-k3` в Ollama Cloud | versioned `config/vps-defaults.yml`; не хранить в Vault |
 | [ ] | Brave Search API key | `BRAVE_SEARCH_API_KEY` | кабинет Brave Search API | `hermes_secret_env` в Ansible Vault; нужен для Brave `web_search` |

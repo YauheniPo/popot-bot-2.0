@@ -1,0 +1,67 @@
+services:
+  valkey:
+    image: {{ vps_searxng.valkey_image | to_json }}
+    container_name: {{ vps_searxng.valkey_container_name | to_json }}
+    restart: unless-stopped
+    command:
+      - valkey-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - 128mb
+      - --maxmemory-policy
+      - allkeys-lru
+    volumes:
+      - "{{ vps_searxng.project_name }}_valkey:/data"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    # The official entrypoint needs setuid once to drop to the valkey user.
+    # Keep no-new-privileges, but do not remove the capability it needs before
+    # that transition.
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 192m
+    cpus: "0.25"
+    networks:
+      - searxng_private
+
+  searxng:
+    image: {{ vps_searxng.image | to_json }}
+    container_name: {{ vps_searxng.container_name | to_json }}
+    restart: unless-stopped
+    depends_on:
+      valkey:
+        # Ansible performs the readiness check below. Do not make Compose
+        # block the whole deployment on a version-specific healthcheck.
+        condition: service_started
+    ports:
+      - "{{ vps_searxng.bind_address }}:{{ vps_searxng.host_port }}:{{ vps_searxng.container_port }}"
+    volumes:
+      - "{{ vps_searxng.bundle_dir }}/config:/etc/searxng:ro"
+      - "{{ vps_searxng.project_name }}_cache:/var/cache/searxng"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: "1.0"
+    networks:
+      - searxng_private
+
+volumes:
+  {{ vps_searxng.project_name }}_cache:
+    name: {{ vps_searxng.project_name }}_cache
+  {{ vps_searxng.project_name }}_valkey:
+    name: {{ vps_searxng.project_name }}_valkey
+
+networks:
+  searxng_private:
+    name: {{ vps_searxng.project_name }}_private

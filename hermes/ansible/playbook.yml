@@ -55,6 +55,8 @@
           - vps_observability.grafana is mapping
           - vps_observability.prometheus is mapping
           - vps_observability.node_exporter is mapping
+          - vps_searxng is mapping
+          - not (vps_deploy.features.searxng | bool) or (vps_searxng.enabled | bool)
           - vps_vscode.project_name is match('^[a-z0-9][a-z0-9_-]{0,62}$')
           - vps_vscode.image is match('^[A-Za-z0-9._/-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$')
           - vps_vscode.bind_address == '127.0.0.1'
@@ -425,12 +427,20 @@
 
         - name: Show the Hermes backup command output for diagnosis
           ansible.builtin.debug:
-            var: hermes_config_backup_result.stdout_lines
+            msg:
+              stdout: "{{ hermes_config_backup_result.stdout | default('') }}"
+              stderr: "{{ hermes_config_backup_result.stderr | default('') }}"
+
+        - name: Combine Hermes backup stdout and stderr for verification
+          ansible.builtin.set_fact:
+            hermes_config_backup_output: >-
+              {{ hermes_config_backup_result.stdout | default('') }}
+              {{ hermes_config_backup_result.stderr | default('') }}
 
         - name: Require Hermes to report a complete config-only deployment backup
           ansible.builtin.assert:
             that:
-              - "'Backup complete:' in hermes_config_backup_result.stdout"
+              - "'Backup complete:' in hermes_config_backup_output"
               - hermes_config_backup_file.stat.exists
               - hermes_config_backup_file.stat.size | int > 0
             fail_msg: Hermes did not create a complete full backup; deployment aborted.
@@ -768,6 +778,18 @@
         insertafter: EOF
         block: "{{ lookup('ansible.builtin.template', 'templates/devops-access.md.j2') }}"
 
+    - name: Publish managed private SearXNG instructions
+      ansible.builtin.blockinfile:
+        path: "{{ hermes_workspace }}/AGENTS.md"
+        create: true
+        owner: "{{ hermes_user }}"
+        group: "{{ hermes_user }}"
+        mode: "0600"
+        marker: "<!-- {mark} ANSIBLE MANAGED SEARXNG ACCESS -->"
+        insertafter: EOF
+        block: "{{ lookup('ansible.builtin.template', 'templates/searxng-access.md.j2') }}"
+      when: vps_deploy.features.searxng | default(false) | bool
+
     - name: Mirror the final workspace instructions into Hermes backup state
       ansible.builtin.copy:
         src: "{{ hermes_workspace }}/AGENTS.md"
@@ -820,6 +842,12 @@
 
         - name: Install and reconcile Hermes services
           ansible.builtin.import_tasks: tasks/services.yml
+
+        - name: Install and start private SearXNG search
+          ansible.builtin.import_tasks: tasks/searxng.yml
+          when:
+            - hermes_host_admin_enabled | bool
+            - vps_deploy.features.searxng | default(false) | bool
 
         - name: Install and start the code-server container
           ansible.builtin.import_tasks: tasks/vscode.yml

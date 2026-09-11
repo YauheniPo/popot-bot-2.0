@@ -36,6 +36,7 @@ vps_deploy:
     observability: true
     tailscale: true
     host_admin: true
+    searxng: true
     lock_public_ssh: false
     vscode_server: true
   # Deliver provider keys (including OLLAMA_API_KEY and optional
@@ -239,6 +240,8 @@ vps_github:
 # Credentials are optional and belong in hermes_secret_env in encrypted Vault:
 # AZURE_DEVOPS_EXT_PAT and SONAR_TOKEN.
 vps_integrations:
+  searxng:
+    url: http://127.0.0.1:8888
   azure_devops:
     organization_url: https://dev.azure.com/YauheniPo
     project: popot-bot-2.0
@@ -330,6 +333,22 @@ vps_vscode:
 vps_browser:
   agent_browser_version: "0.35.0"
   launch_args: --no-sandbox,--disable-dev-shm-usage
+
+# Private Docker search service for cron and other sandboxed subprocesses.
+# It has no provider credentials and is published only on VPS loopback.
+vps_searxng:
+  enabled: true
+  project_name: hermes-searxng
+  container_name: hermes-searxng
+  image: docker.io/searxng/searxng:latest
+  bind_address: 127.0.0.1
+  host_port: 8888
+  container_port: 8080
+  bundle_dir: /opt/hermes-bootstrap/searxng
+  valkey_image: docker.io/valkey/valkey:8-alpine
+  valkey_container_name: hermes-searxng-valkey
+  valkey_host: valkey
+  valkey_port: 6379
 
 # Only this marked block is repository-owned; personal SOUL.md text remains
 # untouched across deployments.

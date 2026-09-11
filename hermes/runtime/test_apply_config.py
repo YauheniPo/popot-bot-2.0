@@ -61,7 +61,15 @@ class ApplyConfigTests(unittest.TestCase):
         features = settings["vps_deploy"]["features"]
         self.assertTrue(features)
         self.assertTrue(all(isinstance(value, bool) for value in features.values()))
+        self.assertTrue(features["searxng"])
         self.assertIsInstance(settings["vps_deploy"]["bundle"]["dir"], str)
+        searxng = settings["vps_searxng"]
+        self.assertEqual(searxng["image"], "docker.io/searxng/searxng:latest")
+        self.assertEqual(searxng["bind_address"], "127.0.0.1")
+        self.assertEqual(searxng["host_port"], 8888)
+        self.assertEqual(searxng["valkey_image"], "docker.io/valkey/valkey:8-alpine")
+        self.assertEqual(searxng["valkey_host"], "valkey")
+        self.assertEqual(searxng["valkey_port"], 6379)
 
         overlay = settings["vps_hermes"]["config"]["managed_overlay"]
         self.assertEqual(overlay["model"], {"provider": "ollama-cloud", "default": "kimi-k3"})

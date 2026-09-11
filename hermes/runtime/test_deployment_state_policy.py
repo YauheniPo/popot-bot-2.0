@@ -108,6 +108,8 @@ class DeploymentStatePolicyTests(unittest.TestCase):
 
         self.assertIn("pre-config-deploy-", playbook)
         self.assertIn("Create the mandatory full config-only deployment backup", playbook)
+        self.assertIn("hermes_config_backup_output", playbook)
+        self.assertIn("hermes_config_backup_result.stderr", playbook)
         self.assertIn("Verify the config-only deployment backup contents", playbook)
         self.assertIn("when: hermes_source_update_required | bool", playbook)
 
@@ -131,6 +133,31 @@ class DeploymentStatePolicyTests(unittest.TestCase):
         gateway_position = services.index("Install and start the Hermes system gateway")
         self.assertLess(check_position, gateway_position)
         self.assertIn("ANSIBLE MANAGED RESPONSE LANGUAGE", services)
+
+    def test_searxng_is_loopback_only_and_secret_free(self) -> None:
+        playbook = (HERMES_ROOT / "ansible" / "playbook.yml").read_text()
+        tasks = (HERMES_ROOT / "ansible" / "tasks" / "searxng.yml").read_text()
+        compose = (HERMES_ROOT / "ansible" / "templates" / "searxng-compose.yml.j2").read_text()
+        settings = (HERMES_ROOT / "ansible" / "templates" / "searxng-settings.yml.j2").read_text()
+        self.assertIn("tasks/searxng.yml", playbook)
+        self.assertIn("vps_deploy.features.searxng", playbook)
+        self.assertIn("vps_searxng.bind_address == '127.0.0.1'", tasks)
+        self.assertIn("vps_searxng.bind_address", compose)
+        self.assertIn("valkey:", compose)
+        self.assertIn("valkey_image", compose)
+        self.assertIn("condition: service_started", compose)
+        self.assertIn("limiter: true", settings)
+        self.assertIn("valkey:", settings)
+        self.assertIn("format", settings)
+        self.assertIn("no_log: true", tasks)
+
+    def test_workspace_publishes_private_searxng_endpoint(self) -> None:
+        playbook = (HERMES_ROOT / "ansible" / "playbook.yml").read_text()
+        template = (HERMES_ROOT / "ansible" / "templates" / "searxng-access.md.j2").read_text()
+        self.assertIn("Publish managed private SearXNG instructions", playbook)
+        self.assertIn("ANSIBLE MANAGED SEARXNG ACCESS", playbook)
+        self.assertIn("format=json", template)
+        self.assertNotIn("BRAVE_SEARCH_API_KEY={{", template)
 
     def test_broken_existing_install_never_bypasses_backup(self) -> None:
         deploy_runtime = (HERMES_ROOT / "deploy" / "runtime.sh").read_text()

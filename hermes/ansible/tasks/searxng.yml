@@ -1,0 +1,127 @@
+---
+- name: Validate private SearXNG settings
+  ansible.builtin.assert:
+    that:
+      - vps_searxng.enabled | bool
+      - vps_searxng.image is match('^docker\.io/searxng/searxng:[A-Za-z0-9._-]+$')
+      - vps_searxng.bind_address == '127.0.0.1'
+      - vps_searxng.host_port | int >= 1
+      - vps_searxng.host_port | int <= 65535
+      - vps_searxng.container_port | int >= 1
+      - vps_searxng.container_port | int <= 65535
+      - vps_searxng.bundle_dir.startswith('/')
+      - vps_searxng.valkey_image is match('^docker\.io/valkey/valkey:[A-Za-z0-9._-]+$')
+      - vps_searxng.valkey_host == 'valkey'
+      - vps_searxng.valkey_port | int == 6379
+    fail_msg: Invalid private SearXNG configuration.
+
+- name: Install Docker Compose for SearXNG
+  ansible.builtin.apt:
+    name: docker-compose-v2
+    state: present
+    update_cache: true
+
+- name: Create SearXNG managed directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ vps_searxng.bundle_dir }}", mode: "0750"}
+    - {path: "{{ vps_searxng.bundle_dir }}/config", mode: "0750"}
+
+- name: Check for the persistent SearXNG secret key
+  ansible.builtin.stat:
+    path: "{{ vps_searxng.bundle_dir }}/.secret-key"
+  register: searxng_secret_key_file
+
+- name: Generate the persistent SearXNG secret key once
+  ansible.builtin.command:
+    argv: [openssl, rand, -hex, "32"]
+  register: searxng_generated_secret_key
+  changed_when: true
+  when: not searxng_secret_key_file.stat.exists
+  no_log: true
+
+- name: Store the persistent SearXNG secret key
+  ansible.builtin.copy:
+    content: "{{ searxng_generated_secret_key.stdout | trim }}\n"
+    dest: "{{ vps_searxng.bundle_dir }}/.secret-key"
+    owner: root
+    group: root
+    mode: "0600"
+  when: not searxng_secret_key_file.stat.exists
+  no_log: true
+  diff: false
+
+- name: Read the persistent SearXNG secret key
+  ansible.builtin.slurp:
+    src: "{{ vps_searxng.bundle_dir }}/.secret-key"
+  register: searxng_secret_key_blob
+  no_log: true
+
+- name: Render SearXNG settings
+  ansible.builtin.template:
+    src: templates/searxng-settings.yml.j2
+    dest: "{{ vps_searxng.bundle_dir }}/config/settings.yml"
+    owner: root
+    group: root
+    mode: "0640"
+  vars:
+    searxng_secret_key: "{{ searxng_secret_key_blob.content | b64decode }}"
+  no_log: true
+  diff: false
+
+- name: Render SearXNG Compose definition
+  ansible.builtin.template:
+    src: templates/searxng-compose.yml.j2
+    dest: "{{ vps_searxng.bundle_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Start the private SearXNG container
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --project-name
+      - "{{ vps_searxng.project_name }}"
+      - up
+      - --detach
+  args:
+    chdir: "{{ vps_searxng.bundle_dir }}"
+  register: searxng_compose_up
+  changed_when: true
+
+- name: Wait for the private Valkey service to answer
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ vps_searxng.valkey_container_name }}"
+      - valkey-cli
+      - -h
+      - 127.0.0.1
+      - ping
+  register: searxng_valkey_ping
+  changed_when: false
+  retries: 12
+  delay: 5
+  until:
+    - searxng_valkey_ping.rc == 0
+    - searxng_valkey_ping.stdout | trim == 'PONG'
+
+- name: Verify the private SearXNG container is running
+  ansible.builtin.command:
+    argv:
+      - docker
+      - inspect
+      - --format
+      - "{{ '{{' }}.State.Running{{ '}}' }}"
+      - "{{ vps_searxng.container_name }}"
+  register: searxng_container_state
+  changed_when: false
+  failed_when: searxng_container_state.stdout != 'true'
