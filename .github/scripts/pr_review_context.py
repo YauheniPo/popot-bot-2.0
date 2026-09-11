@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from typing import cast
 import urllib.error
 import urllib.request
 
@@ -321,7 +322,10 @@ query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: Str
         if errors:
             raise GitHubRequestError(f"GitHub GraphQL returned errors: {str(errors)[:500]}")
         try:
-            connection = response["data"]["repository"]["pullRequest"]["reviewThreads"]
+            data = cast(dict[str, object], response["data"])
+            repository_data = cast(dict[str, object], data["repository"])
+            pull_request = cast(dict[str, object], repository_data["pullRequest"])
+            connection = cast(dict[str, object], pull_request["reviewThreads"])
             nodes = connection["nodes"]
             page_info = connection["pageInfo"]
         except (KeyError, TypeError) as error:
@@ -498,7 +502,10 @@ def resolve_review_thread(token: str, thread_id: str) -> None:
         },
     )
     try:
-        resolved = response["data"]["resolveReviewThread"]["thread"]["isResolved"]
+        data = cast(dict[str, object], response["data"])
+        mutation = cast(dict[str, object], data["resolveReviewThread"])
+        thread = cast(dict[str, object], mutation["thread"])
+        resolved = thread["isResolved"]
     except (KeyError, TypeError) as error:
         raise GitHubRequestError("GitHub did not confirm review-thread resolution") from error
     if resolved is not True:

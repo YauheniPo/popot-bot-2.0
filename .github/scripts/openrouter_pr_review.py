@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import time
+from typing import cast
 import urllib.error
 import urllib.request
 
@@ -1527,7 +1528,8 @@ def publish_review(
     existing_reviews = request_json(f"{reviews_url}?per_page=100", "GET", headers)
     if not isinstance(existing_reviews, list):
         raise RuntimeError("GitHub returned an invalid pull-request review list")
-    if any(marker in (review.get("body") or "") for review in existing_reviews if isinstance(review, dict)):
+    reviews = cast(list[dict[str, object]], [review for review in existing_reviews if isinstance(review, dict)])
+    if any(marker in (review.get("body") or "") for review in reviews):
         print("The OpenRouter formal review already exists for this commit; skipping duplicate.")
         return
 
