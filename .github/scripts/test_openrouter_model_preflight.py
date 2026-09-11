@@ -40,6 +40,13 @@ class ModelSelectionTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "metadata returned HTTP 500"):
                 preflight._fetch_model("provider/model")
 
+    def test_http_error_body_read_failure_is_handled(self) -> None:
+        error = urllib.error.HTTPError("https://example.test", 500, "error", {}, io.BytesIO())
+        error.read = mock.Mock(side_effect=OSError("read failed"))
+        with mock.patch.object(preflight.urllib.request, "urlopen", side_effect=error):
+            with self.assertRaisesRegex(RuntimeError, "metadata returned HTTP 500"):
+                preflight._fetch_model("provider/model")
+
     def test_metadata_retries_transport_errors_during_open_and_read(self) -> None:
         for fetch, argument in (
             (preflight._fetch_model, "provider/model"),
