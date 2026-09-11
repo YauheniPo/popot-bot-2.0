@@ -47,6 +47,17 @@ def thread(
 
 
 class ReviewThreadFetchTest(unittest.TestCase):
+    def test_review_thread_page_rejects_invalid_graphql_shapes(self) -> None:
+        cases = [
+            object(),
+            {"errors": ["boom"]},
+            {"data": {}},
+            {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": {}, "pageInfo": {}}}}}},
+        ]
+        for response in cases:
+            with self.subTest(response=response), self.assertRaises(context.GitHubRequestError):
+                context._review_thread_page(response)
+
     def test_fetches_only_unresolved_threads_and_parses_reply_id(self) -> None:
         response = {
             "data": {
@@ -179,6 +190,16 @@ class ReviewContextRenderTest(unittest.TestCase):
 
 
 class ReviewThreadReplyTest(unittest.TestCase):
+    def test_resolves_thread_after_github_confirms_it(self) -> None:
+        with mock.patch.object(
+            context,
+            "_request_json",
+            return_value={"data": {"resolveReviewThread": {"thread": {"isResolved": True}}}},
+        ) as request:
+            context.resolve_review_thread("token", "thread-1")
+
+        self.assertEqual(request.call_args.args[1], "POST")
+
     def test_posts_reply_to_the_rest_thread_endpoint(self) -> None:
         with mock.patch.object(context, "_request_json", return_value={}) as request:
             context.reply_to_review_thread("owner/repo", "2", "token", 101, "Additional evidence")
@@ -214,6 +235,17 @@ class ReviewThreadReplyTest(unittest.TestCase):
 
 
 class InlineCommentTest(unittest.TestCase):
+    def test_decode_execution_document_supports_legacy_and_rejects_invalid_data(self) -> None:
+        self.assertEqual(context._decode_execution_document('{"event": "one"}'), [{"event": "one"}])
+        self.assertEqual(context._decode_execution_document('{"events": []}'), [])
+        self.assertEqual(context._decode_execution_document('{"messages": []}'), [])
+        with self.assertRaises(RuntimeError):
+            context._decode_execution_document("\n")
+        with self.assertRaises(RuntimeError):
+            context._decode_execution_document("null")
+        with self.assertRaises(context.json.JSONDecodeError):
+            context._decode_execution_document("not-json")
+
     def test_validate_cli_path_rejects_relative_and_traversal_paths(self) -> None:
         for path in (Path("relative.json"), Path("/tmp/../etc/passwd")):
             with self.subTest(path=path), self.assertRaises(RuntimeError):
