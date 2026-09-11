@@ -57,7 +57,7 @@ parameters:
   - name: model
     displayName: Model name
     type: string
-    default: xiaomi/mimo-v2.5
+    default: tencent/hy4-preview
 
   - name: publishMode
     displayName: Result publication
@@ -241,9 +241,9 @@ jobs:
             echo "- Conclusion: \`${conclusion:-unknown}\`"
             echo "- Request id: \`${REQUEST_ID}\`"
             if [[ -s "${report_dir}/report.json" ]]; then
-              check_run_url="$(jq -r '.check_run_url // ""' "${report_dir}/report.json")"
               pr_number="$(jq -r '.pr_number // ""' "${report_dir}/report.json")"
-              [[ -n "${check_run_url}" ]] && echo "- Findings: ${check_run_url}"
+              # The downloaded GitHub summary already contains the findings
+              # link. Keep this outer summary free of a duplicate link.
               [[ -n "${pr_number}" ]] &&
                 echo "- Pull request: [#${pr_number}](https://github.com/${GITHUB_REPOSITORY}/pull/${pr_number})"
             fi

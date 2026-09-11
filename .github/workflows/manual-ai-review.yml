@@ -354,7 +354,7 @@ jobs:
               # GitHub can file this check run under an unrelated check suite
               # for the same commit SHA, so link it directly here instead of
               # sending people to hunt through the Checks sidebar.
-              echo "- Findings: ${CHECK_RUN_URL}"
+              echo "- Findings: [Open findings](${CHECK_RUN_URL})"
             fi
           } | tee -a "${GITHUB_STEP_SUMMARY}" "${REPORT_DIR}/summary.md" >/dev/null
 

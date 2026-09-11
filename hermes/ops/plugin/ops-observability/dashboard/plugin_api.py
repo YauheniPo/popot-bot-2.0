@@ -38,7 +38,7 @@ def _cutoff(seconds: int) -> str:
 
 
 def _connect(database: Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=3)
+    connection = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=3)
     connection.row_factory = sqlite3.Row
     return connection
 
