@@ -42,6 +42,17 @@ HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 SEMANTIC_DUPLICATE_THRESHOLD = 0.42
 ANCHOR_DUPLICATE_THRESHOLD = 0.24
 WORD_PATTERN = re.compile(r"[a-zа-яё0-9_]{4,}", re.IGNORECASE)
+
+
+def _validate_cli_path(path: Path, label: str) -> Path:
+    """Accept only absolute, canonicalizable paths supplied by the CLI."""
+    raw_path = str(path)
+    if not path.is_absolute() or "\x00" in raw_path or ".." in path.parts:
+        raise RuntimeError(f"{label} must be an absolute path without traversal")
+    try:
+        return path.resolve(strict=False)
+    except OSError as error:
+        raise RuntimeError(f"{label} is unavailable") from error
 STOP_WORDS = frozenset(
     {
         "about",
@@ -801,6 +812,7 @@ def _validated_claude_result(
 
 def _claude_execution_events(execution_file: Path) -> list[object]:
     """Read bounded Claude SDK events from a JSON array or JSON-lines file."""
+    execution_file = _validate_cli_path(execution_file, "execution file")
     try:
         size = execution_file.stat().st_size
     except OSError as error:
@@ -938,6 +950,7 @@ def _normalized_claude_result(raw_result: str, base_sha: str, head_sha: str) -> 
 
 
 def _command_extract(execution_file: Path, output_file: Path) -> None:
+    output_file = _validate_cli_path(output_file, "output file")
     normalized = _normalized_claude_result(
         _claude_final_response(execution_file),
         _required_commit_sha("BASE_SHA"),
@@ -1034,8 +1047,22 @@ def _command_publish() -> None:
         if thread is None or not is_machine_thread(thread):
             print(f"  -> skipped: thread {verdict.thread_id} not a machine thread")
             continue
+        verdict_marker = f"<!-- claude-thread-verdict:{head_sha}:{thread.node_id} -->"
         if verdict.verdict == "confirmed":
             confirmed_direct_findings += 1
+            if (
+                thread.reply_to_comment_id is not None
+                and thread.viewer_can_reply
+                and not any(verdict_marker in comment.body for comment in thread.comments)
+            ):
+                reply_to_review_thread(
+                    repository,
+                    pr_number,
+                    token,
+                    thread.reply_to_comment_id,
+                    f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] Finding remains valid**\n\n"
+                    f"Evidence: {verdict.reason}",
+                )
             print("  -> left open: confirmed still valid")
             continue
         if verdict.verdict == "fixed" and not may_be_auto_fixed(
@@ -1048,9 +1075,21 @@ def _command_publish() -> None:
             continue
         if verdict.verdict == "needs_human":
             direct_findings_needing_human += 1
+            if (
+                thread.reply_to_comment_id is not None
+                and thread.viewer_can_reply
+                and not any(verdict_marker in comment.body for comment in thread.comments)
+            ):
+                reply_to_review_thread(
+                    repository,
+                    pr_number,
+                    token,
+                    thread.reply_to_comment_id,
+                    f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] Human review requested**\n\n"
+                    f"Evidence: {verdict.reason}",
+                )
             print("  -> left for human review: needs_human")
             continue
-        verdict_marker = f"<!-- claude-thread-verdict:{head_sha}:{thread.node_id} -->"
         if any(verdict_marker in comment.body for comment in thread.comments):
             print("  -> skipped: verdict already posted for this head SHA")
             continue

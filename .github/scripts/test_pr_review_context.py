@@ -10,7 +10,8 @@ from unittest import mock
 
 SCRIPT_PATH = Path(__file__).with_name("pr_review_context.py")
 SPEC = importlib.util.spec_from_file_location("pr_review_context", SCRIPT_PATH)
-assert SPEC is not None and SPEC.loader is not None
+assert SPEC is not None
+assert SPEC.loader is not None
 context = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = context
 SPEC.loader.exec_module(context)
@@ -388,9 +389,10 @@ class InlineCommentTest(unittest.TestCase):
             ],
             "thread_verdicts": [],
         }
+        invalid_payload = context.json.dumps(invalid_review)
         with self.assertRaisesRegex(RuntimeError, "invalid finding value"):
             context._normalized_claude_result(
-                context.json.dumps(invalid_review),
+                invalid_payload,
                 "a" * 40,
                 "b" * 40,
             )
@@ -414,9 +416,10 @@ class InlineCommentTest(unittest.TestCase):
                 "thread_verdicts": [],
             }
             with self.subTest(field=empty_field):
+                invalid_payload = context.json.dumps(invalid_review)
                 with self.assertRaisesRegex(RuntimeError, "invalid finding value"):
                     context._normalized_claude_result(
-                        context.json.dumps(invalid_review),
+                        invalid_payload,
                         "a" * 40,
                         "b" * 40,
                     )

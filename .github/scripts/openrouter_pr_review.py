@@ -64,6 +64,8 @@ FALLBACK_RESERVE_SECONDS = 150.0
 # Below this there is no point starting another request.
 MIN_ATTEMPT_SECONDS = 20.0
 MAX_FINDINGS = 5
+JSON_CONTENT_TYPE = "application/json"
+GITHUB_WEB_URL = "https://github.com"
 # One extra bounded request re-checks earlier reviewer threads against this
 # revision, so a finding the owner has since fixed stops following the PR.
 MAX_TRIAGED_THREADS = 20
@@ -694,9 +696,10 @@ def parse_review_response(
     content = _response_content(response)
     candidates = [content]
     if content.startswith("```") and content.endswith("```"):
-        candidates.append(
-            re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.IGNORECASE)
-        )
+        fenced = content[3:-3].strip()
+        if fenced[:4].lower() == "json":
+            fenced = fenced[4:].lstrip()
+        candidates.append(fenced)
 
     for candidate in candidates:
         try:
@@ -915,8 +918,8 @@ UNRESOLVED_REVIEW_THREADS:
 """
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com",
+        "Content-Type": JSON_CONTENT_TYPE,
+        "HTTP-Referer": GITHUB_WEB_URL,
         "X-Title": "popot-bot-2.0 PR review",
     }
     body = {
@@ -1112,8 +1115,8 @@ ANNOTATED_DIFF_FOR_THESE_FILES:
 """
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com",
+        "Content-Type": JSON_CONTENT_TYPE,
+        "HTTP-Referer": GITHUB_WEB_URL,
         "X-Title": "popot-bot-2.0 PR review",
     }
     body = {
@@ -1201,16 +1204,43 @@ def apply_thread_verdicts(
         # Human participation opts a thread out permanently: someone is using it.
         if thread is None or not is_machine_thread(thread):
             continue
+        marker = _verdict_marker(head_sha, thread.node_id)
         if verdict.verdict == "confirmed":
             still_open += 1
+            if (
+                thread.reply_to_comment_id is not None
+                and thread.viewer_can_reply
+                and not any(marker in comment.body for comment in thread.comments)
+            ):
+                reply_to_review_thread(
+                    repository,
+                    pr_number,
+                    token,
+                    thread.reply_to_comment_id,
+                    f"{marker}\n**[{label}] Finding remains valid**\n\n"
+                    f"Evidence: {verdict.reason}",
+                )
             continue
         if verdict.verdict == "needs_human" or (
             verdict.verdict in {"fixed", "rejected"}
             and not may_be_auto_fixed(thread, head_sha, changed_paths)
         ):
             left_for_human += 1
+            if (
+                verdict.verdict == "needs_human"
+                and thread.reply_to_comment_id is not None
+                and thread.viewer_can_reply
+                and not any(marker in comment.body for comment in thread.comments)
+            ):
+                reply_to_review_thread(
+                    repository,
+                    pr_number,
+                    token,
+                    thread.reply_to_comment_id,
+                    f"{marker}\n**[{label}] Human review requested**\n\n"
+                    f"Evidence: {verdict.reason}",
+                )
             continue
-        marker = _verdict_marker(head_sha, thread.node_id)
         comment_id = thread.reply_to_comment_id
         if (
             comment_id is None
@@ -1360,7 +1390,7 @@ def _github_headers(token: str) -> dict[str, str]:
     return {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
-        "Content-Type": "application/json",
+        "Content-Type": JSON_CONTENT_TYPE,
         "X-GitHub-Api-Version": "2022-11-28",
     }
 
@@ -1627,7 +1657,7 @@ def publish_check_run(
         for finding in findings
         if finding.side == "RIGHT"
     ]
-    server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
+    server_url = os.environ.get("GITHUB_SERVER_URL", GITHUB_WEB_URL).rstrip("/")
     run_id = os.environ.get("GITHUB_RUN_ID", "").strip()
     payload: dict[str, object] = {
         "name": os.environ.get("CHECK_RUN_NAME", "Manual AI code review")[:100],

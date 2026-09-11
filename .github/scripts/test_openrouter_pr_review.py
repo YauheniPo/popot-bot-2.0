@@ -16,7 +16,8 @@ sys.path.insert(0, str(SCRIPT_PATH.parent))
 import pr_review_context
 
 SPEC = importlib.util.spec_from_file_location("openrouter_pr_review", SCRIPT_PATH)
-assert SPEC is not None and SPEC.loader is not None
+assert SPEC is not None
+assert SPEC.loader is not None
 reviewer = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = reviewer
 SPEC.loader.exec_module(reviewer)
@@ -1366,7 +1367,8 @@ class ThreadTriageTest(unittest.TestCase):
         outcome, reply, resolve = self.apply("confirmed", self.machine_thread())
 
         self.assertEqual(outcome.still_open, 1)
-        reply.assert_not_called()
+        reply.assert_called_once()
+        self.assertIn("Finding remains valid", reply.call_args.args[-1])
         resolve.assert_not_called()
 
     def test_skips_a_thread_already_carrying_this_revision_verdict(self) -> None:
