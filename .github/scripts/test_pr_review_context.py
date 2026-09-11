@@ -343,6 +343,23 @@ class InlineCommentTest(unittest.TestCase):
 
         self.assertEqual(len(verdicts), 200)
 
+    def test_discards_invalid_findings_without_crashing(self) -> None:
+        raw_findings = [
+                None,
+                {"severity": "P3", "path": "app.py", "side": "RIGHT", "line": 1},
+                {"severity": "P2", "path": "app.py", "side": "RIGHT", "line": True},
+                {"severity": "P2", "path": "other.py", "side": "RIGHT", "line": 1},
+                {"severity": "P2", "path": "app.py", "side": "RIGHT", "line": 99},
+            ]
+        raw_verdicts = [None, {"thread_id": "", "verdict": "confirmed", "reason": "x"},
+                        {"thread_id": "t", "verdict": "unknown", "reason": "x"}]
+        with mock.patch.object(context, "_changed_paths", return_value={"app.py"}), \
+                mock.patch.object(context, "changed_diff_lines", return_value={"LEFT": set(), "RIGHT": {1}}):
+            findings = context._parse_review_findings(raw_findings, "a" * 40, "b" * 40)
+            verdicts = context._parse_thread_verdicts(raw_verdicts)
+        self.assertEqual(findings, [])
+        self.assertEqual(verdicts, [])
+
     def test_extracts_and_validates_plain_json_from_claude_execution_file(self) -> None:
         review = {
             "summary": "No actionable findings.",
@@ -372,6 +389,12 @@ class InlineCommentTest(unittest.TestCase):
             extracted = context.json.loads(output_file.read_text(encoding="utf-8"))
 
         self.assertEqual(extracted, review)
+
+    def test_decodes_json_lines_execution_output(self) -> None:
+        self.assertEqual(
+            context._decode_execution_document('{"type":"system"}\n{"type":"result"}'),
+            [{"type": "system"}, {"type": "result"}],
+        )
 
     def test_extracts_json_fence_from_last_assistant_event(self) -> None:
         review = {

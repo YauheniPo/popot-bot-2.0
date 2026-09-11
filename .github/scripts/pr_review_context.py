@@ -761,7 +761,8 @@ def _parse_review_findings(raw_findings: list[object], base_sha: str, head_sha: 
         location = (path, side, line)
         if path not in valid_paths or location in seen_locations:
             continue
-        changed_lines.setdefault(path, changed_diff_lines(base_sha, head_sha, path))
+        if path not in changed_lines:
+            changed_lines[path] = changed_diff_lines(base_sha, head_sha, path)
         if line not in changed_lines[path][side]:
             continue
         title = _clean_result_text(raw.get("title"), 160)
