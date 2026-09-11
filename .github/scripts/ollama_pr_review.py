@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Review a pull request through OpenRouter and publish a formal GitHub review."""
+"""Review a pull request through Ollama Cloud and publish a formal GitHub review."""
 
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ import time
 from typing import cast
 import urllib.error
 import urllib.request
+
+from ollama_review import CHAT_COMPLETIONS_URL, MODEL, completion_payload
 
 from pr_review_context import (
     GitHubRequestError,
@@ -41,22 +43,22 @@ TRANSIENT_NETWORK_ERRORS = (
     ConnectionError,
     IncompleteRead,
 )
-MAX_CHUNK_CHARACTERS = 48_000
-MAX_REVIEW_CHUNKS = 12
+MAX_CHUNK_CHARACTERS = 96_000
+MAX_REVIEW_CHUNKS = 100
 MAX_CONFIGURED_REVIEW_CHUNKS = 100
 DEFAULT_REQUESTS_PER_MINUTE = 8
 DEFAULT_RATE_LIMIT_RETRY_SECONDS = 15.0
 MAX_REQUEST_ATTEMPTS = 5
 MAX_RETRY_DELAY_SECONDS = 90.0
-MAX_OUTPUT_TOKENS = 10_000
+MAX_OUTPUT_TOKENS = 32_768
 # Hidden reasoning is billed against max_tokens, so a reasoning-required
 # endpoint needs headroom the schema-only budget does not have; without it the
 # model spends the whole budget thinking and returns an empty message.
-REASONING_OUTPUT_TOKENS = 12_000
+REASONING_OUTPUT_TOKENS = 32_768
 MAX_INVALID_RESPONSE_ATTEMPTS = 2
 REQUEST_TIMEOUT_SECONDS = 90.0
 # Wall-clock budget for all model traffic in one run. The workflow job allows
-# 12 minutes; staying under it lets the script fail with a diagnostic instead
+# 45 minutes; staying under it lets the script fail with a diagnostic instead
 # of being killed mid-request by the runner.
 DEFAULT_REVIEW_BUDGET_SECONDS = 600.0
 # Held back while the primary model runs so an exhausted primary still leaves
@@ -72,11 +74,11 @@ GITHUB_WEB_URL = "https://github.com"
 MAX_TRIAGED_THREADS = 20
 MAX_TRIAGE_EVIDENCE_CHARACTERS = 24_000
 MAX_RENDERED_LINE_CHARACTERS = 4_000
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OLLAMA_URL = CHAT_COMPLETIONS_URL
 GITHUB_API_URL = "https://api.github.com"
 REVIEW_RULES_PATH = Path(".github/REVIEWER.md")
-REVIEWER_LABEL = "OpenRouterAPI"
-AZURE_REVIEWER_LABEL = "Azure DevOps · OpenRouterAPI"
+REVIEWER_LABEL = "OllamaCloudAPI"
+AZURE_REVIEWER_LABEL = "Azure DevOps · OllamaCloudAPI"
 DEFAULT_REVIEW_ORIGIN = "github-actions"
 AZURE_REVIEW_ORIGIN = "azure-devops"
 STRICT_MODEL_MODE = "strict"
@@ -85,7 +87,7 @@ MODEL_MODES = frozenset({STRICT_MODEL_MODE, ORDINARY_MODEL_MODE})
 EXCLUDED_REVIEW_PATHS = frozenset(
     {
         ".github/workflows/pr-ai-review.yml",
-        ".github/scripts/openrouter_pr_review.py",
+        ".github/scripts/ollama_pr_review.py",
         str(REVIEW_RULES_PATH),
     }
 )
@@ -304,17 +306,17 @@ class ReviewDeadline:
 
 def configured_review_budget() -> float:
     raw = os.environ.get(
-        "OPENROUTER_REVIEW_BUDGET_SECONDS", str(DEFAULT_REVIEW_BUDGET_SECONDS)
+        "OLLAMA_REVIEW_BUDGET_SECONDS", str(DEFAULT_REVIEW_BUDGET_SECONDS)
     )
     try:
         budget = float(raw)
     except ValueError as error:
         raise RuntimeError(
-            "OPENROUTER_REVIEW_BUDGET_SECONDS must be a number"
+            "OLLAMA_REVIEW_BUDGET_SECONDS must be a number"
         ) from error
     if budget < MIN_ATTEMPT_SECONDS:
         raise RuntimeError(
-            "OPENROUTER_REVIEW_BUDGET_SECONDS must be at least "
+            "OLLAMA_REVIEW_BUDGET_SECONDS must be at least "
             f"{MIN_ATTEMPT_SECONDS:.0f}"
         )
     return budget
@@ -403,6 +405,8 @@ def request_json(
     body: object | None = None,
     timeout: float = REQUEST_TIMEOUT_SECONDS,
 ) -> object:
+    if url == OLLAMA_URL and isinstance(body, dict):
+        body = completion_payload(body)
     encoded_body = None if body is None else json.dumps(body).encode("utf-8")
     request = urllib.request.Request(url, data=encoded_body, headers=headers, method=method)
     try:
@@ -620,7 +624,7 @@ def read_review_rules() -> str:
     return rules
 
 
-def openrouter_system_prompt() -> str:
+def review_system_prompt() -> str:
     schema = json.dumps(
         REVIEW_RESPONSE_SCHEMA["schema"],
         ensure_ascii=True,
@@ -628,7 +632,7 @@ def openrouter_system_prompt() -> str:
     )
     return f"""{read_review_rules()}
 
-OpenRouter adapter instructions:
+Ollama Cloud adapter instructions:
 
 Perform static analysis only on the supplied authoritative diff chunk. Return
 only the structured object required by the JSON schema below, with a
@@ -653,12 +657,12 @@ def _response_content(response: object) -> str:
         content = response["choices"][0]["message"]["content"]  # type: ignore[index]
     except (KeyError, IndexError, TypeError) as error:
         raise ReviewResponseError(
-            "OpenRouter response did not contain a review message"
+            "Ollama Cloud response did not contain a review message"
         ) from error
     if isinstance(content, list):
         content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
     if not isinstance(content, str) or not content.strip():
-        raise ReviewResponseError("OpenRouter returned an empty review message")
+        raise ReviewResponseError("Ollama Cloud returned an empty review message")
     return content.strip()
 
 
@@ -724,7 +728,7 @@ def parse_review_response(
             return parsed
 
     raise ReviewResponseError(
-        "OpenRouter returned malformed structured review JSON "
+        "Ollama Cloud returned malformed structured review JSON "
         f"({_response_diagnostic(response, content)})"
     )
 
@@ -738,7 +742,7 @@ def request_with_transient_retries(
         available = REVIEW_DEADLINE.require()
         try:
             return request_json(
-                OPENROUTER_URL,
+                OLLAMA_URL,
                 "POST",
                 headers,
                 body,
@@ -804,7 +808,7 @@ def request_fallback_review(
         return request_reasoning_compatible_review(headers, strict_body, "fallback")
     except RequestError as error:
         # Some fallback models accept ordinary text generation but do not expose
-        # response_format. OpenRouter returns this routing-specific 404 when
+        # response_format. The legacy OpenRouter path returned this 404 when
         # require_parameters filters out every endpoint. Retry only that case;
         # unknown models and unrelated 404 responses must remain hard failures.
         if (
@@ -927,22 +931,20 @@ UNRESOLVED_REVIEW_THREADS:
         "model": model,
         "temperature": 0,
         "max_tokens": MAX_OUTPUT_TOKENS,
-        # Both default free reviewer models enable hidden reasoning by default,
-        # and it consumes the same max_tokens budget as the visible JSON. The
-        # direct reviewer must always reserve that budget for a complete schema;
-        # deeper agentic analysis remains available in ClaudeCodePlugin.
+        # The engine retains its legacy request contract for retry handling.
+        # completion_payload strips provider-specific fields before transport;
+        # the schema is also embedded in the system prompt for local validation.
         "reasoning": {"effort": "none", "exclude": True},
         "provider": {"require_parameters": True},
         "response_format": {"type": "json_schema", "json_schema": REVIEW_RESPONSE_SCHEMA},
-        # OpenRouter's non-streaming response healer repairs common JSON syntax
-        # defects before the deterministic local schema/anchor validation.
+        # Legacy gateway extension, omitted by the Ollama transport adapter.
         "plugins": [{"id": "response-healing"}],
         "messages": [
-            {"role": "system", "content": openrouter_system_prompt()},
+            {"role": "system", "content": review_system_prompt()},
             {"role": "user", "content": user_prompt},
         ],
     }
-    primary_mode = configured_model_mode("OPENROUTER_REVIEW_MODEL_MODE")
+    primary_mode = configured_model_mode("OLLAMA_REVIEW_MODEL_MODE")
     if primary_mode == ORDINARY_MODEL_MODE:
         body = ordinary_json_body(body, model)
     try:
@@ -958,10 +960,10 @@ UNRESOLVED_REVIEW_THREADS:
             f"{_safe_log_message(error)}",
             file=sys.stderr,
         )
-        fallback_model = os.environ.get("OPENROUTER_REVIEW_FALLBACK_MODEL")
+        fallback_model = os.environ.get("OLLAMA_REVIEW_FALLBACK_MODEL")
         if fallback_model and body["model"] != fallback_model:
             fallback_mode = configured_model_mode(
-                "OPENROUTER_REVIEW_FALLBACK_MODE"
+                "OLLAMA_REVIEW_FALLBACK_MODE"
             )
             return request_fallback_review(
                 fallback_model,
@@ -974,30 +976,30 @@ UNRESOLVED_REVIEW_THREADS:
 
 def configured_requests_per_minute() -> int:
     raw_value = os.environ.get(
-        "OPENROUTER_REVIEW_RPM",
+        "OLLAMA_REVIEW_RPM",
         str(DEFAULT_REQUESTS_PER_MINUTE),
     ).strip()
     try:
         requests_per_minute = int(raw_value)
     except ValueError as error:
-        raise RuntimeError("OPENROUTER_REVIEW_RPM must be an integer") from error
+        raise RuntimeError("OLLAMA_REVIEW_RPM must be an integer") from error
     if not 1 <= requests_per_minute <= 60:
-        raise RuntimeError("OPENROUTER_REVIEW_RPM must be between 1 and 60")
+        raise RuntimeError("OLLAMA_REVIEW_RPM must be between 1 and 60")
     return requests_per_minute
 
 
 def configured_max_review_chunks() -> int:
     raw_value = os.environ.get(
-        "OPENROUTER_MAX_REVIEW_CHUNKS",
+        "OLLAMA_MAX_REVIEW_CHUNKS",
         str(MAX_REVIEW_CHUNKS),
     ).strip()
     try:
         max_review_chunks = int(raw_value)
     except ValueError as error:
-        raise RuntimeError("OPENROUTER_MAX_REVIEW_CHUNKS must be an integer") from error
+        raise RuntimeError("OLLAMA_MAX_REVIEW_CHUNKS must be an integer") from error
     if not 1 <= max_review_chunks <= MAX_CONFIGURED_REVIEW_CHUNKS:
         raise RuntimeError(
-            "OPENROUTER_MAX_REVIEW_CHUNKS must be between 1 and "
+            "OLLAMA_MAX_REVIEW_CHUNKS must be between 1 and "
             f"{MAX_CONFIGURED_REVIEW_CHUNKS}"
         )
     return max_review_chunks
@@ -1010,7 +1012,7 @@ def ensure_required_coverage(plan: ReviewPlan) -> None:
         "The full-branch review exceeds its configured chunk or line-size budget: "
         f"{len(plan.partial_files)} partial file(s), "
         f"{len(plan.omitted_files)} omitted file(s). Increase "
-        "OPENROUTER_MAX_REVIEW_CHUNKS within the supported safety limit or split "
+        "OLLAMA_MAX_REVIEW_CHUNKS within the supported safety limit or split "
         "the review into smaller branches."
     )
 
@@ -1053,7 +1055,7 @@ def triage_system_prompt() -> str:
     )
     return f"""{read_review_rules()}
 
-OpenRouter thread-triage instructions:
+Ollama Cloud thread-triage instructions:
 
 This request does not review code for new defects. Re-evaluate existing
 automated review threads against the supplied revision only, and return the
@@ -1133,7 +1135,7 @@ ANNOTATED_DIFF_FOR_THESE_FILES:
             {"role": "user", "content": user_prompt},
         ],
     }
-    if configured_model_mode("OPENROUTER_REVIEW_MODEL_MODE") == ORDINARY_MODEL_MODE:
+    if configured_model_mode("OLLAMA_REVIEW_MODEL_MODE") == ORDINARY_MODEL_MODE:
         body = ordinary_json_body(body, model)
         response = request_ordinary_review(
             headers,
@@ -1457,7 +1459,7 @@ def _review_body(
         marker,
         f"## {label}",
         "",
-        f"> Provider: OpenRouter · Model: `{model}`",
+        f"> Provider: Ollama Cloud · Model: `{model}`",
         *(
             ["> Source: Azure DevOps manual review"]
             if configured_review_origin() == AZURE_REVIEW_ORIGIN
@@ -1530,7 +1532,7 @@ def publish_review(
         raise RuntimeError("GitHub returned an invalid pull-request review list")
     reviews = cast(list[dict[str, object]], [review for review in existing_reviews if isinstance(review, dict)])
     if any(marker in (review.get("body") or "") for review in reviews):
-        print("The OpenRouter formal review already exists for this commit; skipping duplicate.")
+        print("The Ollama Cloud formal review already exists for this commit; skipping duplicate.")
         return
 
     posted_follow_ups = 0
@@ -1589,10 +1591,10 @@ def publish_review(
             headers,
             {"commit_id": head_sha, "body": body, "event": "COMMENT"},
         )
-        print("Created the OpenRouter formal PR review; GitHub rejected its inline anchors.")
+        print("Created the Ollama Cloud formal PR review; GitHub rejected its inline anchors.")
         return
     print(
-        "Created the OpenRouter formal PR review with "
+        "Created the Ollama Cloud formal PR review with "
         f"{len(comments)} new inline finding(s), {posted_follow_ups} follow-up reply/replies, "
         f"and {len(publication.duplicates)} duplicate(s) suppressed."
     )
@@ -1614,7 +1616,7 @@ def _check_run_summary(
         )
     lines = [
         f"Source: {'Azure DevOps' if configured_review_origin() == AZURE_REVIEW_ORIGIN else 'GitHub Actions'}",
-        f"Provider: OpenRouter · Model: `{model}`",
+        f"Provider: Ollama Cloud · Model: `{model}`",
         f"Reviewed commit: `{head_sha}`",
         f"Coverage: {coverage}",
         "",
@@ -1708,11 +1710,10 @@ def publish_check_run(
 
 
 def main() -> None:
-    api_key = required_env("OPENROUTER_API_KEY")
+    api_key = required_env("OLLAMA_API_KEY")
     github_token = required_env("GITHUB_TOKEN")
-    model = required_env("OPENROUTER_REVIEW_MODEL").strip()
-    if not model:
-        raise RuntimeError("OPENROUTER_REVIEW_MODEL must not be blank")
+    model = MODEL
+    os.environ.setdefault("OLLAMA_REVIEW_MODEL_MODE", ORDINARY_MODEL_MODE)
     repository = required_env("GITHUB_REPOSITORY")
     pr_number = os.environ.get("PR_NUMBER", "").strip()
     base_sha = required_env("BASE_SHA")
@@ -1742,12 +1743,12 @@ def main() -> None:
         # slow for the job's wall clock. Warn and leave the other checks alone
         # instead of failing CI, and never let the runner kill the job first.
         message = (
-            f"OpenRouter direct review ran out of time ({_safe_log_message(error)}); "
+            f"Ollama Cloud direct review ran out of time ({_safe_log_message(error)}); "
             "skipping this direct review run."
         )
         print(message, file=sys.stderr)
         print(
-            f"::warning title=OpenRouter direct review skipped::{message}",
+            f"::warning title=Ollama Cloud direct review skipped::{message}",
             file=sys.stderr,
         )
         return
@@ -1755,17 +1756,17 @@ def main() -> None:
         if _is_rate_limited(error):
             if os.environ.get("REQUIRE_REVIEW_RESULT") == "true":
                 raise
-            # Free OpenRouter pools can be shared and temporarily exhausted even
+            # Ollama Cloud capacity can be temporarily exhausted even
             # after the bounded primary/fallback retries. Leave the Claude
             # reviewer and normal PR checks available instead of failing CI for
             # a provider-side capacity condition.
             message = (
-                "OpenRouter is temporarily rate-limited after all review retries; "
+                "Ollama Cloud is temporarily rate-limited after all review retries; "
                 "skipping this direct review run."
             )
             print(message, file=sys.stderr)
             print(
-                f"::warning title=OpenRouter direct review skipped::{message}",
+                f"::warning title=Ollama Cloud direct review skipped::{message}",
                 file=sys.stderr,
             )
             return
@@ -1830,5 +1831,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        print(f"OpenRouter PR review failed: {error}", file=sys.stderr)
+        print(f"Ollama Cloud PR review failed: {error}", file=sys.stderr)
         sys.exit(1)

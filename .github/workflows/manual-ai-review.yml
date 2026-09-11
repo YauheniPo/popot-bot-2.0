@@ -31,10 +31,13 @@ on:
           - commit_range
           - full_branch
       model:
-        description: OpenRouter model id, or auto to use repository defaults
+        description: Pinned Ollama Cloud model (auto is a compatibility alias)
         required: true
-        default: auto
-        type: string
+        default: kimi-k3
+        type: choice
+        options:
+          - kimi-k3
+          - auto
       publish:
         description: Where review findings should be published
         required: true
@@ -249,49 +252,23 @@ jobs:
             echo "Review findings will be published as a Check Run on ${head_sha}."
           fi
 
-      - name: Select requested OpenRouter model
-        id: requested_model
+      - name: Validate pinned Ollama Cloud model
         shell: bash
         env:
-          DEFAULT_FALLBACK_MODEL: ${{ vars.OPENROUTER_REVIEW_FALLBACK_MODEL || 'nvidia/nemotron-3-super-120b-a12b:free' }}
-          DEFAULT_PRIMARY_MODEL: ${{ vars.OPENROUTER_REVIEW_MODEL || 'z-ai/glm-5.2:free' }}
           REQUESTED_MODEL: ${{ inputs.model }}
         run: |
           set -euo pipefail
-
-          primary_model="${REQUESTED_MODEL}"
-          if [[ "${primary_model}" == "auto" ]]; then
-            primary_model="${DEFAULT_PRIMARY_MODEL}"
-          fi
-          model_pattern='^[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$'
-          if [[ ! "${primary_model}" =~ ${model_pattern} ]] ||
-             [[ ! "${DEFAULT_FALLBACK_MODEL}" =~ ${model_pattern} ]]; then
-            echo "::error::Models must use a safe provider/model OpenRouter id."
+          if [[ "${REQUESTED_MODEL}" != "kimi-k3" && "${REQUESTED_MODEL}" != "auto" ]]; then
+            echo "::error::Code review is pinned to Ollama Cloud kimi-k3."
             exit 1
           fi
-          printf 'primary=%s\n' "${primary_model}" >>"${GITHUB_OUTPUT}"
-          printf 'fallback=%s\n' "${DEFAULT_FALLBACK_MODEL}" >>"${GITHUB_OUTPUT}"
 
-      - name: Select a compatible active model endpoint
+      - name: Verify Ollama Cloud JSON review
         id: models
         shell: bash
         env:
-          FALLBACK_MODEL: ${{ steps.requested_model.outputs.fallback }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          PRIMARY_MODEL: ${{ steps.requested_model.outputs.primary }}
-        run: |
-          set -euo pipefail
-          python3 reviewer/.github/scripts/openrouter_model_preflight.py \
-            --primary "${PRIMARY_MODEL}" \
-            --fallback "${FALLBACK_MODEL}" \
-            --discover-free-fallback \
-            --probe-schema \
-            --allow-ordinary-json-fallback \
-            --require max_tokens \
-            --require temperature \
-            --require reasoning \
-            --require response_format \
-            --require structured_outputs
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+        run: python3 reviewer/.github/scripts/ollama_review.py --probe json
 
       - name: Review selected revision and publish findings
         id: review
@@ -301,24 +278,24 @@ jobs:
           CHECK_RUN_NAME: ${{ startsWith(inputs.request_id, 'ado-') && 'Azure DevOps · Manual AI code review' || 'Manual AI code review' }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HEAD_SHA: ${{ steps.context.outputs.head_sha }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OPENROUTER_REVIEW_FALLBACK_MODEL: ${{ steps.models.outputs.secondary_model }}
-          OPENROUTER_REVIEW_FALLBACK_MODE: ${{ steps.models.outputs.secondary_mode }}
-          OPENROUTER_MAX_REVIEW_CHUNKS: ${{ vars.MANUAL_REVIEW_MAX_CHUNKS || '60' }}
-          # This job allows 90 minutes and up to 60 chunks. Without an explicit
-          # budget the script would stop after the 12-minute default meant for
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+          OLLAMA_REVIEW_FALLBACK_MODEL: ${{ steps.models.outputs.secondary_model }}
+          OLLAMA_REVIEW_FALLBACK_MODE: ${{ steps.models.outputs.secondary_mode }}
+          OLLAMA_MAX_REVIEW_CHUNKS: ${{ vars.MANUAL_REVIEW_MAX_CHUNKS || '100' }}
+          # This job allows 90 minutes and up to 100 chunks. Without an explicit
+          # budget the script would stop after the 40-minute default meant for
           # the automatic PR review and fail a large manual or Azure DevOps run.
-          OPENROUTER_REVIEW_BUDGET_SECONDS: ${{ vars.MANUAL_REVIEW_BUDGET_SECONDS || '4800' }}
-          OPENROUTER_REVIEW_MODEL: ${{ steps.models.outputs.selected_model }}
-          OPENROUTER_REVIEW_MODEL_MODE: ${{ steps.models.outputs.selected_mode }}
-          OPENROUTER_REVIEW_RPM: ${{ vars.OPENROUTER_REVIEW_RPM || '8' }}
+          OLLAMA_REVIEW_BUDGET_SECONDS: ${{ vars.MANUAL_REVIEW_BUDGET_SECONDS || '5100' }}
+          OLLAMA_REVIEW_MODEL: ${{ steps.models.outputs.selected_model }}
+          OLLAMA_REVIEW_MODEL_MODE: ${{ steps.models.outputs.selected_mode }}
+          OLLAMA_REVIEW_RPM: ${{ vars.OLLAMA_REVIEW_RPM || '60' }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           REQUIRE_COMPLETE_REVIEW: ${{ inputs.scope == 'full_branch' && 'true' || 'false' }}
           REQUIRE_REVIEW_RESULT: "true"
           REVIEW_INCLUDE_REVIEWER_FILES: ${{ inputs.scope == 'full_branch' && 'true' || 'false' }}
           REVIEW_ORIGIN: ${{ startsWith(inputs.request_id, 'ado-') && 'azure-devops' || 'github-actions' }}
           REVIEW_REQUEST_ID: ${{ inputs.request_id }}
-        run: python3 ../reviewer/.github/scripts/openrouter_pr_review.py
+        run: python3 ../reviewer/.github/scripts/ollama_pr_review.py
 
       - name: Summarize manual review
         if: always()

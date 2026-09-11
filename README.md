@@ -127,6 +127,45 @@ do not add credentials the agent should never be able to use.
   losing the VPS. The planned encrypted offsite-backup work is tracked in
   [`hermes/VPS-BACKLOG.md`](hermes/VPS-BACKLOG.md).
 
+## AI code reviews
+
+All CI code reviewers are pinned in code to **Kimi K3 on Ollama Cloud**:
+the direct API reviewer, Claude Code (including its role models and retries),
+the manual GitHub review, and the Azure DevOps review launcher. The direct
+Cloud API model ID is `kimi-k3`; `kimi-k3:cloud` is the local Ollama alias.
+
+Add **`OLLAMA_API_KEY`** under GitHub repository **Settings → Secrets and
+variables → Actions → Secrets**. The key in the VPS Ansible Vault is separate
+and does not reach GitHub runners. Azure launches the GitHub workflow, so it
+continues to need `GITHUB_ACTIONS_TOKEN`; the Ollama key belongs on GitHub.
+
+The API reviewer uses `https://ollama.com/v1/chat/completions`; Claude Code
+uses `ANTHROPIC_BASE_URL=https://ollama.com` with the same key. Live preflight
+checks JSON responses and Anthropic tool calling respectively. Ollama Cloud
+does not support JSON Schema enforcement, so prompts carry the schema and
+the existing publisher validates the response and exact diff anchors locally.
+No alternative model is selected if Kimi is unavailable.
+
+`PR_REVIEWER` still selects both reviewers (`0`/unset), direct API (`1`), or
+Claude Code (`2`). Model repository variables no longer override the pin.
+The default review budget is sized for the unlimited Ollama account: up to
+100 diff chunks, 32,768 output tokens per completion, 60 requests per minute,
+and a 40-minute direct-review budget. Optional traffic controls are
+`OLLAMA_REVIEW_RPM`, `OLLAMA_REVIEW_COOLDOWN_SECONDS`, and
+`OLLAMA_REVIEW_BUDGET_SECONDS`.
+Manual review retains `MANUAL_REVIEW_MAX_CHUNKS` and
+`MANUAL_REVIEW_BUDGET_SECONDS`.
+
+The direct reviewer is `.github/scripts/ollama_pr_review.py`, and its live
+model preflight is `.github/scripts/ollama_review.py`. The obsolete OpenRouter
+preflight and its tests have been removed. The historical `openrouter-api-review`
+job ID and inline-comment markers remain for existing check and review-thread
+compatibility; current workflows use Ollama for inference.
+
+See [Ollama Cloud](https://docs.ollama.com/cloud),
+[structured output limitations](https://docs.ollama.com/capabilities/structured-outputs),
+and [Anthropic compatibility](https://docs.ollama.com/api/anthropic-compatibility).
+
 ## Coverage quality gate
 
 The project's SonarQube Cloud gate is

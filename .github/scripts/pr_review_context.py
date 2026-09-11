@@ -893,7 +893,7 @@ def _json_response_text(response: str) -> str:
         _validate_claude_result_contract(parsed)
         return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
 
-    # OpenRouter-backed models sometimes add a short explanation or Markdown
+    # Gateway-backed models sometimes add a short explanation or Markdown
     # fence despite the prompt. Decode every complete object boundary, accept
     # only objects satisfying the exact review contract, and use the last one
     # as the model's final answer. Surrounding text is never interpreted.
@@ -1197,7 +1197,7 @@ def _command_publish() -> None:
     lines = [
         f"## {CLAUDE_REVIEWER_LABEL}",
         "",
-        f"> Provider: OpenRouter · Model: `{model}`",
+        f"> Provider: Ollama Cloud · Model: `{model}`",
         "> Execution: Claude Code agent via SDK",
         f"> Reviewed Head SHA: `{head_sha}`",
         "",

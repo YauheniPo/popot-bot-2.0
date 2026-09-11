@@ -20,6 +20,8 @@
 #      Use a fine-grained GitHub token restricted to this repository with the
 #      repository permission Actions: Read and write. Read alone cannot start
 #      the workflow; write alone cannot list runs or download the report.
+#      Add OLLAMA_API_KEY to the GitHub repository Actions secrets: inference
+#      runs on GitHub, so the VPS Vault and Azure variables do not supply it.
 #   3. The wait is bounded by the waitMinutes parameter and by this job's
 #      timeout. A Microsoft-hosted agent in a private project stops at 60
 #      minutes while the GitHub job may run for 90, so a long full-branch
@@ -55,9 +57,9 @@ parameters:
       - full_branch
 
   - name: model
-    displayName: Model name
+    displayName: Ollama Cloud review model
     type: string
-    default: tencent/hy4-preview
+    default: kimi-k3
 
   - name: publishMode
     displayName: Result publication

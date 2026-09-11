@@ -10,31 +10,24 @@ env:
   # Select reviewers through the PR_REVIEWER repository variable:
   # 0/unset = both sequentially, 1 = direct API, 2 = Claude Code.
   PR_REVIEWER: ${{ vars.PR_REVIEWER || '0' }}
-  # Direct API reviewer models. The primary is schema-probed; a fallback that
-  # lacks structured output may return ordinary JSON for local validation.
-  OPENROUTER_REVIEW_MODEL: ${{ vars.OPENROUTER_REVIEW_MODEL || 'z-ai/glm-5.2:free' }}
-  OPENROUTER_REVIEW_FALLBACK_MODEL: ${{ vars.OPENROUTER_REVIEW_FALLBACK_MODEL || 'nvidia/nemotron-3-super-120b-a12b:free' }}
-  # Claude Code can be pinned independently because agent/tool compatibility
-  # and direct JSON-schema compatibility are separate contracts. When these
-  # variables are unset, preserve the shared-model behavior used previously.
-  OPENROUTER_CLAUDE_REVIEW_MODEL: ${{ vars.OPENROUTER_CLAUDE_REVIEW_MODEL || vars.OPENROUTER_REVIEW_MODEL || 'z-ai/glm-5.2:free' }}
-  OPENROUTER_CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.OPENROUTER_CLAUDE_REVIEW_FALLBACK_MODEL || vars.OPENROUTER_REVIEW_FALLBACK_MODEL || 'nvidia/nemotron-3-super-120b-a12b:free' }}
-  # New OpenRouter accounts may allow only ten requests per minute. Keep a
-  # safety margin by default; override with a repository variable when the
-  # account has a different documented limit.
-  OPENROUTER_REVIEW_RPM: ${{ vars.OPENROUTER_REVIEW_RPM || '8' }}
+  # Pin both reviewers and every Claude role to Ollama Cloud Kimi K3.
+  # Repository model variables cannot override this selection.
+  OLLAMA_REVIEW_MODEL: kimi-k3
+  # Bound traffic shared by direct review and Claude Code; tune for the account.
+  OLLAMA_REVIEW_RPM: ${{ vars.OLLAMA_REVIEW_RPM || '60' }}
   # Used only in mode 0, between the two reviewers sharing one API key.
-  OPENROUTER_REVIEW_COOLDOWN_SECONDS: ${{ vars.OPENROUTER_REVIEW_COOLDOWN_SECONDS || '60' }}
+  OLLAMA_REVIEW_COOLDOWN_SECONDS: ${{ vars.OLLAMA_REVIEW_COOLDOWN_SECONDS || '0' }}
   # Wall clock the direct reviewer may spend on model traffic. Keep it below
   # the job's timeout-minutes so a slow provider ends in a warning from the
   # script instead of the runner cancelling the job mid-request.
-  OPENROUTER_REVIEW_BUDGET_SECONDS: ${{ vars.OPENROUTER_REVIEW_BUDGET_SECONDS || '600' }}
+  OLLAMA_REVIEW_BUDGET_SECONDS: ${{ vars.OLLAMA_REVIEW_BUDGET_SECONDS || '2400' }}
 
 concurrency:
   group: pr-ai-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
+  # Keep the historical job id for existing required-check configuration.
   openrouter-api-review:
     # Runs alone in mode 1 and first in mode 0. This is also the validation path
     # for an invalid selector, so a typo cannot silently skip the workflow.
@@ -52,7 +45,7 @@ jobs:
       pull-requests: write
     # The direct reviewer covers the full eligible diff in bounded, rate-limited
     # chunks. Leave enough time for provider retries on large pull requests.
-    timeout-minutes: 12
+    timeout-minutes: 45
 
     steps:
       - name: Validate reviewer selection
@@ -60,7 +53,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${PR_REVIEWER}" != "0" && "${PR_REVIEWER}" != "1" && "${PR_REVIEWER}" != "2" ]]; then
-            echo "::error::PR_REVIEWER must be 0 (both), 1 (direct OpenRouter), or 2 (Claude Code)."
+            echo "::error::PR_REVIEWER must be 0 (both), 1 (direct Ollama Cloud), or 2 (Claude Code)."
             exit 1
           fi
 
@@ -71,45 +64,27 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Select compatible direct-review models
+      - name: Verify Ollama Cloud JSON review
         id: direct_models
         shell: bash
-        # `plugins` is intentionally not required here. Response Healing is an
-        # OpenRouter gateway plugin, not a model-endpoint supported parameter,
-        # so it never appears in the endpoint `supported_parameters` metadata.
         env:
-          PRIMARY_MODEL: ${{ env.OPENROUTER_REVIEW_MODEL }}
-          FALLBACK_MODEL: ${{ env.OPENROUTER_REVIEW_FALLBACK_MODEL }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-        run: |
-          set -euo pipefail
-          # Prefer strict structured output, but retain coding-oriented models
-          # that return ordinary JSON; the reviewer validates it locally.
-          python3 .github/scripts/openrouter_model_preflight.py \
-            --primary "${PRIMARY_MODEL}" \
-            --fallback "${FALLBACK_MODEL}" \
-            --discover-free-fallback \
-            --probe-schema \
-            --allow-ordinary-json-fallback \
-            --require max_tokens \
-            --require temperature \
-            --require reasoning \
-            --require response_format \
-            --require structured_outputs
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+        # Cloud does not support JSON Schema; validate ordinary JSON locally.
+        run: python3 .github/scripts/ollama_review.py --probe json
 
-      - name: OpenRouterAPI — direct review and publication
+      - name: OllamaCloudAPI — direct review and publication
         env:
-          OPENROUTER_REVIEW_MODEL: ${{ steps.direct_models.outputs.selected_model }}
-          OPENROUTER_REVIEW_MODEL_MODE: ${{ steps.direct_models.outputs.selected_mode }}
-          OPENROUTER_REVIEW_FALLBACK_MODEL: ${{ steps.direct_models.outputs.secondary_model }}
-          OPENROUTER_REVIEW_FALLBACK_MODE: ${{ steps.direct_models.outputs.secondary_mode }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OLLAMA_REVIEW_MODEL: ${{ steps.direct_models.outputs.selected_model }}
+          OLLAMA_REVIEW_MODEL_MODE: ${{ steps.direct_models.outputs.selected_mode }}
+          OLLAMA_REVIEW_FALLBACK_MODEL: ${{ steps.direct_models.outputs.secondary_model }}
+          OLLAMA_REVIEW_FALLBACK_MODE: ${{ steps.direct_models.outputs.secondary_mode }}
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 .github/scripts/openrouter_pr_review.py
+        run: python3 .github/scripts/ollama_pr_review.py
 
   # Preserve the existing job id so configured required checks remain stable.
   claude-code-plugin-review:
@@ -130,7 +105,7 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-    timeout-minutes: 45
+    timeout-minutes: 90
 
     steps:
       - name: Check out pull request with history for review context
@@ -140,37 +115,26 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
 
-      # The live schema probe is an OpenRouter completion too, so wait before
+      # The live tool probe is an Ollama Cloud completion too, so wait before
       # model selection when the direct reviewer used the same API key first.
-      - name: Wait for the shared OpenRouter rate-limit window
+      - name: Wait for the shared Ollama Cloud rate-limit window
         if: vars.PR_REVIEWER == '' || vars.PR_REVIEWER == '0'
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "${OPENROUTER_REVIEW_COOLDOWN_SECONDS}" =~ ^[0-9]{1,3}$ ]] ||
-             (( OPENROUTER_REVIEW_COOLDOWN_SECONDS > 300 )); then
-            echo "::error::OPENROUTER_REVIEW_COOLDOWN_SECONDS must be an integer from 0 to 300."
+          if [[ ! "${OLLAMA_REVIEW_COOLDOWN_SECONDS}" =~ ^[0-9]{1,3}$ ]] ||
+             (( OLLAMA_REVIEW_COOLDOWN_SECONDS > 300 )); then
+            echo "::error::OLLAMA_REVIEW_COOLDOWN_SECONDS must be an integer from 0 to 300."
             exit 1
           fi
-          sleep "${OPENROUTER_REVIEW_COOLDOWN_SECONDS}"
+          sleep "${OLLAMA_REVIEW_COOLDOWN_SECONDS}"
 
-      - name: Select compatible Claude Code models
+      - name: Verify Ollama Cloud Claude tool calling
         id: claude_models
         shell: bash
         env:
-          PRIMARY_MODEL: ${{ env.OPENROUTER_CLAUDE_REVIEW_MODEL }}
-          FALLBACK_MODEL: ${{ env.OPENROUTER_CLAUDE_REVIEW_FALLBACK_MODEL }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-        run: |
-          set -euo pipefail
-          python3 .github/scripts/openrouter_model_preflight.py \
-            --primary "${PRIMARY_MODEL}" \
-            --fallback "${FALLBACK_MODEL}" \
-            --discover-free-fallback \
-            --probe-tools \
-            --require max_tokens \
-            --require tools \
-            --require tool_choice
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+        run: python3 .github/scripts/ollama_review.py --probe tools
 
       - name: Load shared reviewer policy from the pull request
         id: reviewer_policy
@@ -238,9 +202,9 @@ jobs:
         continue-on-error: true
         uses: anthropics/claude-code-action@d75b94d5ad426cb8546e6628b6f5f19b84e5cce1 # v1
         with:
-          # OpenRouter receives the request through ANTHROPIC_BASE_URL and
+          # Ollama Cloud receives the request through ANTHROPIC_BASE_URL and
           # authenticates with the same secret below.
-          anthropic_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          anthropic_api_key: ${{ secrets.OLLAMA_API_KEY }}
           # Without an explicit token the action falls back to an OIDC
           # exchange, which needs `id-token: write` (not granted here).
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -350,7 +314,7 @@ jobs:
           # rather than merely denying them after they consume a turn. The extra
           # turns are bounded headroom for larger diffs, not the primary strategy.
           claude_args: |
-            --max-turns 48
+            --max-turns 96
             --model "${{ steps.claude_models.outputs.primary_model }}"
             --tools "Read,Glob,Grep"
             --allowedTools "Read,Glob,Grep"
@@ -359,16 +323,15 @@ jobs:
           # enables the debug variable; they can contain sensitive output.
           show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
         env:
-          ANTHROPIC_BASE_URL: https://openrouter.ai/api
+          ANTHROPIC_BASE_URL: https://ollama.com
           # Keep repository credentials out of Claude's subprocess entirely;
           # only the deterministic publication step receives GITHUB_TOKEN.
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
-          # Claude Code uses bearer-token authentication with OpenRouter's
+          # Claude Code uses bearer-token authentication with Ollama Cloud's
           # Anthropic-compatible endpoint. The action input remains required
-          # for its own validation and receives the same short-lived secret.
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.OPENROUTER_API_KEY }}
-          # Pin every Claude Code role so none can silently fall back to a paid
-          # Anthropic default. Claude Code 2.1.x added Fable as a fourth role.
+          # for its own validation and receives the same Ollama API key.
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.OLLAMA_API_KEY }}
+          # Pin every Claude Code role to the same Ollama model, including Fable.
           ANTHROPIC_DEFAULT_FABLE_MODEL: ${{ steps.claude_models.outputs.primary_model }}
           ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ steps.claude_models.outputs.primary_model }}
           ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ steps.claude_models.outputs.primary_model }}
@@ -415,20 +378,20 @@ jobs:
         continue-on-error: true
         uses: anthropics/claude-code-action@d75b94d5ad426cb8546e6628b6f5f19b84e5cce1 # v1
         with:
-          anthropic_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          anthropic_api_key: ${{ secrets.OLLAMA_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: *claude_review_prompt
           claude_args: |
-            --max-turns 48
+            --max-turns 96
             --model "${{ steps.claude_models.outputs.primary_model }}"
             --tools "Read,Glob,Grep"
             --allowedTools "Read,Glob,Grep"
             --disallowedTools "mcp__github_comment__*,mcp__github_ci__*,mcp__github_inline_comment__*,mcp__github_file_ops__*"
           show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
         env:
-          ANTHROPIC_BASE_URL: https://openrouter.ai/api
+          ANTHROPIC_BASE_URL: https://ollama.com
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.OLLAMA_API_KEY }}
           ANTHROPIC_DEFAULT_FABLE_MODEL: ${{ steps.claude_models.outputs.primary_model }}
           ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ steps.claude_models.outputs.primary_model }}
           ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ steps.claude_models.outputs.primary_model }}
@@ -454,7 +417,7 @@ jobs:
             --execution-file "${CLAUDE_EXECUTION_FILE}" \
             --output "${CLAUDE_REVIEW_RESULT_FILE}"
 
-      - name: ClaudeCodePlugin — retry with fallback model
+      - name: ClaudeCodePlugin — final retry with Kimi K3
         id: claude_review_fallback
         if: >-
           always() &&
@@ -465,20 +428,20 @@ jobs:
         continue-on-error: true
         uses: anthropics/claude-code-action@d75b94d5ad426cb8546e6628b6f5f19b84e5cce1 # v1
         with:
-          anthropic_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          anthropic_api_key: ${{ secrets.OLLAMA_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: *claude_review_prompt
           claude_args: |
-            --max-turns 48
+            --max-turns 96
             --model "${{ steps.claude_models.outputs.fallback_model }}"
             --tools "Read,Glob,Grep"
             --allowedTools "Read,Glob,Grep"
             --disallowedTools "mcp__github_comment__*,mcp__github_ci__*,mcp__github_inline_comment__*,mcp__github_file_ops__*"
           show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
         env:
-          ANTHROPIC_BASE_URL: https://openrouter.ai/api
+          ANTHROPIC_BASE_URL: https://ollama.com
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.OLLAMA_API_KEY }}
           ANTHROPIC_DEFAULT_FABLE_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
           ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
           ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ steps.claude_models.outputs.fallback_model }}

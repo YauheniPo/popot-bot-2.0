@@ -17,16 +17,17 @@ Ansible Vault и `.env` исключены из Git.
 
 | Готово | Данные | Имя/формат | Где получить | Где хранить |
 |---|---|---|---|---|
-| [ ] | OpenRouter API key | `OPENROUTER_API_KEY` | [OpenRouter Keys](https://openrouter.ai/keys) | `hermes_secret_env` в Ansible Vault |
+| [ ] | Ollama Cloud API key | `OLLAMA_API_KEY` | [Ollama Keys](https://ollama.com/settings/keys) | `hermes_secret_env` в Ansible Vault; основной provider `ollama-cloud` |
+| [ ] | OpenRouter API key (optional) | `OPENROUTER_API_KEY` | [OpenRouter Keys](https://openrouter.ai/keys) | `hermes_secret_env` в Ansible Vault; ручная альтернатива и fallback `openrouter/free` |
 | [ ] | NVIDIA NIM API key | `NVIDIA_API_KEY` | [NVIDIA Build](https://build.nvidia.com/) | `hermes_secret_env` в Ansible Vault; альтернативный provider `nvidia` |
-| [ ] | OpenRouter model policy | `vps_hermes.config.managed_overlay` | каталог моделей OpenRouter или `hermes model` | versioned `config/vps-defaults.yml`; не хранить в Vault |
+| [ ] | Ollama model policy | `vps_hermes.config.managed_overlay` | `kimi-k3` в Ollama Cloud | versioned `config/vps-defaults.yml`; не хранить в Vault |
 | [ ] | Brave Search API key | `BRAVE_SEARCH_API_KEY` | кабинет Brave Search API | `hermes_secret_env` в Ansible Vault; нужен для Brave `web_search` |
 | [ ] | Firecrawl API key | `FIRECRAWL_API_KEY` | Firecrawl dashboard | `hermes_secret_env` в Ansible Vault; извлечение HTML/PDF и browser-backed web |
 | [ ] | Telegram bot token | `TELEGRAM_BOT_TOKEN` | создать бота у `@BotFather` | `hermes_secret_env` в Ansible Vault |
 | [ ] | Разрешённый Telegram user ID | `TELEGRAM_ALLOWED_USERS="123..."` | ID личного аккаунта, не username | Vault/`.env`; это allowlist, не пароль |
 
-В типовом Ansible-профиле основной provider — OpenRouter. Задайте
-`OPENROUTER_API_KEY`; repository-owned non-secret policy задайте в
+В типовом Ansible-профиле основной provider — Ollama Cloud. Задайте
+`OLLAMA_API_KEY`; repository-owned non-secret policy задайте в
 `vps_hermes.config.managed_overlay`. Выбранную через `/model_global` модель не
 добавляйте в authoritative overlay, если она должна переживать deploy. Минимальный фрагмент и правила
 замены placeholders находятся в
@@ -39,10 +40,15 @@ Ansible Vault и `.env` исключены из Git.
 /model nvidia:nvidia/nemotron-3-super-120b-a12b
 ```
 
-NVIDIA и OpenRouter имеют отдельные квоты. Бесплатный NVIDIA key может иметь
-rate limits и временную недоступность; наличие ключа не означает безлимитный
+Провайдеры имеют отдельные квоты. Бесплатный NVIDIA key может иметь rate
+limits и временную недоступность; наличие ключа не означает безлимитный
 доступ. Для Nous Portal используется OAuth (`hermes auth add nous`), а не API
 key в `hermes_secret_env`.
+
+Для Ollama Cloud добавьте `OLLAMA_API_KEY` в Vault и примените deploy, затем
+выберите **Ollama Cloud** через `/model`. Для Azure обновите копию
+зашифрованного Vault в Secure files. Полные шаги — в
+[инструкции Ollama Cloud](README.md#ollama-cloud).
 
 ## Web search и браузер
 
@@ -104,6 +110,22 @@ wrapper использует его без второго plaintext credential s
 Copilot inference существуют отдельные credentials. Не выдавайте classic или
 organization-wide token, если достаточно selected repositories. Никогда не
 используйте SSH private key входа на VPS как GitHub deploy key.
+
+## Azure DevOps и SonarQube Cloud
+
+| Готово | Данные | Где получить | Где хранить |
+|---|---|---|---|
+| [ ] | `AZURE_DEVOPS_EXT_PAT` | Azure DevOps → User settings → Personal access tokens | `hermes_secret_env` в Ansible Vault |
+| [ ] | `SONAR_TOKEN` | SonarQube Cloud → My account → Access Tokens | `hermes_secret_env` в Ansible Vault |
+| [ ] | URL, organization и project | Настройки выбранных сервисов | `config/vps-defaults.yml` → `vps_integrations` |
+
+Для чтения Azure builds/logs достаточно Build: Read; запуск требует
+Build: Read & execute и соответствующих прав пользователя. Для чтения
+репозиториев добавьте Code: Read. Для Sonar issues/Quality Gate нужен доступ
+к проекту (Browse project); для исходников — также See Source Code.
+Токен из GitHub Actions не переносится на VPS автоматически. После изменения
+Vault обновите его зашифрованную копию в Azure Secure files и примените deploy.
+Полные шаги — в [инструкции подключения](README.md#azure-devops-и-sonarqube-cloud).
 
 ## Gmail, Calendar и Google Workspace
 

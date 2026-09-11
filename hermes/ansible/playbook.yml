@@ -562,7 +562,10 @@
       ansible.builtin.assert:
         that:
           - hermes_secret_env is mapping
-        fail_msg: hermes_secret_env must be a YAML mapping of ENV_NAME to secret string.
+          - hermes_secret_env | length > 0
+        fail_msg: >-
+          Managed .env requires a non-empty hermes_secret_env mapping of
+          ENV_NAME to secret string. Refusing to replace .env with an empty map.
       when: hermes_manage_secret_env | bool
       no_log: true
 
@@ -753,6 +756,17 @@
         group: "{{ hermes_user }}"
         mode: "0600"
       no_log: true
+
+    - name: Publish managed Azure DevOps and SonarQube instructions
+      ansible.builtin.blockinfile:
+        path: "{{ hermes_workspace }}/AGENTS.md"
+        create: true
+        owner: "{{ hermes_user }}"
+        group: "{{ hermes_user }}"
+        mode: "0600"
+        marker: "<!-- {mark} ANSIBLE MANAGED DEVOPS ACCESS -->"
+        insertafter: EOF
+        block: "{{ lookup('ansible.builtin.template', 'templates/devops-access.md.j2') }}"
 
     - name: Mirror the final workspace instructions into Hermes backup state
       ansible.builtin.copy:

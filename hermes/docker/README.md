@@ -96,12 +96,12 @@ scripts) и `hermes/observability` (Prometheus/Grafana provisioning) — опи�
    `local.env` заполнены обе Telegram-переменные, этой же командой запускается
    Telegram gateway; без них остаётся безопасный Dashboard-only режим.
 
-   По умолчанию запускается OpenRouter с `openrouter/free`: router выберет
-   совместимую бесплатную модель. Лимит одного ответа — 2048 tokens. Другую
-   доступную в OpenRouter модель задайте через `HERMES_LOCAL_OPENROUTER_MODEL`,
-   а лимит — через `HERMES_LOCAL_OPENROUTER_MAX_TOKENS` в `local.env`.
-   Платную модель задавайте только при намеренно включённом billing: это
-   предотвращает ошибку OpenRouter `HTTP 402` на free account.
+   По умолчанию запускается Ollama Cloud с моделью `kimi-k3`. Для вызовов
+   нужен `OLLAMA_API_KEY`; лимит одного ответа — 32768 tokens. Для локального
+   теста другую модель задайте через `HERMES_LOCAL_OLLAMA_MODEL`, а лимит —
+   через `HERMES_LOCAL_OLLAMA_MAX_TOKENS` в `local.env`.
+   При необходимости добавьте `OPENROUTER_API_KEY` в `local.env` и переключите
+   provider вручную через `/model`; он не используется автоматически.
 
    Озвучивание использует бесплатный Edge TTS с русским голосом
    `ru-RU-SvetlanaNeural`. При временном ответе Edge без аудио Hermes повторит
@@ -117,7 +117,7 @@ scripts) и `hermes/observability` (Prometheus/Grafana provisioning) — опи�
    только для поиска; для извлечения полной страницы Hermes использует browser
    или один из extract-capable backends (например, Nous Tool Gateway/Firecrawl).
 
-   Без `OPENROUTER_API_KEY` container тоже стартует — это позволяет проверить
+   Без `OLLAMA_API_KEY` container тоже стартует — это позволяет проверить
    bootstrap и plugins, но не вызовы модели.
 
    После запуска откройте GUI на `http://127.0.0.1:9119` и войдите с

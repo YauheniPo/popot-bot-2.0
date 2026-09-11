@@ -11,11 +11,11 @@ import urllib.error
 from unittest import mock
 
 
-SCRIPT_PATH = Path(__file__).with_name("openrouter_pr_review.py")
+SCRIPT_PATH = Path(__file__).with_name("ollama_pr_review.py")
 sys.path.insert(0, str(SCRIPT_PATH.parent))
 import pr_review_context
 
-SPEC = importlib.util.spec_from_file_location("openrouter_pr_review", SCRIPT_PATH)
+SPEC = importlib.util.spec_from_file_location("ollama_pr_review", SCRIPT_PATH)
 assert SPEC is not None
 assert SPEC.loader is not None
 reviewer = importlib.util.module_from_spec(SPEC)
@@ -24,6 +24,31 @@ SPEC.loader.exec_module(reviewer)
 
 
 class AnnotatedDiffTest(unittest.TestCase):
+    def test_ollama_review_budget_is_sized_for_large_reviews(self) -> None:
+        self.assertGreaterEqual(reviewer.MAX_OUTPUT_TOKENS, 32_000)
+        self.assertGreaterEqual(reviewer.REASONING_OUTPUT_TOKENS, 32_000)
+        self.assertGreaterEqual(reviewer.MAX_CHUNK_CHARACTERS, 80_000)
+        self.assertGreaterEqual(reviewer.MAX_REVIEW_CHUNKS, 100)
+
+    def test_review_transport_targets_ollama_and_omits_gateway_extensions(self) -> None:
+        result = {"choices": [{"message": {"content": '{"summary":"ok","findings":[]}'}}]}
+        response = mock.MagicMock()
+        response.__enter__.return_value = io.StringIO(json.dumps(result))
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        with (
+            mock.patch.object(reviewer.urllib.request, "urlopen", return_value=response) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+        ):
+            review = reviewer.review_chunk("test-key", "kimi-k3", (), chunk, 1, 1)
+        self.assertEqual(review["findings"], [])
+        sent = request.call_args.args[0]
+        self.assertEqual(sent.full_url, "https://ollama.com/v1/chat/completions")
+        payload = json.loads(sent.data)
+        self.assertEqual(payload["model"], "kimi-k3")
+        for unsupported in ("provider", "plugins", "reasoning", "response_format"):
+            self.assertNotIn(unsupported, payload)
+        self.assertIn("REQUIRED_JSON_SCHEMA", payload["messages"][0]["content"])
+
     def test_tracks_only_changed_lines_on_the_correct_side(self) -> None:
         review_file = reviewer.annotate_diff(
             "app.py",
@@ -95,7 +120,7 @@ class ReviewPlanTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "full-branch review exceeds"):
                 reviewer.ensure_required_coverage(plan)
 
-            with self.assertRaisesRegex(RuntimeError, "OPENROUTER_MAX_REVIEW_CHUNKS"):
+            with self.assertRaisesRegex(RuntimeError, "OLLAMA_MAX_REVIEW_CHUNKS"):
                 reviewer.ensure_required_coverage(plan)
 
     def test_normal_review_allows_partial_coverage(self) -> None:
@@ -111,29 +136,30 @@ class ReviewPlanTest(unittest.TestCase):
 
 
 class ChangedPathsTest(unittest.TestCase):
-    def test_full_review_includes_reviewer_implementation_files(self) -> None:
+    def test_reviewer_implementation_files_require_explicit_inclusion(self) -> None:
         paths = (
-            b".github/scripts/openrouter_pr_review.py\0"
+            b".github/scripts/ollama_pr_review.py\0"
             b".github/REVIEWER.md\0app.py\0"
         )
-        with (
-            mock.patch.object(reviewer, "run_git", return_value=paths),
-            mock.patch.dict(
-                reviewer.os.environ,
-                {"REVIEW_INCLUDE_REVIEWER_FILES": "true"},
-                clear=False,
-            ),
-        ):
-            changed = reviewer.changed_paths("base", "head")
-
-        self.assertEqual(
-            changed,
-            [
-                ".github/scripts/openrouter_pr_review.py",
-                ".github/REVIEWER.md",
-                "app.py",
-            ],
-        )
+        for include_reviewer_files in ("false", "true"):
+            with self.subTest(include_reviewer_files=include_reviewer_files):
+                with (
+                    mock.patch.object(reviewer, "run_git", return_value=paths),
+                    mock.patch.dict(
+                        reviewer.os.environ,
+                        {"REVIEW_INCLUDE_REVIEWER_FILES": include_reviewer_files},
+                        clear=False,
+                    ),
+                ):
+                    changed = reviewer.changed_paths("base", "head")
+                expected = ["app.py"]
+                if include_reviewer_files == "true":
+                    expected = [
+                        ".github/scripts/ollama_pr_review.py",
+                        ".github/REVIEWER.md",
+                        "app.py",
+                    ]
+                self.assertEqual(changed, expected)
 
 
 class FindingValidationTest(unittest.TestCase):
@@ -210,19 +236,19 @@ class ReviewDeadlineTest(unittest.TestCase):
 
     def test_budget_must_be_a_usable_number(self) -> None:
         with mock.patch.dict(
-            reviewer.os.environ, {"OPENROUTER_REVIEW_BUDGET_SECONDS": "soon"}
+            reviewer.os.environ, {"OLLAMA_REVIEW_BUDGET_SECONDS": "soon"}
         ):
             with self.assertRaises(RuntimeError):
                 reviewer.configured_review_budget()
 
         with mock.patch.dict(
-            reviewer.os.environ, {"OPENROUTER_REVIEW_BUDGET_SECONDS": "5"}
+            reviewer.os.environ, {"OLLAMA_REVIEW_BUDGET_SECONDS": "5"}
         ):
             with self.assertRaises(RuntimeError):
                 reviewer.configured_review_budget()
 
 
-class OpenRouterRequestTest(unittest.TestCase):
+class OllamaCloudRequestTest(unittest.TestCase):
     def test_transport_errors_retry_and_eventually_use_fallback(self) -> None:
         result = {"summary": "Reviewed.", "findings": []}
         chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
@@ -240,9 +266,9 @@ class OpenRouterRequestTest(unittest.TestCase):
                         responses = [error if stage == "open" else broken] * failures + [good]
                         with (
                             mock.patch.dict(reviewer.os.environ, {
-                                "OPENROUTER_REVIEW_FALLBACK_MODEL": "fallback-model",
-                                "OPENROUTER_REVIEW_MODEL_MODE": "strict",
-                                "OPENROUTER_REVIEW_FALLBACK_MODE": "strict",
+                                "OLLAMA_REVIEW_FALLBACK_MODEL": "fallback-model",
+                                "OLLAMA_REVIEW_MODEL_MODE": "strict",
+                                "OLLAMA_REVIEW_FALLBACK_MODE": "strict",
                             }),
                             mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(600)),
                             mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
@@ -259,11 +285,11 @@ class OpenRouterRequestTest(unittest.TestCase):
     def test_http_error_body_timeout_preserves_status(self) -> None:
         body = mock.Mock()
         body.read.side_effect = TimeoutError("read timeout")
-        error = urllib.error.HTTPError(reviewer.OPENROUTER_URL, 429, "rate limited", {}, body)
+        error = urllib.error.HTTPError(reviewer.OLLAMA_URL, 429, "rate limited", {}, body)
         self.addCleanup(error.close)
         with mock.patch.object(reviewer.urllib.request, "urlopen", side_effect=error):
             with self.assertRaises(reviewer.RequestError) as caught:
-                reviewer.request_json(reviewer.OPENROUTER_URL, "POST", {})
+                reviewer.request_json(reviewer.OLLAMA_URL, "POST", {})
         self.assertEqual(caught.exception.status, 429)
 
     def test_extracts_review_json_from_mixed_provider_text(self) -> None:
@@ -316,7 +342,7 @@ class OpenRouterRequestTest(unittest.TestCase):
         )
         self.assertEqual(request_body["plugins"], [{"id": "response-healing"}])
         self.assertIn("rules", request_body["messages"][0]["content"])
-        self.assertIn("OpenRouter adapter instructions", request_body["messages"][0]["content"])
+        self.assertIn("Ollama Cloud adapter instructions", request_body["messages"][0]["content"])
         self.assertIn("chunk 1 of 2", request_body["messages"][1]["content"])
         self.assertIn("UNRESOLVED_REVIEW_THREADS", request_body["messages"][1]["content"])
 
@@ -372,7 +398,7 @@ class OpenRouterRequestTest(unittest.TestCase):
         with (
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OPENROUTER_REVIEW_MODEL_MODE": "ordinary"},
+                {"OLLAMA_REVIEW_MODEL_MODE": "ordinary"},
             ),
             mock.patch.object(reviewer, "request_json", return_value=response) as request,
             mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
@@ -402,7 +428,7 @@ class OpenRouterRequestTest(unittest.TestCase):
         with (
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OPENROUTER_REVIEW_MODEL_MODE": "ordinary"},
+                {"OLLAMA_REVIEW_MODEL_MODE": "ordinary"},
             ),
             mock.patch.object(
                 reviewer,
@@ -465,7 +491,7 @@ class OpenRouterRequestTest(unittest.TestCase):
         retry_body = request.call_args_list[1].args[3]
         self.assertEqual(first_body["max_tokens"], reviewer.MAX_OUTPUT_TOKENS)
         self.assertEqual(retry_body["max_tokens"], reviewer.REASONING_OUTPUT_TOKENS)
-        self.assertGreater(
+        self.assertGreaterEqual(
             reviewer.REASONING_OUTPUT_TOKENS, reviewer.MAX_OUTPUT_TOKENS
         )
 
@@ -484,7 +510,7 @@ class OpenRouterRequestTest(unittest.TestCase):
         with (
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OPENROUTER_REVIEW_FALLBACK_MODEL": "fallback-model"},
+                {"OLLAMA_REVIEW_FALLBACK_MODEL": "fallback-model"},
             ),
             mock.patch.object(
                 reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(budget)
@@ -589,7 +615,7 @@ class OpenRouterRequestTest(unittest.TestCase):
         with (
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OPENROUTER_REVIEW_FALLBACK_MODEL": "fallback-model"},
+                {"OLLAMA_REVIEW_FALLBACK_MODEL": "fallback-model"},
             ),
             mock.patch.object(
                 reviewer,
@@ -619,7 +645,7 @@ class OpenRouterRequestTest(unittest.TestCase):
         with (
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OPENROUTER_REVIEW_FALLBACK_MODEL": "fallback-model"},
+                {"OLLAMA_REVIEW_FALLBACK_MODEL": "fallback-model"},
             ),
             mock.patch.object(
                 reviewer,
@@ -669,8 +695,8 @@ class OpenRouterRequestTest(unittest.TestCase):
             mock.patch.dict(
                 reviewer.os.environ,
                 {
-                    "OPENROUTER_REVIEW_FALLBACK_MODEL": "fallback-model",
-                    "OPENROUTER_REVIEW_FALLBACK_MODE": "ordinary",
+                    "OLLAMA_REVIEW_FALLBACK_MODEL": "fallback-model",
+                    "OLLAMA_REVIEW_FALLBACK_MODE": "ordinary",
                 },
             ),
             mock.patch.object(
@@ -696,10 +722,10 @@ class OpenRouterRequestTest(unittest.TestCase):
     def test_rejects_unknown_model_mode(self) -> None:
         with mock.patch.dict(
             reviewer.os.environ,
-            {"OPENROUTER_REVIEW_MODEL_MODE": "unknown"},
+            {"OLLAMA_REVIEW_MODEL_MODE": "unknown"},
         ):
             with self.assertRaisesRegex(RuntimeError, "must be strict or ordinary"):
-                reviewer.configured_model_mode("OPENROUTER_REVIEW_MODEL_MODE")
+                reviewer.configured_model_mode("OLLAMA_REVIEW_MODEL_MODE")
 
     def test_enables_low_reasoning_when_fallback_requires_it(self) -> None:
         response = {
@@ -711,7 +737,7 @@ class OpenRouterRequestTest(unittest.TestCase):
         with (
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OPENROUTER_REVIEW_FALLBACK_MODEL": "fallback-model"},
+                {"OLLAMA_REVIEW_FALLBACK_MODEL": "fallback-model"},
             ),
             mock.patch.object(
                 reviewer,
@@ -746,7 +772,7 @@ class OpenRouterRequestTest(unittest.TestCase):
         with (
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OPENROUTER_REVIEW_FALLBACK_MODEL": "missing-model"},
+                {"OLLAMA_REVIEW_FALLBACK_MODEL": "missing-model"},
             ),
             mock.patch.object(
                 reviewer,
@@ -778,7 +804,7 @@ class OpenRouterRequestTest(unittest.TestCase):
         with (
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OPENROUTER_REVIEW_FALLBACK_MODEL": "fallback-model"},
+                {"OLLAMA_REVIEW_FALLBACK_MODEL": "fallback-model"},
             ),
             mock.patch.object(
                 reviewer,
@@ -817,7 +843,7 @@ class OpenRouterRequestTest(unittest.TestCase):
             }
         ).encode()
         http_error = urllib.error.HTTPError(
-            reviewer.OPENROUTER_URL,
+            reviewer.OLLAMA_URL,
             429,
             "Too Many Requests",
             {},
@@ -846,7 +872,7 @@ class OpenRouterRequestTest(unittest.TestCase):
             reviewer.ReviewChunk("second", frozenset({"b.py"}), ("b.py",)),
         )
         with (
-            mock.patch.dict(reviewer.os.environ, {"OPENROUTER_REVIEW_RPM": "10"}),
+            mock.patch.dict(reviewer.os.environ, {"OLLAMA_REVIEW_RPM": "10"}),
             mock.patch.object(
                 reviewer,
                 "review_chunk",
@@ -865,21 +891,21 @@ class OpenRouterRequestTest(unittest.TestCase):
         sleep.assert_called_once_with(5.0)
 
     def test_rejects_invalid_rpm_configuration(self) -> None:
-        with mock.patch.dict(reviewer.os.environ, {"OPENROUTER_REVIEW_RPM": "0"}):
+        with mock.patch.dict(reviewer.os.environ, {"OLLAMA_REVIEW_RPM": "0"}):
             with self.assertRaisesRegex(RuntimeError, "between 1 and 60"):
                 reviewer.configured_requests_per_minute()
 
     def test_accepts_manual_full_review_chunk_budget(self) -> None:
         with mock.patch.dict(
             reviewer.os.environ,
-            {"OPENROUTER_MAX_REVIEW_CHUNKS": "60"},
+            {"OLLAMA_MAX_REVIEW_CHUNKS": "60"},
         ):
             self.assertEqual(reviewer.configured_max_review_chunks(), 60)
 
     def test_rejects_excessive_manual_chunk_budget(self) -> None:
         with mock.patch.dict(
             reviewer.os.environ,
-            {"OPENROUTER_MAX_REVIEW_CHUNKS": "101"},
+            {"OLLAMA_MAX_REVIEW_CHUNKS": "101"},
         ):
             with self.assertRaisesRegex(RuntimeError, "between 1 and 100"):
                 reviewer.configured_max_review_chunks()
@@ -1007,14 +1033,14 @@ class GitHubReviewTest(unittest.TestCase):
             "<!-- openrouter-pr-review:azure-devops:head-sha -->",
             payload["body"],
         )
-        self.assertIn("## Azure DevOps · OpenRouterAPI", payload["body"])
+        self.assertIn("## Azure DevOps · OllamaCloudAPI", payload["body"])
         self.assertIn("> Source: Azure DevOps manual review", payload["body"])
         self.assertIn(
             "<!-- review-origin:azure-devops -->",
             payload["comments"][0]["body"],
         )
         self.assertIn(
-            "[Azure DevOps · OpenRouterAPI]",
+            "[Azure DevOps · OllamaCloudAPI]",
             payload["comments"][0]["body"],
         )
 
