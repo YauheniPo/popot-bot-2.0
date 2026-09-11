@@ -21,7 +21,7 @@ def hermes_home() -> Path:
 
 
 def cutoff(period: str) -> tuple[str, str]:
-    match = re.fullmatch(r"([1-9][0-9]*)([hd])", period.strip().lower())
+    match = re.fullmatch(r"([1-9]\d*)([hd])", period.strip().lower())
     if not match:
         raise ValueError("period must look like 24h, 7d, or 30d")
     seconds = int(match.group(1)) * (3600 if match.group(2) == "h" else 86400)

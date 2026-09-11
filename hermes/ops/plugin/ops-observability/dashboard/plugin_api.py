@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 
 router = APIRouter()
-_PERIOD_RE = re.compile(r"([1-9][0-9]{0,4})([hd])$")
+_PERIOD_RE = re.compile(r"([1-9]\d{0,4})([hd])$")
 _MAX_PERIOD_SECONDS = 366 * 86400
 
 

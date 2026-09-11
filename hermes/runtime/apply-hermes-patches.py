@@ -67,7 +67,7 @@ def _load_patch_state() -> dict[str, dict[str, str]]:
     state_path = HERMES_AGENT_DIR / _STATE_FILE
     try:
         raw = json.loads(state_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError):
         return {}
     return raw if isinstance(raw, dict) else {}
 

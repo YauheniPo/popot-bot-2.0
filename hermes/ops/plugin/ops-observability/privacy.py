@@ -24,14 +24,16 @@ _SAFE_ARG_KEYS = {
     "command", "path", "file_path", "directory", "url", "repo", "branch", "operation", "action"
 }
 _COMMAND_VALUE_KEYS = {"command", "cmd", "shell_command", "args_raw"}
+REDACTED = "[REDACTED]"
+COMMAND_PLACEHOLDER = "[command]"
 
 def _short(value: Any, limit: int = 500) -> str:
     text = str(value or "").replace("\x00", "").replace("\r", " ").replace("\n", " ")
-    text = _SECRET_TEXT.sub(lambda match: (match.group(1) or match.group(2) or "") + "[REDACTED]", text)
-    text = _SECRET_FLAG.sub(lambda match: match.group(1) + "[REDACTED]", text)
-    text = _BASIC_AUTH_FLAG.sub(lambda match: match.group(1) + "[REDACTED]", text)
-    text = _SSHPASS_FLAG.sub(lambda match: match.group(1) + "[REDACTED]", text)
-    text = _URL_USERINFO.sub(r"\1[REDACTED]@", text)
+    text = _SECRET_TEXT.sub(lambda match: (match.group(1) or match.group(2) or "") + REDACTED, text)
+    text = _SECRET_FLAG.sub(lambda match: match.group(1) + REDACTED, text)
+    text = _BASIC_AUTH_FLAG.sub(lambda match: match.group(1) + REDACTED, text)
+    text = _SSHPASS_FLAG.sub(lambda match: match.group(1) + REDACTED, text)
+    text = _URL_USERINFO.sub(r"\1" + REDACTED + "@", text)
     text = re.sub(r"-----BEGIN [^-]+ PRIVATE KEY-----.*", "[REDACTED PRIVATE KEY]", text, flags=re.IGNORECASE)
     return text[:limit]
 
@@ -42,13 +44,13 @@ def _command_program(value: Any) -> str:
     try:
         parts = shlex.split(str(value or ""))
     except ValueError:
-        return "[command]"
+        return COMMAND_PLACEHOLDER
     if not parts:
-        return "[command]"
+        return COMMAND_PLACEHOLDER
     candidate = parts[0].lstrip("/")
     if re.fullmatch(r"[A-Za-z0-9_.+-]{1,80}", candidate):
         return candidate
-    return "[command]"
+    return COMMAND_PLACEHOLDER
 
 
 def _safe_audit_value(value: Any, limit: int = 240) -> Any | None:
@@ -134,6 +136,5 @@ def _safe_args(args: Any) -> dict[str, Any]:
             else:
                 summary[key_text[:80]] = _short(value, 240)
     return summary
-
 
 
