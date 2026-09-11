@@ -34,6 +34,12 @@ def endpoint(*capabilities: str, status: int = 0) -> object:
 
 
 class ModelSelectionTest(unittest.TestCase):
+    def test_http_error_with_invalid_payload_is_handled(self) -> None:
+        error = urllib.error.HTTPError("https://example.test", 500, "error", {}, io.BytesIO(b"not-json"))
+        with mock.patch.object(preflight.urllib.request, "urlopen", side_effect=error):
+            with self.assertRaisesRegex(RuntimeError, "metadata returned HTTP 500"):
+                preflight._fetch_model("provider/model")
+
     def test_metadata_retries_transport_errors_during_open_and_read(self) -> None:
         for fetch, argument in (
             (preflight._fetch_model, "provider/model"),
