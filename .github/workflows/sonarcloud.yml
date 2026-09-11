@@ -33,6 +33,12 @@ jobs:
           coverage run --source=hermes -m unittest "${hermes_tests[@]}"
           coverage xml -o hermes-coverage.xml
 
+      - name: Run review-script tests with coverage
+        run: |
+          coverage run --source=.github/scripts -m unittest discover \
+            -s .github/scripts -p 'test_*.py'
+          coverage xml -o github-scripts-coverage.xml
+
       - name: Set up Python for telegram-user-info-bot coverage
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:

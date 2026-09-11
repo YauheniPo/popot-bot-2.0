@@ -35,7 +35,7 @@ class AnnotatedDiffTest(unittest.TestCase):
 -old_value
 +new_value
 +second_value
- trailing
+        trailing
 """,
         )
 
@@ -43,7 +43,14 @@ class AnnotatedDiffTest(unittest.TestCase):
         self.assertEqual(review_file.right_lines, frozenset({11, 12}))
         self.assertIn("LEFT 11|-old_value", review_file.rendered_diff)
         self.assertIn("RIGHT 12|+second_value", review_file.rendered_diff)
-        self.assertIn("CONTEXT L12/R13| trailing", review_file.rendered_diff)
+        self.assertIn("CONTEXT L12/R13|        trailing", review_file.rendered_diff)
+
+    def test_parses_json_fenced_response_without_regex(self) -> None:
+        response = {"summary": "ok", "findings": []}
+        parsed = reviewer.parse_review_response(
+            {"choices": [{"message": {"content": f"```json\n{json.dumps(response)}\n```"}}]}
+        )
+        self.assertEqual(parsed, response)
 
 
 class ReviewPlanTest(unittest.TestCase):
@@ -1369,6 +1376,14 @@ class ThreadTriageTest(unittest.TestCase):
         self.assertEqual(outcome.still_open, 1)
         reply.assert_called_once()
         self.assertIn("Finding remains valid", reply.call_args.args[-1])
+        resolve.assert_not_called()
+
+    def test_needs_human_posts_evidence_and_leaves_thread_open(self) -> None:
+        outcome, reply, resolve = self.apply("needs_human", self.machine_thread())
+
+        self.assertEqual(outcome.left_for_human, 1)
+        reply.assert_called_once()
+        self.assertIn("Human review requested", reply.call_args.args[-1])
         resolve.assert_not_called()
 
     def test_skips_a_thread_already_carrying_this_revision_verdict(self) -> None:

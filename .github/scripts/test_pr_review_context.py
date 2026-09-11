@@ -214,6 +214,16 @@ class ReviewThreadReplyTest(unittest.TestCase):
 
 
 class InlineCommentTest(unittest.TestCase):
+    def test_validate_cli_path_rejects_relative_and_traversal_paths(self) -> None:
+        for path in (Path("relative.json"), Path("/tmp/../etc/passwd")):
+            with self.subTest(path=path), self.assertRaises(RuntimeError):
+                context._validate_cli_path(path, "test path")
+
+    def test_validate_cli_path_maps_resolution_errors(self) -> None:
+        with mock.patch.object(Path, "resolve", side_effect=OSError("denied")), \
+                self.assertRaisesRegex(RuntimeError, "unavailable"):
+            context._validate_cli_path(Path("/tmp/output.json"), "test path")
+
     def test_tracks_changed_lines_on_both_sides(self) -> None:
         with (
             mock.patch.object(context, "_changed_paths", return_value={"app.py"}),
