@@ -47,7 +47,7 @@ OPS_METRICS_SCHEMA: dict[str, Any] = {
 
 def _period(raw: str) -> tuple[str, str]:
     text = (raw or "24h").strip().lower()
-    match = re.fullmatch(r"([1-9][0-9]*)([hd])", text)
+    match = re.fullmatch(r"([1-9](?a:\d)*)([hd])", text)
     if not match:
         raise ValueError("period must look like 24h, 7d, or 30d")
     amount = int(match.group(1))
@@ -104,7 +104,7 @@ def _prometheus_vector(expression: str) -> list[tuple[dict[str, Any], float]] | 
                 continue
             values.append((item["metric"], float(item["value"][1])))
         return values
-    except (KeyError, TypeError, ValueError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+    except (KeyError, TypeError, ValueError, urllib.error.URLError, TimeoutError):
         return None
 
 
@@ -211,6 +211,4 @@ def _ops_metrics_tool(args: dict[str, Any] | None = None, **_kwargs: Any) -> str
 
     values = args if isinstance(args, dict) else {}
     return json.dumps(_metrics_snapshot(str(values.get("view", "overview")), str(values.get("period", "24h"))), ensure_ascii=False)
-
-
 

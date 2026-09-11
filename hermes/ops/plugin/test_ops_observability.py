@@ -22,6 +22,11 @@ SPEC.loader.exec_module(observability)
 
 
 class ObservabilityRedactionTests(unittest.TestCase):
+    def test_command_program_uses_bounded_placeholder_for_invalid_input(self) -> None:
+        self.assertEqual(observability._command_program(""), "[command]")
+        self.assertEqual(observability._command_program("bad 'quote"), "[command]")
+        self.assertEqual(observability._command_program("/bad/cmd"), "[command]")
+
     def test_register_keeps_all_hooks_command_and_metrics_tool(self) -> None:
         class Connection:
             def close(self) -> None:

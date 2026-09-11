@@ -192,7 +192,7 @@ def _request_probe(
                         raw_message = error_details.get("message")
                         if isinstance(raw_message, str):
                             provider_message = raw_message.lower()
-            except (json.JSONDecodeError, UnicodeDecodeError, OSError, ValueError):
+            except (UnicodeDecodeError, OSError, ValueError):  # pragma: no cover - defensive stream failure
                 pass
             if MANDATORY_REASONING_ERROR in provider_message:
                 return None, (False, REQUIRES_REASONING_REASON)
