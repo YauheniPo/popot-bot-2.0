@@ -1006,7 +1006,7 @@ def ensure_required_coverage(plan: ReviewPlan) -> None:
         "The full-branch review exceeds its configured chunk or line-size budget: "
         f"{len(plan.partial_files)} partial file(s), "
         f"{len(plan.omitted_files)} omitted file(s). Increase "
-        "MANUAL_REVIEW_MAX_CHUNKS within the supported safety limit or split "
+        "OPENROUTER_MAX_REVIEW_CHUNKS within the supported safety limit or split "
         "the review into smaller branches."
     )
 
@@ -1205,7 +1205,7 @@ def apply_thread_verdicts(
             still_open += 1
             continue
         if verdict.verdict == "needs_human" or (
-            verdict.verdict == "fixed"
+            verdict.verdict in {"fixed", "rejected"}
             and not may_be_auto_fixed(thread, head_sha, changed_paths)
         ):
             left_for_human += 1

@@ -779,7 +779,7 @@ def _validated_claude_result(
     findings.sort(key=lambda item: (0 if item.severity == "P1" else 1, item.path, item.line))
     verdicts: list[ThreadVerdict] = []
     seen_thread_ids: set[str] = set()
-    for raw in raw_verdicts[:20]:
+    for raw in raw_verdicts[:200]:
         if not isinstance(raw, dict):
             continue
         thread_id = raw.get("thread_id")

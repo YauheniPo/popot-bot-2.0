@@ -249,7 +249,15 @@ jobs:
             fi
             echo
             if [[ -s "${report_dir}/summary.md" ]]; then
+              # Keep a reachable fallback when an older or malformed report
+              # does not include the findings/check-run link.
+              if ! grep -Eq '^[[:space:]]*-[[:space:]]*Findings:' "${report_dir}/summary.md"; then
+                echo "- Findings: [Open findings](${run_url})"
+                echo
+              fi
               cat "${report_dir}/summary.md"
+            else
+              echo "- Findings: [Open findings](${run_url})"
             fi
           } >"${summary_file}"
 

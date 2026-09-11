@@ -87,6 +87,9 @@ class ReviewPlanTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "full-branch review exceeds"):
                 reviewer.ensure_required_coverage(plan)
 
+            with self.assertRaisesRegex(RuntimeError, "OPENROUTER_MAX_REVIEW_CHUNKS"):
+                reviewer.ensure_required_coverage(plan)
+
     def test_normal_review_allows_partial_coverage(self) -> None:
         plan = reviewer.ReviewPlan(
             chunks=(),
@@ -1328,6 +1331,18 @@ class ThreadTriageTest(unittest.TestCase):
         )
 
         self.assertEqual(outcome.left_for_human, 1)
+        reply.assert_not_called()
+        resolve.assert_not_called()
+
+    def test_downgrades_rejected_when_the_revision_does_not_touch_the_file(self) -> None:
+        outcome, reply, resolve = self.apply(
+            "rejected",
+            self.machine_thread(),
+            changed_paths={"other.py"},
+        )
+
+        self.assertEqual(outcome.left_for_human, 1)
+        self.assertEqual(outcome.rejected, 0)
         reply.assert_not_called()
         resolve.assert_not_called()
 

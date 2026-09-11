@@ -38,7 +38,11 @@ def _cutoff(seconds: int) -> str:
 
 
 def _connect(database: Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=3)
+    try:
+        database_uri = database.resolve().as_uri()
+    except OSError as error:
+        raise sqlite3.OperationalError("metrics database path is unavailable") from error
+    connection = sqlite3.connect(database_uri + "?mode=ro", uri=True, timeout=3)
     connection.row_factory = sqlite3.Row
     return connection
 

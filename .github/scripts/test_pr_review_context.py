@@ -284,6 +284,22 @@ class InlineCommentTest(unittest.TestCase):
         self.assertEqual(findings[0].line, 12)
         self.assertEqual(verdicts[0].verdict, "rejected")
 
+    def test_processes_all_validated_thread_verdicts_up_to_contract_limit(self) -> None:
+        result = {
+            "summary": "Re-checked all threads.",
+            "findings": [],
+            "thread_verdicts": [
+                {"thread_id": f"thread-{index}", "verdict": "confirmed", "reason": "Still applies."}
+                for index in range(200)
+            ],
+        }
+        with mock.patch.object(context, "_changed_paths", return_value=set()):
+            _, _, verdicts = context._validated_claude_result(
+                context.json.dumps(result), "a" * 40, "b" * 40
+            )
+
+        self.assertEqual(len(verdicts), 200)
+
     def test_extracts_and_validates_plain_json_from_claude_execution_file(self) -> None:
         review = {
             "summary": "No actionable findings.",

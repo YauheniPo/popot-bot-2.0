@@ -17,13 +17,15 @@ from fastapi import HTTPException
 
 PLUGIN_DIR = Path(__file__).with_name("ops-observability")
 SPEC = importlib.util.spec_from_file_location("dashboard_observability", PLUGIN_DIR / "__init__.py")
-assert SPEC and SPEC.loader
+assert SPEC
+assert SPEC.loader
 plugin = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = plugin
 SPEC.loader.exec_module(plugin)
 
 API_SPEC = importlib.util.spec_from_file_location("ops_dashboard_api", PLUGIN_DIR / "dashboard" / "plugin_api.py")
-assert API_SPEC and API_SPEC.loader
+assert API_SPEC
+assert API_SPEC.loader
 api = importlib.util.module_from_spec(API_SPEC)
 API_SPEC.loader.exec_module(api)
 
@@ -172,6 +174,10 @@ class DashboardApiTests(unittest.TestCase):
         with self.assertRaises(sqlite3.OperationalError):
             api._connect(self.root / "missing.db")
         self.assertFalse((self.root / "missing.db").exists())
+
+        with mock.patch.object(Path, "resolve", side_effect=OSError("inaccessible")), \
+                self.assertRaises(sqlite3.OperationalError):
+            api._connect(self.root / "unavailable.db")
 
     def test_database_connection_failure_returns_service_unavailable(self) -> None:
         self.create_database()
