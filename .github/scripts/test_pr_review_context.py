@@ -594,6 +594,47 @@ class InlineCommentTest(unittest.TestCase):
         summary_payload = request.call_args_list[1].args[3]
         self.assertIn("rejected and auto-resolved: 1", summary_payload["body"])
 
+    def test_publisher_replies_to_confirmed_machine_thread(self) -> None:
+        self._publish_thread_verdict("confirmed")
+
+    def test_publisher_replies_to_needs_human_machine_thread(self) -> None:
+        self._publish_thread_verdict("needs_human")
+
+    def _publish_thread_verdict(self, verdict: str) -> None:
+        head_sha = "b" * 40
+        result = {
+            "summary": "Thread review.",
+            "findings": [],
+            "thread_verdicts": [{"thread_id": "direct-thread", "verdict": verdict, "reason": "Evidence."}],
+        }
+        thread = context.ReviewThread(
+            node_id="direct-thread", path="playbook.yml", side="RIGHT", line=42,
+            original_line=42, outdated=False, viewer_can_reply=True,
+            comments=(context.ReviewComment(
+                "comment-node", 101, context.AUTOMATED_REVIEW_AUTHOR,
+                f"{context.DIRECT_REVIEWER_INLINE_PREFIX}{'a' * 40}:playbook.yml:RIGHT:42 -->",
+            ),),
+        )
+        environment = {
+            "GITHUB_REPOSITORY": "owner/repo", "PR_NUMBER": "2", "GITHUB_TOKEN": "token",
+            "BASE_SHA": "a" * 40, "HEAD_SHA": head_sha, "CLAUDE_REVIEW_MODEL": "review-model",
+            "CLAUDE_REVIEW_RUN_ID": "123", "CLAUDE_REVIEW_RESULT": context.json.dumps(result),
+        }
+        with (
+            mock.patch.dict(context.os.environ, environment, clear=True),
+            mock.patch.object(context, "_changed_paths", return_value={"playbook.yml"}),
+            mock.patch.object(context, "fetch_unresolved_review_threads", return_value=[thread]),
+            mock.patch.object(context, "fetch_resolved_machine_threads", return_value=[]),
+            mock.patch.object(context, "reply_to_review_thread") as reply,
+            mock.patch.object(context, "resolve_review_thread") as resolve,
+            mock.patch.object(context, "_request_json", side_effect=[[], {}]),
+            mock.patch("builtins.print"),
+        ):
+            context._command_publish()
+        reply.assert_called_once()
+        self.assertIn("Evidence: Evidence.", reply.call_args.args[4])
+        resolve.assert_not_called()
+
     def _stale_machine_thread(self) -> object:
         """A reviewer thread opened on an older revision, with no human reply."""
         return context.ReviewThread(
