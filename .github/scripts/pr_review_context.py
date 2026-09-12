@@ -16,6 +16,8 @@ from typing import cast
 import urllib.error
 import urllib.request
 
+from review_execution import claude_execution_report, strip_execution_metadata
+
 
 GITHUB_API_URL = "https://api.github.com"
 CLAUDE_REVIEWER_LABEL = "ClaudeCodePlugin"
@@ -106,7 +108,7 @@ class ReviewThread:
 
     @property
     def searchable_text(self) -> str:
-        return " ".join(comment.body for comment in self.comments)
+        return " ".join(strip_execution_metadata(comment.body) for comment in self.comments)
 
 
 @dataclass(frozen=True)
@@ -399,7 +401,7 @@ def _rendered_comments(thread: ReviewThread) -> list[dict[str, object]]:
         rendered.append(
             {
                 "author": comment.author,
-                "body": " ".join(comment.body.split())[:MAX_RENDERED_COMMENT_CHARACTERS],
+                "body": " ".join(strip_execution_metadata(comment.body).split())[:MAX_RENDERED_COMMENT_CHARACTERS],
             }
         )
     return rendered
@@ -989,6 +991,8 @@ def _command_publish() -> None:
     head_sha = _required_commit_sha("HEAD_SHA")
     token = _github_token()
     model = _clean_result_text(_required_env("CLAUDE_REVIEW_MODEL"), 200)
+    execution = claude_execution_report({**os.environ, "CLAUDE_REVIEW_MODEL": model})
+    execution_footer = execution.footer("review")
     run_id = _required_env("CLAUDE_REVIEW_RUN_ID")
     if not run_id.isdigit():
         raise RuntimeError("CLAUDE_REVIEW_RUN_ID must be numeric")
@@ -1055,7 +1059,7 @@ def _command_publish() -> None:
                     token,
                     thread.reply_to_comment_id,
                     f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] Finding remains valid**\n\n"
-                    f"Evidence: {verdict.reason}",
+                    f"Evidence: {verdict.reason}" + execution_footer,
                 )
             print("  -> left open: confirmed still valid")
             continue
@@ -1080,7 +1084,7 @@ def _command_publish() -> None:
                     token,
                     thread.reply_to_comment_id,
                     f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] Human review requested**\n\n"
-                    f"Evidence: {verdict.reason}",
+                    f"Evidence: {verdict.reason}" + execution_footer,
                 )
             print("  -> left for human review: needs_human")
             continue
@@ -1101,7 +1105,7 @@ def _command_publish() -> None:
             pr_number,
             token,
             comment_id,
-            f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] {heading}**\n\nReason: {verdict.reason}",
+            f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] {heading}**\n\nReason: {verdict.reason}" + execution_footer,
         )
         resolve_review_thread(token, thread.node_id)
         closed_thread_ids.add(thread.node_id)
@@ -1162,6 +1166,7 @@ def _command_publish() -> None:
                     f"{inline_marker}\n**[{CLAUDE_REVIEWER_LABEL}] "
                     f"{finding.severity} — {finding.title}**\n\n"
                     f"Impact: {finding.impact}\n\nProposed fix: {finding.fix}"
+                    + execution_footer
                 ),
             )
         except GitHubRequestError as error:
@@ -1190,6 +1195,7 @@ def _command_publish() -> None:
                 f"Additional evidence — {finding.severity}: "
                 f"{finding.title}**\n\nImpact: {finding.impact}\n\n"
                 f"Proposed fix: {finding.fix}"
+                + execution_footer
             ),
         )
         posted_follow_ups.append(finding)
@@ -1197,7 +1203,7 @@ def _command_publish() -> None:
     lines = [
         f"## {CLAUDE_REVIEWER_LABEL}",
         "",
-        f"> Provider: Ollama Cloud · Model: `{model}`",
+        execution.summary(),
         "> Execution: Claude Code agent via SDK",
         f"> Reviewed Head SHA: `{head_sha}`",
         "",
@@ -1242,7 +1248,7 @@ def _command_publish() -> None:
             f"- **{finding.severity} — `{finding.path}:{finding.line}`**: {finding.title}."
             for finding in posted_follow_ups
         )
-    lines.extend(["", marker])
+    lines.extend([execution.details(), "", marker])
     _request_json(comments_url, "POST", token, {"body": "\n".join(lines)})
     print(
         "Published the validated Claude review with "

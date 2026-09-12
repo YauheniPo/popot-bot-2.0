@@ -14,7 +14,7 @@ Debian/Ubuntu VPS. Hermes работает от отдельного непри�
 | Сервис | Для чего нужен в этой сборке | Когда требуется |
 |---|---|---|
 | [Hermes Agent](https://hermes-agent.nousresearch.com/docs/) | Основной AI-агент, gateway, terminal tools, skills и dashboard. | Обязателен. |
-| [Ollama Cloud](https://docs.ollama.com/cloud) | Основной provider этой сборки: модель `kimi-k3` через `ollama-cloud`. | Нужен `OLLAMA_API_KEY` в Vault. |
+| [Ollama Cloud](https://docs.ollama.com/cloud) | Один из доступных LLM providers; модель выбирается в конфигурации или меню Hermes. | `OLLAMA_API_KEY` в Vault, если выбран `ollama-cloud`. |
 | [Nous Portal](https://portal.nousresearch.com/) | Альтернатива отдельным ключам: models и Tool Gateway для web, image, TTS и browser. | Опционально, для `deploy-hermes.sh --portal`. |
 | [Telegram Bot API](https://core.telegram.org/bots) | Личный chat gateway и alerts Hermes. | Опционально, если нужен Telegram. |
 | [Tailscale](https://tailscale.com/) | Приватная сеть и Tailscale SSH; позволяет закрыть публичный SSH. | Рекомендуется для VPS. |
@@ -155,11 +155,11 @@ sudo systemctl restart hermes-gateway.service
 - **Разработка на VPS.** Агент может клонировать репозитории, создавать ветки,
   читать, создавать, изменять и удалять доступные ему файлы, запускать сборку и
   тесты, делать commit/push и создавать PR после авторизации GitHub.
-- **Ollama Cloud LLM config.** Ansible Vault хранит `OLLAMA_API_KEY`, а
-  `config.yaml` overlay фиксирует `ollama-cloud/kimi-k3`.
-- **OpenRouter optional access.** При необходимости Vault может также хранить
-  `OPENROUTER_API_KEY`; он доступен Hermes для ручного выбора через `/model`,
-  а также для аварийного fallback `openrouter/free`.
+- **Настраиваемые LLM providers.** Ansible Vault хранит ключи выбранных
+  providers, а `vps_hermes.config.managed_overlay` задаёт модели для чата,
+  вспомогательных задач и cron, а также список fallback.
+- **OpenRouter access.** При необходимости добавьте `OPENROUTER_API_KEY` в
+  Vault для выбора через `/model` или использования в настроенном fallback.
 - **NVIDIA NIM.** Для альтернативного inference provider добавьте
   `NVIDIA_API_KEY` в Vault и выберите модель командой `/model
   nvidia:<model-id>`. NVIDIA имеет собственные квоты и rate limits; бесплатный
@@ -1178,6 +1178,33 @@ sudo -u hermes -H /home/hermes/.local/bin/hermes \
 ещё не настроенную интеграцию. Ansible deploy строже: финальный
 `hermes config check` обязан пройти до запуска gateway.
 
+### Проверочный запрос к модели с повторами
+
+После деплоя отдельный helper можно запустить на VPS:
+
+```bash
+sudo /usr/local/lib/hermes-ops/api-retry-loop.sh
+```
+
+Он читает `vps_ops.api_retry` через `/etc/hermes-ops.conf` и запускает
+`hermes chat` от сервисного пользователя с заданными `provider` и `model`.
+Ключи загружает сам Hermes из своего окружения; Dashboard для этого не нужен.
+Основная модель и настройки cron при таком запросе не меняются.
+
+`max_attempts` ограничивает число запусков CLI, `wait_seconds` задаёт паузу
+между неудачами, `timeout_seconds` ограничивает каждый запуск. Внутри одного
+запуска Hermes может выполнять собственные повторы API. После успеха скрипт
+завершается сразу, после исчерпания попыток возвращает ошибку.
+
+Для одного запуска можно передать другую модель и текст:
+
+```bash
+sudo /usr/local/lib/hermes-ops/api-retry-loop.sh '<model-id>' 'Ответь одним предложением'
+```
+
+Провайдер остаётся указанным в конфиге. Helper запускает запрос без toolsets
+и передаёт текст через stdin, сохраняя кавычки и переводы строк буквально.
+
 ## Режимы установки
 
 Ниже — команды для VPS после перехода в каталог со скопированной папкой Hermes:
@@ -1217,11 +1244,11 @@ cd /root/hermes # замените путь, если repository находит�
 
 ### 1. Модели и экономия токенов
 
-Deploy фиксирует основную модель из `vps_hermes.config.managed_overlay`:
-`kimi-k3` через Ollama Cloud. При наличии `OPENROUTER_API_KEY` аварийный
-fallback использует бесплатный router `openrouter/free`; без этого ключа
-Hermes оставляет ошибку Ollama видимой и не сможет выполнить fallback.
-Следующий deploy снова применит этот repository-owned default. Hermes также
+Deploy применяет модельную политику из `vps_hermes.config.managed_overlay` в
+[`config/vps-defaults.yml`](config/vps-defaults.yml): основной provider и модель,
+вспомогательные модели, настройки cron и `fallback_providers`. Для каждого
+используемого provider нужны его credentials; наличие записи fallback не
+заменяет авторизацию. Следующий deploy снова применит эту политику. Hermes также
 поддерживает built-in providers с API key/OAuth, named custom providers и
 локальные OpenAI-compatible endpoints.
 Для Ansible укажите нужные ENV keys в `hermes_secret_env`, а non-secret
@@ -1270,27 +1297,28 @@ server и настройка custom provider не требуются.
    получает каталог моделей автоматически. Для явного выбора используйте
    `/model ollama-cloud:<model-id>` с точным ID из каталога.
 
-Ключ и policy подготовлены для основного provider `ollama-cloud` с моделью
-`kimi-k3`; после deploy Hermes использует их для чата, compression и
-cron-задач. При наличии второго ключа fallback использует `openrouter/free`.
+Для постоянного выбора через Ansible задайте нужные model IDs в
+`vps_hermes.config.managed_overlay`. Чат, compression, cron и fallback имеют
+отдельные настройки: смена модели чата не меняет остальные назначения.
 
 ### Надёжные cron-задачи
 
-Для cron задан отдельный fleet-default: `cron.model_provider: ollama-cloud` и
-`cron.model: kimi-k3`. Поэтому задачи без собственного pin не
-зависят от переключения основной модели чата и не получают `drift_skip` при
+Для cron provider и модель задаются отдельно в `cron.model_provider` и
+`cron.model` внутри managed overlay. Задачи без собственного pin используют
+эти значения, поэтому не зависят от переключения основной модели чата и не
+получают `drift_skip` при
 изменении интерактивного provider. Личный pin конкретной задачи имеет
-приоритет над этим default. Если Ollama Cloud недоступен или не авторизован,
-preflight переведёт задачу в `blocked_config` без скрытого запуска на другой
-модели.
+приоритет над этой конфигурацией. Если выбранный provider недоступен или не
+авторизован, preflight переведёт задачу в `blocked_config` без скрытого запуска
+на другой модели.
 
 Для другой модели измените только эти два значения в
 `vps_hermes.config.managed_overlay` и примените Ansible-деплой. Для разовой
-задачи задайте pin явно:
+задачи задайте pin явно, заменив placeholders на provider и model ID из каталога:
 
 ```text
 cronjob(action="create", schedule="every 2h", prompt="Check server status",
-        provider="ollama-cloud", model="kimi-k3", deliver="origin")
+        provider="<provider>", model="<model-id>", deliver="origin")
 ```
 
 Проверить существующие задачи можно командами:

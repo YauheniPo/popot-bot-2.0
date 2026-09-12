@@ -17,33 +17,32 @@ Ansible Vault и `.env` исключены из Git.
 
 | Готово | Данные | Имя/формат | Где получить | Где хранить |
 |---|---|---|---|---|
-| [ ] | Ollama Cloud API key | `OLLAMA_API_KEY` | [Ollama Keys](https://ollama.com/settings/keys) | `hermes_secret_env` в Ansible Vault; основной provider `ollama-cloud` |
-| [ ] | OpenRouter API key (optional) | `OPENROUTER_API_KEY` | [OpenRouter Keys](https://openrouter.ai/keys) | `hermes_secret_env` в Ansible Vault; ручная альтернатива и fallback `openrouter/free` |
-| [ ] | NVIDIA NIM API key | `NVIDIA_API_KEY` | [NVIDIA Build](https://build.nvidia.com/) | `hermes_secret_env` в Ansible Vault; альтернативный provider `nvidia` |
-| [ ] | Ollama model policy | `vps_hermes.config.managed_overlay` | `kimi-k3` в Ollama Cloud | versioned `config/vps-defaults.yml`; не хранить в Vault |
+| [ ] | Ollama Cloud API key | `OLLAMA_API_KEY` | [Ollama Keys](https://ollama.com/settings/keys) | `hermes_secret_env` в Ansible Vault, если используется `ollama-cloud` |
+| [ ] | OpenRouter API key | `OPENROUTER_API_KEY` | [OpenRouter Keys](https://openrouter.ai/keys) | `hermes_secret_env` в Ansible Vault, если используется `openrouter` |
+| [ ] | NVIDIA NIM API key | `NVIDIA_API_KEY` | [NVIDIA Build](https://build.nvidia.com/) | `hermes_secret_env` в Ansible Vault, если используется `nvidia` |
+| [ ] | Providers, модели и fallback | `vps_hermes.config.managed_overlay` | Provider и точные model IDs из выбранного каталога | versioned [`config/vps-defaults.yml`](config/vps-defaults.yml); не хранить в Vault |
 | [ ] | Brave Search API key | `BRAVE_SEARCH_API_KEY` | кабинет Brave Search API | `hermes_secret_env` в Ansible Vault; нужен для Brave `web_search` |
 | [ ] | Firecrawl API key | `FIRECRAWL_API_KEY` | Firecrawl dashboard | `hermes_secret_env` в Ansible Vault; извлечение HTML/PDF и browser-backed web |
 | [ ] | Telegram bot token | `TELEGRAM_BOT_TOKEN` | создать бота у `@BotFather` | `hermes_secret_env` в Ansible Vault |
 | [ ] | Разрешённый Telegram user ID | `TELEGRAM_ALLOWED_USERS="123..."` | ID личного аккаунта, не username | Vault/`.env`; это allowlist, не пароль |
 
-В типовом Ansible-профиле основной provider — Ollama Cloud. Задайте
-`OLLAMA_API_KEY`; repository-owned non-secret policy задайте в
-`vps_hermes.config.managed_overlay`. Выбранную через `/model_global` модель не
-добавляйте в authoritative overlay, если она должна переживать deploy. Минимальный фрагмент и правила
-замены placeholders находятся в
+Добавьте credentials для каждого выбранного provider; основной provider,
+модели и fallback задаются в `vps_hermes.config.managed_overlay`. Deploy
+повторно применяет поля из overlay: если модель должна управляться через
+`/model_global`, уберите соответствующий pin из overlay. Минимальный фрагмент
+и правила замены placeholders находятся в
 [`ansible/group_vars/all/VAULT.md`](ansible/group_vars/all/VAULT.md).
 
 Для NVIDIA NIM добавьте `NVIDIA_API_KEY` в Vault. Переключение provider не
 требует изменения секретов или переустановки:
 
 ```text
-/model nvidia:nvidia/nemotron-3-super-120b-a12b
+/model nvidia:<model-id>
 ```
 
-Провайдеры имеют отдельные квоты. Бесплатный NVIDIA key может иметь rate
-limits и временную недоступность; наличие ключа не означает безлимитный
-доступ. Для Nous Portal используется OAuth (`hermes auth add nous`), а не API
-key в `hermes_secret_env`.
+Замените `<model-id>` на ID доступной вам модели. Квоты и доступность моделей
+зависят от выбранного provider и аккаунта. Для Nous Portal используется
+OAuth (`hermes auth add nous`), а не API key в `hermes_secret_env`.
 
 Для Ollama Cloud добавьте `OLLAMA_API_KEY` в Vault и примените deploy, затем
 выберите **Ollama Cloud** через `/model`. Для Azure обновите копию

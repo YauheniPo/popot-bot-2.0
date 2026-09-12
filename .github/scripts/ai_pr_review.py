@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Review a pull request through Ollama Cloud and publish a formal GitHub review."""
+"""Review a pull request through the configured API and publish a GitHub review."""
 
 from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable
 import contextlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
 from http.client import IncompleteRead
 import json
@@ -20,7 +20,8 @@ from typing import cast
 import urllib.error
 import urllib.request
 
-from ollama_review import CHAT_COMPLETIONS_URL, MODEL, completion_payload
+from ai_review_preflight import CHAT_COMPLETIONS_URL, MODEL, PLAIN_JSON_PROVIDERS, completion_payload, provider_config, configured_model
+from review_execution import ExecutionReport
 
 from pr_review_context import (
     GitHubRequestError,
@@ -48,7 +49,7 @@ MAX_REVIEW_CHUNKS = 100
 MAX_CONFIGURED_REVIEW_CHUNKS = 100
 DEFAULT_REQUESTS_PER_MINUTE = 8
 DEFAULT_RATE_LIMIT_RETRY_SECONDS = 15.0
-MAX_REQUEST_ATTEMPTS = 5
+MAX_REQUEST_ATTEMPTS = 2
 MAX_RETRY_DELAY_SECONDS = 90.0
 MAX_OUTPUT_TOKENS = 32_768
 # Hidden reasoning is billed against max_tokens, so a reasoning-required
@@ -75,10 +76,11 @@ MAX_TRIAGED_THREADS = 20
 MAX_TRIAGE_EVIDENCE_CHARACTERS = 24_000
 MAX_RENDERED_LINE_CHARACTERS = 4_000
 OLLAMA_URL = CHAT_COMPLETIONS_URL
+ACTIVE_PROVIDER = "ollama-cloud"
 GITHUB_API_URL = "https://api.github.com"
 REVIEW_RULES_PATH = Path(".github/REVIEWER.md")
-REVIEWER_LABEL = "OllamaCloudAPI"
-AZURE_REVIEWER_LABEL = "Azure DevOps · OllamaCloudAPI"
+REVIEWER_LABEL = "DirectAPI"
+AZURE_REVIEWER_LABEL = "Azure DevOps · DirectAPI"
 DEFAULT_REVIEW_ORIGIN = "github-actions"
 AZURE_REVIEW_ORIGIN = "azure-devops"
 STRICT_MODEL_MODE = "strict"
@@ -87,7 +89,7 @@ MODEL_MODES = frozenset({STRICT_MODEL_MODE, ORDINARY_MODEL_MODE})
 EXCLUDED_REVIEW_PATHS = frozenset(
     {
         ".github/workflows/pr-ai-review.yml",
-        ".github/scripts/ollama_pr_review.py",
+        ".github/scripts/ai_pr_review.py",
         str(REVIEW_RULES_PATH),
     }
 )
@@ -230,6 +232,7 @@ class Finding:
     title: str
     impact: str
     fix: str
+    execution_unit: str = field(default="", compare=False)
 
 
 @dataclass(frozen=True)
@@ -323,6 +326,7 @@ def configured_review_budget() -> float:
 
 
 REVIEW_DEADLINE = ReviewDeadline(configured_review_budget())
+EXECUTION_REPORT: ExecutionReport | None = None
 
 
 def _seconds_until_reset(value: object) -> float | None:
@@ -343,12 +347,17 @@ def _seconds_until_reset(value: object) -> float | None:
     return max(0.0, timestamp - time.time())
 
 
-def _retry_after_seconds(response_headers: object, details: str) -> float | None:
+def _header_mapping(response_headers: object) -> dict[str, object]:
     headers: dict[str, object] = {}
     if response_headers is not None and hasattr(response_headers, "items"):
         headers.update(
             {str(key).lower(): value for key, value in response_headers.items()}
         )
+    return headers
+
+
+def _error_headers(details: str) -> dict[str, object]:
+    headers: dict[str, object] = {}
     try:
         payload = json.loads(details)
     except (json.JSONDecodeError, TypeError):
@@ -359,16 +368,26 @@ def _retry_after_seconds(response_headers: object, details: str) -> float | None
         metadata_headers = metadata.get("headers") if isinstance(metadata, dict) else None
         if isinstance(metadata_headers, dict):
             headers.update({str(key).lower(): value for key, value in metadata_headers.items()})
+    return headers
+
+
+def _retry_after_candidate(value: object) -> float | None:
+    if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+        return None
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return _seconds_until_reset(value)
+
+
+def _retry_after_seconds(response_headers: object, details: str) -> float | None:
+    headers = _header_mapping(response_headers)
+    headers.update(_error_headers(details))
 
     candidates: list[float] = []
-    retry_after = headers.get("retry-after")
-    if isinstance(retry_after, (str, int, float)) and not isinstance(retry_after, bool):
-        try:
-            candidates.append(max(0.0, float(retry_after)))
-        except ValueError:
-            reset_delay = _seconds_until_reset(retry_after)
-            if reset_delay is not None:
-                candidates.append(reset_delay)
+    retry_after = _retry_after_candidate(headers.get("retry-after"))
+    if retry_after is not None:
+        candidates.append(retry_after)
     reset_delay = _seconds_until_reset(headers.get("x-ratelimit-reset"))
     if reset_delay is not None:
         candidates.append(reset_delay)
@@ -405,8 +424,8 @@ def request_json(
     body: object | None = None,
     timeout: float = REQUEST_TIMEOUT_SECONDS,
 ) -> object:
-    if url == OLLAMA_URL and isinstance(body, dict):
-        body = completion_payload(body)
+    if ACTIVE_PROVIDER in PLAIN_JSON_PROVIDERS and url == OLLAMA_URL and isinstance(body, dict):
+        body = completion_payload(body, provider=ACTIVE_PROVIDER)
     encoded_body = None if body is None else json.dumps(body).encode("utf-8")
     request = urllib.request.Request(url, data=encoded_body, headers=headers, method=method)
     try:
@@ -632,7 +651,7 @@ def review_system_prompt() -> str:
     )
     return f"""{read_review_rules()}
 
-Ollama Cloud adapter instructions:
+Direct API adapter instructions:
 
 Perform static analysis only on the supplied authoritative diff chunk. Return
 only the structured object required by the JSON schema below, with a
@@ -657,12 +676,12 @@ def _response_content(response: object) -> str:
         content = response["choices"][0]["message"]["content"]  # type: ignore[index]
     except (KeyError, IndexError, TypeError) as error:
         raise ReviewResponseError(
-            "Ollama Cloud response did not contain a review message"
+            "Provider response did not contain a review message"
         ) from error
     if isinstance(content, list):
         content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
     if not isinstance(content, str) or not content.strip():
-        raise ReviewResponseError("Ollama Cloud returned an empty review message")
+        raise ReviewResponseError("Provider returned an empty review message")
     return content.strip()
 
 
@@ -728,9 +747,33 @@ def parse_review_response(
             return parsed
 
     raise ReviewResponseError(
-        "Ollama Cloud returned malformed structured review JSON "
+        "Provider returned malformed structured review JSON "
         f"({_response_diagnostic(response, content)})"
     )
+
+
+def _request_review_json(
+    headers: dict[str, str], body: dict[str, object], timeout: float,
+) -> object:
+    """Record one API call; keep prompts, credentials and raw errors out of reports."""
+    report = EXECUTION_REPORT
+    sent_body = completion_payload(body, provider=ACTIVE_PROVIDER) if ACTIVE_PROVIDER in PLAIN_JSON_PROVIDERS else body
+    attempt = report.begin(sent_body) if report else None
+    started = time.monotonic()
+    try:
+        response = request_json(OLLAMA_URL, "POST", headers, body, timeout=timeout)
+    except RequestError as error:
+        if report and attempt:
+            outcome = f"http_{error.status}" if error.status is not None else "transport_error"
+            report.finish(attempt, outcome, time.monotonic() - started)
+        raise
+    except ValueError:
+        if report and attempt:
+            report.finish(attempt, "invalid_json", time.monotonic() - started)
+        raise
+    if report and attempt:
+        report.finish(attempt, "received", time.monotonic() - started, response)
+    return response
 
 
 def request_with_transient_retries(
@@ -741,9 +784,7 @@ def request_with_transient_retries(
     for attempt in range(1, MAX_REQUEST_ATTEMPTS + 1):
         available = REVIEW_DEADLINE.require()
         try:
-            return request_json(
-                OLLAMA_URL,
-                "POST",
+            return _request_review_json(
                 headers,
                 body,
                 timeout=min(REQUEST_TIMEOUT_SECONDS, available),
@@ -772,8 +813,10 @@ def request_valid_review(
     for attempt in range(1, MAX_INVALID_RESPONSE_ATTEMPTS + 1):
         response = request_with_transient_retries(headers, body)
         try:
-            return parse_review_response(response, has_expected_shape)
+            parsed = parse_review_response(response, has_expected_shape)
         except ReviewResponseError as error:
+            if EXECUTION_REPORT:
+                EXECUTION_REPORT.validate_last("invalid_json")
             if attempt == MAX_INVALID_RESPONSE_ATTEMPTS:
                 raise
             print(
@@ -781,40 +824,57 @@ def request_valid_review(
                 f"regenerating once ({error})",
                 file=sys.stderr,
             )
+        else:
+            if EXECUTION_REPORT:
+                EXECUTION_REPORT.validate_last("valid_json")
+            return parsed
     raise AssertionError("unreachable")
+
+
+def _structured_output_unavailable(error: RequestError) -> bool:
+    message = str(error).lower()
+    if error.status == 404:
+        return PARAMETER_ROUTING_ERROR in message
+    if error.status not in {400, 422}:
+        return False
+    format_named = any(field in message for field in ("response_format", "json_schema"))
+    unsupported = any(phrase in message for phrase in (
+        "not supported", "does not support", "unsupported parameter", "unsupported value",
+    ))
+    return format_named and unsupported
 
 
 def request_fallback_review(
     fallback_model: str,
     headers: dict[str, str],
     primary_body: dict[str, object],
-    fallback_mode: str = STRICT_MODEL_MODE,
 ) -> dict[str, object]:
-    if fallback_mode not in MODEL_MODES:
-        raise RuntimeError("fallback model mode must be strict or ordinary")
-    strict_body = {**primary_body, "model": fallback_model}
+    """Choose the fallback format without an operator-supplied model mode."""
     print(
         f"  primary exhausted; retrying with fallback: {fallback_model}",
         file=sys.stderr,
     )
-    if fallback_mode == ORDINARY_MODEL_MODE:
-        ordinary_body = ordinary_json_body(strict_body, fallback_model)
+    # Use locally validated JSON where schema enforcement is not assumed.
+    if ACTIVE_PROVIDER != "openrouter":
+        ordinary_body = ordinary_json_body(primary_body, fallback_model)
         return request_ordinary_review(
             headers,
             ordinary_body,
             "ordinary JSON fallback",
         )
+    # The primary may have used ordinary JSON, so supply the schema explicitly.
+    strict_body = {
+        **primary_body,
+        "model": fallback_model,
+        "provider": {"require_parameters": True},
+        "response_format": {"type": "json_schema", "json_schema": REVIEW_RESPONSE_SCHEMA},
+    }
     try:
         return request_reasoning_compatible_review(headers, strict_body, "fallback")
     except RequestError as error:
-        # Some fallback models accept ordinary text generation but do not expose
-        # response_format. The legacy OpenRouter path returned this 404 when
-        # require_parameters filters out every endpoint. Retry only that case;
-        # unknown models and unrelated 404 responses must remain hard failures.
-        if (
-            error.status != 404
-            or PARAMETER_ROUTING_ERROR not in str(error).lower()
-        ):
+        # Only a capability rejection allows switching formats. Authentication,
+        # unknown models and invalid schemas must remain visible failures.
+        if not _structured_output_unavailable(error):
             raise
         relaxed_body = ordinary_json_body(
             strict_body,
@@ -904,6 +964,8 @@ def review_chunk(
     chunk_number: int,
     total_chunks: int,
 ) -> dict[str, object]:
+    if EXECUTION_REPORT:
+        EXECUTION_REPORT.unit = f"chunk {chunk_number}/{total_chunks}"
     existing_context = render_review_context(review_threads, chunk.paths)
     user_prompt = f"""Review chunk {chunk_number} of {total_chunks} from one code review.
 
@@ -937,14 +999,14 @@ UNRESOLVED_REVIEW_THREADS:
         "reasoning": {"effort": "none", "exclude": True},
         "provider": {"require_parameters": True},
         "response_format": {"type": "json_schema", "json_schema": REVIEW_RESPONSE_SCHEMA},
-        # Legacy gateway extension, omitted by the Ollama transport adapter.
+        # Legacy gateway extension, omitted by plain-JSON transport adapters.
         "plugins": [{"id": "response-healing"}],
         "messages": [
             {"role": "system", "content": review_system_prompt()},
             {"role": "user", "content": user_prompt},
         ],
     }
-    primary_mode = configured_model_mode("OLLAMA_REVIEW_MODEL_MODE")
+    primary_mode = configured_model_mode("DIRECT_REVIEW_MODEL_MODE")
     if primary_mode == ORDINARY_MODEL_MODE:
         body = ordinary_json_body(body, model)
     try:
@@ -960,16 +1022,14 @@ UNRESOLVED_REVIEW_THREADS:
             f"{_safe_log_message(error)}",
             file=sys.stderr,
         )
-        fallback_model = os.environ.get("OLLAMA_REVIEW_FALLBACK_MODEL")
+        fallback_model = os.environ.get(
+            "DIRECT_REVIEW_FALLBACK_MODEL", ""
+        ).strip()
         if fallback_model and body["model"] != fallback_model:
-            fallback_mode = configured_model_mode(
-                "OLLAMA_REVIEW_FALLBACK_MODE"
-            )
             return request_fallback_review(
                 fallback_model,
                 headers,
                 body,
-                fallback_mode,
             )
         raise
 
@@ -1055,7 +1115,7 @@ def triage_system_prompt() -> str:
     )
     return f"""{read_review_rules()}
 
-Ollama Cloud thread-triage instructions:
+Direct API thread-triage instructions:
 
 This request does not review code for new defects. Re-evaluate existing
 automated review threads against the supplied revision only, and return the
@@ -1104,6 +1164,8 @@ def request_thread_triage(
     threads: tuple[ReviewThread, ...],
     review_files: list[ReviewFile],
 ) -> list[ThreadVerdict]:
+    if EXECUTION_REPORT:
+        EXECUTION_REPORT.unit = "thread triage"
     paths = {thread.path for thread in threads}
     user_prompt = f"""Re-evaluate the automated review threads below against this revision.
 
@@ -1135,7 +1197,7 @@ ANNOTATED_DIFF_FOR_THESE_FILES:
             {"role": "user", "content": user_prompt},
         ],
     }
-    if configured_model_mode("OLLAMA_REVIEW_MODEL_MODE") == ORDINARY_MODEL_MODE:
+    if configured_model_mode("DIRECT_REVIEW_MODEL_MODE") == ORDINARY_MODEL_MODE:
         body = ordinary_json_body(body, model)
         response = request_ordinary_review(
             headers,
@@ -1188,6 +1250,22 @@ def _verdict_marker(head_sha: str, thread_id: str) -> str:
     return f"<!-- openrouter-thread-verdict:{head_sha}:{thread_id} -->"
 
 
+def _reply_if_needed(
+    repository: str, pr_number: str, token: str, thread: ReviewThread,
+    marker: str, message: str,
+) -> bool:
+    if (
+        thread.reply_to_comment_id is None
+        or not thread.viewer_can_reply
+        or any(marker in comment.body for comment in thread.comments)
+    ):
+        return False
+    if EXECUTION_REPORT:
+        message += EXECUTION_REPORT.footer("thread triage")
+    reply_to_review_thread(repository, pr_number, token, thread.reply_to_comment_id, message)
+    return True
+
+
 def apply_thread_verdicts(
     repository: str,
     pr_number: str,
@@ -1210,38 +1288,20 @@ def apply_thread_verdicts(
         marker = _verdict_marker(head_sha, thread.node_id)
         if verdict.verdict == "confirmed":
             still_open += 1
-            if (
-                thread.reply_to_comment_id is not None
-                and thread.viewer_can_reply
-                and not any(marker in comment.body for comment in thread.comments)
-            ):
-                reply_to_review_thread(
-                    repository,
-                    pr_number,
-                    token,
-                    thread.reply_to_comment_id,
-                    f"{marker}\n**[{label}] Finding remains valid**\n\n"
-                    f"Evidence: {verdict.reason}",
-                )
+            _reply_if_needed(
+                repository, pr_number, token, thread, marker,
+                f"{marker}\n**[{label}] Finding remains valid**\n\nEvidence: {verdict.reason}",
+            )
             continue
         if verdict.verdict == "needs_human" or (
             verdict.verdict in {"fixed", "rejected"}
             and not may_be_auto_fixed(thread, head_sha, changed_paths)
         ):
             left_for_human += 1
-            if (
-                verdict.verdict == "needs_human"
-                and thread.reply_to_comment_id is not None
-                and thread.viewer_can_reply
-                and not any(marker in comment.body for comment in thread.comments)
-            ):
-                reply_to_review_thread(
-                    repository,
-                    pr_number,
-                    token,
-                    thread.reply_to_comment_id,
-                    f"{marker}\n**[{label}] Human review requested**\n\n"
-                    f"Evidence: {verdict.reason}",
+            if verdict.verdict == "needs_human":
+                _reply_if_needed(
+                    repository, pr_number, token, thread, marker,
+                    f"{marker}\n**[{label}] Human review requested**\n\nEvidence: {verdict.reason}",
                 )
             continue
         comment_id = thread.reply_to_comment_id
@@ -1256,11 +1316,8 @@ def apply_thread_verdicts(
             if verdict.verdict == "fixed"
             else "Rejected finding"
         )
-        reply_to_review_thread(
-            repository,
-            pr_number,
-            token,
-            comment_id,
+        _reply_if_needed(
+            repository, pr_number, token, thread, marker,
             f"{marker}\n**[{label}] {heading}**\n\nReason: {verdict.reason}",
         )
         resolve_review_thread(token, thread.node_id)
@@ -1289,6 +1346,25 @@ def _clean_text(value: object, limit: int) -> str:
     return " ".join(value.split())[:limit]
 
 
+def _parse_finding(
+    raw: object, chunk: ReviewChunk, files_by_path: dict[str, ReviewFile], execution_unit: str = "",
+) -> Finding | None:
+    if not isinstance(raw, dict):
+        return None
+    severity, path, side, line = (raw.get(key) for key in ("severity", "path", "side", "line"))
+    if isinstance(path, str) and path.startswith("./"):
+        path = path[2:]
+    if (severity not in {"P1", "P2"} or not isinstance(path, str) or path not in chunk.paths
+            or path not in files_by_path or side not in {"RIGHT", "LEFT"}
+            or isinstance(line, bool) or not isinstance(line, int)):
+        return None
+    valid_lines = files_by_path[path].right_lines if side == "RIGHT" else files_by_path[path].left_lines
+    title, impact, fix = (_clean_text(raw.get(key), limit) for key, limit in (("title", 160), ("impact", 700), ("fix", 700)))
+    if line not in valid_lines or not all((title, impact, fix)):
+        return None
+    return Finding(severity, path, side, line, title, impact, fix, execution_unit)
+
+
 def validate_findings(
     responses: list[dict[str, object]],
     chunks: tuple[ReviewChunk, ...],
@@ -1301,40 +1377,19 @@ def validate_findings(
     if len(responses) != len(chunks):
         raise ValueError("review responses and chunks must have the same length")
 
-    for response, chunk in zip(responses, chunks):
+    for index, (response, chunk) in enumerate(zip(responses, chunks), start=1):
         raw_findings = response.get("findings", [])
         if not isinstance(raw_findings, list):
             continue
         for raw in raw_findings:
-            if not isinstance(raw, dict):
+            finding = _parse_finding(raw, chunk, files_by_path, f"chunk {index}/{len(chunks)}")
+            if finding is None:
                 continue
-            severity = raw.get("severity")
-            path = raw.get("path")
-            side = raw.get("side")
-            line = raw.get("line")
-            if isinstance(path, str) and path.startswith("./"):
-                path = path[2:]
-            if (
-                severity not in {"P1", "P2"}
-                or not isinstance(path, str)
-                or path not in chunk.paths
-                or path not in files_by_path
-                or side not in {"RIGHT", "LEFT"}
-                or isinstance(line, bool)
-                or not isinstance(line, int)
-            ):
-                continue
-            valid_lines = (
-                files_by_path[path].right_lines if side == "RIGHT" else files_by_path[path].left_lines
-            )
-            location = (path, side, line)
-            title = _clean_text(raw.get("title"), 160)
-            impact = _clean_text(raw.get("impact"), 700)
-            fix = _clean_text(raw.get("fix"), 700)
-            if line not in valid_lines or location in seen_locations or not all((title, impact, fix)):
+            location = (finding.path, finding.side, finding.line)
+            if location in seen_locations:
                 continue
             seen_locations.add(location)
-            findings.append(Finding(severity, path, side, line, title, impact, fix))
+            findings.append(finding)
 
     findings.sort(key=lambda finding: (0 if finding.severity == "P1" else 1, finding.path, finding.line))
     return findings[:MAX_FINDINGS]
@@ -1431,6 +1486,15 @@ def _follow_up_marker(head_sha: str, thread_id: str) -> str:
     return f"<!-- openrouter-thread-followup:{head_sha}:{thread_id} -->"
 
 
+def _execution_summary(model: str) -> str:
+    report = EXECUTION_REPORT or ExecutionReport(ACTIVE_PROVIDER, OLLAMA_URL, model)
+    return report.summary()
+
+
+def _finding_execution(finding: Finding) -> str:
+    return EXECUTION_REPORT.footer(finding.execution_unit) if EXECUTION_REPORT else ""
+
+
 def _review_body(
     model: str,
     head_sha: str,
@@ -1459,7 +1523,7 @@ def _review_body(
         marker,
         f"## {label}",
         "",
-        f"> Provider: Ollama Cloud · Model: `{model}`",
+        _execution_summary(model),
         *(
             ["> Source: Azure DevOps manual review"]
             if configured_review_origin() == AZURE_REVIEW_ORIGIN
@@ -1509,6 +1573,8 @@ def _review_body(
         )
     if not actionable_count:
         lines.append("Findings: No new actionable findings.")
+    if EXECUTION_REPORT:
+        lines.append(EXECUTION_REPORT.details())
     return "\n".join(lines)
 
 
@@ -1530,9 +1596,10 @@ def publish_review(
     existing_reviews = request_json(f"{reviews_url}?per_page=100", "GET", headers)
     if not isinstance(existing_reviews, list):
         raise RuntimeError("GitHub returned an invalid pull-request review list")
-    reviews = cast(list[dict[str, object]], [review for review in existing_reviews if isinstance(review, dict)])
+    review_items = cast(list[object], existing_reviews)
+    reviews = [review for review in review_items if isinstance(review, dict)]
     if any(marker in (review.get("body") or "") for review in reviews):
-        print("The Ollama Cloud formal review already exists for this commit; skipping duplicate.")
+        print("The direct API review already exists for this commit; skipping duplicate.")
         return
 
     posted_follow_ups = 0
@@ -1553,6 +1620,7 @@ def publish_review(
                 f"**[{label}] Additional evidence — "
                 f"{finding.severity}: {finding.title}**\n\n"
                 f"Impact: {finding.impact}\n\nProposed fix: {finding.fix}"
+                + _finding_execution(finding)
             ),
         )
         posted_follow_ups += 1
@@ -1569,6 +1637,7 @@ def publish_review(
                 + (f"{origin_marker}\n" if origin_marker else "")
                 + f"**[{label}] {finding.severity} — {finding.title}**\n\n"
                 + f"Impact: {finding.impact}\n\nProposed fix: {finding.fix}"
+                + _finding_execution(finding)
             ),
         }
         for finding in publication.new_findings
@@ -1591,10 +1660,10 @@ def publish_review(
             headers,
             {"commit_id": head_sha, "body": body, "event": "COMMENT"},
         )
-        print("Created the Ollama Cloud formal PR review; GitHub rejected its inline anchors.")
+        print("Created the direct API PR review; GitHub rejected its inline anchors.")
         return
     print(
-        "Created the Ollama Cloud formal PR review with "
+        "Created the direct API PR review with "
         f"{len(comments)} new inline finding(s), {posted_follow_ups} follow-up reply/replies, "
         f"and {len(publication.duplicates)} duplicate(s) suppressed."
     )
@@ -1616,7 +1685,7 @@ def _check_run_summary(
         )
     lines = [
         f"Source: {'Azure DevOps' if configured_review_origin() == AZURE_REVIEW_ORIGIN else 'GitHub Actions'}",
-        f"Provider: Ollama Cloud · Model: `{model}`",
+        _execution_summary(model),
         f"Reviewed commit: `{head_sha}`",
         f"Coverage: {coverage}",
         "",
@@ -1631,6 +1700,8 @@ def _check_run_summary(
             f"{finding.title}. {finding.impact} Proposed fix: {finding.fix}"
             for finding in findings
         )
+    if EXECUTION_REPORT:
+        lines.append(EXECUTION_REPORT.details())
     return "\n".join(lines)
 
 
@@ -1653,6 +1724,7 @@ def publish_check_run(
             "title": f"{finding.severity} — {finding.title}"[:255],
             "message": (
                 f"Impact: {finding.impact}\n\nProposed fix: {finding.fix}"
+                + _finding_execution(finding)
             )[:65_535],
         }
         # Check Run annotations address files at the reviewed commit, so a
@@ -1709,94 +1781,59 @@ def publish_check_run(
                 handle.write(f"check_run_url={check_run_url}\n")
 
 
+def _review_inputs(repository: str, pr_number: str, token: str, base_sha: str, head_sha: str) -> tuple[tuple[ReviewThread, ...], tuple[ReviewThread, ...], list[ReviewFile], ReviewPlan]:
+    review_threads = tuple(fetch_unresolved_review_threads(repository, pr_number, token)) if pr_number else ()
+    settled_threads = tuple(fetch_resolved_machine_threads(repository, pr_number, token)) if pr_number else ()
+    review_files = read_review_files(base_sha, head_sha)
+    plan = build_review_plan(review_files, configured_max_review_chunks())
+    ensure_required_coverage(plan)
+    return review_threads, settled_threads, review_files, plan
+
+
+def _run_review(api_key: str, model: str, review_threads: tuple[ReviewThread, ...], plan: ReviewPlan) -> list[dict[str, object]]:
+    return review_chunks(api_key, model, review_threads, plan.chunks)
+
+
+def _optional_triage(
+    repository: str, pr_number: str, token: str, api_key: str, model: str,
+    head_sha: str, review_threads: tuple[ReviewThread, ...], review_files: list[ReviewFile],
+) -> TriageOutcome:
+    candidates = triage_candidates(review_threads)
+    if not pr_number or not candidates:
+        return TriageOutcome()
+    try:
+        return apply_thread_verdicts(
+            repository, pr_number, token, head_sha,
+            request_thread_triage(api_key, model, candidates, review_files),
+            candidates, {review_file.path for review_file in review_files},
+        )
+    except (GitHubRequestError, RequestError, ReviewResponseError, ReviewBudgetExhausted) as error:
+        print(f"  thread triage skipped: {_safe_log_message(error)}", file=sys.stderr)
+        return TriageOutcome()
+
+
 def main() -> None:
-    api_key = required_env("OLLAMA_API_KEY")
+    provider, provider_key, provider_url = provider_config()
+    if not provider_key:
+        raise RuntimeError(f"API key for {provider} is missing")
+    api_key = provider_key
+    global OLLAMA_URL, ACTIVE_PROVIDER, EXECUTION_REPORT
+    OLLAMA_URL = provider_url
+    ACTIVE_PROVIDER = provider
     github_token = required_env("GITHUB_TOKEN")
-    model = MODEL
-    os.environ.setdefault("OLLAMA_REVIEW_MODEL_MODE", ORDINARY_MODEL_MODE)
+    model = configured_model()
+    EXECUTION_REPORT = ExecutionReport(provider, provider_url, model)
+    os.environ.setdefault("DIRECT_REVIEW_MODEL_MODE", ORDINARY_MODEL_MODE)
     repository = required_env("GITHUB_REPOSITORY")
     pr_number = os.environ.get("PR_NUMBER", "").strip()
     base_sha = required_env("BASE_SHA")
     head_sha = required_env("HEAD_SHA")
-
-    review_threads = (
-        tuple(fetch_unresolved_review_threads(repository, pr_number, github_token))
-        if pr_number
-        else ()
+    review_threads, settled_threads, review_files, plan = _review_inputs(
+        repository, pr_number, github_token, base_sha, head_sha
     )
-    # Resolved reviewer threads never reach a model prompt; they only stop this
-    # run from re-posting a finding an earlier revision already settled.
-    settled_threads = (
-        tuple(fetch_resolved_machine_threads(repository, pr_number, github_token))
-        if pr_number
-        else ()
-    )
-    review_files = read_review_files(base_sha, head_sha)
-    plan = build_review_plan(review_files, configured_max_review_chunks())
-    ensure_required_coverage(plan)
-    try:
-        responses = review_chunks(api_key, model, review_threads, plan.chunks)
-    except ReviewBudgetExhausted as error:
-        if os.environ.get("REQUIRE_REVIEW_RESULT") == "true":
-            raise
-        # Same class of condition as provider throttling: the models were too
-        # slow for the job's wall clock. Warn and leave the other checks alone
-        # instead of failing CI, and never let the runner kill the job first.
-        message = (
-            f"Ollama Cloud direct review ran out of time ({_safe_log_message(error)}); "
-            "skipping this direct review run."
-        )
-        print(message, file=sys.stderr)
-        print(
-            f"::warning title=Ollama Cloud direct review skipped::{message}",
-            file=sys.stderr,
-        )
-        return
-    except RequestError as error:
-        if _is_rate_limited(error):
-            if os.environ.get("REQUIRE_REVIEW_RESULT") == "true":
-                raise
-            # Ollama Cloud capacity can be temporarily exhausted even
-            # after the bounded primary/fallback retries. Leave the Claude
-            # reviewer and normal PR checks available instead of failing CI for
-            # a provider-side capacity condition.
-            message = (
-                "Ollama Cloud is temporarily rate-limited after all review retries; "
-                "skipping this direct review run."
-            )
-            print(message, file=sys.stderr)
-            print(
-                f"::warning title=Ollama Cloud direct review skipped::{message}",
-                file=sys.stderr,
-            )
-            return
-        raise
+    responses = _run_review(api_key, model, review_threads, plan)
     findings = validate_findings(responses, plan.chunks, review_files)
-    triage = TriageOutcome()
-    candidates = triage_candidates(review_threads)
-    if pr_number and candidates:
-        try:
-            triage = apply_thread_verdicts(
-                repository,
-                pr_number,
-                github_token,
-                head_sha,
-                request_thread_triage(api_key, model, candidates, review_files),
-                candidates,
-                {review_file.path for review_file in review_files},
-            )
-        except (
-            GitHubRequestError,
-            RequestError,
-            ReviewResponseError,
-            ReviewBudgetExhausted,
-        ) as error:
-            # Triage is an optional pass. Losing it leaves every earlier thread
-            # open, which is the safe direction; the review itself still ships.
-            print(
-                f"  thread triage skipped: {_safe_log_message(error)}",
-                file=sys.stderr,
-            )
+    triage = _optional_triage(repository, pr_number, github_token, api_key, model, head_sha, review_threads, review_files)
     open_threads = tuple(
         thread
         for thread in review_threads
@@ -1831,5 +1868,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        print(f"Ollama Cloud PR review failed: {error}", file=sys.stderr)
+        print(f"Direct API PR review failed: {error}", file=sys.stderr)
         sys.exit(1)

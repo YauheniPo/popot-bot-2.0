@@ -11,11 +11,11 @@ import urllib.error
 from unittest import mock
 
 
-SCRIPT_PATH = Path(__file__).with_name("ollama_pr_review.py")
+SCRIPT_PATH = Path(__file__).with_name("ai_pr_review.py")
 sys.path.insert(0, str(SCRIPT_PATH.parent))
 import pr_review_context
 
-SPEC = importlib.util.spec_from_file_location("ollama_pr_review", SCRIPT_PATH)
+SPEC = importlib.util.spec_from_file_location("ai_pr_review", SCRIPT_PATH)
 assert SPEC is not None
 assert SPEC.loader is not None
 reviewer = importlib.util.module_from_spec(SPEC)
@@ -39,12 +39,12 @@ class AnnotatedDiffTest(unittest.TestCase):
             mock.patch.object(reviewer.urllib.request, "urlopen", return_value=response) as request,
             mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
         ):
-            review = reviewer.review_chunk("test-key", "kimi-k3", (), chunk, 1, 1)
+            review = reviewer.review_chunk("test-key", "moonshotai/kimi-k3", (), chunk, 1, 1)
         self.assertEqual(review["findings"], [])
         sent = request.call_args.args[0]
         self.assertEqual(sent.full_url, "https://ollama.com/v1/chat/completions")
         payload = json.loads(sent.data)
-        self.assertEqual(payload["model"], "kimi-k3")
+        self.assertEqual(payload["model"], "moonshotai/kimi-k3")
         for unsupported in ("provider", "plugins", "reasoning", "response_format"):
             self.assertNotIn(unsupported, payload)
         self.assertIn("REQUIRED_JSON_SCHEMA", payload["messages"][0]["content"])
@@ -76,6 +76,182 @@ class AnnotatedDiffTest(unittest.TestCase):
             {"choices": [{"message": {"content": f"```json\n{json.dumps(response)}\n```"}}]}
         )
         self.assertEqual(parsed, response)
+
+
+class AutomaticFallbackFormatTest(unittest.TestCase):
+    def test_selects_fallback_format_without_mode_or_primary_schema(self):
+        result = {"summary": "Reviewed.", "findings": []}
+        body = {
+            "model": "primary", "max_tokens": 4096,
+            "provider": {"require_parameters": True},
+            "reasoning": {"effort": "none", "exclude": True},
+            "messages": [{"role": "user", "content": "Return review JSON."}],
+        }
+        for provider, url in (
+            ("ollama-cloud", "https://ollama.com/v1/chat/completions"),
+            ("nvidia", "https://integrate.api.nvidia.com/v1/chat/completions"),
+            ("nous", "https://inference-api.nousresearch.com/v1/chat/completions"),
+            ("openrouter", "https://openrouter.ai/api/v1/chat/completions"),
+        ):
+            response = mock.MagicMock()
+            response.__enter__.return_value = io.StringIO(json.dumps({
+                "choices": [{"message": {"content": json.dumps(result)}}]
+            }))
+            with (
+                self.subTest(provider=provider),
+                mock.patch.dict(reviewer.os.environ, {}, clear=True),
+                mock.patch.object(reviewer, "ACTIVE_PROVIDER", provider),
+                mock.patch.object(reviewer, "OLLAMA_URL", url),
+                mock.patch.object(reviewer.urllib.request, "urlopen", return_value=response) as request,
+                mock.patch("builtins.print"),
+            ):
+                self.assertEqual(reviewer.request_fallback_review("backup", {}, body), result)
+                request.assert_called_once()
+                sent = request.call_args.args[0]
+                self.assertEqual(sent.full_url, url)
+                payload = json.loads(sent.data)
+                self.assertEqual(payload["model"], "backup")
+                self.assertEqual(payload["messages"], body["messages"])
+                if provider == "openrouter":
+                    self.assertEqual(payload["response_format"]["json_schema"], reviewer.REVIEW_RESPONSE_SCHEMA)
+                else:
+                    for field in ("response_format", "provider", "plugins", "reasoning"):
+                        self.assertNotIn(field, payload)
+        self.assertNotIn("response_format", body)
+
+    def test_explicit_unsupported_schema_switches_to_locally_validated_json(self):
+        valid = {"choices": [{"message": {"content": '{"summary":"ok","findings":[]}'}}]}
+        for status, message in (
+            (400, "This model does not support response_format of type json_schema"),
+            (422, "Unsupported parameter: response_format"),
+            (404, reviewer.PARAMETER_ROUTING_ERROR),
+        ):
+            with (
+                self.subTest(status=status),
+                mock.patch.object(reviewer, "ACTIVE_PROVIDER", "openrouter"),
+                mock.patch.object(reviewer, "request_json", side_effect=[
+                    reviewer.RequestError(message, status=status), valid,
+                ]) as request,
+                mock.patch("builtins.print"),
+            ):
+                result = reviewer.request_fallback_review("backup", {}, {"messages": []})
+                self.assertEqual(result["findings"], [])
+                self.assertEqual(request.call_count, 2)
+                self.assertIn("response_format", request.call_args_list[0].args[3])
+                self.assertNotIn("response_format", request.call_args_list[1].args[3])
+
+    def test_does_not_treat_other_api_errors_as_unsupported_schema(self):
+        for status, message in (
+            (401, "unauthorized"), (403, "forbidden"), (404, "model not found"),
+            (400, "invalid json_schema: missing required properties"),
+            (422, "unsupported max_tokens value"),
+        ):
+            with (
+                self.subTest(status=status, message=message),
+                mock.patch.object(reviewer, "ACTIVE_PROVIDER", "openrouter"),
+                mock.patch.object(reviewer, "request_json", side_effect=reviewer.RequestError(message, status=status)) as request,
+                mock.patch("builtins.print"),
+            ):
+                with self.assertRaises(reviewer.RequestError):
+                    reviewer.request_fallback_review("backup", {}, {"messages": []})
+                request.assert_called_once()
+
+
+class RequestPublicationTest(unittest.TestCase):
+    def test_nous_fallback_transport_and_provenance_follow_actual_request(self):
+        from review_execution import ExecutionReport
+        url = "https://inference-api.nousresearch.com/v1/chat/completions"
+        report = ExecutionReport("nous", url, "vendor/primary")
+        result = {"summary": "Reviewed.", "findings": []}
+        response = mock.MagicMock()
+        response.__enter__.return_value = io.StringIO(json.dumps({
+            "id": "nous-response-123", "model": "vendor/backup",
+            "choices": [{"message": {"content": json.dumps(result)}}],
+        }))
+        missing_model = urllib.error.HTTPError(url, 404, "model unavailable", {}, io.BytesIO(b'{}'))
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        with (
+            mock.patch.object(reviewer, "EXECUTION_REPORT", report),
+            mock.patch.object(reviewer, "ACTIVE_PROVIDER", "nous"),
+            mock.patch.object(reviewer, "OLLAMA_URL", url),
+            mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(600)),
+            mock.patch.dict(reviewer.os.environ, {
+                "DIRECT_REVIEW_MODEL_MODE": "ordinary", "DIRECT_REVIEW_FALLBACK_MODEL": "vendor/backup",
+            }, clear=True),
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch.object(reviewer.urllib.request, "urlopen", side_effect=[missing_model, response]) as request,
+            mock.patch("builtins.print"),
+        ):
+            self.assertEqual(reviewer.review_chunk("nous-test-key", "vendor/primary", (), chunk, 1, 1), result)
+        self.assertEqual(request.call_count, 2)
+        models = []
+        for call in request.call_args_list:
+            sent = call.args[0]
+            self.assertEqual(sent.full_url, url)
+            self.assertEqual(sent.get_header("Authorization"), "Bearer nous-test-key")
+            payload = json.loads(sent.data)
+            models.append(payload["model"])
+            self.assertLessEqual(payload["max_tokens"], 32000)
+            self.assertTrue({"provider", "plugins", "reasoning", "response_format"}.isdisjoint(payload))
+            self.assertIn("REQUIRED_JSON_SCHEMA", payload["messages"][0]["content"])
+        self.assertEqual(models, ["vendor/primary", "vendor/backup"])
+        self.assertEqual([a.outcome for a in report.attempts], ["http_404", "valid_json"])
+        self.assertTrue(all(a.format == "ordinary" for a in report.attempts))
+        self.assertIn("request #2", report.footer("chunk 1/1"))
+        self.assertIn("nous-response-123", report.details())
+
+    def test_records_api_attempts_and_attributes_inline_finding_to_its_chunk(self):
+        from review_execution import ExecutionReport
+        url = "https://integrate.api.nvidia.com/v1/chat/completions"
+        report = ExecutionReport("nvidia", url, "primary")
+        files = [
+            reviewer.ReviewFile("app.py", "RIGHT 1|+bad", frozenset({1}), frozenset()),
+            reviewer.ReviewFile("other.py", "RIGHT 2|+ok", frozenset({2}), frozenset()),
+        ]
+        chunks = tuple(reviewer.ReviewChunk(f.rendered_diff, frozenset({f.path}), (f.path,)) for f in files)
+        finding = {"severity": "P2", "path": "app.py", "side": "RIGHT", "line": 1,
+                   "title": "Bad value", "impact": "Breaks callers", "fix": "Use the right value"}
+        fallback = {"id": "response-backup", "choices": [{"message": {"content": json.dumps({
+            "summary": "Found a bug", "findings": [finding],
+        })}}]}
+        good = {"choices": [{"message": {"content": '{"summary":"ok","findings":[]}'}}]}
+        bad = {"choices": [{"message": {"content": 'not JSON'}}]}
+        with (
+            mock.patch.object(reviewer, "EXECUTION_REPORT", report),
+            mock.patch.object(reviewer, "ACTIVE_PROVIDER", "nvidia"),
+            mock.patch.object(reviewer, "OLLAMA_URL", url),
+            mock.patch.dict(reviewer.os.environ, {
+                "DIRECT_REVIEW_MODEL_MODE": "ordinary", "DIRECT_REVIEW_FALLBACK_MODEL": "backup",
+            }, clear=True),
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch.object(reviewer.time, "sleep"),
+            mock.patch("builtins.print"),
+        ):
+            with mock.patch.object(reviewer, "request_json", side_effect=[
+                reviewer.RequestError("secret body", status=429),
+                reviewer.RequestError("secret transport diagnostic"), fallback, bad, good,
+            ]):
+                responses = reviewer.review_chunks("api-secret", "primary", (), chunks)
+            findings = reviewer.validate_findings(responses, chunks, files)
+            publication = reviewer.build_publication_plan(findings, ())
+            plan = reviewer.ReviewPlan(chunks, 2, frozenset({"app.py", "other.py"}), frozenset(), frozenset())
+            with mock.patch.object(reviewer, "request_json", side_effect=[[], {}]) as publish:
+                reviewer.publish_review("owner/repo", "1", "github-secret", "primary", "head", plan, publication)
+            payload = publish.call_args.args[3]
+            summary = reviewer._check_run_summary("primary", "head", plan, findings)
+        self.assertEqual(len(report.attempts), 5)
+        for text in (payload["body"], summary):
+            self.assertIn("Requests: 5", text)
+            self.assertIn("Retries: 3", text)
+            self.assertIn("invalid_json", text)
+            self.assertIn("http_429", text)
+            self.assertNotIn("secret", text)
+        inline = payload["comments"][0]["body"]
+        self.assertIn("chunk 1/2", inline)
+        self.assertIn("backup", inline)
+        self.assertIn("fallback", inline)
+        self.assertIn("request #3", inline)
+        self.assertNotIn("request #5", inline)
 
 
 class ReviewPlanTest(unittest.TestCase):
@@ -138,7 +314,7 @@ class ReviewPlanTest(unittest.TestCase):
 class ChangedPathsTest(unittest.TestCase):
     def test_reviewer_implementation_files_require_explicit_inclusion(self) -> None:
         paths = (
-            b".github/scripts/ollama_pr_review.py\0"
+            b".github/scripts/ai_pr_review.py\0"
             b".github/REVIEWER.md\0app.py\0"
         )
         for include_reviewer_files in ("false", "true"):
@@ -155,7 +331,7 @@ class ChangedPathsTest(unittest.TestCase):
                 expected = ["app.py"]
                 if include_reviewer_files == "true":
                     expected = [
-                        ".github/scripts/ollama_pr_review.py",
+                        ".github/scripts/ai_pr_review.py",
                         ".github/REVIEWER.md",
                         "app.py",
                     ]
@@ -266,9 +442,8 @@ class OllamaCloudRequestTest(unittest.TestCase):
                         responses = [error if stage == "open" else broken] * failures + [good]
                         with (
                             mock.patch.dict(reviewer.os.environ, {
-                                "OLLAMA_REVIEW_FALLBACK_MODEL": "fallback-model",
-                                "OLLAMA_REVIEW_MODEL_MODE": "strict",
-                                "OLLAMA_REVIEW_FALLBACK_MODE": "strict",
+                                "DIRECT_REVIEW_FALLBACK_MODEL": "fallback-model",
+                                "DIRECT_REVIEW_MODEL_MODE": "strict",
                             }),
                             mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(600)),
                             mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
@@ -342,7 +517,7 @@ class OllamaCloudRequestTest(unittest.TestCase):
         )
         self.assertEqual(request_body["plugins"], [{"id": "response-healing"}])
         self.assertIn("rules", request_body["messages"][0]["content"])
-        self.assertIn("Ollama Cloud adapter instructions", request_body["messages"][0]["content"])
+        self.assertIn("Direct API adapter instructions", request_body["messages"][0]["content"])
         self.assertIn("chunk 1 of 2", request_body["messages"][1]["content"])
         self.assertIn("UNRESOLVED_REVIEW_THREADS", request_body["messages"][1]["content"])
 
@@ -398,7 +573,7 @@ class OllamaCloudRequestTest(unittest.TestCase):
         with (
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OLLAMA_REVIEW_MODEL_MODE": "ordinary"},
+                {"DIRECT_REVIEW_MODEL_MODE": "ordinary"},
             ),
             mock.patch.object(reviewer, "request_json", return_value=response) as request,
             mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
@@ -428,7 +603,7 @@ class OllamaCloudRequestTest(unittest.TestCase):
         with (
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OLLAMA_REVIEW_MODEL_MODE": "ordinary"},
+                {"DIRECT_REVIEW_MODEL_MODE": "ordinary"},
             ),
             mock.patch.object(
                 reviewer,
@@ -510,7 +685,7 @@ class OllamaCloudRequestTest(unittest.TestCase):
         with (
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OLLAMA_REVIEW_FALLBACK_MODEL": "fallback-model"},
+                {"DIRECT_REVIEW_FALLBACK_MODEL": "fallback-model"},
             ),
             mock.patch.object(
                 reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(budget)
@@ -615,7 +790,7 @@ class OllamaCloudRequestTest(unittest.TestCase):
         with (
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OLLAMA_REVIEW_FALLBACK_MODEL": "fallback-model"},
+                {"DIRECT_REVIEW_FALLBACK_MODEL": "fallback-model"},
             ),
             mock.patch.object(
                 reviewer,
@@ -643,9 +818,10 @@ class OllamaCloudRequestTest(unittest.TestCase):
             status=404,
         )
         with (
+            mock.patch.object(reviewer, "ACTIVE_PROVIDER", "openrouter"),
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OLLAMA_REVIEW_FALLBACK_MODEL": "fallback-model"},
+                {"DIRECT_REVIEW_FALLBACK_MODEL": "fallback-model"},
             ),
             mock.patch.object(
                 reviewer,
@@ -680,7 +856,7 @@ class OllamaCloudRequestTest(unittest.TestCase):
             {"effort": "none", "exclude": True},
         )
 
-    def test_uses_declared_ordinary_fallback_without_strict_request(self) -> None:
+    def test_automatically_uses_ordinary_ollama_fallback(self) -> None:
         response = {
             "choices": [
                 {
@@ -695,8 +871,7 @@ class OllamaCloudRequestTest(unittest.TestCase):
             mock.patch.dict(
                 reviewer.os.environ,
                 {
-                    "OLLAMA_REVIEW_FALLBACK_MODEL": "fallback-model",
-                    "OLLAMA_REVIEW_FALLBACK_MODE": "ordinary",
+                    "DIRECT_REVIEW_FALLBACK_MODEL": "fallback-model",
                 },
             ),
             mock.patch.object(
@@ -722,10 +897,10 @@ class OllamaCloudRequestTest(unittest.TestCase):
     def test_rejects_unknown_model_mode(self) -> None:
         with mock.patch.dict(
             reviewer.os.environ,
-            {"OLLAMA_REVIEW_MODEL_MODE": "unknown"},
+            {"DIRECT_REVIEW_MODEL_MODE": "unknown"},
         ):
             with self.assertRaisesRegex(RuntimeError, "must be strict or ordinary"):
-                reviewer.configured_model_mode("OLLAMA_REVIEW_MODEL_MODE")
+                reviewer.configured_model_mode("DIRECT_REVIEW_MODEL_MODE")
 
     def test_enables_low_reasoning_when_fallback_requires_it(self) -> None:
         response = {
@@ -735,9 +910,10 @@ class OllamaCloudRequestTest(unittest.TestCase):
         }
         chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
         with (
+            mock.patch.object(reviewer, "ACTIVE_PROVIDER", "openrouter"),
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OLLAMA_REVIEW_FALLBACK_MODEL": "fallback-model"},
+                {"DIRECT_REVIEW_FALLBACK_MODEL": "fallback-model"},
             ),
             mock.patch.object(
                 reviewer,
@@ -772,7 +948,7 @@ class OllamaCloudRequestTest(unittest.TestCase):
         with (
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OLLAMA_REVIEW_FALLBACK_MODEL": "missing-model"},
+                {"DIRECT_REVIEW_FALLBACK_MODEL": "missing-model"},
             ),
             mock.patch.object(
                 reviewer,
@@ -802,9 +978,10 @@ class OllamaCloudRequestTest(unittest.TestCase):
             status=404,
         )
         with (
+            mock.patch.object(reviewer, "ACTIVE_PROVIDER", "openrouter"),
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OLLAMA_REVIEW_FALLBACK_MODEL": "fallback-model"},
+                {"DIRECT_REVIEW_FALLBACK_MODEL": "fallback-model"},
             ),
             mock.patch.object(
                 reviewer,
@@ -1033,14 +1210,14 @@ class GitHubReviewTest(unittest.TestCase):
             "<!-- openrouter-pr-review:azure-devops:head-sha -->",
             payload["body"],
         )
-        self.assertIn("## Azure DevOps · OllamaCloudAPI", payload["body"])
+        self.assertIn("## Azure DevOps · DirectAPI", payload["body"])
         self.assertIn("> Source: Azure DevOps manual review", payload["body"])
         self.assertIn(
             "<!-- review-origin:azure-devops -->",
             payload["comments"][0]["body"],
         )
         self.assertIn(
-            "[Azure DevOps · OllamaCloudAPI]",
+            "[Azure DevOps · DirectAPI]",
             payload["comments"][0]["body"],
         )
 

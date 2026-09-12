@@ -96,10 +96,11 @@ scripts) и `hermes/observability` (Prometheus/Grafana provisioning) — опи�
    `local.env` заполнены обе Telegram-переменные, этой же командой запускается
    Telegram gateway; без них остаётся безопасный Dashboard-only режим.
 
-   По умолчанию запускается Ollama Cloud с моделью `kimi-k3`. Для вызовов
-   нужен `OLLAMA_API_KEY`; лимит одного ответа — 32768 tokens. Для локального
-   теста другую модель задайте через `HERMES_LOCAL_OLLAMA_MODEL`, а лимит —
-   через `HERMES_LOCAL_OLLAMA_MAX_TOKENS` в `local.env`.
+   Docker bootstrap настраивает Ollama Cloud и использует `OLLAMA_API_KEY`.
+   Модель задайте через `HERMES_LOCAL_OLLAMA_MODEL`, а лимит ответа — через
+   `HERMES_LOCAL_OLLAMA_MAX_TOKENS` в `local.env`. Если значение не задано,
+   применяется соответствующая настройка из [`20-local-bootstrap`](20-local-bootstrap).
+   Используйте точный model ID из каталога выбранного provider.
    При необходимости добавьте `OPENROUTER_API_KEY` в `local.env` и переключите
    provider вручную через `/model`; он не используется автоматически.
 

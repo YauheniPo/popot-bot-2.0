@@ -53,29 +53,27 @@ vps_hermes:
   config:
     managed_overlay:
       model:
-        default: kimi-k3
+        default: deepseek-v4-pro
         provider: ollama-cloud
-      # Keep Ollama authoritative, with the free OpenRouter router as an
-      # explicit emergency fallback when OPENROUTER_API_KEY is supplied.
+      # Use a separate provider for emergency fallback with NVIDIA_API_KEY.
       fallback_providers:
-        - provider: openrouter
-          model: openrouter/free
+        - provider: nvidia
+          model: deepseek-ai/deepseek-v4-pro-0813
       user_char_limit: 3000
       memory_char_limit: 4000
       # Compact long sessions after 70% of the active model context is used.
       compression:
         threshold: 0.70
-      # Keep context compaction on the same pinned Ollama Cloud model so every
-      # Hermes request uses Kimi K3.
+      # Context compaction uses its own route with OPENROUTER_API_KEY.
       auxiliary:
         compression:
-          provider: ollama-cloud
-          model: kimi-k3
+          provider: openrouter
+          model: nvidia/nemotron-3-ultra-550b-a55b:free
       # Keep scheduled jobs independent from interactive model changes.
       # A per-job provider/model pin still takes precedence.
       cron:
-        model_provider: ollama-cloud
-        model: kimi-k3
+        model_provider: nvidia
+        model: deepseek-ai/deepseek-v4-pro-0813
         model_drift_guard: true
       # Let Hermes select only providers whose credentials/capabilities are
       # available. Managed Vault keys still enable Brave and Firecrawl through
@@ -252,14 +250,15 @@ vps_integrations:
 vps_ops:
   alert_target: telegram
   service_restart_sec: 5s
-  # Default parameters for the local API retry helper. The script reads these
+  # Default parameters for the CLI retry helper. The script reads these
   # values from the root-owned /etc/hermes-ops.conf rendered at deployment.
   api_retry:
-    endpoint: http://127.0.0.1:9119/api/execute
-    model: poolside/laguna-s-2.1:free
+    provider: nvidia
+    model: deepseek-ai/deepseek-v4-pro-0813
     message: Hello
     max_attempts: 10
     wait_seconds: 30
+    timeout_seconds: 180
   backup:
     required: true
     retention_days: 14

@@ -8,12 +8,7 @@ on:
       - ".github/workflows/pr-ai-review.yml"
       - ".github/workflows/manual-ai-review.yml"
       - "azure-ci/azure-ai-code-review.yml"
-      - ".github/scripts/ollama_review.py"
-      - ".github/scripts/test_ollama_review.py"
-      - ".github/scripts/ollama_pr_review.py"
-      - ".github/scripts/pr_review_context.py"
-      - ".github/scripts/test_ollama_pr_review.py"
-      - ".github/scripts/test_pr_review_context.py"
+      - ".github/scripts/**"
       - ".github/REVIEWER.md"
   push:
     paths:
@@ -22,12 +17,7 @@ on:
       - ".github/workflows/pr-ai-review.yml"
       - ".github/workflows/manual-ai-review.yml"
       - "azure-ci/azure-ai-code-review.yml"
-      - ".github/scripts/ollama_review.py"
-      - ".github/scripts/test_ollama_review.py"
-      - ".github/scripts/ollama_pr_review.py"
-      - ".github/scripts/pr_review_context.py"
-      - ".github/scripts/test_ollama_pr_review.py"
-      - ".github/scripts/test_pr_review_context.py"
+      - ".github/scripts/**"
       - ".github/REVIEWER.md"
 
 permissions:

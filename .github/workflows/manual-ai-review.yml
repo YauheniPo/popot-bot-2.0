@@ -31,13 +31,20 @@ on:
           - commit_range
           - full_branch
       model:
-        description: Pinned Ollama Cloud model (auto is a compatibility alias)
+        description: Model for the direct reviewer
         required: true
-        default: kimi-k3
+        default: moonshotai/kimi-k3
+        type: string
+      provider:
+        description: Provider for the direct reviewer
+        required: true
+        default: nvidia
         type: choice
         options:
-          - kimi-k3
-          - auto
+          - ollama-cloud
+          - openrouter
+          - nvidia
+          - nous
       publish:
         description: Where review findings should be published
         required: true
@@ -252,23 +259,29 @@ jobs:
             echo "Review findings will be published as a Check Run on ${head_sha}."
           fi
 
-      - name: Validate pinned Ollama Cloud model
+      - name: Validate selected review model
         shell: bash
         env:
           REQUESTED_MODEL: ${{ inputs.model }}
         run: |
           set -euo pipefail
-          if [[ "${REQUESTED_MODEL}" != "kimi-k3" && "${REQUESTED_MODEL}" != "auto" ]]; then
-            echo "::error::Code review is pinned to Ollama Cloud kimi-k3."
+          if [[ -z "${REQUESTED_MODEL}" || "${REQUESTED_MODEL}" == *$'\n'* ]]; then
+            echo "::error::A non-empty single-line review model is required."
             exit 1
           fi
 
-      - name: Verify Ollama Cloud JSON review
+      - name: Verify direct API JSON review
         id: models
         shell: bash
         env:
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
-        run: python3 reviewer/.github/scripts/ollama_review.py --probe json
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
+          DIRECT_REVIEW_PROVIDER: ${{ inputs.provider || vars.DIRECT_REVIEW_PROVIDER || 'nvidia' }}
+          DIRECT_REVIEW_MODEL: ${{ inputs.model }}
+          DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || '' }}
+        run: python3 reviewer/.github/scripts/ai_review_preflight.py --probe json
 
       - name: Review selected revision and publish findings
         id: review
@@ -279,15 +292,19 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HEAD_SHA: ${{ steps.context.outputs.head_sha }}
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
-          OLLAMA_REVIEW_FALLBACK_MODEL: ${{ steps.models.outputs.secondary_model }}
-          OLLAMA_REVIEW_FALLBACK_MODE: ${{ steps.models.outputs.secondary_mode }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
+          DIRECT_REVIEW_PROVIDER: ${{ inputs.provider || vars.DIRECT_REVIEW_PROVIDER || 'nvidia' }}
+          DIRECT_REVIEW_MODEL: ${{ steps.models.outputs.selected_model }}
+          DIRECT_REVIEW_FALLBACK_MODEL: ${{ steps.models.outputs.secondary_model }}
           OLLAMA_MAX_REVIEW_CHUNKS: ${{ vars.MANUAL_REVIEW_MAX_CHUNKS || '100' }}
           # This job allows 90 minutes and up to 100 chunks. Without an explicit
           # budget the script would stop after the 40-minute default meant for
           # the automatic PR review and fail a large manual or Azure DevOps run.
           OLLAMA_REVIEW_BUDGET_SECONDS: ${{ vars.MANUAL_REVIEW_BUDGET_SECONDS || '5100' }}
-          OLLAMA_REVIEW_MODEL: ${{ steps.models.outputs.selected_model }}
-          OLLAMA_REVIEW_MODEL_MODE: ${{ steps.models.outputs.selected_mode }}
+          # The response mode is selected by preflight for this run.
+          DIRECT_REVIEW_MODEL_MODE: ${{ steps.models.outputs.selected_mode }}
           OLLAMA_REVIEW_RPM: ${{ vars.OLLAMA_REVIEW_RPM || '60' }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           REQUIRE_COMPLETE_REVIEW: ${{ inputs.scope == 'full_branch' && 'true' || 'false' }}
@@ -295,7 +312,7 @@ jobs:
           REVIEW_INCLUDE_REVIEWER_FILES: ${{ inputs.scope == 'full_branch' && 'true' || 'false' }}
           REVIEW_ORIGIN: ${{ startsWith(inputs.request_id, 'ado-') && 'azure-devops' || 'github-actions' }}
           REVIEW_REQUEST_ID: ${{ inputs.request_id }}
-        run: python3 ../reviewer/.github/scripts/ollama_pr_review.py
+        run: python3 ../reviewer/.github/scripts/ai_pr_review.py
 
       - name: Summarize manual review
         if: always()
@@ -321,7 +338,7 @@ jobs:
             echo
             echo "- Target: \`${TARGET_REF}\`"
             echo "- Range: \`${BASE_SHA}..${HEAD_SHA}\`"
-            echo "- Model: \`${MODEL}\`"
+            echo "- Requested model: \`${MODEL}\` (actual successful models and retries are listed in the published review)"
             echo "- Source: \`${REVIEW_SOURCE}\`"
             echo "- Publication: \`${PUBLISH_TARGET}\`"
             if [[ -n "${PR_NUMBER}" ]]; then

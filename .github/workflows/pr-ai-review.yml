@@ -10,12 +10,17 @@ env:
   # Select reviewers through the PR_REVIEWER repository variable:
   # 0/unset = both sequentially, 1 = direct API, 2 = Claude Code.
   PR_REVIEWER: ${{ vars.PR_REVIEWER || '0' }}
-  # Pin both reviewers and every Claude role to Ollama Cloud Kimi K3.
-  # Repository model variables cannot override this selection.
-  OLLAMA_REVIEW_MODEL: kimi-k3
-  # Bound traffic shared by direct review and Claude Code; tune for the account.
+  # Provider/model are independently configurable for both reviewers.
+  DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'nvidia' }}
+  DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'moonshotai/kimi-k3' }}
+  DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || '' }}
+  CLAUDE_REVIEW_PROVIDER: ${{ vars.CLAUDE_REVIEW_PROVIDER || 'nvidia' }}
+  CLAUDE_REVIEW_MODEL: ${{ vars.CLAUDE_REVIEW_MODEL || 'moonshotai/kimi-k3' }}
+  CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.CLAUDE_REVIEW_FALLBACK_MODEL || vars.CLAUDE_REVIEW_MODEL || 'moonshotai/kimi-k3' }}
+  CLAUDE_REVIEW_BASE_URL: ${{ vars.CLAUDE_REVIEW_BASE_URL || '' }}
+  # Pace direct API requests; tune for the selected provider and account.
   OLLAMA_REVIEW_RPM: ${{ vars.OLLAMA_REVIEW_RPM || '60' }}
-  # Used only in mode 0, between the two reviewers sharing one API key.
+  # Used only in mode 0, between reviewers; useful when they share a quota.
   OLLAMA_REVIEW_COOLDOWN_SECONDS: ${{ vars.OLLAMA_REVIEW_COOLDOWN_SECONDS || '0' }}
   # Wall clock the direct reviewer may spend on model traffic. Keep it below
   # the job's timeout-minutes so a slow provider ends in a warning from the
@@ -27,8 +32,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Keep the historical job id for existing required-check configuration.
-  openrouter-api-review:
+  # Direct API reviewer job; the historical ID is kept for compatibility.
+  ollama-api-review:
     # Runs alone in mode 1 and first in mode 0. This is also the validation path
     # for an invalid selector, so a typo cannot silently skip the workflow.
     if: >-
@@ -53,7 +58,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${PR_REVIEWER}" != "0" && "${PR_REVIEWER}" != "1" && "${PR_REVIEWER}" != "2" ]]; then
-            echo "::error::PR_REVIEWER must be 0 (both), 1 (direct Ollama Cloud), or 2 (Claude Code)."
+            echo "::error::PR_REVIEWER must be 0 (both), 1 (direct API), or 2 (Claude Code)."
             exit 1
           fi
 
@@ -64,33 +69,43 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Verify Ollama Cloud JSON review
+      - name: Verify direct API JSON review
         id: direct_models
         shell: bash
         env:
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
-        # Cloud does not support JSON Schema; validate ordinary JSON locally.
-        run: python3 .github/scripts/ollama_review.py --probe json
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
+          DIRECT_REVIEW_PROVIDER: ${{ env.DIRECT_REVIEW_PROVIDER }}
+          DIRECT_REVIEW_MODEL: ${{ env.DIRECT_REVIEW_MODEL }}
+          DIRECT_REVIEW_FALLBACK_MODEL: ${{ env.DIRECT_REVIEW_FALLBACK_MODEL }}
+        # Preflight validates the selected provider/model response contract.
+        run: python3 .github/scripts/ai_review_preflight.py --probe json
 
-      - name: OllamaCloudAPI — direct review and publication
+      - name: DirectAPI — review and publication
         env:
-          OLLAMA_REVIEW_MODEL: ${{ steps.direct_models.outputs.selected_model }}
-          OLLAMA_REVIEW_MODEL_MODE: ${{ steps.direct_models.outputs.selected_mode }}
-          OLLAMA_REVIEW_FALLBACK_MODEL: ${{ steps.direct_models.outputs.secondary_model }}
-          OLLAMA_REVIEW_FALLBACK_MODE: ${{ steps.direct_models.outputs.secondary_mode }}
+          # The response mode is an internal preflight output, not a repository variable.
+          DIRECT_REVIEW_MODEL_MODE: ${{ steps.direct_models.outputs.selected_mode }}
+          DIRECT_REVIEW_FALLBACK_MODEL: ${{ steps.direct_models.outputs.secondary_model }}
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
+          DIRECT_REVIEW_PROVIDER: ${{ env.DIRECT_REVIEW_PROVIDER }}
+          DIRECT_REVIEW_MODEL: ${{ steps.direct_models.outputs.selected_model }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 .github/scripts/ollama_pr_review.py
+        run: python3 .github/scripts/ai_pr_review.py
 
   # Preserve the existing job id so configured required checks remain stable.
   claude-code-plugin-review:
     # `always()` lets mode 2 proceed after the skipped dependency and keeps the
     # second diagnostic available in mode 0 even if reviewer 1 fails.
-    needs: openrouter-api-review
+    needs: ollama-api-review
     if: >-
       always() &&
       !cancelled() &&
@@ -115,9 +130,8 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
 
-      # The live tool probe is an Ollama Cloud completion too, so wait before
-      # model selection when the direct reviewer used the same API key first.
-      - name: Wait for the shared Ollama Cloud rate-limit window
+      # Apply the configured pause before Claude preflight in sequential mode.
+      - name: Wait for the configured interval between reviewers
         if: vars.PR_REVIEWER == '' || vars.PR_REVIEWER == '0'
         shell: bash
         run: |
@@ -129,12 +143,17 @@ jobs:
           fi
           sleep "${OLLAMA_REVIEW_COOLDOWN_SECONDS}"
 
-      - name: Verify Ollama Cloud Claude tool calling
+      - name: Verify the selected model for Claude tool calling
         id: claude_models
         shell: bash
         env:
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
-        run: python3 .github/scripts/ollama_review.py --probe tools
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
+          DIRECT_REVIEW_PROVIDER: ${{ env.CLAUDE_REVIEW_PROVIDER }}
+          DIRECT_REVIEW_MODEL: ${{ env.CLAUDE_REVIEW_MODEL }}
+        run: python3 .github/scripts/ai_review_preflight.py --probe tools
 
       - name: Load shared reviewer policy from the pull request
         id: reviewer_policy
@@ -202,9 +221,8 @@ jobs:
         continue-on-error: true
         uses: anthropics/claude-code-action@d75b94d5ad426cb8546e6628b6f5f19b84e5cce1 # v1
         with:
-          # Ollama Cloud receives the request through ANTHROPIC_BASE_URL and
-          # authenticates with the same secret below.
-          anthropic_api_key: ${{ secrets.OLLAMA_API_KEY }}
+          # Route through ANTHROPIC_BASE_URL with the selected provider's key.
+          anthropic_api_key: &claude_api_key ${{ (steps.claude_models.outputs.provider == 'nous' && secrets.NOUS_API_KEY) || (steps.claude_models.outputs.provider == 'nvidia' && secrets.NVIDIA_API_KEY) || (steps.claude_models.outputs.provider == 'openrouter' && secrets.OPENROUTER_API_KEY) || (steps.claude_models.outputs.provider == 'ollama-cloud' && secrets.OLLAMA_API_KEY) || '' }}
           # Without an explicit token the action falls back to an OIDC
           # exchange, which needs `id-token: write` (not granted here).
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -315,7 +333,7 @@ jobs:
           # turns are bounded headroom for larger diffs, not the primary strategy.
           claude_args: |
             --max-turns 96
-            --model "${{ steps.claude_models.outputs.primary_model }}"
+            --model "${{ env.CLAUDE_REVIEW_MODEL }}"
             --tools "Read,Glob,Grep"
             --allowedTools "Read,Glob,Grep"
             --disallowedTools "mcp__github_comment__*,mcp__github_ci__*,mcp__github_inline_comment__*,mcp__github_file_ops__*"
@@ -323,20 +341,19 @@ jobs:
           # enables the debug variable; they can contain sensitive output.
           show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
         env:
-          ANTHROPIC_BASE_URL: https://ollama.com
+          ANTHROPIC_BASE_URL: &claude_api_url ${{ env.CLAUDE_REVIEW_BASE_URL || (steps.claude_models.outputs.provider == 'nous' && 'https://inference-api.nousresearch.com' || (steps.claude_models.outputs.provider == 'nvidia' && 'https://integrate.api.nvidia.com' || (steps.claude_models.outputs.provider == 'openrouter' && 'https://openrouter.ai/api' || 'https://ollama.com'))) }}
           # Keep repository credentials out of Claude's subprocess entirely;
           # only the deterministic publication step receives GITHUB_TOKEN.
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
-          # Claude Code uses bearer-token authentication with Ollama Cloud's
-          # Anthropic-compatible endpoint. The action input remains required
-          # for its own validation and receives the same Ollama API key.
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.OLLAMA_API_KEY }}
-          # Pin every Claude Code role to the same Ollama model, including Fable.
-          ANTHROPIC_DEFAULT_FABLE_MODEL: ${{ steps.claude_models.outputs.primary_model }}
-          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ steps.claude_models.outputs.primary_model }}
-          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ steps.claude_models.outputs.primary_model }}
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ steps.claude_models.outputs.primary_model }}
-          CLAUDE_CODE_SUBAGENT_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+          # Claude Code sends the selected provider's key as a bearer token.
+          # The action input also requires that key for its own validation.
+          ANTHROPIC_AUTH_TOKEN: *claude_api_key
+          # Use the configured model for every Claude Code role, including Fable.
+          ANTHROPIC_DEFAULT_FABLE_MODEL: ${{ env.CLAUDE_REVIEW_MODEL }}
+          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ env.CLAUDE_REVIEW_MODEL }}
+          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ env.CLAUDE_REVIEW_MODEL }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ env.CLAUDE_REVIEW_MODEL }}
+          CLAUDE_CODE_SUBAGENT_MODEL: ${{ env.CLAUDE_REVIEW_MODEL }}
 
       - name: ClaudeCodePlugin — extract and validate primary response
         id: extract_claude_review_primary
@@ -378,25 +395,25 @@ jobs:
         continue-on-error: true
         uses: anthropics/claude-code-action@d75b94d5ad426cb8546e6628b6f5f19b84e5cce1 # v1
         with:
-          anthropic_api_key: ${{ secrets.OLLAMA_API_KEY }}
+          anthropic_api_key: *claude_api_key
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: *claude_review_prompt
           claude_args: |
             --max-turns 96
-            --model "${{ steps.claude_models.outputs.primary_model }}"
+            --model "${{ env.CLAUDE_REVIEW_MODEL }}"
             --tools "Read,Glob,Grep"
             --allowedTools "Read,Glob,Grep"
             --disallowedTools "mcp__github_comment__*,mcp__github_ci__*,mcp__github_inline_comment__*,mcp__github_file_ops__*"
           show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
         env:
-          ANTHROPIC_BASE_URL: https://ollama.com
+          ANTHROPIC_BASE_URL: *claude_api_url
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.OLLAMA_API_KEY }}
-          ANTHROPIC_DEFAULT_FABLE_MODEL: ${{ steps.claude_models.outputs.primary_model }}
-          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ steps.claude_models.outputs.primary_model }}
-          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ steps.claude_models.outputs.primary_model }}
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ steps.claude_models.outputs.primary_model }}
-          CLAUDE_CODE_SUBAGENT_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+          ANTHROPIC_AUTH_TOKEN: *claude_api_key
+          ANTHROPIC_DEFAULT_FABLE_MODEL: ${{ env.CLAUDE_REVIEW_MODEL }}
+          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ env.CLAUDE_REVIEW_MODEL }}
+          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ env.CLAUDE_REVIEW_MODEL }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ env.CLAUDE_REVIEW_MODEL }}
+          CLAUDE_CODE_SUBAGENT_MODEL: ${{ env.CLAUDE_REVIEW_MODEL }}
 
       - name: ClaudeCodePlugin — extract and validate primary retry response
         id: extract_claude_review_primary_retry
@@ -417,7 +434,7 @@ jobs:
             --execution-file "${CLAUDE_EXECUTION_FILE}" \
             --output "${CLAUDE_REVIEW_RESULT_FILE}"
 
-      - name: ClaudeCodePlugin — final retry with Kimi K3
+      - name: ClaudeCodePlugin — review with fallback model
         id: claude_review_fallback
         if: >-
           always() &&
@@ -428,25 +445,25 @@ jobs:
         continue-on-error: true
         uses: anthropics/claude-code-action@d75b94d5ad426cb8546e6628b6f5f19b84e5cce1 # v1
         with:
-          anthropic_api_key: ${{ secrets.OLLAMA_API_KEY }}
+          anthropic_api_key: *claude_api_key
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: *claude_review_prompt
           claude_args: |
             --max-turns 96
-            --model "${{ steps.claude_models.outputs.fallback_model }}"
+            --model "${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}"
             --tools "Read,Glob,Grep"
             --allowedTools "Read,Glob,Grep"
             --disallowedTools "mcp__github_comment__*,mcp__github_ci__*,mcp__github_inline_comment__*,mcp__github_file_ops__*"
           show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
         env:
-          ANTHROPIC_BASE_URL: https://ollama.com
+          ANTHROPIC_BASE_URL: *claude_api_url
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.OLLAMA_API_KEY }}
-          ANTHROPIC_DEFAULT_FABLE_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
-          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
-          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
-          CLAUDE_CODE_SUBAGENT_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
+          ANTHROPIC_AUTH_TOKEN: *claude_api_key
+          ANTHROPIC_DEFAULT_FABLE_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
+          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
+          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
+          CLAUDE_CODE_SUBAGENT_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
 
       - name: ClaudeCodePlugin — extract and validate fallback response
         id: extract_claude_review_fallback
@@ -481,7 +498,16 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CLAUDE_REVIEW_MODEL: ${{ (steps.extract_claude_review_primary.outcome == 'success' || steps.extract_claude_review_primary_retry.outcome == 'success') && steps.claude_models.outputs.primary_model || steps.claude_models.outputs.fallback_model }}
+          CLAUDE_REVIEW_MODEL: ${{ (steps.extract_claude_review_primary.outcome == 'success' || steps.extract_claude_review_primary_retry.outcome == 'success') && env.CLAUDE_REVIEW_MODEL || env.CLAUDE_REVIEW_FALLBACK_MODEL }}
+          CLAUDE_REVIEW_PROVIDER: ${{ steps.claude_models.outputs.provider }}
+          CLAUDE_REVIEW_PRIMARY_MODEL: ${{ env.CLAUDE_REVIEW_MODEL }}
+          CLAUDE_REVIEW_ENDPOINT: *claude_api_url
+          CLAUDE_REVIEW_PRIMARY_OUTCOME: ${{ steps.claude_review_primary.outcome }}
+          CLAUDE_REVIEW_PRIMARY_VALIDATION: ${{ steps.extract_claude_review_primary.outcome }}
+          CLAUDE_REVIEW_RETRY_OUTCOME: ${{ steps.claude_review_primary_retry.outcome }}
+          CLAUDE_REVIEW_RETRY_VALIDATION: ${{ steps.extract_claude_review_primary_retry.outcome }}
+          CLAUDE_REVIEW_FALLBACK_OUTCOME: ${{ steps.claude_review_fallback.outcome }}
+          CLAUDE_REVIEW_FALLBACK_VALIDATION: ${{ steps.extract_claude_review_fallback.outcome }}
           CLAUDE_REVIEW_RUN_ID: ${{ github.run_id }}
           CLAUDE_REVIEW_RESULT_FILE: ${{ runner.temp }}/claude-review-result.json
         run: python3 .github/scripts/pr_review_context.py publish
@@ -501,7 +527,7 @@ jobs:
           PRIMARY_RESULT_OUTCOME: ${{ steps.extract_claude_review_primary.outcome }}
           PRIMARY_RETRY_OUTCOME: ${{ steps.claude_review_primary_retry.outcome }}
           PRIMARY_RETRY_RESULT_OUTCOME: ${{ steps.extract_claude_review_primary_retry.outcome }}
-          FALLBACK_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
+          FALLBACK_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
           FALLBACK_READY: ${{ steps.claude_models.outputs.fallback_ready }}
           FALLBACK_OUTCOME: ${{ steps.claude_review_fallback.outcome }}
           FALLBACK_RESULT_OUTCOME: ${{ steps.extract_claude_review_fallback.outcome }}
