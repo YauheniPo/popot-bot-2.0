@@ -172,10 +172,11 @@ class ReviewWorkflowTest(unittest.TestCase):
         self.assertEqual(outcome.closed_thread_ids, frozenset({thread.node_id}))
         self.assertEqual([call[0] for call in calls.mock_calls], ["reply", "resolve"])
         self.assertIn("request #1", calls.reply.call_args.args[-1])
+        rejected_verdicts = [reviewer.ThreadVerdict(thread.node_id, "rejected", "Evidence")]
         with mock.patch.object(reviewer, "reply_to_review_thread", side_effect=context.GitHubRequestError("reply failed")), mock.patch.object(reviewer, "resolve_review_thread") as resolve:
             with self.assertRaises(context.GitHubRequestError):
                 reviewer.apply_thread_verdicts("owner/repo", "31", "token", HEAD_SHA,
-                    [reviewer.ThreadVerdict(thread.node_id, "rejected", "Evidence")], (thread,), {"app.py"})
+                    rejected_verdicts, (thread,), {"app.py"})
         resolve.assert_not_called()
 
     def test_non_replyable_and_already_answered_threads_are_not_replied_to(self):
@@ -225,9 +226,10 @@ class ReviewWorkflowTest(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, "anchor rejected"):
                         reviewer.publish_review("owner/repo", "31", "token", "model", HEAD_SHA, self.plan, publication)
                     self.assertEqual(request.call_count, 2)
+        empty_publication = reviewer.PublicationPlan((), (), ())
         with mock.patch.object(reviewer, "request_json", return_value={}):
             with self.assertRaisesRegex(RuntimeError, "invalid pull-request review list"):
-                reviewer.publish_review("owner/repo", "31", "token", "model", HEAD_SHA, self.plan, reviewer.PublicationPlan((), (), ()))
+                reviewer.publish_review("owner/repo", "31", "token", "model", HEAD_SHA, self.plan, empty_publication)
 
     def test_invalid_finding_paths_and_envelopes_cannot_create_comments(self):
         self.assertIsNone(reviewer._parse_finding(None, self.plan.chunks[0], {"app.py": self.file}, "chunk 1/1"))
@@ -238,11 +240,12 @@ class ReviewWorkflowTest(unittest.TestCase):
         self.assertEqual(reviewer.validate_findings([{"findings": [{**raw, "impact": None}]}], self.plan.chunks, [self.file]), [])
 
     def test_main_selects_configured_provider_and_publishes_pr_or_manual_review(self):
-        for pr in ("31", ""):
-            with self.subTest(pr=pr), tempfile.TemporaryDirectory() as directory:
+        for pr, primary in (("31", ""), ("", ""), ("31", "vendor/failed-primary"), ("", "vendor/failed-primary")):
+            with self.subTest(pr=pr, primary=primary), tempfile.TemporaryDirectory() as directory:
                 output = Path(directory) / "github-output"
                 environment = {"NVIDIA_API_KEY": "test-model-key", "DIRECT_REVIEW_PROVIDER": "nvidia",
                     "DIRECT_REVIEW_MODEL": "vendor/model", "GITHUB_TOKEN": "test-github-key",
+                    "DIRECT_REVIEW_PRIMARY_MODEL": primary,
                     "GITHUB_REPOSITORY": "owner/repo", "PR_NUMBER": pr, "BASE_SHA": OLD_SHA,
                     "HEAD_SHA": HEAD_SHA, "GITHUB_OUTPUT": str(output)}
                 requests = []
@@ -258,6 +261,7 @@ class ReviewWorkflowTest(unittest.TestCase):
                     reviewer.main()
                 self.assertEqual(len([r for r in requests if r[0] == preflight.NVIDIA_CHAT_COMPLETIONS_URL]), 1)
                 final = requests[-1]
+                self.assertIn(f"Fallback successes: {int(bool(primary))}", json.dumps(final[3]))
                 self.assertTrue(final[0].endswith("/reviews" if pr else "/check-runs"))
                 if pr:
                     unresolved.assert_called_once()
@@ -270,8 +274,9 @@ class ReviewWorkflowTest(unittest.TestCase):
 
     def test_cli_entrypoints_return_nonzero_without_credentials(self):
         for name, argv in (("ai_pr_review.py", []), ("ai_review_preflight.py", ["--probe", "json"])):
+            script_path = str(Path(__file__).with_name(name))
             with self.subTest(name=name), mock.patch.object(sys, "argv", [name, *argv]), self.assertRaises(SystemExit) as caught:
-                runpy.run_path(str(Path(__file__).with_name(name)), run_name="__main__")
+                runpy.run_path(script_path, run_name="__main__")
             self.assertEqual(caught.exception.code, 1)
         self.assertIn("API key for nvidia is missing", self.errors.getvalue())
         self.assertIn("NVIDIA_API_KEY", self.errors.getvalue())

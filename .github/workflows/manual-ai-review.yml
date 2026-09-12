@@ -78,7 +78,8 @@ jobs:
       github.actor == github.repository_owner &&
       github.triggering_actor == github.repository_owner
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # 15 minutes for two model probes + 85 for review + five for setup/publication.
+    timeout-minutes: 105
 
     steps:
       - name: Validate manual review inputs
@@ -297,9 +298,11 @@ jobs:
           NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
           DIRECT_REVIEW_PROVIDER: ${{ inputs.provider || vars.DIRECT_REVIEW_PROVIDER || 'nvidia' }}
           DIRECT_REVIEW_MODEL: ${{ steps.models.outputs.selected_model }}
+          # Internal preflight metadata; this is not a repository variable.
+          DIRECT_REVIEW_PRIMARY_MODEL: ${{ steps.models.outputs.primary_model }}
           DIRECT_REVIEW_FALLBACK_MODEL: ${{ steps.models.outputs.secondary_model }}
           OLLAMA_MAX_REVIEW_CHUNKS: ${{ vars.MANUAL_REVIEW_MAX_CHUNKS || '100' }}
-          # This job allows 90 minutes and up to 100 chunks. Without an explicit
+          # This job allows 105 minutes and up to 100 chunks. Without an explicit
           # budget the script would stop after the 40-minute default meant for
           # the automatic PR review and fail a large manual or Azure DevOps run.
           OLLAMA_REVIEW_BUDGET_SECONDS: ${{ vars.MANUAL_REVIEW_BUDGET_SECONDS || '5100' }}

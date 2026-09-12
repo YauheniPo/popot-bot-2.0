@@ -204,15 +204,29 @@ endpoint. Provider selection alone does not establish model or API compatibility
 the supported probes are implemented in
 [`ai_review_preflight.py`](.github/scripts/ai_review_preflight.py).
 Both primary and configured fallback must pass the appropriate probe before
-being marked ready. A distinct fallback adds a probe with at most two HTTP
+being marked ready. A distinct fallback adds a probe with at most four HTTP
 attempts; when it equals the primary, that result is reused without another
 request. A failed fallback probe emits a warning and disables the fallback for
-that run while keeping the validated primary. Preflight calls may incur provider
-charges, even though they are excluded from the published review request totals.
+that run while keeping the validated primary. If the primary fails its probe,
+preflight still checks the configured distinct fallback: direct review starts
+with the validated fallback, and Claude skips primary runs and uses its fallback
+stage. If neither model passes, preflight fails without starting review. A
+fallback equal to the failed primary does not grant another retry budget.
+Each probe attempt logs its model, attempt number, and timeout. Preflight calls
+may incur provider charges, even though they are excluded from the published
+review request totals.
 The direct adapter selects the fallback response format automatically, including
 an ordinary-JSON retry when a schema request is explicitly rejected as
 unsupported. No fallback-mode variable is required. The publisher validates
 review JSON and exact diff anchors locally before posting findings.
+
+Direct review allows at most four API requests per model for each chunk or
+thread-triage operation. Transport retries, invalid-JSON regeneration, and API
+compatibility adjustments share that limit. A different fallback has its own
+four-request limit; the total time budget can stop either model earlier.
+Claude Code's full-run retry stages are configured separately in the PR workflow.
+The direct PR job allows 60 minutes and manual/Azure review 105 minutes, including
+preflight and publication; their model-traffic budgets remain separate.
 
 Tune traffic and execution budgets for your provider's quota and the size of the
 review. `OLLAMA_REVIEW_RPM` controls direct API request pacing,
@@ -239,6 +253,9 @@ preflight and GitHub publication calls are excluded from the model request count
 Retries count additional requests for the same chunk or thread-triage operation;
 five chunks completed in five requests report zero retries. Request numbers are
 global positions in the execution history.
+When preflight selects a backup, successful review requests still count as
+fallback successes. The workflows pass the original primary through internal
+`DIRECT_REVIEW_PRIMARY_MODEL` metadata; no additional repository variable is needed.
 Claude comments report the actual successful CI attempt and its configured model,
 including prior execution or result-validation failures. Claude SDK HTTP retries
 are not exposed by this workflow and are explicitly marked as unrecorded.

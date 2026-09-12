@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -81,19 +82,19 @@ class OllamaReviewTest(unittest.TestCase):
         ):
             with self.subTest(failure=type(failure).__name__):
                 with (
-                    mock.patch.object(ai_review_preflight.urllib.request, "urlopen", side_effect=[failure, self.response(response)]) as request,
+                    mock.patch.object(ai_review_preflight.urllib.request, "urlopen", side_effect=[failure] * 3 + [self.response(response)]) as request,
                     mock.patch.object(ai_review_preflight.time, "sleep") as sleep,
                 ):
                     ai_review_preflight.probe("test-key", "json")
-                self.assertEqual(request.call_count, 2)
-                sleep.assert_called_once_with(15)
+                self.assertEqual(request.call_count, 4)
+                self.assertEqual(sleep.call_args_list, [mock.call(15), mock.call(30), mock.call(45)])
                 with (
                     mock.patch.object(ai_review_preflight.urllib.request, "urlopen", side_effect=failure) as request,
                     mock.patch.object(ai_review_preflight.time, "sleep"),
                 ):
                     with self.assertRaises(RuntimeError):
                         ai_review_preflight.probe("test-key", "json")
-                self.assertEqual(request.call_count, 2)
+                self.assertEqual(request.call_count, 4)
 
     def test_non_json_or_unexpected_envelope_is_rejected(self):
         for content in ("not JSON", "[]", '{"choices":[]}', '{"choices":[{"message":{"content":null}}]}'):
@@ -111,7 +112,7 @@ class OllamaReviewTest(unittest.TestCase):
                 mock.patch.dict(os.environ, {"OLLAMA_API_KEY": "test-key", "DIRECT_REVIEW_PROVIDER": "ollama-cloud", "GITHUB_OUTPUT": str(output)}),
                 mock.patch.object(ai_review_preflight, "probe", side_effect=RuntimeError("not ready")),
             ):
-                with self.assertRaisesRegex(RuntimeError, "not ready"):
+                with self.assertRaisesRegex(RuntimeError, "No configured review model passed"):
                     ai_review_preflight.main(["--probe", "tools"])
             self.assertFalse(output.exists())
 
@@ -123,7 +124,7 @@ class OllamaReviewTest(unittest.TestCase):
                 mock.patch.object(ai_review_preflight, "probe") as probe,
             ):
                 self.assertEqual(ai_review_preflight.main(["--probe", "json"]), 0)
-            probe.assert_called_once_with("test-key", "json")
+            probe.assert_called_once_with("test-key", "json", "ollama-cloud", ai_review_preflight.MODEL)
             values = dict(line.split("=", 1) for line in output.read_text().splitlines())
             self.assertEqual(values["selected_model"], "moonshotai/kimi-k3")
             self.assertEqual(values["primary_model"], "moonshotai/kimi-k3")
@@ -171,7 +172,7 @@ class OllamaReviewTest(unittest.TestCase):
                     if outcome == "forbidden":
                         replies.append(urllib.error.HTTPError("https://openrouter.ai/api", 403, "Forbidden", {}, io.BytesIO(b"private provider error")))
                     elif outcome == "unavailable":
-                        replies.extend([TimeoutError(), TimeoutError()])
+                        replies.extend([TimeoutError()] * 4)
                     else:
                         replies.append(self.response(response if outcome == "valid" else {}))
                     with (
@@ -185,9 +186,9 @@ class OllamaReviewTest(unittest.TestCase):
                         mock.patch.object(sys, "stderr", new_callable=io.StringIO) as errors,
                     ):
                         self.assertEqual(ai_review_preflight.main(["--probe", kind]), 0)
-                    expected_models = ["primary", "backup"] + (["backup"] if outcome == "unavailable" else [])
+                    expected_models = ["primary", "backup"] + (["backup"] * 3 if outcome == "unavailable" else [])
                     self.assertEqual([json.loads(call.args[0].data)["model"] for call in request.call_args_list], expected_models)
-                    self.assertEqual(sleep.call_count, int(outcome == "unavailable"))
+                    self.assertEqual(sleep.call_count, 3 if outcome == "unavailable" else 0)
                     suffix = "messages" if kind == "tools" else "chat/completions"
                     self.assertTrue(all(call.args[0].full_url == f"https://openrouter.ai/api/v1/{suffix}" for call in request.call_args_list))
                     values = dict(line.split("=", 1) for line in output.read_text().splitlines())
@@ -212,6 +213,54 @@ class OllamaReviewTest(unittest.TestCase):
             values = dict(line.split("=", 1) for line in output.read_text().splitlines())
             self.assertEqual(values["fallback_ready"], "true")
             self.assertEqual(values["secondary_model"], "primary")
+
+    def test_primary_timeout_checks_fallback_and_selects_only_a_validated_model(self):
+        for kind, provider, response in (
+            ("json", "nvidia", {"choices": [{"message": {"content": '{"status":"ok"}'}}]}),
+            ("tools", "openrouter", {"content": [{"type": "tool_use", "name": "review_model_preflight", "input": {"status": "ok"}}]}),
+        ):
+            for fallback, outcome in (("backup", "valid"), ("backup", "invalid"), ("backup", "timeout"), ("primary", "same"), ("", "none")):
+                with self.subTest(kind=kind, outcome=outcome), tempfile.TemporaryDirectory() as temporary:
+                    output = Path(temporary) / "outputs"
+                    replies = [TimeoutError()] * 4
+                    expected_models = ["primary"] * 4
+                    if fallback == "backup":
+                        expected_models.append("backup")
+                        if outcome == "timeout":
+                            replies.extend([TimeoutError()] * 4)
+                            expected_models.extend(["backup"] * 3)
+                        else:
+                            replies.append(self.response(response if outcome == "valid" else {}))
+                    with (
+                        mock.patch.dict(os.environ, {
+                            "DIRECT_REVIEW_PROVIDER": provider, "NVIDIA_API_KEY": "test-key", "OPENROUTER_API_KEY": "test-key",
+                            "DIRECT_REVIEW_MODEL": "primary", "DIRECT_REVIEW_FALLBACK_MODEL": fallback,
+                            "GITHUB_OUTPUT": str(output),
+                        }, clear=True),
+                        mock.patch.object(ai_review_preflight.urllib.request, "urlopen", side_effect=replies) as request,
+                        mock.patch.object(ai_review_preflight.time, "sleep") as sleep,
+                        mock.patch.object(sys, "stderr", new_callable=io.StringIO) as errors,
+                    ):
+                        if outcome == "valid":
+                            self.assertEqual(ai_review_preflight.main(["--probe", kind]), 0)
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, "No configured review model passed"):
+                                ai_review_preflight.main(["--probe", kind])
+                    self.assertEqual([json.loads(call.args[0].data)["model"] for call in request.call_args_list], expected_models)
+                    delays = [mock.call(15), mock.call(30), mock.call(45)]
+                    self.assertEqual(sleep.call_args_list, delays * (2 if outcome == "timeout" else 1))
+                    self.assertIn("primary", errors.getvalue())
+                    self.assertIn("4/4", errors.getvalue())
+                    self.assertNotIn("5/4", errors.getvalue())
+                    if outcome == "valid":
+                        values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+                        self.assertEqual(values["primary_model"], "primary")
+                        self.assertEqual(values["primary_ready"], "false")
+                        self.assertEqual(values["fallback_ready"], "true")
+                        self.assertEqual(values["selected_model"], "backup")
+                        self.assertEqual(values["secondary_model"], "")
+                    else:
+                        self.assertFalse(output.exists())
 
     def test_nvidia_tools_require_an_explicit_anthropic_gateway_before_network(self):
         for base_url in ("", "  "):
@@ -245,6 +294,9 @@ class OllamaReviewTest(unittest.TestCase):
     def test_ci_reviewers_use_provider_neutral_model_settings(self):
         root = Path(__file__).resolve().parents[2]
         automatic = yaml.load((root / ".github/workflows/pr-ai-review.yml").read_text(), Loader=yaml.BaseLoader)
+        self.assertIn("direct-api-review", automatic["jobs"])
+        self.assertNotIn("ollama-api-review", automatic["jobs"])
+        self.assertEqual(automatic["jobs"]["claude-code-plugin-review"]["needs"], "direct-api-review")
         self.assertEqual(automatic["env"]["DIRECT_REVIEW_MODEL"], "${{ vars.DIRECT_REVIEW_MODEL || 'moonshotai/kimi-k3' }}")
         self.assertEqual(automatic["env"]["OLLAMA_REVIEW_RPM"], "${{ vars.OLLAMA_REVIEW_RPM || '60' }}")
         self.assertEqual(automatic["env"]["OLLAMA_REVIEW_COOLDOWN_SECONDS"], "${{ vars.OLLAMA_REVIEW_COOLDOWN_SECONDS || '0' }}")
@@ -294,6 +346,30 @@ class OllamaReviewTest(unittest.TestCase):
                 review_step["env"]["DIRECT_REVIEW_MODEL_MODE"],
                 "${{ steps." + preflight_id + ".outputs.selected_mode }}",
             )
+            self.assertEqual(
+                review_step["env"].get("DIRECT_REVIEW_PRIMARY_MODEL"),
+                "${{ steps." + preflight_id + ".outputs.primary_model }}",
+            )
+
+        claude_steps = {step.get("id"): step for job in automatic["jobs"].values() for step in job["steps"]}
+        for step_id in ("claude_review_primary", "claude_review_primary_retry"):
+            self.assertIn("steps.claude_models.outputs.primary_ready == 'true'", claude_steps[step_id]["if"])
+        self.assertIn("steps.claude_models.outputs.fallback_ready == 'true'", claude_steps["claude_review_fallback"]["if"])
+        self.assertNotIn("outputs.primary_ready", claude_steps["claude_review_fallback"]["if"])
+
+    def test_job_timeouts_fit_two_model_probes_and_the_default_review_budget(self):
+        root = Path(__file__).resolve().parents[2]
+        probe_budget = 4 * ai_review_preflight.REQUEST_TIMEOUT_SECONDS + 15 + 30 + 45
+        for name in ("pr-ai-review.yml", "manual-ai-review.yml"):
+            workflow = yaml.load((root / ".github/workflows" / name).read_text(), Loader=yaml.BaseLoader)
+            for job in workflow["jobs"].values():
+                review_steps = [step for step in job["steps"] if "ai_pr_review.py" in step.get("run", "")]
+                if not review_steps:
+                    continue
+                budget = review_steps[0]["env"].get("OLLAMA_REVIEW_BUDGET_SECONDS", workflow.get("env", {}).get("OLLAMA_REVIEW_BUDGET_SECONDS"))
+                default_budget = int(re.search(r"\|\| '(\d+)'", budget).group(1))
+                with self.subTest(workflow=name):
+                    self.assertGreaterEqual(int(job["timeout-minutes"]) * 60, default_budget + 2 * probe_budget + 300)
 
     def test_model_selection_ignores_retired_alias_for_every_provider(self):
         for provider in ("ollama-cloud", "nvidia", "openrouter", "nous"):

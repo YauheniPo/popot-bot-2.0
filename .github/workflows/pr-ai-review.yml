@@ -32,8 +32,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Direct API reviewer job; the historical ID is kept for compatibility.
-  ollama-api-review:
+  # Direct API reviewer; the provider is selected through DIRECT_REVIEW_PROVIDER.
+  direct-api-review:
     # Runs alone in mode 1 and first in mode 0. This is also the validation path
     # for an invalid selector, so a typo cannot silently skip the workflow.
     if: >-
@@ -49,8 +49,9 @@ jobs:
       issues: write
       pull-requests: write
     # The direct reviewer covers the full eligible diff in bounded, rate-limited
-    # chunks. Leave enough time for provider retries on large pull requests.
-    timeout-minutes: 45
+    # chunks. Allow 15 minutes for both four-attempt probes, 40 for review, and
+    # five for setup/publication; a failed preflight can end much earlier.
+    timeout-minutes: 60
 
     steps:
       - name: Validate reviewer selection
@@ -94,6 +95,8 @@ jobs:
           NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
           DIRECT_REVIEW_PROVIDER: ${{ env.DIRECT_REVIEW_PROVIDER }}
           DIRECT_REVIEW_MODEL: ${{ steps.direct_models.outputs.selected_model }}
+          # Internal preflight metadata; this is not a repository variable.
+          DIRECT_REVIEW_PRIMARY_MODEL: ${{ steps.direct_models.outputs.primary_model }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -105,7 +108,7 @@ jobs:
   claude-code-plugin-review:
     # `always()` lets mode 2 proceed after the skipped dependency and keeps the
     # second diagnostic available in mode 0 even if reviewer 1 fails.
-    needs: ollama-api-review
+    needs: direct-api-review
     if: >-
       always() &&
       !cancelled() &&

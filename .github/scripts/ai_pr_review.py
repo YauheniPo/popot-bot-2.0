@@ -49,18 +49,17 @@ MAX_REVIEW_CHUNKS = 100
 MAX_CONFIGURED_REVIEW_CHUNKS = 100
 DEFAULT_REQUESTS_PER_MINUTE = 8
 DEFAULT_RATE_LIMIT_RETRY_SECONDS = 15.0
-MAX_REQUEST_ATTEMPTS = 2
+MAX_REQUEST_ATTEMPTS = 4
 MAX_RETRY_DELAY_SECONDS = 90.0
 MAX_OUTPUT_TOKENS = 32_768
 # Hidden reasoning is billed against max_tokens, so a reasoning-required
 # endpoint needs headroom the schema-only budget does not have; without it the
 # model spends the whole budget thinking and returns an empty message.
 REASONING_OUTPUT_TOKENS = 32_768
-MAX_INVALID_RESPONSE_ATTEMPTS = 2
 REQUEST_TIMEOUT_SECONDS = 90.0
 # Wall-clock budget for all model traffic in one run. The workflow job allows
-# 45 minutes; staying under it lets the script fail with a diagnostic instead
-# of being killed mid-request by the runner.
+# 60 minutes including preflight; staying under it lets the script fail with a
+# diagnostic instead of being killed mid-request by the runner.
 DEFAULT_REVIEW_BUDGET_SECONDS = 600.0
 # Held back while the primary model runs so an exhausted primary still leaves
 # the fallback model a usable slot.
@@ -268,6 +267,19 @@ class ReviewResponseError(RuntimeError):
 
 class ReviewBudgetExhausted(RuntimeError):
     """The shared wall-clock budget cannot fit another model request."""
+
+
+@dataclass
+class ReviewAttempts:
+    """One model's request limit, shared across every retry and format change."""
+
+    used: int = 0
+
+    def start(self) -> int:
+        if self.used >= MAX_REQUEST_ATTEMPTS:
+            raise ReviewResponseError(f"model request limit exhausted ({MAX_REQUEST_ATTEMPTS} attempts)")
+        self.used += 1
+        return self.used
 
 
 class ReviewDeadline:
@@ -780,10 +792,12 @@ def _request_review_json(
 def request_with_transient_retries(
     headers: dict[str, str],
     body: dict[str, object],
+    attempts: ReviewAttempts,
 ) -> object:
     """Retry a single model request without changing models or parameters."""
-    for attempt in range(1, MAX_REQUEST_ATTEMPTS + 1):
+    while True:
         available = REVIEW_DEADLINE.require()
+        attempt = attempts.start()
         try:
             return _request_review_json(
                 headers,
@@ -808,20 +822,22 @@ def request_valid_review(
     body: dict[str, object],
     model_label: str,
     has_expected_shape: Callable[[object], bool] = _has_review_shape,
+    attempts: ReviewAttempts | None = None,
 ) -> dict[str, object]:
-    """Regenerate once when a successful HTTP response contains invalid JSON."""
-    for attempt in range(1, MAX_INVALID_RESPONSE_ATTEMPTS + 1):
-        response = request_with_transient_retries(headers, body)
+    """Regenerate invalid JSON within the same limit as transport retries."""
+    attempts = attempts or ReviewAttempts()
+    while True:
+        response = request_with_transient_retries(headers, body, attempts)
         try:
             parsed = parse_review_response(response, has_expected_shape)
         except ReviewResponseError as error:
             if EXECUTION_REPORT:
                 EXECUTION_REPORT.validate_last("invalid_json")
-            if attempt == MAX_INVALID_RESPONSE_ATTEMPTS:
+            if attempts.used == MAX_REQUEST_ATTEMPTS:
                 raise
             print(
                 f"  {model_label} returned invalid structured JSON; "
-                f"regenerating once ({error})",
+                f"regenerating after attempt {attempts.used}/{MAX_REQUEST_ATTEMPTS} ({error})",
                 file=sys.stderr,
             )
         else:
@@ -849,6 +865,7 @@ def request_fallback_review(
     primary_body: dict[str, object],
 ) -> dict[str, object]:
     """Choose the fallback format without an operator-supplied model mode."""
+    attempts = ReviewAttempts()
     print(
         f"  primary exhausted; retrying with fallback: {fallback_model}",
         file=sys.stderr,
@@ -860,6 +877,7 @@ def request_fallback_review(
             headers,
             ordinary_body,
             "ordinary JSON fallback",
+            attempts=attempts,
         )
     # The primary may have used ordinary JSON, so supply the schema explicitly.
     strict_body = {
@@ -869,7 +887,7 @@ def request_fallback_review(
         "response_format": {"type": "json_schema", "json_schema": REVIEW_RESPONSE_SCHEMA},
     }
     try:
-        return request_reasoning_compatible_review(headers, strict_body, "fallback")
+        return request_reasoning_compatible_review(headers, strict_body, "fallback", attempts=attempts)
     except RequestError as error:
         # Only a capability rejection allows switching formats. Authentication,
         # unknown models and invalid schemas must remain visible failures.
@@ -889,6 +907,7 @@ def request_fallback_review(
             headers,
             relaxed_body,
             "fallback compatibility request",
+            attempts=attempts,
         )
 
 
@@ -913,6 +932,7 @@ def request_ordinary_review(
     body: dict[str, object],
     model_label: str,
     has_expected_shape: Callable[[object], bool] = _has_review_shape,
+    attempts: ReviewAttempts | None = None,
 ) -> dict[str, object]:
     """Request ordinary JSON and accommodate providers that require reasoning."""
     return request_reasoning_compatible_review(
@@ -920,6 +940,7 @@ def request_ordinary_review(
         body,
         model_label,
         has_expected_shape,
+        attempts,
     )
 
 
@@ -928,10 +949,12 @@ def request_reasoning_compatible_review(
     body: dict[str, object],
     model_label: str,
     has_expected_shape: Callable[[object], bool] = _has_review_shape,
+    attempts: ReviewAttempts | None = None,
 ) -> dict[str, object]:
     """Retry once with bounded hidden reasoning when an endpoint requires it."""
+    attempts = attempts or ReviewAttempts()
     try:
-        return request_valid_review(headers, body, model_label, has_expected_shape)
+        return request_valid_review(headers, body, model_label, has_expected_shape, attempts)
     except RequestError as error:
         if error.status != 400 or MANDATORY_REASONING_ERROR not in str(error).lower():
             raise
@@ -952,6 +975,7 @@ def request_reasoning_compatible_review(
             reasoning_body,
             f"{model_label} reasoning-compatible request",
             has_expected_shape,
+            attempts,
         )
 
 
@@ -1822,7 +1846,10 @@ def main() -> None:
     ACTIVE_PROVIDER = provider
     github_token = required_env("GITHUB_TOKEN")
     model = configured_model()
-    EXECUTION_REPORT = ExecutionReport(provider, provider_url, model)
+    # Preflight may select the fallback before review starts. Preserve the
+    # configured primary solely for accurate execution-route reporting.
+    primary_model = os.environ.get("DIRECT_REVIEW_PRIMARY_MODEL", "").strip() or model
+    EXECUTION_REPORT = ExecutionReport(provider, provider_url, primary_model)
     os.environ.setdefault("DIRECT_REVIEW_MODEL_MODE", ORDINARY_MODEL_MODE)
     repository = required_env("GITHUB_REPOSITORY")
     pr_number = os.environ.get("PR_NUMBER", "").strip()

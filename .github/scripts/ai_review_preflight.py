@@ -30,7 +30,7 @@ PLAIN_JSON_PROVIDERS = frozenset({"ollama-cloud", "nvidia", "nous"})
 # Nous publishes this request limit in https://portal.nousresearch.com/api/openapi.
 NOUS_MAX_OUTPUT_TOKENS = 32_000
 REQUEST_TIMEOUT_SECONDS = 90
-MAX_ATTEMPTS = 2
+MAX_ATTEMPTS = 4
 RETRYABLE_STATUSES = {408, 429, 500, 502, 503, 504}
 
 
@@ -145,6 +145,10 @@ def probe(api_key: str, kind: str, provider: str = "ollama-cloud", model: str = 
     request = _probe_request(api_key, kind, provider, model)
     result: object = None
     for attempt in range(MAX_ATTEMPTS):
+        print(
+            f"{provider} {model}: {kind} probe attempt {attempt + 1}/{MAX_ATTEMPTS} "
+            f"(timeout {REQUEST_TIMEOUT_SECONDS}s)", file=sys.stderr,
+        )
         try:
             with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
                 result = json.load(response)
@@ -163,17 +167,28 @@ def probe(api_key: str, kind: str, provider: str = "ollama-cloud", model: str = 
         raise RuntimeError(f"{provider} {kind} probe did not satisfy the expected response contract")
 
 
-def probe_fallback(api_key: str, kind: str, provider: str, primary: str, fallback: str) -> bool:
-    if not fallback:
-        return False
-    if fallback == primary:
-        return True  # The primary probe has already validated this model and API.
+def probe_ready(api_key: str, kind: str, provider: str, model: str, role: str) -> bool:
     try:
-        probe(api_key, kind, provider, fallback)
+        probe(api_key, kind, provider, model)
     except RuntimeError as error:
-        print(f"::warning::Fallback is unavailable; continuing with primary only. {error}", file=sys.stderr)
+        print(f"::warning::{provider} {model}: {role} probe unavailable. {error}", file=sys.stderr)
         return False
+    print(f"{provider} {model}: live {kind} probe passed ({role})")
     return True
+
+
+def probe_models(api_key: str, kind: str, provider: str, primary: str, fallback: str) -> tuple[bool, bool]:
+    primary_ready = probe_ready(api_key, kind, provider, primary, "primary")
+    if not fallback:
+        fallback_ready = False
+    elif fallback == primary:
+        # Reuse failures as well as successes; the same model gets no extra tries.
+        fallback_ready = primary_ready
+    else:
+        fallback_ready = probe_ready(api_key, kind, provider, fallback, "fallback")
+    if not primary_ready and not fallback_ready:
+        raise RuntimeError("No configured review model passed preflight; see the probe failures above")
+    return primary_ready, fallback_ready
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -187,27 +202,26 @@ def main(argv: list[str] | None = None) -> int:
             "nvidia": "NVIDIA_API_KEY", "nous": "NOUS_API_KEY",
         }[provider]
         raise RuntimeError(f"{key_name} must be configured as a GitHub Actions secret for {provider}")
+    if args.probe == "tools":
+        messages_url(provider)  # Reject incompatible transport before any model probes.
     model = configured_model()
-    if provider == "ollama-cloud" and model == MODEL:
-        probe(api_key, args.probe)
-    else:
-        probe(api_key, args.probe, provider, model)
     fallback = configured_fallback_model()
-    fallback_ready = probe_fallback(api_key, args.probe, provider, model, fallback)
+    primary_ready, fallback_ready = probe_models(api_key, args.probe, provider, model, fallback)
+    selected_model = model if primary_ready else fallback
     output_path = os.environ.get("GITHUB_OUTPUT")
     if output_path:
         # A configured fallback is selectable only after the matching API probe.
         values = {
             "provider": provider,
-            "primary_model": model, "primary_ready": "true",
+            "primary_model": model, "primary_ready": str(primary_ready).lower(),
             "fallback_model": fallback, "fallback_ready": str(fallback_ready).lower(),
-            "selected_model": model, "selected_mode": "ordinary",
-            "secondary_model": fallback if fallback_ready else "",
+            "selected_model": selected_model, "selected_mode": "ordinary",
+            "secondary_model": fallback if primary_ready and fallback_ready else "",
         }
         with open(output_path, "a", encoding="utf-8") as output:
             for key, value in values.items():
                 output.write(f"{key}={value}\n")
-    print(f"{provider} {model}: live {args.probe} probe passed")
+    print(f"{provider}: selected {selected_model} for review")
     return 0
 
 
