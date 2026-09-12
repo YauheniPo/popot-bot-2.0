@@ -141,6 +141,10 @@ class DeploymentStatePolicyTests(unittest.TestCase):
         settings = (HERMES_ROOT / "ansible" / "templates" / "searxng-settings.yml.j2").read_text()
         self.assertIn("tasks/searxng.yml", playbook)
         self.assertIn("vps_deploy.features.searxng", playbook)
+        self.assertIn("tasks/tailscale-serve.yml", playbook)
+        self.assertIn("- serve", (HERMES_ROOT / "ansible" / "tasks" / "tailscale-serve.yml").read_text())
+        self.assertIn('"--{{ item.protocol }}={{ item.port }}"', (HERMES_ROOT / "ansible" / "tasks" / "tailscale-serve.yml").read_text())
+        self.assertIn("/usr/local/sbin/hermes-setup-tailscale-access", playbook)
         self.assertIn("vps_searxng.bind_address == '127.0.0.1'", tasks)
         self.assertIn("vps_searxng.bind_address", compose)
         self.assertIn("valkey:", compose)
@@ -158,6 +162,14 @@ class DeploymentStatePolicyTests(unittest.TestCase):
         self.assertIn("ANSIBLE MANAGED SEARXNG ACCESS", playbook)
         self.assertIn("format=json", template)
         self.assertNotIn("BRAVE_SEARCH_API_KEY={{", template)
+
+    def test_tailscale_bootstrap_is_root_only_and_private(self) -> None:
+        script = (HERMES_ROOT / "ops" / "setup-tailscale-access.sh").read_text()
+        self.assertIn('[[ "${EUID}" -eq 0 ]]', script)
+        self.assertIn("tailscale up --ssh", script)
+        self.assertIn("tailscale serve --bg --https=443", script)
+        self.assertIn("127.0.0.1:${DASHBOARD_PORT}", script)
+        self.assertNotIn("tailscale funnel", script)
 
     def test_broken_existing_install_never_bypasses_backup(self) -> None:
         deploy_runtime = (HERMES_ROOT / "deploy" / "runtime.sh").read_text()

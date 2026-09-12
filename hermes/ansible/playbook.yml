@@ -56,6 +56,9 @@
           - vps_observability.prometheus is mapping
           - vps_observability.node_exporter is mapping
           - vps_searxng is mapping
+          - vps_tailscale is mapping
+          - vps_tailscale.serve is mapping
+          - vps_tailscale.serve.services is sequence
           - not (vps_deploy.features.searxng | bool) or (vps_searxng.enabled | bool)
           - vps_vscode.project_name is match('^[a-z0-9][a-z0-9_-]{0,62}$')
           - vps_vscode.image is match('^[A-Za-z0-9._/-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$')
@@ -212,6 +215,14 @@
         group: root
         mode: preserve
         directory_mode: "0755"
+
+    - name: Install the one-command Tailscale access bootstrap
+      ansible.builtin.copy:
+        src: ../ops/setup-tailscale-access.sh
+        dest: /usr/local/sbin/hermes-setup-tailscale-access
+        owner: root
+        group: root
+        mode: "0755"
 
     - name: Copy versioned Grafana and Prometheus provisioning files
       ansible.builtin.copy:
@@ -524,6 +535,9 @@
 
     - name: Configure private networking and firewall
       ansible.builtin.import_tasks: tasks/network.yml
+
+    - name: Configure private Tailscale web services
+      ansible.builtin.import_tasks: tasks/tailscale-serve.yml
 
     - name: Stop the gateway before restoring a backup
       ansible.builtin.systemd_service:

@@ -37,7 +37,7 @@ vps_deploy:
     tailscale: true
     host_admin: true
     searxng: true
-    lock_public_ssh: false
+    lock_public_ssh: true
     vscode_server: true
   # Deliver provider keys (including OLLAMA_API_KEY and optional
   # OPENROUTER_API_KEY) from encrypted Vault.
@@ -320,6 +320,33 @@ vps_observability:
   node_exporter:
     bind_address: 127.0.0.1
     port: 9100
+
+# Private Tailscale Serve endpoints for local-only web services. These ports
+# are reachable from the tailnet only; nothing is opened on the public NIC.
+vps_tailscale:
+  serve:
+    enabled: true
+    services:
+      - name: hermes-dashboard
+        protocol: https
+        port: 443
+        target: http://127.0.0.1:9119
+      - name: grafana
+        protocol: https
+        port: 3000
+        target: http://127.0.0.1:3000
+      - name: prometheus
+        protocol: https
+        port: 9090
+        target: http://127.0.0.1:9090
+      - name: code-server
+        protocol: https
+        port: 3001
+        target: http://127.0.0.1:3001
+      - name: searxng
+        protocol: https
+        port: 8888
+        target: http://127.0.0.1:8888
 
 # Browser IDE is loopback-only and reached through an SSH tunnel.
 vps_vscode:

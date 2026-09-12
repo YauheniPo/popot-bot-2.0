@@ -118,6 +118,8 @@ organization-wide token, если достаточно selected repositories. Н
 |---|---|---|---|
 | [ ] | `AZURE_DEVOPS_EXT_PAT` | Azure DevOps → User settings → Personal access tokens | `hermes_secret_env` в Ansible Vault |
 | [ ] | `SONAR_TOKEN` | SonarQube Cloud → My account → Access Tokens | `hermes_secret_env` в Ansible Vault |
+| [ ] | Hermes dashboard OAuth client ID | вывод `hermes dashboard register` | `hermes_secret_env` в Ansible Vault как `HERMES_DASHBOARD_OAUTH_CLIENT_ID`; идентификатор, не пароль |
+| [ ] | Hermes dashboard public URL | зарегистрированный Tailscale `.ts.net` hostname | `hermes_secret_env` в Ansible Vault как `HERMES_DASHBOARD_PUBLIC_URL`; полный `https://...` URL |
 | [ ] | URL, organization и project | Настройки выбранных сервисов | `config/vps-defaults.yml` → `vps_integrations` |
 
 Для чтения Azure builds/logs достаточно Build: Read; запуск требует

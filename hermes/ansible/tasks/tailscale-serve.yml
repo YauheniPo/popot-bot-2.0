@@ -1,0 +1,49 @@
+---
+- name: Validate private Tailscale Serve endpoints
+  ansible.builtin.assert:
+    that:
+      - vps_tailscale.serve.enabled | bool
+      - item.name is match('^[a-z][a-z0-9-]+$')
+      - item.protocol in ['http', 'https']
+      - item.port | int >= 1
+      - item.port | int <= 65535
+      - item.target is match('^http://127\\.0\\.0\\.1:[1-9][0-9]{0,4}$')
+    fail_msg: Invalid private Tailscale Serve endpoint.
+  loop: "{{ vps_tailscale.serve.services }}"
+  when:
+    - hermes_enable_tailscale | bool
+    - vps_tailscale.serve.enabled | bool
+
+- name: Check that Tailscale is connected before publishing services
+  ansible.builtin.command:
+    argv: [tailscale, ip, -4]
+  register: tailscale_serve_connection
+  changed_when: false
+  failed_when: false
+  when:
+    - hermes_enable_tailscale | bool
+    - vps_tailscale.serve.enabled | bool
+
+- name: Reset the managed Tailscale Serve configuration before publishing endpoints
+  ansible.builtin.command:
+    argv: [tailscale, serve, reset]
+  changed_when: true
+  when:
+    - hermes_enable_tailscale | bool
+    - vps_tailscale.serve.enabled | bool
+    - tailscale_serve_connection.rc == 0
+
+- name: Publish local web services privately through Tailscale Serve
+  ansible.builtin.command:
+    argv:
+      - tailscale
+      - serve
+      - --bg
+      - "--{{ item.protocol }}={{ item.port }}"
+      - "{{ item.target }}"
+  loop: "{{ vps_tailscale.serve.services }}"
+  when:
+    - hermes_enable_tailscale | bool
+    - vps_tailscale.serve.enabled | bool
+    - tailscale_serve_connection.rc == 0
+  changed_when: true

@@ -70,6 +70,8 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertEqual(searxng["valkey_image"], "docker.io/valkey/valkey:8-alpine")
         self.assertEqual(searxng["valkey_host"], "valkey")
         self.assertEqual(searxng["valkey_port"], 6379)
+        self.assertTrue(settings["vps_tailscale"]["serve"]["enabled"])
+        self.assertEqual(len(settings["vps_tailscale"]["serve"]["services"]), 5)
 
         overlay = settings["vps_hermes"]["config"]["managed_overlay"]
         self.assertEqual(overlay["model"], {"provider": "ollama-cloud", "default": "kimi-k3"})

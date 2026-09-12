@@ -19,6 +19,11 @@ hermes_secret_env:
   TELEGRAM_BOT_TOKEN: "replace-inside-ansible-vault"
   TELEGRAM_ALLOWED_USERS: "123456789"
   # GITHUB_TOKEN: "replace-inside-ansible-vault"
+  # Dashboard OAuth values for the registered Tailscale Serve hostname. The
+  # client ID is an identifier, not a password; keeping both values here
+  # preserves dashboard login after managed .env redeploys.
+  # HERMES_DASHBOARD_OAUTH_CLIENT_ID: "agent:replace-with-registered-client-id"
+  # HERMES_DASHBOARD_PUBLIC_URL: "https://your-hermes-host.tailnet-example.ts.net"
 
 # Required by the enabled managed services.
 hermes_grafana_admin_password: "replace-inside-ansible-vault"

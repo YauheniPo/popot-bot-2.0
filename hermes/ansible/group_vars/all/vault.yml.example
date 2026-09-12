@@ -45,6 +45,13 @@ hermes_secret_env: {}
 #   # Optional SonarQube user/PAT token for reading issues and Quality Gates.
 #   # A GitHub Actions SONAR_TOKEN is not automatically available on the VPS.
 #   SONAR_TOKEN: "replace-inside-ansible-vault"
+#
+#   # Dashboard OAuth registration for the Tailscale Serve hostname. These are
+#   # not passwords, but keeping them in the managed map makes dashboard login
+#   # survive a full .env rewrite during deployment. Use the client ID emitted
+#   # by `hermes dashboard register`; never invent one.
+#   HERMES_DASHBOARD_OAUTH_CLIENT_ID: "agent:replace-with-registered-client-id"
+#   HERMES_DASHBOARD_PUBLIC_URL: "https://your-hermes-host.tailnet-example.ts.net"
 
 # Non-secret config.yaml policy belongs in
 # config/vps-defaults.yml:vps_hermes.config.managed_overlay, not in Vault.
