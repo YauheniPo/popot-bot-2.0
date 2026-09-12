@@ -19,6 +19,13 @@ MESSAGES_URL = "https://ollama.com/v1/messages"
 OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
 NVIDIA_CHAT_COMPLETIONS_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 NOUS_CHAT_COMPLETIONS_URL = "https://inference-api.nousresearch.com/v1/chat/completions"
+# Anthropic routes are independent of Chat Completions support. NVIDIA's
+# hosted catalog requires an operator-provided Anthropic-compatible gateway.
+MESSAGES_BASE_URLS = {
+    "ollama-cloud": "https://ollama.com",
+    "openrouter": "https://openrouter.ai/api",
+    "nous": "https://inference-api.nousresearch.com",
+}
 PLAIN_JSON_PROVIDERS = frozenset({"ollama-cloud", "nvidia", "nous"})
 # Nous publishes this request limit in https://portal.nousresearch.com/api/openapi.
 NOUS_MAX_OUTPUT_TOKENS = 32_000
@@ -70,6 +77,18 @@ def configured_fallback_model() -> str:
     return os.environ.get("DIRECT_REVIEW_FALLBACK_MODEL", "").strip()
 
 
+def messages_url(provider: str) -> str:
+    base_url = os.environ.get("CLAUDE_REVIEW_BASE_URL", "").strip().rstrip("/")
+    base_url = base_url or MESSAGES_BASE_URLS.get(provider, "")
+    if not base_url:
+        raise RuntimeError(
+            f"{provider} has no configured Anthropic Messages route; set "
+            "CLAUDE_REVIEW_BASE_URL to an Anthropic-compatible gateway for Claude Code, "
+            "or use the direct API reviewer"
+        )
+    return f"{base_url}/v1/messages"
+
+
 def _probe_request(api_key: str, kind: str, provider: str, model: str) -> urllib.request.Request:
     body: dict[str, object] = {
         "model": model,
@@ -86,8 +105,7 @@ def _probe_request(api_key: str, kind: str, provider: str, model: str) -> urllib
     if kind == "tools":
         # Probe the same Anthropic route used by the Claude action, including
         # an operator-provided base URL. A chat response cannot prove tool support.
-        base_url = os.environ.get("CLAUDE_REVIEW_BASE_URL", "").strip().rstrip("/")
-        url = f"{base_url}/v1/messages" if base_url else url.removesuffix("chat/completions") + "messages"
+        url = messages_url(provider)
         headers["anthropic-version"] = "2023-06-01"
         body.update({
             "tools": [{
@@ -145,6 +163,19 @@ def probe(api_key: str, kind: str, provider: str = "ollama-cloud", model: str = 
         raise RuntimeError(f"{provider} {kind} probe did not satisfy the expected response contract")
 
 
+def probe_fallback(api_key: str, kind: str, provider: str, primary: str, fallback: str) -> bool:
+    if not fallback:
+        return False
+    if fallback == primary:
+        return True  # The primary probe has already validated this model and API.
+    try:
+        probe(api_key, kind, provider, fallback)
+    except RuntimeError as error:
+        print(f"::warning::Fallback is unavailable; continuing with primary only. {error}", file=sys.stderr)
+        return False
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--probe", choices=["json", "tools"], required=True)
@@ -161,16 +192,17 @@ def main(argv: list[str] | None = None) -> int:
         probe(api_key, args.probe)
     else:
         probe(api_key, args.probe, provider, model)
+    fallback = configured_fallback_model()
+    fallback_ready = probe_fallback(api_key, args.probe, provider, model, fallback)
     output_path = os.environ.get("GITHUB_OUTPUT")
     if output_path:
-        # Keep the workflow output contract and expose configured model IDs.
-        # The probe above validates only the primary model, not the fallback.
+        # A configured fallback is selectable only after the matching API probe.
         values = {
             "provider": provider,
             "primary_model": model, "primary_ready": "true",
-            "fallback_model": configured_fallback_model(), "fallback_ready": "true",
+            "fallback_model": fallback, "fallback_ready": str(fallback_ready).lower(),
             "selected_model": model, "selected_mode": "ordinary",
-            "secondary_model": configured_fallback_model(),
+            "secondary_model": fallback if fallback_ready else "",
         }
         with open(output_path, "a", encoding="utf-8") as output:
             for key, value in values.items():

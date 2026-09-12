@@ -128,6 +128,7 @@ class OllamaReviewTest(unittest.TestCase):
             self.assertEqual(values["selected_model"], "moonshotai/kimi-k3")
             self.assertEqual(values["primary_model"], "moonshotai/kimi-k3")
             self.assertEqual(values["fallback_model"], "")
+            self.assertEqual(values["fallback_ready"], "false")
             self.assertEqual(values["selected_mode"], "ordinary")
             self.assertEqual(values["provider"], "ollama-cloud")
             self.assertEqual(values["secondary_model"], "")
@@ -138,7 +139,7 @@ class OllamaReviewTest(unittest.TestCase):
                 ai_review_preflight.main(["--probe", "json"])
         probe.assert_not_called()
 
-    def test_fallback_model_passes_through_without_a_mode_setting(self):
+    def test_fallback_model_is_probed_without_a_mode_setting(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "outputs"
             with (
@@ -149,10 +150,97 @@ class OllamaReviewTest(unittest.TestCase):
                 mock.patch.object(ai_review_preflight, "probe") as probe,
             ):
                 self.assertEqual(ai_review_preflight.main(["--probe", "json"]), 0)
-            probe.assert_called_once()
+            self.assertEqual(probe.call_args_list, [
+                mock.call("test-key", "json", "nvidia", ai_review_preflight.MODEL),
+                mock.call("test-key", "json", "nvidia", "backup"),
+            ])
             values = dict(line.split("=", 1) for line in output.read_text().splitlines())
             self.assertEqual(values["secondary_model"], "backup")
+            self.assertEqual(values["fallback_ready"], "true")
             self.assertNotIn("secondary_mode", values)
+
+    def test_fallback_readiness_requires_a_valid_response_on_the_reviewers_api(self):
+        for kind, response in (
+            ("json", {"choices": [{"message": {"content": '{"status":"ok"}'}}]}),
+            ("tools", {"content": [{"type": "tool_use", "name": "review_model_preflight", "input": {"status": "ok"}}]}),
+        ):
+            for outcome in ("valid", "forbidden", "invalid", "unavailable"):
+                with self.subTest(kind=kind, outcome=outcome), tempfile.TemporaryDirectory() as temporary:
+                    output = Path(temporary) / "outputs"
+                    replies = [self.response(response)]
+                    if outcome == "forbidden":
+                        replies.append(urllib.error.HTTPError("https://openrouter.ai/api", 403, "Forbidden", {}, io.BytesIO(b"private provider error")))
+                    elif outcome == "unavailable":
+                        replies.extend([TimeoutError(), TimeoutError()])
+                    else:
+                        replies.append(self.response(response if outcome == "valid" else {}))
+                    with (
+                        mock.patch.dict(os.environ, {
+                            "DIRECT_REVIEW_PROVIDER": "openrouter", "OPENROUTER_API_KEY": "test-key",
+                            "DIRECT_REVIEW_MODEL": "primary", "DIRECT_REVIEW_FALLBACK_MODEL": "backup",
+                            "GITHUB_OUTPUT": str(output),
+                        }, clear=True),
+                        mock.patch.object(ai_review_preflight.urllib.request, "urlopen", side_effect=replies) as request,
+                        mock.patch.object(ai_review_preflight.time, "sleep") as sleep,
+                        mock.patch.object(sys, "stderr", new_callable=io.StringIO) as errors,
+                    ):
+                        self.assertEqual(ai_review_preflight.main(["--probe", kind]), 0)
+                    expected_models = ["primary", "backup"] + (["backup"] if outcome == "unavailable" else [])
+                    self.assertEqual([json.loads(call.args[0].data)["model"] for call in request.call_args_list], expected_models)
+                    self.assertEqual(sleep.call_count, int(outcome == "unavailable"))
+                    suffix = "messages" if kind == "tools" else "chat/completions"
+                    self.assertTrue(all(call.args[0].full_url == f"https://openrouter.ai/api/v1/{suffix}" for call in request.call_args_list))
+                    values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+                    self.assertEqual(values["primary_ready"], "true")
+                    self.assertEqual(values["fallback_model"], "backup")
+                    self.assertEqual(values["fallback_ready"], "true" if outcome == "valid" else "false")
+                    self.assertEqual(values["secondary_model"], "backup" if outcome == "valid" else "")
+                    self.assertEqual("::warning::" in errors.getvalue(), outcome != "valid")
+                    self.assertNotIn("private provider error", errors.getvalue())
+                    self.assertNotIn("test-key", errors.getvalue())
+
+    def test_same_fallback_model_reuses_the_primary_probe(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "outputs"
+            with mock.patch.dict(os.environ, {
+                "DIRECT_REVIEW_PROVIDER": "openrouter", "OPENROUTER_API_KEY": "test-key",
+                "DIRECT_REVIEW_MODEL": "primary", "DIRECT_REVIEW_FALLBACK_MODEL": "primary",
+                "GITHUB_OUTPUT": str(output),
+            }, clear=True), mock.patch.object(ai_review_preflight, "probe") as probe:
+                self.assertEqual(ai_review_preflight.main(["--probe", "tools"]), 0)
+            probe.assert_called_once_with("test-key", "tools", "openrouter", "primary")
+            values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+            self.assertEqual(values["fallback_ready"], "true")
+            self.assertEqual(values["secondary_model"], "primary")
+
+    def test_nvidia_tools_require_an_explicit_anthropic_gateway_before_network(self):
+        for base_url in ("", "  "):
+            with self.subTest(base_url=base_url), mock.patch.dict(os.environ, {"CLAUDE_REVIEW_BASE_URL": base_url}, clear=True), mock.patch.object(ai_review_preflight.urllib.request, "urlopen") as request:
+                with self.assertRaisesRegex(RuntimeError, "CLAUDE_REVIEW_BASE_URL"):
+                    ai_review_preflight.probe("test-key", "tools", "nvidia", "vendor/model")
+                request.assert_not_called()
+
+    def test_tools_use_explicit_provider_routes_or_the_custom_gateway(self):
+        for provider, endpoint in (
+            ("ollama-cloud", "https://ollama.com/v1/messages"),
+            ("openrouter", "https://openrouter.ai/api/v1/messages"),
+            ("nous", "https://inference-api.nousresearch.com/v1/messages"),
+        ):
+            with self.subTest(provider=provider), mock.patch.dict(os.environ, {}, clear=True):
+                request = ai_review_preflight._probe_request("test-key", "tools", provider, "vendor/model")
+                self.assertEqual(request.full_url, endpoint)
+        with mock.patch.dict(os.environ, {"CLAUDE_REVIEW_BASE_URL": "https://gateway.example/anthropic/"}, clear=True):
+            request = ai_review_preflight._probe_request("test-key", "tools", "nvidia", "vendor/model")
+            self.assertEqual(request.full_url, "https://gateway.example/anthropic/v1/messages")
+            self.assertEqual(request.get_header("Authorization"), "Bearer test-key")
+            request = ai_review_preflight._probe_request("test-key", "json", "nvidia", "vendor/model")
+            self.assertEqual(request.full_url, ai_review_preflight.NVIDIA_CHAT_COMPLETIONS_URL)
+
+    def test_claude_preflight_uses_its_own_fallback_not_the_direct_reviewers(self):
+        path = Path(__file__).resolve().parents[2] / ".github/workflows/pr-ai-review.yml"
+        workflow = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
+        step = next(step for job in workflow["jobs"].values() for step in job["steps"] if step.get("id") == "claude_models")
+        self.assertEqual(step["env"].get("DIRECT_REVIEW_FALLBACK_MODEL"), "${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}")
 
     def test_ci_reviewers_use_provider_neutral_model_settings(self):
         root = Path(__file__).resolve().parents[2]

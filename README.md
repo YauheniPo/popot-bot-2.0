@@ -191,12 +191,24 @@ Set a fallback model to select a backup on the same provider. An unset
 an unset `CLAUDE_REVIEW_FALLBACK_MODEL` makes the fallback stage use the primary
 model. `CLAUDE_REVIEW_BASE_URL` overrides the Claude endpoint while keeping the
 selected provider's credentials; it must accept Claude Code's API and tool calls.
+For NVIDIA, the hosted Chat Completions endpoint is used by the direct reviewer.
+Claude with NVIDIA requires an Anthropic-compatible gateway set explicitly in
+`CLAUDE_REVIEW_BASE_URL` (the base URL without `/v1/messages`). Without it, Claude
+preflight stops before making a model request. Ollama Cloud, OpenRouter, and Nous
+have explicit Messages routes in the adapter; the tool probe checks the selected
+model against that route or your override.
 
 Preflight checks run before review. The direct reviewer requires valid review
 JSON; Claude Code also requires tool calling through an Anthropic-compatible
 endpoint. Provider selection alone does not establish model or API compatibility;
 the supported probes are implemented in
 [`ai_review_preflight.py`](.github/scripts/ai_review_preflight.py).
+Both primary and configured fallback must pass the appropriate probe before
+being marked ready. A distinct fallback adds a probe with at most two HTTP
+attempts; when it equals the primary, that result is reused without another
+request. A failed fallback probe emits a warning and disables the fallback for
+that run while keeping the validated primary. Preflight calls may incur provider
+charges, even though they are excluded from the published review request totals.
 The direct adapter selects the fallback response format automatically, including
 an ordinary-JSON retry when a schema request is explicitly rejected as
 unsupported. No fallback-mode variable is required. The publisher validates
@@ -224,6 +236,9 @@ successes, API time, and a bounded request history. Inline findings
 and thread replies identify their successful request and primary/fallback route.
 Response IDs and reported model IDs are included when the API returns them;
 preflight and GitHub publication calls are excluded from the model request counts.
+Retries count additional requests for the same chunk or thread-triage operation;
+five chunks completed in five requests report zero retries. Request numbers are
+global positions in the execution history.
 Claude comments report the actual successful CI attempt and its configured model,
 including prior execution or result-validation failures. Claude SDK HTTP retries
 are not exposed by this workflow and are explicitly marked as unrecorded.

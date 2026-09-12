@@ -87,6 +87,8 @@ class ExecutionReport:
     def summary(self) -> str:
         successes = [a for a in self.attempts if a.outcome == "valid_json"]
         models = sorted({a.model for a in successes})
+        # Each unit (chunk or triage) has one initial request. Attempt.number is
+        # global report order, so counting number == 1 would mislabel new chunks.
         retries = len(self.attempts) - len({a.unit for a in self.attempts})
         label = "Requests" if self.kind == "api" else "CI attempts"
         lines = [self.connection()]

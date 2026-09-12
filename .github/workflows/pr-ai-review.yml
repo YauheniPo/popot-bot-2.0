@@ -153,6 +153,7 @@ jobs:
           NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
           DIRECT_REVIEW_PROVIDER: ${{ env.CLAUDE_REVIEW_PROVIDER }}
           DIRECT_REVIEW_MODEL: ${{ env.CLAUDE_REVIEW_MODEL }}
+          DIRECT_REVIEW_FALLBACK_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
         run: python3 .github/scripts/ai_review_preflight.py --probe tools
 
       - name: Load shared reviewer policy from the pull request

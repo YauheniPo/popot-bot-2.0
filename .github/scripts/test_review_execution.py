@@ -6,6 +6,20 @@ from review_execution import ExecutionReport, claude_execution_report
 
 
 class ExecutionReportTest(unittest.TestCase):
+    def test_five_chunks_count_only_additional_requests_to_the_same_chunk_as_retries(self):
+        report = ExecutionReport("nvidia", "https://integrate.api.nvidia.com/v1/chat/completions", "model")
+        for index in range(5):
+            report.unit = f"chunk {index + 1}/5"
+            attempt = report.begin({"model": "model"})
+            report.finish(attempt, "received", 1)
+            report.validate_last("valid_json")
+        self.assertEqual([a.number for a in report.attempts], [1, 2, 3, 4, 5])
+        self.assertIn("Requests: 5 · Validated: 5 · Retries: 0", report.summary())
+        for chunk in ("chunk 2/5", "chunk 5/5"):
+            report.unit = chunk
+            report.begin({"model": "model"})
+        self.assertIn("Requests: 7 · Validated: 5 · Retries: 2", report.summary())
+
     def test_nous_reports_canonical_endpoints_for_both_reviewers(self):
         for endpoint in ("https://inference-api.nousresearch.com", "https://inference-api.nousresearch.com/v1/chat/completions"):
             with self.subTest(endpoint=endpoint):

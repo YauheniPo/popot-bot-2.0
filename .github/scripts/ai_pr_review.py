@@ -73,6 +73,7 @@ GITHUB_WEB_URL = "https://github.com"
 # One extra bounded request re-checks earlier reviewer threads against this
 # revision, so a finding the owner has since fixed stops following the PR.
 MAX_TRIAGED_THREADS = 20
+THREAD_TRIAGE_UNIT = "thread triage"
 MAX_TRIAGE_EVIDENCE_CHARACTERS = 24_000
 MAX_RENDERED_LINE_CHARACTERS = 4_000
 OLLAMA_URL = CHAT_COMPLETIONS_URL
@@ -800,7 +801,6 @@ def request_with_transient_retries(
                     DEFAULT_RATE_LIMIT_RETRY_SECONDS,
                 )
             REVIEW_DEADLINE.bounded_sleep(error.retry_after_seconds or fallback_delay)
-    raise AssertionError("unreachable")
 
 
 def request_valid_review(
@@ -828,7 +828,6 @@ def request_valid_review(
             if EXECUTION_REPORT:
                 EXECUTION_REPORT.validate_last("valid_json")
             return parsed
-    raise AssertionError("unreachable")
 
 
 def _structured_output_unavailable(error: RequestError) -> bool:
@@ -1165,7 +1164,7 @@ def request_thread_triage(
     review_files: list[ReviewFile],
 ) -> list[ThreadVerdict]:
     if EXECUTION_REPORT:
-        EXECUTION_REPORT.unit = "thread triage"
+        EXECUTION_REPORT.unit = THREAD_TRIAGE_UNIT
     paths = {thread.path for thread in threads}
     user_prompt = f"""Re-evaluate the automated review threads below against this revision.
 
@@ -1209,7 +1208,7 @@ ANNOTATED_DIFF_FOR_THESE_FILES:
         response = request_reasoning_compatible_review(
             headers,
             body,
-            "thread triage",
+            THREAD_TRIAGE_UNIT,
             _has_triage_shape,
         )
     return validate_thread_verdicts(response, threads)
@@ -1261,9 +1260,51 @@ def _reply_if_needed(
     ):
         return False
     if EXECUTION_REPORT:
-        message += EXECUTION_REPORT.footer("thread triage")
+        message += EXECUTION_REPORT.footer(THREAD_TRIAGE_UNIT)
     reply_to_review_thread(repository, pr_number, token, thread.reply_to_comment_id, message)
     return True
+
+
+def _apply_thread_verdict(
+    repository: str,
+    pr_number: str,
+    token: str,
+    head_sha: str,
+    verdict: ThreadVerdict,
+    thread: ReviewThread,
+    changed_paths: set[str],
+) -> str:
+    """Apply one verdict, retaining threads that require human participation."""
+    marker = _verdict_marker(head_sha, thread.node_id)
+    label = reviewer_label()
+    if verdict.verdict == "confirmed":
+        _reply_if_needed(
+            repository, pr_number, token, thread, marker,
+            f"{marker}\n**[{label}] Finding remains valid**\n\nEvidence: {verdict.reason}",
+        )
+        return "still_open"
+    if verdict.verdict == "needs_human" or (
+        verdict.verdict in {"fixed", "rejected"}
+        and not may_be_auto_fixed(thread, head_sha, changed_paths)
+    ):
+        if verdict.verdict == "needs_human":
+            _reply_if_needed(
+                repository, pr_number, token, thread, marker,
+                f"{marker}\n**[{label}] Human review requested**\n\nEvidence: {verdict.reason}",
+            )
+        return "left_for_human"
+    heading = (
+        "Resolved — the requested change is present in this revision"
+        if verdict.verdict == "fixed"
+        else "Rejected finding"
+    )
+    if not _reply_if_needed(
+        repository, pr_number, token, thread, marker,
+        f"{marker}\n**[{label}] {heading}**\n\nReason: {verdict.reason}",
+    ):
+        return "skipped"
+    resolve_review_thread(token, thread.node_id)
+    return "fixed" if verdict.verdict == "fixed" else "rejected"
 
 
 def apply_thread_verdicts(
@@ -1277,67 +1318,26 @@ def apply_thread_verdicts(
 ) -> TriageOutcome:
     """Close earlier reviewer threads this revision has settled."""
     threads_by_id = {thread.node_id: thread for thread in threads}
-    label = reviewer_label()
-    fixed = rejected = still_open = left_for_human = 0
+    outcomes: Counter[str] = Counter()
     closed: set[str] = set()
     for verdict in verdicts:
         thread = threads_by_id.get(verdict.thread_id)
         # Human participation opts a thread out permanently: someone is using it.
         if thread is None or not is_machine_thread(thread):
             continue
-        marker = _verdict_marker(head_sha, thread.node_id)
-        if verdict.verdict == "confirmed":
-            still_open += 1
-            _reply_if_needed(
-                repository, pr_number, token, thread, marker,
-                f"{marker}\n**[{label}] Finding remains valid**\n\nEvidence: {verdict.reason}",
-            )
-            continue
-        if verdict.verdict == "needs_human" or (
-            verdict.verdict in {"fixed", "rejected"}
-            and not may_be_auto_fixed(thread, head_sha, changed_paths)
-        ):
-            left_for_human += 1
-            if verdict.verdict == "needs_human":
-                _reply_if_needed(
-                    repository, pr_number, token, thread, marker,
-                    f"{marker}\n**[{label}] Human review requested**\n\nEvidence: {verdict.reason}",
-                )
-            continue
-        comment_id = thread.reply_to_comment_id
-        if (
-            comment_id is None
-            or not thread.viewer_can_reply
-            or any(marker in comment.body for comment in thread.comments)
-        ):
-            continue
-        heading = (
-            "Resolved — the requested change is present in this revision"
-            if verdict.verdict == "fixed"
-            else "Rejected finding"
+        outcome = _apply_thread_verdict(
+            repository, pr_number, token, head_sha, verdict, thread, changed_paths,
         )
-        _reply_if_needed(
-            repository, pr_number, token, thread, marker,
-            f"{marker}\n**[{label}] {heading}**\n\nReason: {verdict.reason}",
-        )
-        resolve_review_thread(token, thread.node_id)
-        closed.add(thread.node_id)
-        if verdict.verdict == "fixed":
-            fixed += 1
-        else:
-            rejected += 1
+        outcomes[outcome] += 1
+        if outcome in {"fixed", "rejected"}:
+            closed.add(thread.node_id)
     return TriageOutcome(
-        fixed=fixed,
-        rejected=rejected,
-        still_open=still_open,
-        left_for_human=left_for_human,
+        fixed=outcomes["fixed"],
+        rejected=outcomes["rejected"],
+        still_open=outcomes["still_open"],
+        left_for_human=outcomes["left_for_human"],
         closed_thread_ids=frozenset(closed),
     )
-
-
-def _is_rate_limited(error: RequestError) -> bool:
-    """Identify provider throttling that should not fail the CI review job."""
-    return error.status == 429
 
 
 def _clean_text(value: object, limit: int) -> str:
