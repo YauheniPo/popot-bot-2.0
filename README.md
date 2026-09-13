@@ -193,7 +193,11 @@ model. `CLAUDE_REVIEW_BASE_URL` overrides the Claude endpoint while keeping the
 selected provider's credentials; it must accept Claude Code's API and tool calls.
 For NVIDIA, the hosted Chat Completions endpoint is used by the direct reviewer.
 Claude with NVIDIA requires an Anthropic-compatible gateway set explicitly in
-`CLAUDE_REVIEW_BASE_URL` (the base URL without `/v1/messages`). Without it, Claude
+`CLAUDE_REVIEW_BASE_URL`. The adapter accepts the API root, a base ending in `/v1`,
+or the full `/v1/messages` URL and normalizes it once for both preflight and all
+Claude stages. For example, `https://openrouter.ai/api/v1` becomes the SDK base
+`https://openrouter.ai/api`, with requests sent to `/api/v1/messages`.
+Without a gateway URL for NVIDIA, Claude
 preflight stops before making a model request. Ollama Cloud, OpenRouter, and Nous
 have explicit Messages routes in the adapter; the tool probe checks the selected
 model against that route or your override.
