@@ -31,12 +31,12 @@ def _changed_paths(base_sha: str, head_sha: str) -> set[str]:
     import subprocess
 
     result = subprocess.run(
-        ["git", "diff", "--name-only", base_sha, head_sha, "--"],
+        ["git", "diff", "--name-only", "-z", base_sha, head_sha, "--"],
         check=True,
         capture_output=True,
         text=True,
     )
-    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    return {path for path in result.stdout.split("\0") if path}
 
 
 def build_context(project_key: str, pull_request: str, token: str, base_sha: str, head_sha: str) -> dict[str, object]:

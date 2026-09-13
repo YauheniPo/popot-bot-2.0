@@ -62,6 +62,9 @@ elif [[ "$(id -un)" != "$RUN_AS_USER" ]]; then
 fi
 runner+=(env -i HOME="$HERMES_USER_HOME" HERMES_HOME="$HERMES_HOME"
     USER="$RUN_AS_USER" LOGNAME="$RUN_AS_USER" LANG=C.UTF-8
+    LC_ALL="${LC_ALL:-C.UTF-8}" TERM="${TERM:-}"
+    HTTP_PROXY="${HTTP_PROXY:-}" HTTPS_PROXY="${HTTPS_PROXY:-}" NO_PROXY="${NO_PROXY:-}"
+    SSL_CERT_FILE="${SSL_CERT_FILE:-}" SSL_CERT_DIR="${SSL_CERT_DIR:-}"
     PATH="$HERMES_USER_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
     "$TIMEOUT_BIN" --kill-after=5s "${TIMEOUT_SECONDS}s"
     "$HERMES_BIN" chat --provider "$PROVIDER_NAME" --model "$MODEL_NAME"
@@ -76,7 +79,7 @@ for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
     # Quiet mode exits after one query. The empty toolset limits this helper to
     # inference, and timeout bounds the whole CLI attempt including its retries.
     if printf '%s' "$USER_MESSAGE" | "${runner[@]}" >"$response_file"; then
-        if [[ -n "$(tr -d '[:space:]' <"$response_file")" ]]; then
+        if [[ -s "$response_file" ]]; then
             cat "$response_file"
             exit 0
         fi

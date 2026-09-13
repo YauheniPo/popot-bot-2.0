@@ -3,11 +3,39 @@ from unittest import mock
 import os
 from pathlib import Path
 import tempfile
+import io
+import json
 
 import sonar_review_context
 
 
 class SonarContextTest(unittest.TestCase):
+    def test_request_sets_basic_auth_and_rejects_non_object_payloads(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value = io.StringIO(json.dumps({"ok": True}))
+        with mock.patch.object(sonar_review_context.urllib.request, "urlopen", return_value=response) as urlopen:
+            self.assertEqual(
+                sonar_review_context._request("/api/test", "token", {"q": "a b"}),
+                {"ok": True},
+            )
+        request = urlopen.call_args.args[0]
+        self.assertIn("q=a+b", request.full_url)
+        self.assertTrue(request.get_header("Authorization").startswith("Basic "))
+
+        bad = mock.MagicMock()
+        bad.__enter__.return_value = io.StringIO("[]")
+        with mock.patch.object(sonar_review_context.urllib.request, "urlopen", return_value=bad):
+            with self.assertRaisesRegex(RuntimeError, "invalid response"):
+                sonar_review_context._request("/api/test", "token", {})
+
+    @mock.patch("subprocess.run")
+    def test_changed_paths_uses_nul_delimited_git_output(self, run):
+        # subprocess is imported inside _changed_paths; patch the module object
+        # used by the function after import.
+        completed = mock.Mock(stdout="src/a.py\0README.md\0")
+        run.return_value = completed
+        self.assertEqual(sonar_review_context._changed_paths("base", "head"), {"src/a.py", "README.md"})
+
     def test_main_reports_api_failures_to_the_workflow(self):
         with mock.patch.dict(
             sonar_review_context.os.environ,

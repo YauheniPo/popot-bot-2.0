@@ -33,6 +33,7 @@ REQUEST_TIMEOUT_SECONDS = 90
 MAX_ATTEMPTS = 4
 SMOKE_TIMEOUT_SECONDS = 45
 SMOKE_MAX_ATTEMPTS = 1
+SMOKE_FALLBACK_MAX_ATTEMPTS = 2
 RETRYABLE_STATUSES = {408, 429, 500, 502, 503, 504}
 
 
@@ -230,7 +231,7 @@ def probe(api_key: str, kind: str, provider: str = "ollama-cloud", model: str = 
         # Run both checks against the same Anthropic route. This catches the
         # common case where tool use works but Claude cannot emit our JSON contract.
         probe(api_key, "tools", provider, model,
-              attempts_override=SMOKE_MAX_ATTEMPTS, timeout_override=SMOKE_TIMEOUT_SECONDS)
+              attempts_override=attempts, timeout_override=SMOKE_TIMEOUT_SECONDS)
     request = _probe_request(api_key, kind, provider, model)
     result = _request_probe_response(request, attempts, timeout, provider, model, kind)
 
@@ -238,9 +239,13 @@ def probe(api_key: str, kind: str, provider: str = "ollama-cloud", model: str = 
         raise RuntimeError(f"{provider} {kind} probe did not satisfy the expected response contract")
 
 
-def probe_ready(api_key: str, kind: str, provider: str, model: str, role: str) -> bool:
+def probe_ready(api_key: str, kind: str, provider: str, model: str, role: str,
+                attempts_override: int | None = None) -> bool:
     try:
-        probe(api_key, kind, provider, model)
+        if attempts_override is None:
+            probe(api_key, kind, provider, model)
+        else:
+            probe(api_key, kind, provider, model, attempts_override=attempts_override)
     except RuntimeError as error:
         print(f"::warning::{provider} {model}: {role} probe unavailable. {error}", file=sys.stderr)
         return False
@@ -256,7 +261,10 @@ def probe_models(api_key: str, kind: str, provider: str, primary: str, fallback:
         # Reuse failures as well as successes; the same model gets no extra tries.
         fallback_ready = primary_ready
     else:
-        fallback_ready = probe_ready(api_key, kind, provider, fallback, "fallback")
+        fallback_ready = probe_ready(
+            api_key, kind, provider, fallback, "fallback",
+            attempts_override=SMOKE_FALLBACK_MAX_ATTEMPTS if kind == "claude" else None,
+        )
     if not primary_ready and not fallback_ready:
         raise RuntimeError("No configured review model passed preflight; see the probe failures above")
     return primary_ready, fallback_ready

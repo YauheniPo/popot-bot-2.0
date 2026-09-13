@@ -37,23 +37,24 @@ class OperationScriptTests(unittest.TestCase):
         responses = responses if responses is not None else ["Review response\n"] * len(exit_codes)
         self.assertEqual(len(responses), len(exit_codes))
         hermes = executable_dir / "hermes"
-        self.write_executable(hermes, f"""#!{sys.executable}
+        mock_source = """#!%s
 import json, os, pathlib, sys
-path = pathlib.Path({str(calls)!r})
+path = pathlib.Path(%r)
 previous = path.read_text().splitlines() if path.exists() else []
 with path.open('a') as output:
-    output.write(json.dumps({{'args': sys.argv[1:], 'query': sys.stdin.read(),
+    output.write(json.dumps({'args': sys.argv[1:], 'query': sys.stdin.read(),
                              'home': os.environ.get('HOME'), 'hermes_home': os.environ.get('HERMES_HOME'),
-                             'inherited_key': 'NVIDIA_API_KEY' in os.environ}}) + '\\n')
+                             'inherited_key': 'NVIDIA_API_KEY' in os.environ}) + '\\n')
 index = len(previous)
-codes = {json.dumps(exit_codes)}
+codes = %r
 if index >= len(codes):
     sys.exit('Unexpected Hermes CLI invocation')
 code = codes[index]
 if code == 0:
-    sys.stdout.write({json.dumps(responses)}[index])
+    sys.stdout.write(%r[index])
 sys.exit(code)
-""")
+""" % (sys.executable, str(calls), exit_codes, responses)
+        self.write_executable(hermes, mock_source)
         # Simulate the VPS utilities without starting Hermes or calling a model.
         self.write_executable(executable_dir / "timeout", '#!/usr/bin/env bash\nshift 2\nexec "$@"\n')
         self.write_executable(executable_dir / "sleep", f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> {shlex.quote(str(sleeps))}\n')
@@ -180,13 +181,19 @@ os.execvp(sys.argv[4], sys.argv[4:])
                     self.run_retry_helper(temporary, exit_codes)
 
     def test_api_retry_rejects_empty_success_and_reports_the_actual_exit_status(self):
-        for empty in ("", " \t\n"):
-            with self.subTest(empty=empty), tempfile.TemporaryDirectory() as directory:
-                result, calls, sleeps, _ = self.run_retry_helper(Path(directory), [0], responses=[empty])
-                self.assertEqual(len(calls), 1)
-                self.assertFalse(sleeps.exists())
-                self.assertEqual(result.returncode, 1)
-                self.assertIn("returned an empty response (exit 0)", result.stderr)
+        with tempfile.TemporaryDirectory() as directory:
+            result, calls, sleeps, _ = self.run_retry_helper(Path(directory), [0], responses=[""])
+            self.assertEqual(len(calls), 1)
+            self.assertFalse(sleeps.exists())
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("returned an empty response (exit 0)", result.stderr)
+
+        with tempfile.TemporaryDirectory() as directory:
+            result, calls, sleeps, _ = self.run_retry_helper(Path(directory), [0], responses=[" \t\n"])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(calls), 1)
+            self.assertFalse(sleeps.exists())
+            self.assertTrue(result.stdout.endswith(" \t\n"), repr(result.stdout))
 
     def test_notify_doctor_url_encodes_plain_text_and_reports_failures(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

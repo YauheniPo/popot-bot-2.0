@@ -274,6 +274,14 @@ class OllamaReviewTest(unittest.TestCase):
                     ai_review_preflight.probe("test-key", "tools", "nvidia", "vendor/model")
                 request.assert_not_called()
 
+    def test_claude_fallback_gets_a_second_smoke_attempt(self):
+        with mock.patch.object(ai_review_preflight, "probe") as probe:
+            probe.return_value = None
+            ai_review_preflight.probe_models("key", "claude", "openrouter", "primary", "backup")
+            fallback_calls = [call for call in probe.call_args_list if call.args[3] == "backup"]
+            self.assertEqual(len(fallback_calls), 1)
+            self.assertEqual(fallback_calls[0].kwargs["attempts_override"], 2)
+
     def test_tools_use_explicit_provider_routes_or_the_custom_gateway(self):
         for provider, endpoint in (
             ("ollama-cloud", "https://ollama.com/v1/messages"),
