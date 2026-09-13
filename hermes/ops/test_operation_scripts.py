@@ -117,6 +117,14 @@ os.execvp(sys.argv[4], sys.argv[4:])
                 self.assertEqual(len(calls), 2)
                 self.assertEqual(sleeps.read_text().splitlines(), ["1"])
 
+    def test_api_retry_stops_on_fixed_cli_usage_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, calls, sleeps, _ = self.run_retry_helper(Path(directory), [2])
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertEqual(len(calls), 1)
+            self.assertFalse(sleeps.exists())
+            self.assertIn("failed (exit 2)", result.stderr)
+
     def test_api_retry_rejects_missing_provider_before_starting_cli(self):
         with tempfile.TemporaryDirectory() as directory:
             result, calls, _, _ = self.run_retry_helper(Path(directory), [], overrides={"HERMES_API_RETRY_PROVIDER": ""})
