@@ -285,6 +285,31 @@ class OllamaReviewTest(unittest.TestCase):
             request = ai_review_preflight._probe_request("test-key", "json", "nvidia", "vendor/model")
             self.assertEqual(request.full_url, ai_review_preflight.NVIDIA_CHAT_COMPLETIONS_URL)
 
+    def test_tool_probe_and_claude_share_a_normalized_base_url(self):
+        cases = (
+            ("https://openrouter.ai/api", "https://openrouter.ai/api"),
+            ("https://openrouter.ai/api/v1", "https://openrouter.ai/api"),
+            (" https://openrouter.ai/api/v1/ ", "https://openrouter.ai/api"),
+            ("https://gateway.example/proxy/v1/messages/", "https://gateway.example/proxy"),
+            ("https://gateway.example/v1/proxy", "https://gateway.example/v1/proxy"),
+            ("https://gateway.example/v1/v1/messages", "https://gateway.example/v1"),
+        )
+        response = {"content": [{"type": "tool_use", "name": "review_model_preflight", "input": {"status": "ok"}}]}
+        for configured, normalized in cases:
+            with self.subTest(base=configured), tempfile.TemporaryDirectory() as temporary:
+                output = Path(temporary) / "outputs"
+                with (
+                    mock.patch.dict(os.environ, {
+                        "DIRECT_REVIEW_PROVIDER": "openrouter", "OPENROUTER_API_KEY": "test-key",
+                        "CLAUDE_REVIEW_BASE_URL": configured, "GITHUB_OUTPUT": str(output),
+                    }, clear=True),
+                    mock.patch.object(ai_review_preflight.urllib.request, "urlopen", return_value=self.response(response)) as request,
+                ):
+                    self.assertEqual(ai_review_preflight.main(["--probe", "tools"]), 0)
+                values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+                self.assertEqual(values.get("anthropic_base_url"), normalized)
+                self.assertEqual(request.call_args.args[0].full_url, f"{normalized}/v1/messages")
+
     def test_claude_preflight_uses_its_own_fallback_not_the_direct_reviewers(self):
         path = Path(__file__).resolve().parents[2] / ".github/workflows/pr-ai-review.yml"
         workflow = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
@@ -306,10 +331,12 @@ class OllamaReviewTest(unittest.TestCase):
         for job in automatic["jobs"].values():
             for step in job["steps"]:
                 if "anthropics/claude-code-action@" in step.get("uses", ""):
-                    self.assertIn("steps.claude_models.outputs.provider", step["env"]["ANTHROPIC_BASE_URL"])
+                    self.assertEqual(step["env"]["ANTHROPIC_BASE_URL"], "${{ steps.claude_models.outputs.anthropic_base_url }}")
                     self.assertIn("steps.claude_models.outputs.provider", step["with"]["anthropic_api_key"])
                     self.assertIn("OPENROUTER_API_KEY", step["with"]["anthropic_api_key"])
                     self.assertIn("OPENROUTER_API_KEY", step["env"]["ANTHROPIC_AUTH_TOKEN"])
+                if "CLAUDE_REVIEW_ENDPOINT" in step.get("env", {}):
+                    self.assertEqual(step["env"]["CLAUDE_REVIEW_ENDPOINT"], "${{ steps.claude_models.outputs.anthropic_base_url }}")
         manual_text = (root / ".github/workflows/manual-ai-review.yml").read_text()
         manual = yaml.load(manual_text, Loader=yaml.BaseLoader)
         self.assertEqual(manual["on"]["workflow_dispatch"]["inputs"]["model"]["default"], "moonshotai/kimi-k3")
@@ -457,8 +484,7 @@ class NousReviewTest(unittest.TestCase):
                     if any(name in step.get("run", "") for name in ("ai_pr_review.py", "ai_review_preflight.py")):
                         self.assertEqual(step["env"]["NOUS_API_KEY"], "${{ secrets.NOUS_API_KEY }}")
                     if "anthropics/claude-code-action@" in step.get("uses", ""):
-                        self.assertIn("inference-api.nousresearch.com", step["env"]["ANTHROPIC_BASE_URL"])
-                        self.assertIn("== 'nous'", step["env"]["ANTHROPIC_BASE_URL"])
+                        self.assertEqual(step["env"]["ANTHROPIC_BASE_URL"], "${{ steps.claude_models.outputs.anthropic_base_url }}")
                         self.assertIn("NOUS_API_KEY", step["with"]["anthropic_api_key"])
                         self.assertEqual(step["with"]["anthropic_api_key"], step["env"]["ANTHROPIC_AUTH_TOKEN"])
 

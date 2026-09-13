@@ -345,7 +345,7 @@ jobs:
           # enables the debug variable; they can contain sensitive output.
           show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
         env:
-          ANTHROPIC_BASE_URL: &claude_api_url ${{ env.CLAUDE_REVIEW_BASE_URL || (steps.claude_models.outputs.provider == 'nous' && 'https://inference-api.nousresearch.com' || (steps.claude_models.outputs.provider == 'nvidia' && 'https://integrate.api.nvidia.com' || (steps.claude_models.outputs.provider == 'openrouter' && 'https://openrouter.ai/api' || 'https://ollama.com'))) }}
+          ANTHROPIC_BASE_URL: &claude_api_url ${{ steps.claude_models.outputs.anthropic_base_url }}
           # Keep repository credentials out of Claude's subprocess entirely;
           # only the deterministic publication step receives GITHUB_TOKEN.
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"

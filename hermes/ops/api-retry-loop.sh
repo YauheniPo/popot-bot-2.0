@@ -77,11 +77,14 @@ for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
             printf '%s\n' "$response"
             exit 0
         fi
-        status=1
+        # A partial Hermes result can exit zero without a usable answer. This
+        # helper checks inference, so require text as well as a successful exit.
+        status=0
+        printf 'Hermes CLI attempt %s/%s returned no answer (exit 0).\n' "$attempt" "$MAX_ATTEMPTS" >&2
     else
         status=$?
+        printf 'Hermes CLI attempt %s/%s failed (exit %s).\n' "$attempt" "$MAX_ATTEMPTS" "$status" >&2
     fi
-    printf 'Hermes CLI attempt %s/%s failed (exit %s).\n' "$attempt" "$MAX_ATTEMPTS" "$status" >&2
     if (( status == 2 || status == 126 || status == 127 )); then
         exit "$status"
     fi

@@ -77,7 +77,8 @@ def configured_fallback_model() -> str:
     return os.environ.get("DIRECT_REVIEW_FALLBACK_MODEL", "").strip()
 
 
-def messages_url(provider: str) -> str:
+def anthropic_base_url(provider: str) -> str:
+    """Normalize operator input for both the probe and Claude's SDK routes."""
     base_url = os.environ.get("CLAUDE_REVIEW_BASE_URL", "").strip().rstrip("/")
     base_url = base_url or MESSAGES_BASE_URLS.get(provider, "")
     if not base_url:
@@ -86,7 +87,14 @@ def messages_url(provider: str) -> str:
             "CLAUDE_REVIEW_BASE_URL to an Anthropic-compatible gateway for Claude Code, "
             "or use the direct API reviewer"
         )
-    return f"{base_url}/v1/messages"
+    for suffix in ("/v1/messages", "/v1"):
+        if base_url.endswith(suffix):
+            return base_url.removesuffix(suffix)
+    return base_url
+
+
+def messages_url(provider: str) -> str:
+    return f"{anthropic_base_url(provider)}/v1/messages"
 
 
 def _probe_request(api_key: str, kind: str, provider: str, model: str) -> urllib.request.Request:
@@ -202,8 +210,9 @@ def main(argv: list[str] | None = None) -> int:
             "nvidia": "NVIDIA_API_KEY", "nous": "NOUS_API_KEY",
         }[provider]
         raise RuntimeError(f"{key_name} must be configured as a GitHub Actions secret for {provider}")
-    if args.probe == "tools":
-        messages_url(provider)  # Reject incompatible transport before any model probes.
+    # Reject incompatible transport before probing and export the same normalized
+    # base for every Claude stage, including token-counting and Messages requests.
+    base_url = anthropic_base_url(provider) if args.probe == "tools" else ""
     model = configured_model()
     fallback = configured_fallback_model()
     primary_ready, fallback_ready = probe_models(api_key, args.probe, provider, model, fallback)
@@ -213,6 +222,7 @@ def main(argv: list[str] | None = None) -> int:
         # A configured fallback is selectable only after the matching API probe.
         values = {
             "provider": provider,
+            "anthropic_base_url": base_url,
             "primary_model": model, "primary_ready": str(primary_ready).lower(),
             "fallback_model": fallback, "fallback_ready": str(fallback_ready).lower(),
             "selected_model": selected_model, "selected_mode": "ordinary",
