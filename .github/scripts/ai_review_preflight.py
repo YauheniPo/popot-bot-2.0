@@ -167,7 +167,7 @@ def _probe_response_valid(result: object, kind: str) -> bool:
                 and isinstance(parsed.get("findings"), list)
                 and isinstance(parsed.get("thread_verdicts"), list)
             )
-        except (TypeError, AttributeError, ValueError, json.JSONDecodeError):
+        except (TypeError, AttributeError, ValueError):
             return False
     try:
         content = result["choices"][0]["message"]["content"]
@@ -178,18 +178,8 @@ def _probe_response_valid(result: object, kind: str) -> bool:
         return False
 
 
-def probe(api_key: str, kind: str, provider: str = "ollama-cloud", model: str = MODEL,
-          *, attempts_override: int | None = None, timeout_override: int | None = None) -> None:
-    attempts = attempts_override or (SMOKE_MAX_ATTEMPTS if kind == "claude" else MAX_ATTEMPTS)
-    timeout = timeout_override or (SMOKE_TIMEOUT_SECONDS if kind == "claude" else REQUEST_TIMEOUT_SECONDS)
-    if kind == "claude":
-        # Run both checks against the same Anthropic route. This catches the
-        # common case where tool use works but Claude cannot emit our JSON contract.
-        probe(api_key, "tools", provider, model,
-              attempts_override=SMOKE_MAX_ATTEMPTS, timeout_override=SMOKE_TIMEOUT_SECONDS)
-        request = _probe_request(api_key, "claude", provider, model)
-    else:
-        request = _probe_request(api_key, kind, provider, model)
+def _request_probe_response(request: urllib.request.Request, attempts: int, timeout: int,
+                            provider: str, model: str, kind: str) -> object:
     result: object = None
     for attempt in range(attempts):
         print(
@@ -211,6 +201,20 @@ def probe(api_key: str, kind: str, provider: str = "ollama-cloud", model: str = 
         # Pace only the next request; the final retryable response raises above
         # without an unnecessary sleep because there is no next attempt.
         time.sleep(15 * (attempt + 1))
+    return result
+
+
+def probe(api_key: str, kind: str, provider: str = "ollama-cloud", model: str = MODEL,
+          *, attempts_override: int | None = None, timeout_override: int | None = None) -> None:
+    attempts = attempts_override or (SMOKE_MAX_ATTEMPTS if kind == "claude" else MAX_ATTEMPTS)
+    timeout = timeout_override or (SMOKE_TIMEOUT_SECONDS if kind == "claude" else REQUEST_TIMEOUT_SECONDS)
+    if kind == "claude":
+        # Run both checks against the same Anthropic route. This catches the
+        # common case where tool use works but Claude cannot emit our JSON contract.
+        probe(api_key, "tools", provider, model,
+              attempts_override=SMOKE_MAX_ATTEMPTS, timeout_override=SMOKE_TIMEOUT_SECONDS)
+    request = _probe_request(api_key, kind, provider, model)
+    result = _request_probe_response(request, attempts, timeout, provider, model, kind)
 
     if not _probe_response_valid(result, kind):
         raise RuntimeError(f"{provider} {kind} probe did not satisfy the expected response contract")
