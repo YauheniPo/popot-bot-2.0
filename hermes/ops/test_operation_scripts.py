@@ -58,7 +58,14 @@ sys.exit(code)
         self.write_executable(executable_dir / "timeout", '#!/usr/bin/env bash\nshift 2\nexec "$@"\n')
         self.write_executable(executable_dir / "sleep", f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> {shlex.quote(str(sleeps))}\n')
         if root:
-            self.write_executable(executable_dir / "id", '#!/usr/bin/env bash\nif [[ $# == 1 && "$1" == -u ]]; then echo 0; else echo 1001; fi\n')
+            self.write_executable(executable_dir / "id", '''#!/usr/bin/env bash
+case "$*" in
+  "-u") echo 0 ;;
+  "-u hermes") echo 1001 ;;
+  "-un") echo root ;;
+  *) exit 1 ;;
+esac
+''')
             self.write_executable(executable_dir / "runuser", f"""#!{sys.executable}
 import json, os, pathlib, sys
 pathlib.Path({str(runuser_args)!r}).write_text(json.dumps(sys.argv[1:]))
