@@ -125,3 +125,16 @@
   register: searxng_container_state
   changed_when: false
   failed_when: searxng_container_state.stdout != 'true'
+
+- name: Verify the configured SearXNG search endpoint
+  ansible.builtin.uri:
+    url: "{{ hermes_searxng_url | trim | regex_replace('/+$', '') }}/search?q=hermes&format=json"
+    method: GET
+    status_code: 200
+    timeout: 5
+    return_content: false
+  register: searxng_http_health
+  retries: 6
+  delay: 5
+  until: searxng_http_health.status == 200
+  when: hermes_searxng_url | default('', true) | trim | length > 0

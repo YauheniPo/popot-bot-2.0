@@ -235,15 +235,15 @@ def build_asset_values(
     if len(gateway_services) != 1:
         raise ValueError("vps_services.gateway must contain exactly one service")
 
-    api_retry_endpoint = _string_setting(
+    api_retry_provider = _string_setting(
         settings,
-        "vps_ops.api_retry.endpoint",
-        r"http://127[.]0[.]0[.]1:[1-9][0-9]{0,4}/[A-Za-z0-9._~/%:-]*",
+        "vps_ops.api_retry.provider",
+        r"[a-z][a-z0-9-]*",
     )
     api_retry_model = _string_setting(
         settings,
         "vps_ops.api_retry.model",
-        r"[A-Za-z0-9._:/-]+",
+        r"[A-Za-z0-9][A-Za-z0-9._:/+-]*",
     )
     api_retry_message = _string_setting(
         settings,
@@ -261,6 +261,9 @@ def build_asset_values(
         "vps_ops.api_retry.wait_seconds",
         1,
         3600,
+    )
+    api_retry_timeout_seconds = _integer_setting(
+        settings, "vps_ops.api_retry.timeout_seconds", 1, 3600,
     )
 
     backup_required = _boolean_setting(settings, "vps_ops.backup.required")
@@ -295,6 +298,12 @@ def build_asset_values(
         1,
         1440,
     )
+    web_settings = settings.get("vps_web", {})
+    if not isinstance(web_settings, dict):
+        raise ValueError("vps_web must be a mapping")
+    searxng_url = web_settings.get("searxng_url", "")
+    if not isinstance(searxng_url, str) or "\n" in searxng_url or "\r" in searxng_url:
+        raise ValueError("vps_web.searxng_url must be a single-line string")
 
     timer_values: dict[str, str] = {}
     timer_names = {
@@ -402,11 +411,12 @@ def build_asset_values(
         "OPS_ALERT_TARGET": alert_target,
         "SERVICE_RESTART_SEC": service_restart_sec,
         "GATEWAY_SERVICE": gateway_services[0],
-        "API_RETRY_ENDPOINT": api_retry_endpoint,
+        "API_RETRY_PROVIDER": api_retry_provider,
         "API_RETRY_MODEL": api_retry_model,
         "API_RETRY_MESSAGE": api_retry_message,
         "API_RETRY_MAX_ATTEMPTS": str(api_retry_max_attempts),
         "API_RETRY_WAIT_SECONDS": str(api_retry_wait_seconds),
+        "API_RETRY_TIMEOUT_SECONDS": str(api_retry_timeout_seconds),
         "BACKUP_REQUIRED": cli_value(backup_required),
         "BACKUP_DIR": backup_dir,
         "BACKUP_MAX_AGE_HOURS": str(backup_max_age),
@@ -421,6 +431,7 @@ def build_asset_values(
         "LOAD_WARN_PER_CPU": str(load_warn),
         "METRICS_FILE": f"{hermes_home}/ops/metrics/hermes.prom",
         "METRICS_MAX_AGE_MINUTES": str(metrics_max_age),
+        "SEARXNG_URL": searxng_url,
         "OBSERVABILITY_DATABASE_RETENTION_DAYS": str(database_retention_days),
         "OBSERVABILITY_AUDIT_MAX_BYTES": str(audit_max_bytes),
         "OBSERVABILITY_AUDIT_ROTATED_FILES": str(audit_rotated_files),
@@ -438,7 +449,7 @@ def build_asset_values(
     }
     values.update(timer_values)
     for key, value in values.items():
-        if not value or "\n" in value or "\r" in value:
+        if (not value and key != "SEARXNG_URL") or "\n" in value or "\r" in value:
             raise ValueError(f"unsafe rendered VPS setting: {key}")
     return values
 

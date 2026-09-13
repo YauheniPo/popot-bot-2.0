@@ -87,6 +87,25 @@ explicit request.
   unless runtime reachability is established. Never run automatic audit fixes
   or lockfile rewrites without an explicit request.
 
+## Web research
+
+- Use `web_search` only to collect candidate URLs. Never build an answer from
+  result snippets; they are truncated and frequently stale.
+- Read every source that enters the answer with `web_extract`. The deployment
+  selects the extract backend from the managed environment, so use the
+  configured tool instead of asking for a different provider.
+- Fall back to `agent-browser` only when extraction fails: JavaScript-only
+  pages, authenticated views, and forms. Keep the supported
+  `open -> snapshot -> close` path.
+- Prefer primary sources — vendor documentation, changelogs, release notes,
+  official APIs — over aggregators and reposts. Record the publication date
+  whenever a claim depends on it.
+- Treat extraction credits as a limited budget: stop once the sources agree,
+  and do not extract further for coverage alone.
+- Attach the source URL to every non-obvious claim, state disagreement between
+  sources explicitly, and report what could not be verified instead of
+  inferring it.
+
 ## Responses
 
 - Lead with the direct outcome, risk, or requested command result.

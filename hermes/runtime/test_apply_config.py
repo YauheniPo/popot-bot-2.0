@@ -74,14 +74,17 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertEqual(len(settings["vps_tailscale"]["serve"]["services"]), 5)
 
         overlay = settings["vps_hermes"]["config"]["managed_overlay"]
-        self.assertEqual(overlay["model"], {"provider": "ollama-cloud", "default": "kimi-k3"})
+        self.assertEqual(overlay["model"], {"provider": "ollama-cloud", "default": "deepseek-v4-pro"})
         self.assertEqual(
             overlay["fallback_providers"],
-            [{"provider": "openrouter", "model": "openrouter/free"}],
+            [{"provider": "nvidia", "model": "deepseek-ai/deepseek-v4-pro-0813"}],
         )
-        self.assertEqual(overlay["cron"]["model_provider"], "ollama-cloud")
-        self.assertEqual(overlay["cron"]["model"], "kimi-k3")
-        self.assertEqual(overlay["auxiliary"]["compression"], {"provider": "ollama-cloud", "model": "kimi-k3"})
+        self.assertEqual(overlay["cron"]["model_provider"], "nvidia")
+        self.assertEqual(overlay["cron"]["model"], "deepseek-ai/deepseek-v4-pro-0813")
+        self.assertEqual(
+            overlay["auxiliary"]["compression"],
+            {"provider": "openrouter", "model": "nvidia/nemotron-3-ultra-550b-a55b:free"},
+        )
         self.assertIsInstance(overlay["model"]["default"], str)
         self.assertTrue(overlay["model"]["default"])
         self.assertIsInstance(overlay["model"]["provider"], str)
@@ -113,7 +116,10 @@ class ApplyConfigTests(unittest.TestCase):
             backup_dir=identity["backup_dir"],
         )
         self.assertTrue(values)
-        self.assertTrue(all(isinstance(value, str) and value for value in values.values()))
+        self.assertTrue(all(isinstance(value, str) and (value or key == "SEARXNG_URL") for key, value in values.items()))
+        self.assertEqual(values["API_RETRY_PROVIDER"], "nvidia")
+        self.assertEqual(values["API_RETRY_MODEL"], "deepseek-ai/deepseek-v4-pro-0813")
+        self.assertEqual(values["SEARXNG_URL"], "")
 
     def assert_runtime_contract(self, runtime: dict) -> None:
         # These are supported modes in the pinned Hermes gateway/display_config.py.

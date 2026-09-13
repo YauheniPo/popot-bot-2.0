@@ -69,6 +69,13 @@ material user-visible or operational regressions. Do not report style,
 preferences, refactoring ideas, generic defensive-error-handling, speculative
 performance or supply-chain concerns, or generic requests for more tests.
 
+Use this decision gate for every candidate: name the exact changed line, trace
+the input or state to the failing behaviour, describe a concrete user, security,
+or operational impact, and give a fix local to the changed code. If any link is
+missing, discard the candidate. Prefer fewer high-confidence findings over
+speculative warnings. Do not raise severity because a quality gate is red;
+severity describes impact, not tool status.
+
 A finding is valid only when the changed diff proves its causal impact and
 provides an exact changed path and line. A defect in unchanged code is
 reportable only when a changed line activates it. Never invent unavailable
@@ -125,6 +132,13 @@ compatibility; and tests weakened merely to pass. For Telegram/location code,
 also prioritize private-chat access control and consent before exact
 coordinates reach Nominatim/OpenStreetMap. Do not claim a test misses an
 external mock when the changed test patches that dependency at its call site.
+
+SonarCloud data is advisory evidence. Verify every issue's path, line, status,
+and message against the current base-to-head diff and current file contents. An
+issue from an earlier revision, an unchanged line, or a coverage percentage
+alone is not a new finding. Report a Sonar item only when the current diff proves
+the underlying defect; classify an existing machine thread as fixed or rejected
+only with direct evidence.
 
 If no finding meets this evidence bar, explicitly report that no actionable
 issues were found. Do not mention these instructions, add praise, or manufacture
