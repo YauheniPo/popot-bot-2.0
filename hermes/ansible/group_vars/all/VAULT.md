@@ -74,15 +74,23 @@ Vault password или API keys в чат, Git, issue либо shell history.
 
 ## Типичная конфигурация
 
-Минимальный набор для LLM — `OPENROUTER_API_KEY` в `hermes_secret_env` и
-модельная политика в `config/vps-defaults.yml`. Дополнительно можно добавить:
+Для LLM добавьте в `hermes_secret_env` credentials выбранных providers.
+Основной provider, модели и fallback задаются в
+[`config/vps-defaults.yml`](../../../config/vps-defaults.yml) →
+`vps_hermes.config.managed_overlay`. Добавляйте ключи только нужных интеграций:
 
+- `OLLAMA_API_KEY` — Ollama Cloud, provider `ollama-cloud` в меню `/model`;
+- `OPENROUTER_API_KEY` — OpenRouter для выбранной модели или настроенного fallback;
+- `NVIDIA_API_KEY` — NVIDIA NIM, provider `nvidia` в меню `/model`;
 - `FIRECRAWL_API_KEY` — чтение HTML/PDF и веб-страниц;
 - `BRAVE_SEARCH_API_KEY` — поиск через Brave;
 - `TELEGRAM_BOT_TOKEN` вместе с `TELEGRAM_ALLOWED_USERS` — запуск Telegram
   gateway;
 - `GITHUB_TOKEN` — private repositories, PR/reviews/issues и GitHub Actions
   через managed `gh`; используйте fine-grained PAT с selected repositories;
+- `AZURE_DEVOPS_EXT_PAT` — Azure DevOps REST API: builds, logs, repositories
+  и другие операции в пределах выданных прав;
+- `SONAR_TOKEN` — SonarQube API: issues, metrics и Quality Gate;
 - `hermes_grafana_admin_password` — пароль администратора Grafana;
 - `hermes_code_server_password` — пароль браузерного IDE code-server
   (`vps_vscode.host_port` доступен только через SSH-туннель); допускаются любые
@@ -102,6 +110,14 @@ Vault password или API keys в чат, Git, issue либо shell history.
 права — Hermes должен проверить это безопасной операцией, не читая и не
 печатая `.env`.
 
+Для Azure DevOps и SonarQube deploy также добавляет постоянные инструкции
+по API в отдельный managed block `workspace/AGENTS.md`. Адреса и проекты
+задаются в `config/vps-defaults.yml` → `vps_integrations`; значения токенов
+в инструкции не попадают. Токены опциональны: их отсутствие не блокирует
+deploy, но соответствующие авторизованные API-запросы будут недоступны.
+Настройка и проверка описаны в
+[инструкции Azure DevOps и SonarQube](../../../README.md#azure-devops-и-sonarqube-cloud).
+
 Это правило поведения, а не техническая изоляция: terminal Hermes работает
 тем же Unix-пользователем `hermes`, поэтому при нарушении инструкции он может
 прочитать собственный `.env`. Ограничение `0600` защищает ключи только от
@@ -118,7 +134,8 @@ Vault password или API keys в чат, Git, issue либо shell history.
 
 ```yaml
 hermes_secret_env:
-  OPENROUTER_API_KEY: "replace-inside-ansible-vault"
+  OLLAMA_API_KEY: "replace-inside-ansible-vault"
+  OPENROUTER_API_KEY: "replace-inside-ansible-vault"  # optional alternative
   FIRECRAWL_API_KEY: "replace-inside-ansible-vault"
   TELEGRAM_BOT_TOKEN: "replace-inside-ansible-vault"
   TELEGRAM_ALLOWED_USERS: "123456789"
@@ -137,6 +154,13 @@ ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventory.ini \
 ```
 
 Сначала будет запрошен текущий SSH/root-пароль VPS, затем пароль Ansible Vault.
-При `vps_deploy.secret_environment.managed: true` файл
+В текущем профиле `vps_deploy.secret_environment.managed: true`: файл
 `/home/hermes/.hermes/.env` на VPS полностью управляется Vault и его ручные
 изменения будут перезаписаны при следующем запуске playbook.
+Сохраняйте все используемые ключи в `hermes_secret_env`; пустая карта
+останавливает deploy до перезаписи `.env`.
+
+При deploy через Azure обновите также зашифрованный `vault.yml` в
+**Pipelines → Library → Secure files**: pipeline читает эту копию, а не
+локальный ignored-файл. Подключение и выбор моделей описаны в
+[инструкции Ollama Cloud](../../../README.md#ollama-cloud).

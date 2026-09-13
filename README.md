@@ -127,6 +127,157 @@ do not add credentials the agent should never be able to use.
   losing the VPS. The planned encrypted offsite-backup work is tracked in
   [`hermes/VPS-BACKLOG.md`](hermes/VPS-BACKLOG.md).
 
+## AI code reviews
+
+The repository has two review engines: a direct API reviewer and a Claude Code
+reviewer. Configure their providers and models independently under GitHub
+repository **Settings → Secrets and variables → Actions → Variables**.
+
+| Setting | Direct API, including manual/Azure reviews | Claude Code |
+| --- | --- | --- |
+| Provider | `DIRECT_REVIEW_PROVIDER` | `CLAUDE_REVIEW_PROVIDER` |
+| Primary model | `DIRECT_REVIEW_MODEL` | `CLAUDE_REVIEW_MODEL` |
+| Fallback model on the same provider | `DIRECT_REVIEW_FALLBACK_MODEL` | `CLAUDE_REVIEW_FALLBACK_MODEL` |
+| Custom API base URL | Selected by the provider adapter | `CLAUDE_REVIEW_BASE_URL` (optional) |
+
+Use a model ID accepted by the selected provider. The provider selector supports
+these values and chooses the corresponding GitHub Actions **Secret**:
+
+| Provider value | API key secret |
+| --- | --- |
+| `nvidia` | `NVIDIA_API_KEY` |
+| `ollama-cloud` | `OLLAMA_API_KEY` |
+| `openrouter` | `OPENROUTER_API_KEY` |
+| `nous` (Nous Portal) | `NOUS_API_KEY` |
+
+The default provider is `nvidia`. If `DIRECT_REVIEW_PROVIDER` is omitted when
+running the preflight script directly, `NVIDIA_API_KEY` is therefore required;
+set the provider explicitly when only another provider is configured.
+
+Add the keys for the providers you intend to use. VPS Ansible Vault credentials
+are separate and do not reach GitHub runners. Azure needs `GITHUB_ACTIONS_TOKEN`
+to launch and collect the GitHub review; the inference key belongs on GitHub.
+Changing a model does not require a new variable name or a code edit.
+
+For Nous Portal, generate an inference key in [Portal API keys](https://portal.nousresearch.com/api-keys)
+and save it as the GitHub Actions secret `NOUS_API_KEY`. Portal documents
+[API-key bearer authentication](https://portal.nousresearch.com/api/openapi).
+The CI integration uses that key; it does not import or refresh the VPS Hermes
+OAuth session.
+
+To select Portal for either or both engines, set the corresponding Variables
+below, replacing the model placeholders with IDs available to your Portal key:
+
+```dotenv
+DIRECT_REVIEW_PROVIDER=nous
+DIRECT_REVIEW_MODEL=<portal-model-id>
+CLAUDE_REVIEW_PROVIDER=nous
+CLAUDE_REVIEW_MODEL=<portal-tool-capable-model-id>
+```
+
+The existing `DIRECT_REVIEW_FALLBACK_MODEL` and `CLAUDE_REVIEW_FALLBACK_MODEL`
+also accept Portal model IDs. Manual GitHub and Azure runs select `provider=nous`
+and supply `model` in their run parameters. For the standard Portal connection,
+leave `CLAUDE_REVIEW_BASE_URL` unset. Direct review uses Chat Completions; Claude
+uses the Portal Messages endpoint and runs a short smoke test before starting:
+it checks tool calling and the exact review JSON contract in separate requests.
+The smoke test uses one attempt with a 45-second timeout per check, so an
+unavailable or incompatible model is reported before the full Claude run.
+Model IDs are passed verbatim, and model access is checked using the CI key.
+
+`PR_REVIEWER` selects both reviewers sequentially (`0`/unset), direct API (`1`),
+or Claude Code (`2`). Manual GitHub review and the Azure launcher use the same
+direct reviewer. Their `provider` and `model` come from run inputs, including
+the defaults displayed in the launch form. Set both there; changing the PR's
+`DIRECT_REVIEW_MODEL` repository variable does not change that form's default.
+The direct reviewer uses `DIRECT_REVIEW_MODEL` for every supported provider.
+The model validated by preflight is passed to the review step automatically.
+
+Set a fallback model to select a backup on the same provider. An unset
+`DIRECT_REVIEW_FALLBACK_MODEL` disables switching to a backup model. For Claude,
+an unset `CLAUDE_REVIEW_FALLBACK_MODEL` makes the fallback stage use the primary
+model. `CLAUDE_REVIEW_BASE_URL` overrides the Claude endpoint while keeping the
+selected provider's credentials; it must accept Claude Code's API and tool calls.
+For NVIDIA, the hosted Chat Completions endpoint is used by the direct reviewer.
+Claude with NVIDIA requires an Anthropic-compatible gateway set explicitly in
+`CLAUDE_REVIEW_BASE_URL`. The adapter accepts the API root, a base ending in `/v1`,
+or the full `/v1/messages` URL and normalizes it once for both preflight and all
+Claude stages. For example, `https://openrouter.ai/api/v1` becomes the SDK base
+`https://openrouter.ai/api`, with requests sent to `/api/v1/messages`.
+Without a gateway URL for NVIDIA, Claude
+preflight stops before making a model request. Ollama Cloud, OpenRouter, and Nous
+have explicit Messages routes in the adapter; the tool probe checks the selected
+model against that route or your override.
+
+Preflight checks run before review. The direct reviewer requires valid review
+JSON; Claude Code also requires tool calling through an Anthropic-compatible
+endpoint. Provider selection alone does not establish model or API compatibility;
+the supported probes are implemented in
+[`ai_review_preflight.py`](.github/scripts/ai_review_preflight.py).
+Both primary and configured fallback must pass the appropriate probe before
+being marked ready. A distinct fallback adds a probe with at most four HTTP
+attempts; when it equals the primary, that result is reused without another
+request. A failed fallback probe emits a warning and disables the fallback for
+that run while keeping the validated primary. If the primary fails its probe,
+preflight still checks the configured distinct fallback: direct review starts
+with the validated fallback, and Claude skips primary runs and uses its fallback
+stage. If neither model passes, preflight fails without starting review. A
+fallback equal to the failed primary does not grant another retry budget.
+Each probe attempt logs its model, attempt number, and timeout. Preflight calls
+may incur provider charges, even though they are excluded from the published
+review request totals.
+The direct adapter selects the fallback response format automatically, including
+an ordinary-JSON retry when a schema request is explicitly rejected as
+unsupported. No fallback-mode variable is required. The publisher validates
+review JSON and exact diff anchors locally before posting findings.
+
+Direct review allows at most four API requests per model for each chunk or
+thread-triage operation. Transport retries, invalid-JSON regeneration, and API
+compatibility adjustments share that limit. A different fallback has its own
+four-request limit; the total time budget can stop either model earlier.
+Claude Code's full-run retry stages are configured separately in the PR workflow.
+The direct PR job allows 60 minutes and manual/Azure review 105 minutes, including
+preflight and publication; their model-traffic budgets remain separate.
+
+Tune traffic and execution budgets for your provider's quota and the size of the
+review. `OLLAMA_REVIEW_RPM` controls direct API request pacing,
+`OLLAMA_REVIEW_COOLDOWN_SECONDS` controls the pause between the two PR reviewers,
+and `OLLAMA_REVIEW_BUDGET_SECONDS` bounds direct review model traffic. These
+historical variable names also apply when a different provider is selected.
+Manual/Azure review uses `MANUAL_REVIEW_MAX_CHUNKS` and
+`MANUAL_REVIEW_BUDGET_SECONDS` for its chunk and time budgets.
+
+Current defaults, retry limits, and job timeouts live in the
+[PR workflow](.github/workflows/pr-ai-review.yml),
+[manual workflow](.github/workflows/manual-ai-review.yml),
+[Azure launcher](azure-ci/azure-ai-code-review.yml), and
+[review script](.github/scripts/ai_pr_review.py). Use those files and the selected
+run inputs as the source of configured values; use the published execution
+history to see which model and attempts actually produced a result.
+
+Published reviews include execution evidence. Direct API reviews and manual/Azure
+Check Runs show the connection, successful models, request/retry totals, fallback
+successes, API time, and a bounded request history. Inline findings
+and thread replies identify their successful request and primary/fallback route.
+Response IDs and reported model IDs are included when the API returns them;
+preflight and GitHub publication calls are excluded from the model request counts.
+Retries count additional requests for the same chunk or thread-triage operation;
+five chunks completed in five requests report zero retries. Request numbers are
+global positions in the execution history.
+When preflight selects a backup, successful review requests still count as
+fallback successes. The workflows pass the original primary through internal
+`DIRECT_REVIEW_PRIMARY_MODEL` metadata; no additional repository variable is needed.
+Claude comments report the actual successful CI attempt and its configured model,
+including prior execution or result-validation failures. Claude SDK HTTP retries
+are not exposed by this workflow and are explicitly marked as unrecorded.
+Credentials, prompts, raw response/error bodies, and custom endpoint addresses
+are never included in this execution metadata.
+The metadata is excluded from future review prompts and duplicate matching.
+
+Historical provider names in job IDs, environment aliases, and inline-comment
+markers are retained for compatibility. They do not identify the connection
+used by a particular run.
+
 ## Coverage quality gate
 
 The project's SonarQube Cloud gate is

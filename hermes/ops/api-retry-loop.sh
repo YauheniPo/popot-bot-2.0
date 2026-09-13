@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# api-retry-loop.sh — retries model requests after rate limits (429).
-# Usage: ./api-retry-loop.sh [MODEL_NAME] ["USER_MESSAGE"]
-# Example: ./api-retry-loop.sh "poolside/laguna-s-2.1:free" "write a short description"
-
-set -uo pipefail
+# Retry a single Hermes CLI query using the deployment's provider and model.
+# Usage: api-retry-loop.sh [MODEL_NAME] ["USER_MESSAGE"]
+# The name is retained for installed callers; no dashboard API is required.
+set -Eeuo pipefail
 
 OPS_CONFIG="${HERMES_OPS_CONFIG:-/etc/hermes-ops.conf}"
 
@@ -12,81 +11,90 @@ die() {
     exit 1
 }
 
-config_value() {
-    local key="$1"
-    [[ -r "$OPS_CONFIG" ]] || return 1
-    awk -v key="$key" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }' "$OPS_CONFIG"
-}
-
 required_config_value() {
-    local key="$1"
-    local value
-    value="$(config_value "$key")" ||
-        die "${key} is missing from ${OPS_CONFIG}; run the managed deployment first"
+    local key="$1" value
+    [[ -r "$OPS_CONFIG" ]] || die "Cannot read ${OPS_CONFIG}; run the managed deployment first"
+    value="$(awk -v key="$key" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }' "$OPS_CONFIG")"
     [[ -n "$value" ]] || die "${key} must not be empty in ${OPS_CONFIG}"
     printf '%s' "$value"
 }
 
-# Defaults are rendered from config/vps-defaults.yml into the root-owned ops
-# config during deployment. Positional arguments intentionally override only
-# the model and request text for one invocation.
-API_URL="$(required_config_value HERMES_API_RETRY_ENDPOINT)"
+# Read non-secret policy without sourcing it as shell code. Hermes itself loads
+# credentials from its own home; neither the wrapper nor its arguments carry keys.
+RUN_AS_USER="$(required_config_value HERMES_RUN_AS_USER)"
+HERMES_USER_HOME="$(required_config_value HERMES_USER_HOME)"
+HERMES_HOME="$(required_config_value HERMES_HOME)"
+HERMES_BIN="$(required_config_value HERMES_BIN)"
+PROVIDER_NAME="$(required_config_value HERMES_API_RETRY_PROVIDER)"
 MODEL_NAME="${1:-$(required_config_value HERMES_API_RETRY_MODEL)}"
 USER_MESSAGE="${2:-$(required_config_value HERMES_API_RETRY_MESSAGE)}"
 MAX_ATTEMPTS="$(required_config_value HERMES_API_RETRY_MAX_ATTEMPTS)"
 WAIT_SECONDS="$(required_config_value HERMES_API_RETRY_WAIT_SECONDS)"
+TIMEOUT_SECONDS="$(required_config_value HERMES_API_RETRY_TIMEOUT_SECONDS)"
 
-[[ "$API_URL" =~ ^http://127\.0\.0\.1:[1-9][0-9]{0,4}/[A-Za-z0-9._~/%:-]*$ ]] ||
-    die "HERMES_API_RETRY_ENDPOINT must be a loopback HTTP URL"
-[[ "$MODEL_NAME" =~ ^[A-Za-z0-9._:/-]+$ ]] || die "model name contains unsupported characters"
-[[ -n "$USER_MESSAGE" ]] || die "request message must not be empty"
-if ! [[ "$MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || (( MAX_ATTEMPTS > 99 )); then
+[[ "$RUN_AS_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "Invalid Hermes service user"
+[[ "$PROVIDER_NAME" =~ ^[a-z][a-z0-9-]*$ ]] || die "Invalid Hermes provider"
+[[ "$MODEL_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._:/+-]*$ ]] || die "Invalid model name"
+[[ -n "${USER_MESSAGE//[[:space:]]/}" ]] || die "Request message must not be empty"
+for path in "$HERMES_USER_HOME" "$HERMES_HOME" "$HERMES_BIN"; do
+    [[ "$path" =~ ^/[A-Za-z0-9._/@+-]+$ ]] || die "Invalid Hermes runtime path"
+done
+[[ -x "$HERMES_BIN" ]] || die "Hermes CLI is not executable: ${HERMES_BIN}"
+if ! [[ "$MAX_ATTEMPTS" =~ ^[1-9][0-9]?$ ]]; then
     die "HERMES_API_RETRY_MAX_ATTEMPTS must be between 1 and 99"
 fi
-if ! [[ "$WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]] || (( WAIT_SECONDS > 3600 )); then
-    die "HERMES_API_RETRY_WAIT_SECONDS must be between 1 and 3600"
-fi
-
-REQUEST_BODY="$(python3 -c '
-import json
-import sys
-
-print(json.dumps({
-    "model": sys.argv[1],
-    "messages": [{"role": "user", "content": sys.argv[2]}],
-}, ensure_ascii=False))
-' "$MODEL_NAME" "$USER_MESSAGE")"
-
-echo "🔄 Starting retry loop for model: $MODEL_NAME"
-echo "📡 API endpoint: $API_URL"
-echo "⏱ Retry interval: every $WAIT_SECONDS seconds"
-echo "========================================"
-
-for ((i = 1; i <= MAX_ATTEMPTS; i++)); do
-    # Send the request.
-    RESPONSE=$(curl -sS -w "\n%{http_code}" "$API_URL" \
-        -H "Content-Type: application/json" \
-        --data-binary "$REQUEST_BODY")
-
-    HTTP_CODE="${RESPONSE##*$'\n'}"
-    BODY="${RESPONSE%$'\n'*}"
-
-    if [[ "$HTTP_CODE" == "200" ]]; then
-        echo "✅ [$(date '+%H:%M:%S')] Success! Response:"
-        echo "$BODY"
-        exit 0
-    elif [[ "$HTTP_CODE" == "429" ]]; then
-        REMAINING_MIN=$(( (MAX_ATTEMPTS - i) * WAIT_SECONDS / 60 ))
-        echo "🕐 [$(date '+%H:%M:%S')] Rate limited (429). Waiting $WAIT_SECONDS sec... (attempt $i/$MAX_ATTEMPTS, ~${REMAINING_MIN} min remaining)"
-        sleep "$WAIT_SECONDS"
-    else
-        echo "❌ [$(date '+%H:%M:%S')] HTTP $HTTP_CODE: $BODY"
-        if [[ $i -lt $MAX_ATTEMPTS ]]; then
-            echo "🔄 Waiting $WAIT_SECONDS sec and retrying..."
-            sleep "$WAIT_SECONDS"
-        fi
+for setting in WAIT_SECONDS TIMEOUT_SECONDS; do
+    value="${!setting}"
+    if ! [[ "$value" =~ ^[1-9][0-9]{0,3}$ ]] || (( value > 3600 )); then
+        die "${setting} must be between 1 and 3600"
     fi
 done
+service_uid="$(id -u "$RUN_AS_USER")" || die "Hermes service user does not exist"
+[[ "$service_uid" != 0 ]] || die "Refusing to run model queries as root"
+TIMEOUT_BIN="$(command -v timeout)" || die "The coreutils timeout command is required"
 
-echo "🔴 [$(date '+%H:%M:%S')] Attempts exhausted ($MAX_ATTEMPTS). Request failed."
-exit 1
+runner=()
+if [[ "$(id -u)" == 0 ]]; then
+    runner=(runuser -u "$RUN_AS_USER" --)
+elif [[ "$(id -un)" != "$RUN_AS_USER" ]]; then
+    die "Run this helper as ${RUN_AS_USER} or through sudo"
+fi
+runner+=(env -i HOME="$HERMES_USER_HOME" HERMES_HOME="$HERMES_HOME"
+    USER="$RUN_AS_USER" LOGNAME="$RUN_AS_USER" LANG=C.UTF-8
+    PATH="$HERMES_USER_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+    "$TIMEOUT_BIN" --kill-after=5s "${TIMEOUT_SECONDS}s"
+    "$HERMES_BIN" chat --provider "$PROVIDER_NAME" --model "$MODEL_NAME"
+    --quiet --toolsets none --max-turns 1 --query-file -)
+cd -- "$HERMES_USER_HOME"
+
+printf 'Hermes query: provider=%s model=%s; up to %s CLI attempts\n' "$PROVIDER_NAME" "$MODEL_NAME" "$MAX_ATTEMPTS"
+response_file="$(mktemp)" || die "Cannot create a temporary response file"
+trap 'rm -f -- "$response_file"' EXIT
+for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
+    # stdin keeps arbitrary messages literal and out of the process arguments.
+    # Quiet mode exits after one query. The empty toolset limits this helper to
+    # inference, and timeout bounds the whole CLI attempt including its retries.
+    if printf '%s' "$USER_MESSAGE" | "${runner[@]}" >"$response_file"; then
+        if [[ -n "$(tr -d '[:space:]' <"$response_file")" ]]; then
+            cat "$response_file"
+            exit 0
+        fi
+        # A partial Hermes result can exit zero without a usable answer. This
+        # helper checks inference, so require text as well as a successful exit.
+        status=0
+        printf 'Hermes CLI attempt %s/%s returned no answer (exit 0).\n' "$attempt" "$MAX_ATTEMPTS" >&2
+    else
+        status=$?
+        printf 'Hermes CLI attempt %s/%s failed (exit %s).\n' "$attempt" "$MAX_ATTEMPTS" "$status" >&2
+    fi
+    # Status 2 is Hermes' argparse/usage error. This helper supplies a fixed
+    # argument vector, so retrying it cannot change the failure; 126/127 mean
+    # the executable cannot be invoked and are likewise permanent here.
+    if (( status == 2 || status == 126 || status == 127 )); then
+        exit "$status"
+    fi
+    if (( attempt < MAX_ATTEMPTS )); then
+        sleep "$WAIT_SECONDS"
+    fi
+done
+die "Attempts exhausted (${MAX_ATTEMPTS})"

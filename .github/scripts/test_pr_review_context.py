@@ -106,6 +106,15 @@ class ReviewThreadFetchTest(unittest.TestCase):
 
 
 class MachineThreadTest(unittest.TestCase):
+    def test_execution_metadata_does_not_enter_future_model_context_or_duplicate_matching(self):
+        finding = "The API returns a stale account status."
+        metadata = "\n<!-- review-execution -->\nConnection nvidia fallback transport_error\n<!-- /review-execution -->"
+        review_thread = self._thread(finding + metadata)
+        self.assertEqual(review_thread.searchable_text.strip(), finding)
+        rendered = context.render_review_context([review_thread])
+        self.assertIn(finding, rendered)
+        self.assertNotIn("transport_error", rendered)
+
     @staticmethod
     def _thread(body: str, *, author: str = context.AUTOMATED_REVIEW_AUTHOR) -> object:
         return context.ReviewThread(
@@ -514,6 +523,14 @@ class InlineCommentTest(unittest.TestCase):
             "CLAUDE_REVIEW_MODEL": "review-model",
             "CLAUDE_REVIEW_RUN_ID": "123",
             "CLAUDE_REVIEW_RESULT": context.json.dumps(result),
+            "CLAUDE_REVIEW_PROVIDER": "openrouter",
+            "CLAUDE_REVIEW_ENDPOINT": "https://openrouter.ai/api",
+            "CLAUDE_REVIEW_PRIMARY_MODEL": "review-model",
+            "CLAUDE_REVIEW_FALLBACK_MODEL": "fallback-model",
+            "CLAUDE_REVIEW_PRIMARY_OUTCOME": "failure",
+            "CLAUDE_REVIEW_RETRY_OUTCOME": "failure",
+            "CLAUDE_REVIEW_FALLBACK_OUTCOME": "success",
+            "CLAUDE_REVIEW_FALLBACK_VALIDATION": "success",
         }
         with (
             mock.patch.dict(context.os.environ, environment, clear=True),
@@ -537,6 +554,11 @@ class InlineCommentTest(unittest.TestCase):
         self.assertIn("Found one issue.", summary_payload["body"])
         self.assertIn(context.CLAUDE_REVIEWER_LABEL, summary_payload["body"])
         self.assertIn("<!-- claude-pr-review:" + "b" * 40 + ":123 -->", summary_payload["body"])
+        for body in (summary_payload["body"], create.call_args.args[7]):
+            self.assertIn("openrouter", body)
+            self.assertIn("fallback-model", body)
+            self.assertNotIn("Provider: Ollama Cloud", body)
+        self.assertIn("CI attempt #3", create.call_args.args[7])
 
     def test_publisher_falls_back_to_summary_when_github_rejects_an_inline_anchor(self) -> None:
         result = {

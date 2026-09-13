@@ -14,11 +14,13 @@ Debian/Ubuntu VPS. Hermes работает от отдельного непри�
 | Сервис | Для чего нужен в этой сборке | Когда требуется |
 |---|---|---|
 | [Hermes Agent](https://hermes-agent.nousresearch.com/docs/) | Основной AI-агент, gateway, terminal tools, skills и dashboard. | Обязателен. |
-| [OpenRouter](https://openrouter.ai/docs/quickstart) | Модели LLM через один API key; основной provider в Ansible-примерах. | Нужен при выборе OpenRouter model. |
+| [Ollama Cloud](https://docs.ollama.com/cloud) | Один из доступных LLM providers; модель выбирается в конфигурации или меню Hermes. | `OLLAMA_API_KEY` в Vault, если выбран `ollama-cloud`. |
 | [Nous Portal](https://portal.nousresearch.com/) | Альтернатива отдельным ключам: models и Tool Gateway для web, image, TTS и browser. | Опционально, для `deploy-hermes.sh --portal`. |
 | [Telegram Bot API](https://core.telegram.org/bots) | Личный chat gateway и alerts Hermes. | Опционально, если нужен Telegram. |
 | [Tailscale](https://tailscale.com/) | Приватная сеть и Tailscale SSH; позволяет закрыть публичный SSH. | Рекомендуется для VPS. |
 | [GitHub](https://github.com/) | Клонирование репозиториев, commit/push, pull requests и GitHub CLI. | Опционально, для GitHub workflows. |
+| [Azure DevOps](https://dev.azure.com/) | Builds, logs, repositories и другие операции через REST API. | Опционально: `AZURE_DEVOPS_EXT_PAT` в Vault. |
+| [SonarQube Cloud](https://sonarcloud.io/) | Issues, metrics и Quality Gate через REST API. | Опционально: `SONAR_TOKEN` в Vault. |
 | [Google Workspace](https://workspace.google.com/) | Gmail, Calendar, Drive, Contacts, Docs и Sheets через OAuth. | Опционально, для Google tools. |
 | [Brave Search API](https://brave.com/search/api/) | Web search по явно выданному API key. | Опционально, если не используется Nous Tool Gateway. |
 | [Firecrawl](https://docs.firecrawl.dev/) | Извлечение и чтение HTML/PDF/web-страниц. | Опционально, для `web_extract`. |
@@ -153,8 +155,11 @@ sudo systemctl restart hermes-gateway.service
 - **Разработка на VPS.** Агент может клонировать репозитории, создавать ветки,
   читать, создавать, изменять и удалять доступные ему файлы, запускать сборку и
   тесты, делать commit/push и создавать PR после авторизации GitHub.
-- **OpenRouter LLM config.** Ansible Vault хранит `OPENROUTER_API_KEY` и
-  управляет выбранной OpenRouter model через `config.yaml` overlay.
+- **Настраиваемые LLM providers.** Ansible Vault хранит ключи выбранных
+  providers, а `vps_hermes.config.managed_overlay` задаёт модели для чата,
+  вспомогательных задач и cron, а также список fallback.
+- **OpenRouter access.** При необходимости добавьте `OPENROUTER_API_KEY` в
+  Vault для выбора через `/model` или использования в настроенном fallback.
 - **NVIDIA NIM.** Для альтернативного inference provider добавьте
   `NVIDIA_API_KEY` в Vault и выберите модель командой `/model
   nvidia:<model-id>`. NVIDIA имеет собственные квоты и rate limits; бесплатный
@@ -236,7 +241,7 @@ sudo systemctl restart hermes-gateway.service
 | Функция | Статус | Что ещё требуется |
 |---|---|---|
 | Файлы, terminal, Git, coding | Готово сразу | Права Unix на нужный workspace/repository |
-| OpenRouter LLM | Готово после Vault deploy | Задать `OPENROUTER_API_KEY` в Vault; provider/fallback policy — в `vps_hermes.config.managed_overlay`, `model.max_tokens` — в `vps_runtime.set`, live model — через `/model_global` |
+| Ollama Cloud LLM | Готово после Vault deploy | Задать `OLLAMA_API_KEY` в Vault; provider/model policy — в `vps_hermes.config.managed_overlay`, `model.max_tokens` — в `vps_runtime.set` |
 | API keys через Ansible Vault | Готово | Создать и зашифровать локальный `group_vars/all/vault.yml` |
 | Public GitHub clone | Готово сразу | Ничего |
 | Private clone, push, PR, reviews, issues, Actions | Управляется Ansible | `GITHUB_TOKEN` с минимальными repo permissions в Vault; identity и access probe находятся в `vps_github` |
@@ -841,15 +846,16 @@ Hermes в группу `docker`. Поэтому Hermes сможет устана
 `AGENTS.md` запрещает удаление данных, но не может технически ограничить root.
 Задайте `false`, если нужен ограниченный VPS.
 
-При `vps_deploy.secret_environment.managed: true` Vault становится источником истины для
+В текущем профиле `vps_deploy.secret_environment.managed: true`: Vault — источник истины для
 всего Hermes `.env`: ручные изменения на VPS будут заменены следующим запуском
-playbook. Добавление и ротация ключей описаны в
+playbook. Сохраняйте в Vault все используемые ключи; пустой `hermes_secret_env`
+останавливает deploy до перезаписи `.env`. Добавление и ротация ключей описаны в
 [`ansible/group_vars/all/VAULT.md`](ansible/group_vars/all/VAULT.md).
 
 Если Vault содержит оба значения `TELEGRAM_BOT_TOKEN` и
 `TELEGRAM_ALLOWED_USERS`, playbook автоматически поднимет gateway уже с
 обновлёнными ключами. Если хотите продолжать вводить credentials вручную через
-`hermes model`, оставьте `vps_deploy.secret_environment.managed: false`.
+`hermes model`, задайте `vps_deploy.secret_environment.managed: false`.
 
 SSH private key работает иначе: он всегда остаётся на управляющем компьютере.
 В cloud-init/VPS добавляется только соответствующий public key, а в
@@ -1172,6 +1178,33 @@ sudo -u hermes -H /home/hermes/.local/bin/hermes \
 ещё не настроенную интеграцию. Ansible deploy строже: финальный
 `hermes config check` обязан пройти до запуска gateway.
 
+### Проверочный запрос к модели с повторами
+
+После деплоя отдельный helper можно запустить на VPS:
+
+```bash
+sudo /usr/local/lib/hermes-ops/api-retry-loop.sh
+```
+
+Он читает `vps_ops.api_retry` через `/etc/hermes-ops.conf` и запускает
+`hermes chat` от сервисного пользователя с заданными `provider` и `model`.
+Ключи загружает сам Hermes из своего окружения; Dashboard для этого не нужен.
+Основная модель и настройки cron при таком запросе не меняются.
+
+`max_attempts` ограничивает число запусков CLI, `wait_seconds` задаёт паузу
+между неудачами, `timeout_seconds` ограничивает каждый запуск. Внутри одного
+запуска Hermes может выполнять собственные повторы API. После успеха скрипт
+завершается сразу, после исчерпания попыток возвращает ошибку.
+
+Для одного запуска можно передать другую модель и текст:
+
+```bash
+sudo /usr/local/lib/hermes-ops/api-retry-loop.sh '<model-id>' 'Ответь одним предложением'
+```
+
+Провайдер остаётся указанным в конфиге. Helper запускает запрос без toolsets
+и передаёт текст через stdin, сохраняя кавычки и переводы строк буквально.
+
 ## Режимы установки
 
 Ниже — команды для VPS после перехода в каталог со скопированной папкой Hermes:
@@ -1211,14 +1244,13 @@ cd /root/hermes # замените путь, если repository находит�
 
 ### 1. Модели и экономия токенов
 
-Deploy фиксирует основную модель из `vps_hermes.config.managed_overlay`:
-`google/gemini-3.8-flash` через OpenRouter. Запасная модель —
-`deepseek/deepseek-v4-flash-0731` через тот же OpenRouter, в
-`fallback_providers`. Она используется при сбоях основной модели; общий
-сбой OpenRouter или его авторизации затронет обе модели. Поэтому выбор через
-`/model_global` действует до следующего deploy, который вновь применит
-репозиторный default. Hermes также поддерживает built-in providers с API
-key/OAuth, named custom providers и локальные OpenAI-compatible endpoints.
+Deploy применяет модельную политику из `vps_hermes.config.managed_overlay` в
+[`config/vps-defaults.yml`](config/vps-defaults.yml): основной provider и модель,
+вспомогательные модели, настройки cron и `fallback_providers`. Для каждого
+используемого provider нужны его credentials; наличие записи fallback не
+заменяет авторизацию. Следующий deploy снова применит эту политику. Hermes также
+поддерживает built-in providers с API key/OAuth, named custom providers и
+локальные OpenAI-compatible endpoints.
 Для Ansible укажите нужные ENV keys в `hermes_secret_env`, а non-secret
 provider/fallback policy — в `vps_hermes.config.managed_overlay`. Добавление
 нового custom endpoint не требует изменения playbook.
@@ -1240,23 +1272,53 @@ providers могут быть описаны в `vps_hermes.config.managed_overl
 Model IDs задаются в `config/vps-defaults.yml`; каталоги и доступность меняются. Не
 присылайте ключи в Telegram или в чат агенту.
 
+#### Ollama Cloud
+
+Закреплённая версия Hermes уже поддерживает provider `ollama-cloud` с endpoint
+`https://ollama.com/v1`. Для него нужен `OLLAMA_API_KEY`; отдельный Ollama
+server и настройка custom provider не требуются.
+
+1. В своём terminal из корня repository откройте существующий Vault:
+   ```bash
+   EDITOR=nano ansible-vault edit hermes/ansible/group_vars/all/vault.yml
+   ```
+2. Добавьте `OLLAMA_API_KEY` в существующий `hermes_secret_env`, сохранив
+   остальные ключи. Значение берётся из [Ollama Keys](https://ollama.com/settings/keys).
+   Доставка `.env` включена в `vps_deploy.secret_environment.managed`; если
+   старый Vault задаёт `hermes_manage_secret_env: false`, удалите это
+   переопределение, чтобы использовалась политика repository.
+3. Примените обычный Ansible deploy. Для Azure сначала загрузите обновлённый
+   **зашифрованный** `vault.yml` в **Pipelines → Library → Secure files** и
+   запустите deployment pipeline из `main` с **Confirm production deployment**
+   и настроенными approvals. Изменения repository должны быть доступны в
+   `main`; изменение только локального Vault не обновляет Azure Secure File.
+   Deploy сам перезапустит gateway.
+4. Откройте `/model` в Hermes/Telegram и выберите **Ollama Cloud**. Hermes
+   получает каталог моделей автоматически. Для явного выбора используйте
+   `/model ollama-cloud:<model-id>` с точным ID из каталога.
+
+Для постоянного выбора через Ansible задайте нужные model IDs в
+`vps_hermes.config.managed_overlay`. Чат, compression, cron и fallback имеют
+отдельные настройки: смена модели чата не меняет остальные назначения.
+
 ### Надёжные cron-задачи
 
-Для cron задан отдельный fleet-default: `cron.model_provider: openrouter` и
-`cron.model: z-ai/glm-5.3-flash`. Поэтому задачи без собственного pin не
-зависят от переключения основной модели чата и не получают `drift_skip` при
+Для cron provider и модель задаются отдельно в `cron.model_provider` и
+`cron.model` внутри managed overlay. Задачи без собственного pin используют
+эти значения, поэтому не зависят от переключения основной модели чата и не
+получают `drift_skip` при
 изменении интерактивного provider. Личный pin конкретной задачи имеет
-приоритет над этим default. Если OpenRouter недоступен или не авторизован,
-preflight переведёт задачу в `blocked_config` без скрытого запуска на другой
-модели.
+приоритет над этой конфигурацией. Если выбранный provider недоступен или не
+авторизован, preflight переведёт задачу в `blocked_config` без скрытого запуска
+на другой модели.
 
 Для другой модели измените только эти два значения в
 `vps_hermes.config.managed_overlay` и примените Ansible-деплой. Для разовой
-задачи задайте pin явно:
+задачи задайте pin явно, заменив placeholders на provider и model ID из каталога:
 
 ```text
 cronjob(action="create", schedule="every 2h", prompt="Check server status",
-        provider="openrouter", model="z-ai/glm-5.3-flash", deliver="origin")
+        provider="<provider>", model="<model-id>", deliver="origin")
 ```
 
 Проверить существующие задачи можно командами:
@@ -1287,7 +1349,7 @@ sudo -u hermes -H /home/hermes/.local/bin/hermes status
 ```
 
 `provider_routing` имеет смысл только для aggregators, которые его поддерживают
-(сейчас OpenRouter и Nous Portal), поэтому deploy больше не включает его
+(например, Nous Portal), поэтому deploy больше не включает его
 глобально. Если выбран такой provider, нужные `sort`, allow/deny lists,
 `require_parameters` и `data_collection` задайте в `vps_hermes.config.managed_overlay`.
 Provider-specific cache также включается только явно.
@@ -1484,6 +1546,56 @@ sudo -u hermes -H /home/hermes/.local/bin/hermes memory setup
 
 Внешняя память может иметь отдельную стоимость и хранить данные вне VPS, поэтому
 её не следует включать автоматически.
+
+### Azure DevOps и SonarQube Cloud
+
+Ansible доставляет токены через существующий `hermes_secret_env` и публикует
+инструкции по работе с API в отдельном блоке `workspace/AGENTS.md`.
+Личные заметки сохраняются, повторный deploy обновляет тот же блок, а его
+копия входит в Hermes backup. Python и terminal уже доступны; установка
+Azure CLI, Sonar scanner или MCP для чтения API не требуется.
+
+Адреса и проекты заданы в `config/vps-defaults.yml` → `vps_integrations`:
+
+| Сервис | URL | Организация | Проект |
+|---|---|---|---|
+| Azure DevOps | `https://dev.azure.com/YauheniPo` | `YauheniPo` | `popot-bot-2.0` |
+| SonarQube Cloud | `https://sonarcloud.io` | `yauhenipo` | `YauheniPo_popot-bot-2.0` |
+
+Для другого сервера или проекта измените этот раздел. Токены туда не добавляйте.
+
+1. В личном terminal из корня repository откройте Vault:
+   ```bash
+   EDITOR=nano ansible-vault edit hermes/ansible/group_vars/all/vault.yml
+   ```
+2. Добавьте `AZURE_DEVOPS_EXT_PAT` и `SONAR_TOKEN` в существующий
+   `hermes_secret_env`, сохранив все остальные ключи. Для SonarQube Cloud
+   используйте personal access token с доступом к нужному проекту.
+   Секрет `SONAR_TOKEN` в GitHub Actions не доставляется на VPS автоматически.
+3. Примените Ansible deploy. Для Azure pipeline обновите зашифрованный
+   `vault.yml` в **Pipelines → Library → Secure files**; изменения repository
+   должны быть в `main`. Запустите pipeline с **Confirm production deployment**
+   и пройдите настроенные approvals. Gateway перезапустится автоматически.
+4. Проверьте из нового диалога Hermes: «Покажи последние пять сборок Azure
+   DevOps проекта popot-bot-2.0» и «Покажи Quality Gate и открытые issues
+   SonarQube проекта YauheniPo_popot-bot-2.0». Проверка должна вернуть данные
+   проекта; наличие имени переменной само по себе не подтверждает доступ.
+
+Оба токена опциональны для deploy. Если токен не добавлен, Hermes сообщит
+имя недостающей переменной; значения токенов не нужно передавать в чат.
+Инструкции используют Azure PAT через HTTP Basic, Sonar token через Bearer
+и читают значения из окружения внутри Python-процесса.
+
+Для чтения Azure builds/logs выдайте Build: Read; для запуска pipeline —
+Build: Read & execute; для чтения репозиториев — Code: Read. В Sonar права
+зависят от владельца токена: Browse project для результатов и See Source Code
+для исходников. Изменения и запуски выполняются по запросу владельца с
+сохранением существующих approvals.
+
+Официальные справочники: [Azure PAT](https://learn.microsoft.com/en-us/azure/devops/cli/log-in-via-pat?view=azure-devops),
+[Azure REST API](https://learn.microsoft.com/en-us/rest/api/azure/devops/),
+[Sonar tokens](https://docs.sonarsource.com/sonarqube-cloud/managing-your-account/managing-tokens),
+[Sonar Web API](https://docs.sonarsource.com/sonarqube-cloud/appendices/web-api).
 
 ### 8. CLI только под конкретные проекты
 

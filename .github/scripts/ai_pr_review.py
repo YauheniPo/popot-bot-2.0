@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Review a pull request through OpenRouter and publish a formal GitHub review."""
+"""Review a pull request through the configured API and publish a GitHub review."""
 
 from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable
 import contextlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
 from http.client import IncompleteRead
 import json
@@ -19,6 +19,9 @@ import time
 from typing import cast
 import urllib.error
 import urllib.request
+
+from ai_review_preflight import CHAT_COMPLETIONS_URL, MODEL, PLAIN_JSON_PROVIDERS, completion_payload, provider_config, configured_model
+from review_execution import ExecutionReport
 
 from pr_review_context import (
     GitHubRequestError,
@@ -41,23 +44,22 @@ TRANSIENT_NETWORK_ERRORS = (
     ConnectionError,
     IncompleteRead,
 )
-MAX_CHUNK_CHARACTERS = 48_000
-MAX_REVIEW_CHUNKS = 12
+MAX_CHUNK_CHARACTERS = 96_000
+MAX_REVIEW_CHUNKS = 100
 MAX_CONFIGURED_REVIEW_CHUNKS = 100
 DEFAULT_REQUESTS_PER_MINUTE = 8
 DEFAULT_RATE_LIMIT_RETRY_SECONDS = 15.0
-MAX_REQUEST_ATTEMPTS = 5
+MAX_REQUEST_ATTEMPTS = 4
 MAX_RETRY_DELAY_SECONDS = 90.0
-MAX_OUTPUT_TOKENS = 10_000
+MAX_OUTPUT_TOKENS = 32_768
 # Hidden reasoning is billed against max_tokens, so a reasoning-required
 # endpoint needs headroom the schema-only budget does not have; without it the
 # model spends the whole budget thinking and returns an empty message.
-REASONING_OUTPUT_TOKENS = 12_000
-MAX_INVALID_RESPONSE_ATTEMPTS = 2
+REASONING_OUTPUT_TOKENS = 32_768
 REQUEST_TIMEOUT_SECONDS = 90.0
 # Wall-clock budget for all model traffic in one run. The workflow job allows
-# 12 minutes; staying under it lets the script fail with a diagnostic instead
-# of being killed mid-request by the runner.
+# 60 minutes including preflight; staying under it lets the script fail with a
+# diagnostic instead of being killed mid-request by the runner.
 DEFAULT_REVIEW_BUDGET_SECONDS = 600.0
 # Held back while the primary model runs so an exhausted primary still leaves
 # the fallback model a usable slot.
@@ -70,13 +72,15 @@ GITHUB_WEB_URL = "https://github.com"
 # One extra bounded request re-checks earlier reviewer threads against this
 # revision, so a finding the owner has since fixed stops following the PR.
 MAX_TRIAGED_THREADS = 20
+THREAD_TRIAGE_UNIT = "thread triage"
 MAX_TRIAGE_EVIDENCE_CHARACTERS = 24_000
 MAX_RENDERED_LINE_CHARACTERS = 4_000
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OLLAMA_URL = CHAT_COMPLETIONS_URL
+ACTIVE_PROVIDER = "ollama-cloud"
 GITHUB_API_URL = "https://api.github.com"
 REVIEW_RULES_PATH = Path(".github/REVIEWER.md")
-REVIEWER_LABEL = "OpenRouterAPI"
-AZURE_REVIEWER_LABEL = "Azure DevOps · OpenRouterAPI"
+REVIEWER_LABEL = "DirectAPI"
+AZURE_REVIEWER_LABEL = "Azure DevOps · DirectAPI"
 DEFAULT_REVIEW_ORIGIN = "github-actions"
 AZURE_REVIEW_ORIGIN = "azure-devops"
 STRICT_MODEL_MODE = "strict"
@@ -85,7 +89,7 @@ MODEL_MODES = frozenset({STRICT_MODEL_MODE, ORDINARY_MODEL_MODE})
 EXCLUDED_REVIEW_PATHS = frozenset(
     {
         ".github/workflows/pr-ai-review.yml",
-        ".github/scripts/openrouter_pr_review.py",
+        ".github/scripts/ai_pr_review.py",
         str(REVIEW_RULES_PATH),
     }
 )
@@ -228,6 +232,7 @@ class Finding:
     title: str
     impact: str
     fix: str
+    execution_unit: str = field(default="", compare=False)
 
 
 @dataclass(frozen=True)
@@ -262,6 +267,19 @@ class ReviewResponseError(RuntimeError):
 
 class ReviewBudgetExhausted(RuntimeError):
     """The shared wall-clock budget cannot fit another model request."""
+
+
+@dataclass
+class ReviewAttempts:
+    """One model's request limit, shared across every retry and format change."""
+
+    used: int = 0
+
+    def start(self) -> int:
+        if self.used >= MAX_REQUEST_ATTEMPTS:
+            raise ReviewResponseError(f"model request limit exhausted ({MAX_REQUEST_ATTEMPTS} attempts)")
+        self.used += 1
+        return self.used
 
 
 class ReviewDeadline:
@@ -304,23 +322,24 @@ class ReviewDeadline:
 
 def configured_review_budget() -> float:
     raw = os.environ.get(
-        "OPENROUTER_REVIEW_BUDGET_SECONDS", str(DEFAULT_REVIEW_BUDGET_SECONDS)
+        "OLLAMA_REVIEW_BUDGET_SECONDS", str(DEFAULT_REVIEW_BUDGET_SECONDS)
     )
     try:
         budget = float(raw)
     except ValueError as error:
         raise RuntimeError(
-            "OPENROUTER_REVIEW_BUDGET_SECONDS must be a number"
+            "OLLAMA_REVIEW_BUDGET_SECONDS must be a number"
         ) from error
     if budget < MIN_ATTEMPT_SECONDS:
         raise RuntimeError(
-            "OPENROUTER_REVIEW_BUDGET_SECONDS must be at least "
+            "OLLAMA_REVIEW_BUDGET_SECONDS must be at least "
             f"{MIN_ATTEMPT_SECONDS:.0f}"
         )
     return budget
 
 
 REVIEW_DEADLINE = ReviewDeadline(configured_review_budget())
+EXECUTION_REPORT: ExecutionReport | None = None
 
 
 def _seconds_until_reset(value: object) -> float | None:
@@ -341,12 +360,17 @@ def _seconds_until_reset(value: object) -> float | None:
     return max(0.0, timestamp - time.time())
 
 
-def _retry_after_seconds(response_headers: object, details: str) -> float | None:
+def _header_mapping(response_headers: object) -> dict[str, object]:
     headers: dict[str, object] = {}
     if response_headers is not None and hasattr(response_headers, "items"):
         headers.update(
             {str(key).lower(): value for key, value in response_headers.items()}
         )
+    return headers
+
+
+def _error_headers(details: str) -> dict[str, object]:
+    headers: dict[str, object] = {}
     try:
         payload = json.loads(details)
     except (json.JSONDecodeError, TypeError):
@@ -357,16 +381,26 @@ def _retry_after_seconds(response_headers: object, details: str) -> float | None
         metadata_headers = metadata.get("headers") if isinstance(metadata, dict) else None
         if isinstance(metadata_headers, dict):
             headers.update({str(key).lower(): value for key, value in metadata_headers.items()})
+    return headers
+
+
+def _retry_after_candidate(value: object) -> float | None:
+    if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+        return None
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return _seconds_until_reset(value)
+
+
+def _retry_after_seconds(response_headers: object, details: str) -> float | None:
+    headers = _header_mapping(response_headers)
+    headers.update(_error_headers(details))
 
     candidates: list[float] = []
-    retry_after = headers.get("retry-after")
-    if isinstance(retry_after, (str, int, float)) and not isinstance(retry_after, bool):
-        try:
-            candidates.append(max(0.0, float(retry_after)))
-        except ValueError:
-            reset_delay = _seconds_until_reset(retry_after)
-            if reset_delay is not None:
-                candidates.append(reset_delay)
+    retry_after = _retry_after_candidate(headers.get("retry-after"))
+    if retry_after is not None:
+        candidates.append(retry_after)
     reset_delay = _seconds_until_reset(headers.get("x-ratelimit-reset"))
     if reset_delay is not None:
         candidates.append(reset_delay)
@@ -403,6 +437,8 @@ def request_json(
     body: object | None = None,
     timeout: float = REQUEST_TIMEOUT_SECONDS,
 ) -> object:
+    if ACTIVE_PROVIDER in PLAIN_JSON_PROVIDERS and url == OLLAMA_URL and isinstance(body, dict):
+        body = completion_payload(body, provider=ACTIVE_PROVIDER)
     encoded_body = None if body is None else json.dumps(body).encode("utf-8")
     request = urllib.request.Request(url, data=encoded_body, headers=headers, method=method)
     try:
@@ -620,7 +656,7 @@ def read_review_rules() -> str:
     return rules
 
 
-def openrouter_system_prompt() -> str:
+def review_system_prompt() -> str:
     schema = json.dumps(
         REVIEW_RESPONSE_SCHEMA["schema"],
         ensure_ascii=True,
@@ -628,7 +664,7 @@ def openrouter_system_prompt() -> str:
     )
     return f"""{read_review_rules()}
 
-OpenRouter adapter instructions:
+Direct API adapter instructions:
 
 Perform static analysis only on the supplied authoritative diff chunk. Return
 only the structured object required by the JSON schema below, with a
@@ -653,12 +689,12 @@ def _response_content(response: object) -> str:
         content = response["choices"][0]["message"]["content"]  # type: ignore[index]
     except (KeyError, IndexError, TypeError) as error:
         raise ReviewResponseError(
-            "OpenRouter response did not contain a review message"
+            "Provider response did not contain a review message"
         ) from error
     if isinstance(content, list):
         content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
     if not isinstance(content, str) or not content.strip():
-        raise ReviewResponseError("OpenRouter returned an empty review message")
+        raise ReviewResponseError("Provider returned an empty review message")
     return content.strip()
 
 
@@ -724,22 +760,46 @@ def parse_review_response(
             return parsed
 
     raise ReviewResponseError(
-        "OpenRouter returned malformed structured review JSON "
+        "Provider returned malformed structured review JSON "
         f"({_response_diagnostic(response, content)})"
     )
+
+
+def _request_review_json(
+    headers: dict[str, str], body: dict[str, object], timeout: float,
+) -> object:
+    """Record one API call; keep prompts, credentials and raw errors out of reports."""
+    report = EXECUTION_REPORT
+    sent_body = completion_payload(body, provider=ACTIVE_PROVIDER) if ACTIVE_PROVIDER in PLAIN_JSON_PROVIDERS else body
+    attempt = report.begin(sent_body) if report else None
+    started = time.monotonic()
+    try:
+        response = request_json(OLLAMA_URL, "POST", headers, body, timeout=timeout)
+    except RequestError as error:
+        if report and attempt:
+            outcome = f"http_{error.status}" if error.status is not None else "transport_error"
+            report.finish(attempt, outcome, time.monotonic() - started)
+        raise
+    except ValueError:
+        if report and attempt:
+            report.finish(attempt, "invalid_json", time.monotonic() - started)
+        raise
+    if report and attempt:
+        report.finish(attempt, "received", time.monotonic() - started, response)
+    return response
 
 
 def request_with_transient_retries(
     headers: dict[str, str],
     body: dict[str, object],
+    attempts: ReviewAttempts,
 ) -> object:
     """Retry a single model request without changing models or parameters."""
-    for attempt in range(1, MAX_REQUEST_ATTEMPTS + 1):
+    while True:
         available = REVIEW_DEADLINE.require()
+        attempt = attempts.start()
         try:
-            return request_json(
-                OPENROUTER_URL,
-                "POST",
+            return _request_review_json(
                 headers,
                 body,
                 timeout=min(REQUEST_TIMEOUT_SECONDS, available),
@@ -755,7 +815,6 @@ def request_with_transient_retries(
                     DEFAULT_RATE_LIMIT_RETRY_SECONDS,
                 )
             REVIEW_DEADLINE.bounded_sleep(error.retry_after_seconds or fallback_delay)
-    raise AssertionError("unreachable")
 
 
 def request_valid_review(
@@ -763,54 +822,76 @@ def request_valid_review(
     body: dict[str, object],
     model_label: str,
     has_expected_shape: Callable[[object], bool] = _has_review_shape,
+    attempts: ReviewAttempts | None = None,
 ) -> dict[str, object]:
-    """Regenerate once when a successful HTTP response contains invalid JSON."""
-    for attempt in range(1, MAX_INVALID_RESPONSE_ATTEMPTS + 1):
-        response = request_with_transient_retries(headers, body)
+    """Regenerate invalid JSON within the same limit as transport retries."""
+    attempts = attempts or ReviewAttempts()
+    while True:
+        response = request_with_transient_retries(headers, body, attempts)
         try:
-            return parse_review_response(response, has_expected_shape)
+            parsed = parse_review_response(response, has_expected_shape)
         except ReviewResponseError as error:
-            if attempt == MAX_INVALID_RESPONSE_ATTEMPTS:
+            if EXECUTION_REPORT:
+                EXECUTION_REPORT.validate_last("invalid_json")
+            if attempts.used == MAX_REQUEST_ATTEMPTS:
                 raise
             print(
                 f"  {model_label} returned invalid structured JSON; "
-                f"regenerating once ({error})",
+                f"regenerating after attempt {attempts.used}/{MAX_REQUEST_ATTEMPTS} ({error})",
                 file=sys.stderr,
             )
-    raise AssertionError("unreachable")
+        else:
+            if EXECUTION_REPORT:
+                EXECUTION_REPORT.validate_last("valid_json")
+            return parsed
+
+
+def _structured_output_unavailable(error: RequestError) -> bool:
+    message = str(error).lower()
+    if error.status == 404:
+        return PARAMETER_ROUTING_ERROR in message
+    if error.status not in {400, 422}:
+        return False
+    format_named = any(field in message for field in ("response_format", "json_schema"))
+    unsupported = any(phrase in message for phrase in (
+        "not supported", "does not support", "unsupported parameter", "unsupported value",
+    ))
+    return format_named and unsupported
 
 
 def request_fallback_review(
     fallback_model: str,
     headers: dict[str, str],
     primary_body: dict[str, object],
-    fallback_mode: str = STRICT_MODEL_MODE,
 ) -> dict[str, object]:
-    if fallback_mode not in MODEL_MODES:
-        raise RuntimeError("fallback model mode must be strict or ordinary")
-    strict_body = {**primary_body, "model": fallback_model}
+    """Choose the fallback format without an operator-supplied model mode."""
+    attempts = ReviewAttempts()
     print(
         f"  primary exhausted; retrying with fallback: {fallback_model}",
         file=sys.stderr,
     )
-    if fallback_mode == ORDINARY_MODEL_MODE:
-        ordinary_body = ordinary_json_body(strict_body, fallback_model)
+    # Use locally validated JSON where schema enforcement is not assumed.
+    if ACTIVE_PROVIDER != "openrouter":
+        ordinary_body = ordinary_json_body(primary_body, fallback_model)
         return request_ordinary_review(
             headers,
             ordinary_body,
             "ordinary JSON fallback",
+            attempts=attempts,
         )
+    # The primary may have used ordinary JSON, so supply the schema explicitly.
+    strict_body = {
+        **primary_body,
+        "model": fallback_model,
+        "provider": {"require_parameters": True},
+        "response_format": {"type": "json_schema", "json_schema": REVIEW_RESPONSE_SCHEMA},
+    }
     try:
-        return request_reasoning_compatible_review(headers, strict_body, "fallback")
+        return request_reasoning_compatible_review(headers, strict_body, "fallback", attempts=attempts)
     except RequestError as error:
-        # Some fallback models accept ordinary text generation but do not expose
-        # response_format. OpenRouter returns this routing-specific 404 when
-        # require_parameters filters out every endpoint. Retry only that case;
-        # unknown models and unrelated 404 responses must remain hard failures.
-        if (
-            error.status != 404
-            or PARAMETER_ROUTING_ERROR not in str(error).lower()
-        ):
+        # Only a capability rejection allows switching formats. Authentication,
+        # unknown models and invalid schemas must remain visible failures.
+        if not _structured_output_unavailable(error):
             raise
         relaxed_body = ordinary_json_body(
             strict_body,
@@ -826,6 +907,7 @@ def request_fallback_review(
             headers,
             relaxed_body,
             "fallback compatibility request",
+            attempts=attempts,
         )
 
 
@@ -850,6 +932,7 @@ def request_ordinary_review(
     body: dict[str, object],
     model_label: str,
     has_expected_shape: Callable[[object], bool] = _has_review_shape,
+    attempts: ReviewAttempts | None = None,
 ) -> dict[str, object]:
     """Request ordinary JSON and accommodate providers that require reasoning."""
     return request_reasoning_compatible_review(
@@ -857,6 +940,7 @@ def request_ordinary_review(
         body,
         model_label,
         has_expected_shape,
+        attempts,
     )
 
 
@@ -865,10 +949,12 @@ def request_reasoning_compatible_review(
     body: dict[str, object],
     model_label: str,
     has_expected_shape: Callable[[object], bool] = _has_review_shape,
+    attempts: ReviewAttempts | None = None,
 ) -> dict[str, object]:
     """Retry once with bounded hidden reasoning when an endpoint requires it."""
+    attempts = attempts or ReviewAttempts()
     try:
-        return request_valid_review(headers, body, model_label, has_expected_shape)
+        return request_valid_review(headers, body, model_label, has_expected_shape, attempts)
     except RequestError as error:
         if error.status != 400 or MANDATORY_REASONING_ERROR not in str(error).lower():
             raise
@@ -889,6 +975,7 @@ def request_reasoning_compatible_review(
             reasoning_body,
             f"{model_label} reasoning-compatible request",
             has_expected_shape,
+            attempts,
         )
 
 
@@ -900,6 +987,8 @@ def review_chunk(
     chunk_number: int,
     total_chunks: int,
 ) -> dict[str, object]:
+    if EXECUTION_REPORT:
+        EXECUTION_REPORT.unit = f"chunk {chunk_number}/{total_chunks}"
     existing_context = render_review_context(review_threads, chunk.paths)
     user_prompt = f"""Review chunk {chunk_number} of {total_chunks} from one code review.
 
@@ -927,22 +1016,20 @@ UNRESOLVED_REVIEW_THREADS:
         "model": model,
         "temperature": 0,
         "max_tokens": MAX_OUTPUT_TOKENS,
-        # Both default free reviewer models enable hidden reasoning by default,
-        # and it consumes the same max_tokens budget as the visible JSON. The
-        # direct reviewer must always reserve that budget for a complete schema;
-        # deeper agentic analysis remains available in ClaudeCodePlugin.
+        # The engine retains its legacy request contract for retry handling.
+        # completion_payload strips provider-specific fields before transport;
+        # the schema is also embedded in the system prompt for local validation.
         "reasoning": {"effort": "none", "exclude": True},
         "provider": {"require_parameters": True},
         "response_format": {"type": "json_schema", "json_schema": REVIEW_RESPONSE_SCHEMA},
-        # OpenRouter's non-streaming response healer repairs common JSON syntax
-        # defects before the deterministic local schema/anchor validation.
+        # Legacy gateway extension, omitted by plain-JSON transport adapters.
         "plugins": [{"id": "response-healing"}],
         "messages": [
-            {"role": "system", "content": openrouter_system_prompt()},
+            {"role": "system", "content": review_system_prompt()},
             {"role": "user", "content": user_prompt},
         ],
     }
-    primary_mode = configured_model_mode("OPENROUTER_REVIEW_MODEL_MODE")
+    primary_mode = configured_model_mode("DIRECT_REVIEW_MODEL_MODE")
     if primary_mode == ORDINARY_MODEL_MODE:
         body = ordinary_json_body(body, model)
     try:
@@ -958,46 +1045,44 @@ UNRESOLVED_REVIEW_THREADS:
             f"{_safe_log_message(error)}",
             file=sys.stderr,
         )
-        fallback_model = os.environ.get("OPENROUTER_REVIEW_FALLBACK_MODEL")
+        fallback_model = os.environ.get(
+            "DIRECT_REVIEW_FALLBACK_MODEL", ""
+        ).strip()
         if fallback_model and body["model"] != fallback_model:
-            fallback_mode = configured_model_mode(
-                "OPENROUTER_REVIEW_FALLBACK_MODE"
-            )
             return request_fallback_review(
                 fallback_model,
                 headers,
                 body,
-                fallback_mode,
             )
         raise
 
 
 def configured_requests_per_minute() -> int:
     raw_value = os.environ.get(
-        "OPENROUTER_REVIEW_RPM",
+        "OLLAMA_REVIEW_RPM",
         str(DEFAULT_REQUESTS_PER_MINUTE),
     ).strip()
     try:
         requests_per_minute = int(raw_value)
     except ValueError as error:
-        raise RuntimeError("OPENROUTER_REVIEW_RPM must be an integer") from error
+        raise RuntimeError("OLLAMA_REVIEW_RPM must be an integer") from error
     if not 1 <= requests_per_minute <= 60:
-        raise RuntimeError("OPENROUTER_REVIEW_RPM must be between 1 and 60")
+        raise RuntimeError("OLLAMA_REVIEW_RPM must be between 1 and 60")
     return requests_per_minute
 
 
 def configured_max_review_chunks() -> int:
     raw_value = os.environ.get(
-        "OPENROUTER_MAX_REVIEW_CHUNKS",
+        "OLLAMA_MAX_REVIEW_CHUNKS",
         str(MAX_REVIEW_CHUNKS),
     ).strip()
     try:
         max_review_chunks = int(raw_value)
     except ValueError as error:
-        raise RuntimeError("OPENROUTER_MAX_REVIEW_CHUNKS must be an integer") from error
+        raise RuntimeError("OLLAMA_MAX_REVIEW_CHUNKS must be an integer") from error
     if not 1 <= max_review_chunks <= MAX_CONFIGURED_REVIEW_CHUNKS:
         raise RuntimeError(
-            "OPENROUTER_MAX_REVIEW_CHUNKS must be between 1 and "
+            "OLLAMA_MAX_REVIEW_CHUNKS must be between 1 and "
             f"{MAX_CONFIGURED_REVIEW_CHUNKS}"
         )
     return max_review_chunks
@@ -1010,7 +1095,7 @@ def ensure_required_coverage(plan: ReviewPlan) -> None:
         "The full-branch review exceeds its configured chunk or line-size budget: "
         f"{len(plan.partial_files)} partial file(s), "
         f"{len(plan.omitted_files)} omitted file(s). Increase "
-        "OPENROUTER_MAX_REVIEW_CHUNKS within the supported safety limit or split "
+        "OLLAMA_MAX_REVIEW_CHUNKS within the supported safety limit or split "
         "the review into smaller branches."
     )
 
@@ -1053,7 +1138,7 @@ def triage_system_prompt() -> str:
     )
     return f"""{read_review_rules()}
 
-OpenRouter thread-triage instructions:
+Direct API thread-triage instructions:
 
 This request does not review code for new defects. Re-evaluate existing
 automated review threads against the supplied revision only, and return the
@@ -1102,6 +1187,8 @@ def request_thread_triage(
     threads: tuple[ReviewThread, ...],
     review_files: list[ReviewFile],
 ) -> list[ThreadVerdict]:
+    if EXECUTION_REPORT:
+        EXECUTION_REPORT.unit = THREAD_TRIAGE_UNIT
     paths = {thread.path for thread in threads}
     user_prompt = f"""Re-evaluate the automated review threads below against this revision.
 
@@ -1133,7 +1220,7 @@ ANNOTATED_DIFF_FOR_THESE_FILES:
             {"role": "user", "content": user_prompt},
         ],
     }
-    if configured_model_mode("OPENROUTER_REVIEW_MODEL_MODE") == ORDINARY_MODEL_MODE:
+    if configured_model_mode("DIRECT_REVIEW_MODEL_MODE") == ORDINARY_MODEL_MODE:
         body = ordinary_json_body(body, model)
         response = request_ordinary_review(
             headers,
@@ -1145,7 +1232,7 @@ ANNOTATED_DIFF_FOR_THESE_FILES:
         response = request_reasoning_compatible_review(
             headers,
             body,
-            "thread triage",
+            THREAD_TRIAGE_UNIT,
             _has_triage_shape,
         )
     return validate_thread_verdicts(response, threads)
@@ -1186,6 +1273,64 @@ def _verdict_marker(head_sha: str, thread_id: str) -> str:
     return f"<!-- openrouter-thread-verdict:{head_sha}:{thread_id} -->"
 
 
+def _reply_if_needed(
+    repository: str, pr_number: str, token: str, thread: ReviewThread,
+    marker: str, message: str,
+) -> bool:
+    if (
+        thread.reply_to_comment_id is None
+        or not thread.viewer_can_reply
+        or any(marker in comment.body for comment in thread.comments)
+    ):
+        return False
+    if EXECUTION_REPORT:
+        message += EXECUTION_REPORT.footer(THREAD_TRIAGE_UNIT)
+    reply_to_review_thread(repository, pr_number, token, thread.reply_to_comment_id, message)
+    return True
+
+
+def _apply_thread_verdict(
+    repository: str,
+    pr_number: str,
+    token: str,
+    head_sha: str,
+    verdict: ThreadVerdict,
+    thread: ReviewThread,
+    changed_paths: set[str],
+) -> str:
+    """Apply one verdict, retaining threads that require human participation."""
+    marker = _verdict_marker(head_sha, thread.node_id)
+    label = reviewer_label()
+    if verdict.verdict == "confirmed":
+        _reply_if_needed(
+            repository, pr_number, token, thread, marker,
+            f"{marker}\n**[{label}] Finding remains valid**\n\nEvidence: {verdict.reason}",
+        )
+        return "still_open"
+    if verdict.verdict == "needs_human" or (
+        verdict.verdict in {"fixed", "rejected"}
+        and not may_be_auto_fixed(thread, head_sha, changed_paths)
+    ):
+        if verdict.verdict == "needs_human":
+            _reply_if_needed(
+                repository, pr_number, token, thread, marker,
+                f"{marker}\n**[{label}] Human review requested**\n\nEvidence: {verdict.reason}",
+            )
+        return "left_for_human"
+    heading = (
+        "Resolved — the requested change is present in this revision"
+        if verdict.verdict == "fixed"
+        else "Rejected finding"
+    )
+    if not _reply_if_needed(
+        repository, pr_number, token, thread, marker,
+        f"{marker}\n**[{label}] {heading}**\n\nReason: {verdict.reason}",
+    ):
+        return "skipped"
+    resolve_review_thread(token, thread.node_id)
+    return "fixed" if verdict.verdict == "fixed" else "rejected"
+
+
 def apply_thread_verdicts(
     repository: str,
     pr_number: str,
@@ -1197,94 +1342,51 @@ def apply_thread_verdicts(
 ) -> TriageOutcome:
     """Close earlier reviewer threads this revision has settled."""
     threads_by_id = {thread.node_id: thread for thread in threads}
-    label = reviewer_label()
-    fixed = rejected = still_open = left_for_human = 0
+    outcomes: Counter[str] = Counter()
     closed: set[str] = set()
     for verdict in verdicts:
         thread = threads_by_id.get(verdict.thread_id)
         # Human participation opts a thread out permanently: someone is using it.
         if thread is None or not is_machine_thread(thread):
             continue
-        marker = _verdict_marker(head_sha, thread.node_id)
-        if verdict.verdict == "confirmed":
-            still_open += 1
-            if (
-                thread.reply_to_comment_id is not None
-                and thread.viewer_can_reply
-                and not any(marker in comment.body for comment in thread.comments)
-            ):
-                reply_to_review_thread(
-                    repository,
-                    pr_number,
-                    token,
-                    thread.reply_to_comment_id,
-                    f"{marker}\n**[{label}] Finding remains valid**\n\n"
-                    f"Evidence: {verdict.reason}",
-                )
-            continue
-        if verdict.verdict == "needs_human" or (
-            verdict.verdict in {"fixed", "rejected"}
-            and not may_be_auto_fixed(thread, head_sha, changed_paths)
-        ):
-            left_for_human += 1
-            if (
-                verdict.verdict == "needs_human"
-                and thread.reply_to_comment_id is not None
-                and thread.viewer_can_reply
-                and not any(marker in comment.body for comment in thread.comments)
-            ):
-                reply_to_review_thread(
-                    repository,
-                    pr_number,
-                    token,
-                    thread.reply_to_comment_id,
-                    f"{marker}\n**[{label}] Human review requested**\n\n"
-                    f"Evidence: {verdict.reason}",
-                )
-            continue
-        comment_id = thread.reply_to_comment_id
-        if (
-            comment_id is None
-            or not thread.viewer_can_reply
-            or any(marker in comment.body for comment in thread.comments)
-        ):
-            continue
-        heading = (
-            "Resolved — the requested change is present in this revision"
-            if verdict.verdict == "fixed"
-            else "Rejected finding"
+        outcome = _apply_thread_verdict(
+            repository, pr_number, token, head_sha, verdict, thread, changed_paths,
         )
-        reply_to_review_thread(
-            repository,
-            pr_number,
-            token,
-            comment_id,
-            f"{marker}\n**[{label}] {heading}**\n\nReason: {verdict.reason}",
-        )
-        resolve_review_thread(token, thread.node_id)
-        closed.add(thread.node_id)
-        if verdict.verdict == "fixed":
-            fixed += 1
-        else:
-            rejected += 1
+        outcomes[outcome] += 1
+        if outcome in {"fixed", "rejected"}:
+            closed.add(thread.node_id)
     return TriageOutcome(
-        fixed=fixed,
-        rejected=rejected,
-        still_open=still_open,
-        left_for_human=left_for_human,
+        fixed=outcomes["fixed"],
+        rejected=outcomes["rejected"],
+        still_open=outcomes["still_open"],
+        left_for_human=outcomes["left_for_human"],
         closed_thread_ids=frozenset(closed),
     )
-
-
-def _is_rate_limited(error: RequestError) -> bool:
-    """Identify provider throttling that should not fail the CI review job."""
-    return error.status == 429
 
 
 def _clean_text(value: object, limit: int) -> str:
     if not isinstance(value, str):
         return ""
     return " ".join(value.split())[:limit]
+
+
+def _parse_finding(
+    raw: object, chunk: ReviewChunk, files_by_path: dict[str, ReviewFile], execution_unit: str = "",
+) -> Finding | None:
+    if not isinstance(raw, dict):
+        return None
+    severity, path, side, line = (raw.get(key) for key in ("severity", "path", "side", "line"))
+    if isinstance(path, str) and path.startswith("./"):
+        path = path[2:]
+    if (severity not in {"P1", "P2"} or not isinstance(path, str) or path not in chunk.paths
+            or path not in files_by_path or side not in {"RIGHT", "LEFT"}
+            or isinstance(line, bool) or not isinstance(line, int)):
+        return None
+    valid_lines = files_by_path[path].right_lines if side == "RIGHT" else files_by_path[path].left_lines
+    title, impact, fix = (_clean_text(raw.get(key), limit) for key, limit in (("title", 160), ("impact", 700), ("fix", 700)))
+    if line not in valid_lines or not all((title, impact, fix)):
+        return None
+    return Finding(severity, path, side, line, title, impact, fix, execution_unit)
 
 
 def validate_findings(
@@ -1299,40 +1401,19 @@ def validate_findings(
     if len(responses) != len(chunks):
         raise ValueError("review responses and chunks must have the same length")
 
-    for response, chunk in zip(responses, chunks):
+    for index, (response, chunk) in enumerate(zip(responses, chunks), start=1):
         raw_findings = response.get("findings", [])
         if not isinstance(raw_findings, list):
             continue
         for raw in raw_findings:
-            if not isinstance(raw, dict):
+            finding = _parse_finding(raw, chunk, files_by_path, f"chunk {index}/{len(chunks)}")
+            if finding is None:
                 continue
-            severity = raw.get("severity")
-            path = raw.get("path")
-            side = raw.get("side")
-            line = raw.get("line")
-            if isinstance(path, str) and path.startswith("./"):
-                path = path[2:]
-            if (
-                severity not in {"P1", "P2"}
-                or not isinstance(path, str)
-                or path not in chunk.paths
-                or path not in files_by_path
-                or side not in {"RIGHT", "LEFT"}
-                or isinstance(line, bool)
-                or not isinstance(line, int)
-            ):
-                continue
-            valid_lines = (
-                files_by_path[path].right_lines if side == "RIGHT" else files_by_path[path].left_lines
-            )
-            location = (path, side, line)
-            title = _clean_text(raw.get("title"), 160)
-            impact = _clean_text(raw.get("impact"), 700)
-            fix = _clean_text(raw.get("fix"), 700)
-            if line not in valid_lines or location in seen_locations or not all((title, impact, fix)):
+            location = (finding.path, finding.side, finding.line)
+            if location in seen_locations:
                 continue
             seen_locations.add(location)
-            findings.append(Finding(severity, path, side, line, title, impact, fix))
+            findings.append(finding)
 
     findings.sort(key=lambda finding: (0 if finding.severity == "P1" else 1, finding.path, finding.line))
     return findings[:MAX_FINDINGS]
@@ -1429,6 +1510,15 @@ def _follow_up_marker(head_sha: str, thread_id: str) -> str:
     return f"<!-- openrouter-thread-followup:{head_sha}:{thread_id} -->"
 
 
+def _execution_summary(model: str) -> str:
+    report = EXECUTION_REPORT or ExecutionReport(ACTIVE_PROVIDER, OLLAMA_URL, model)
+    return report.summary()
+
+
+def _finding_execution(finding: Finding) -> str:
+    return EXECUTION_REPORT.footer(finding.execution_unit) if EXECUTION_REPORT else ""
+
+
 def _review_body(
     model: str,
     head_sha: str,
@@ -1457,7 +1547,7 @@ def _review_body(
         marker,
         f"## {label}",
         "",
-        f"> Provider: OpenRouter · Model: `{model}`",
+        _execution_summary(model),
         *(
             ["> Source: Azure DevOps manual review"]
             if configured_review_origin() == AZURE_REVIEW_ORIGIN
@@ -1507,6 +1597,8 @@ def _review_body(
         )
     if not actionable_count:
         lines.append("Findings: No new actionable findings.")
+    if EXECUTION_REPORT:
+        lines.append(EXECUTION_REPORT.details())
     return "\n".join(lines)
 
 
@@ -1528,9 +1620,10 @@ def publish_review(
     existing_reviews = request_json(f"{reviews_url}?per_page=100", "GET", headers)
     if not isinstance(existing_reviews, list):
         raise RuntimeError("GitHub returned an invalid pull-request review list")
-    reviews = cast(list[dict[str, object]], [review for review in existing_reviews if isinstance(review, dict)])
+    review_items = cast(list[object], existing_reviews)
+    reviews = [review for review in review_items if isinstance(review, dict)]
     if any(marker in (review.get("body") or "") for review in reviews):
-        print("The OpenRouter formal review already exists for this commit; skipping duplicate.")
+        print("The direct API review already exists for this commit; skipping duplicate.")
         return
 
     posted_follow_ups = 0
@@ -1551,6 +1644,7 @@ def publish_review(
                 f"**[{label}] Additional evidence — "
                 f"{finding.severity}: {finding.title}**\n\n"
                 f"Impact: {finding.impact}\n\nProposed fix: {finding.fix}"
+                + _finding_execution(finding)
             ),
         )
         posted_follow_ups += 1
@@ -1567,6 +1661,7 @@ def publish_review(
                 + (f"{origin_marker}\n" if origin_marker else "")
                 + f"**[{label}] {finding.severity} — {finding.title}**\n\n"
                 + f"Impact: {finding.impact}\n\nProposed fix: {finding.fix}"
+                + _finding_execution(finding)
             ),
         }
         for finding in publication.new_findings
@@ -1589,10 +1684,10 @@ def publish_review(
             headers,
             {"commit_id": head_sha, "body": body, "event": "COMMENT"},
         )
-        print("Created the OpenRouter formal PR review; GitHub rejected its inline anchors.")
+        print("Created the direct API PR review; GitHub rejected its inline anchors.")
         return
     print(
-        "Created the OpenRouter formal PR review with "
+        "Created the direct API PR review with "
         f"{len(comments)} new inline finding(s), {posted_follow_ups} follow-up reply/replies, "
         f"and {len(publication.duplicates)} duplicate(s) suppressed."
     )
@@ -1614,7 +1709,7 @@ def _check_run_summary(
         )
     lines = [
         f"Source: {'Azure DevOps' if configured_review_origin() == AZURE_REVIEW_ORIGIN else 'GitHub Actions'}",
-        f"Provider: OpenRouter · Model: `{model}`",
+        _execution_summary(model),
         f"Reviewed commit: `{head_sha}`",
         f"Coverage: {coverage}",
         "",
@@ -1629,6 +1724,8 @@ def _check_run_summary(
             f"{finding.title}. {finding.impact} Proposed fix: {finding.fix}"
             for finding in findings
         )
+    if EXECUTION_REPORT:
+        lines.append(EXECUTION_REPORT.details())
     return "\n".join(lines)
 
 
@@ -1651,6 +1748,7 @@ def publish_check_run(
             "title": f"{finding.severity} — {finding.title}"[:255],
             "message": (
                 f"Impact: {finding.impact}\n\nProposed fix: {finding.fix}"
+                + _finding_execution(finding)
             )[:65_535],
         }
         # Check Run annotations address files at the reviewed commit, so a
@@ -1707,95 +1805,62 @@ def publish_check_run(
                 handle.write(f"check_run_url={check_run_url}\n")
 
 
+def _review_inputs(repository: str, pr_number: str, token: str, base_sha: str, head_sha: str) -> tuple[tuple[ReviewThread, ...], tuple[ReviewThread, ...], list[ReviewFile], ReviewPlan]:
+    review_threads = tuple(fetch_unresolved_review_threads(repository, pr_number, token)) if pr_number else ()
+    settled_threads = tuple(fetch_resolved_machine_threads(repository, pr_number, token)) if pr_number else ()
+    review_files = read_review_files(base_sha, head_sha)
+    plan = build_review_plan(review_files, configured_max_review_chunks())
+    ensure_required_coverage(plan)
+    return review_threads, settled_threads, review_files, plan
+
+
+def _run_review(api_key: str, model: str, review_threads: tuple[ReviewThread, ...], plan: ReviewPlan) -> list[dict[str, object]]:
+    return review_chunks(api_key, model, review_threads, plan.chunks)
+
+
+def _optional_triage(
+    repository: str, pr_number: str, token: str, api_key: str, model: str,
+    head_sha: str, review_threads: tuple[ReviewThread, ...], review_files: list[ReviewFile],
+) -> TriageOutcome:
+    candidates = triage_candidates(review_threads)
+    if not pr_number or not candidates:
+        return TriageOutcome()
+    try:
+        return apply_thread_verdicts(
+            repository, pr_number, token, head_sha,
+            request_thread_triage(api_key, model, candidates, review_files),
+            candidates, {review_file.path for review_file in review_files},
+        )
+    except (GitHubRequestError, RequestError, ReviewResponseError, ReviewBudgetExhausted) as error:
+        print(f"  thread triage skipped: {_safe_log_message(error)}", file=sys.stderr)
+        return TriageOutcome()
+
+
 def main() -> None:
-    api_key = required_env("OPENROUTER_API_KEY")
+    provider, provider_key, provider_url = provider_config()
+    if not provider_key:
+        raise RuntimeError(f"API key for {provider} is missing")
+    api_key = provider_key
+    global OLLAMA_URL, ACTIVE_PROVIDER, EXECUTION_REPORT
+    OLLAMA_URL = provider_url
+    ACTIVE_PROVIDER = provider
     github_token = required_env("GITHUB_TOKEN")
-    model = required_env("OPENROUTER_REVIEW_MODEL").strip()
-    if not model:
-        raise RuntimeError("OPENROUTER_REVIEW_MODEL must not be blank")
+    model = configured_model()
+    # Preflight may select the fallback before review starts. Preserve the
+    # configured primary solely for accurate execution-route reporting.
+    primary_model = os.environ.get("DIRECT_REVIEW_PRIMARY_MODEL", "").strip() or model
+    EXECUTION_REPORT = ExecutionReport(provider, provider_url, primary_model)
+    os.environ.setdefault("DIRECT_REVIEW_MODEL_MODE", ORDINARY_MODEL_MODE)
     repository = required_env("GITHUB_REPOSITORY")
     pr_number = os.environ.get("PR_NUMBER", "").strip()
     base_sha = required_env("BASE_SHA")
     head_sha = required_env("HEAD_SHA")
-
-    review_threads = (
-        tuple(fetch_unresolved_review_threads(repository, pr_number, github_token))
-        if pr_number
-        else ()
+    review_threads, settled_threads, review_files, plan = _review_inputs(
+        repository, pr_number, github_token, base_sha, head_sha
     )
-    # Resolved reviewer threads never reach a model prompt; they only stop this
-    # run from re-posting a finding an earlier revision already settled.
-    settled_threads = (
-        tuple(fetch_resolved_machine_threads(repository, pr_number, github_token))
-        if pr_number
-        else ()
-    )
-    review_files = read_review_files(base_sha, head_sha)
-    plan = build_review_plan(review_files, configured_max_review_chunks())
-    ensure_required_coverage(plan)
-    try:
-        responses = review_chunks(api_key, model, review_threads, plan.chunks)
-    except ReviewBudgetExhausted as error:
-        if os.environ.get("REQUIRE_REVIEW_RESULT") == "true":
-            raise
-        # Same class of condition as provider throttling: the models were too
-        # slow for the job's wall clock. Warn and leave the other checks alone
-        # instead of failing CI, and never let the runner kill the job first.
-        message = (
-            f"OpenRouter direct review ran out of time ({_safe_log_message(error)}); "
-            "skipping this direct review run."
-        )
-        print(message, file=sys.stderr)
-        print(
-            f"::warning title=OpenRouter direct review skipped::{message}",
-            file=sys.stderr,
-        )
-        return
-    except RequestError as error:
-        if _is_rate_limited(error):
-            if os.environ.get("REQUIRE_REVIEW_RESULT") == "true":
-                raise
-            # Free OpenRouter pools can be shared and temporarily exhausted even
-            # after the bounded primary/fallback retries. Leave the Claude
-            # reviewer and normal PR checks available instead of failing CI for
-            # a provider-side capacity condition.
-            message = (
-                "OpenRouter is temporarily rate-limited after all review retries; "
-                "skipping this direct review run."
-            )
-            print(message, file=sys.stderr)
-            print(
-                f"::warning title=OpenRouter direct review skipped::{message}",
-                file=sys.stderr,
-            )
-            return
-        raise
+    responses = _run_review(api_key, model, review_threads, plan)
     findings = validate_findings(responses, plan.chunks, review_files)
-    triage = TriageOutcome()
-    candidates = triage_candidates(review_threads)
-    if pr_number and candidates:
-        try:
-            triage = apply_thread_verdicts(
-                repository,
-                pr_number,
-                github_token,
-                head_sha,
-                request_thread_triage(api_key, model, candidates, review_files),
-                candidates,
-                {review_file.path for review_file in review_files},
-            )
-        except (
-            GitHubRequestError,
-            RequestError,
-            ReviewResponseError,
-            ReviewBudgetExhausted,
-        ) as error:
-            # Triage is an optional pass. Losing it leaves every earlier thread
-            # open, which is the safe direction; the review itself still ships.
-            print(
-                f"  thread triage skipped: {_safe_log_message(error)}",
-                file=sys.stderr,
-            )
+    triage = _optional_triage(repository, pr_number, github_token, api_key, model, head_sha, review_threads, review_files)
     open_threads = tuple(
         thread
         for thread in review_threads
@@ -1830,5 +1895,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        print(f"OpenRouter PR review failed: {error}", file=sys.stderr)
+        print(f"Direct API PR review failed: {error}", file=sys.stderr)
         sys.exit(1)

@@ -11,11 +11,11 @@ import urllib.error
 from unittest import mock
 
 
-SCRIPT_PATH = Path(__file__).with_name("openrouter_pr_review.py")
+SCRIPT_PATH = Path(__file__).with_name("ai_pr_review.py")
 sys.path.insert(0, str(SCRIPT_PATH.parent))
 import pr_review_context
 
-SPEC = importlib.util.spec_from_file_location("openrouter_pr_review", SCRIPT_PATH)
+SPEC = importlib.util.spec_from_file_location("ai_pr_review", SCRIPT_PATH)
 assert SPEC is not None
 assert SPEC.loader is not None
 reviewer = importlib.util.module_from_spec(SPEC)
@@ -24,6 +24,31 @@ SPEC.loader.exec_module(reviewer)
 
 
 class AnnotatedDiffTest(unittest.TestCase):
+    def test_ollama_review_budget_is_sized_for_large_reviews(self) -> None:
+        self.assertGreaterEqual(reviewer.MAX_OUTPUT_TOKENS, 32_000)
+        self.assertGreaterEqual(reviewer.REASONING_OUTPUT_TOKENS, 32_000)
+        self.assertGreaterEqual(reviewer.MAX_CHUNK_CHARACTERS, 80_000)
+        self.assertGreaterEqual(reviewer.MAX_REVIEW_CHUNKS, 100)
+
+    def test_review_transport_targets_ollama_and_omits_gateway_extensions(self) -> None:
+        result = {"choices": [{"message": {"content": '{"summary":"ok","findings":[]}'}}]}
+        response = mock.MagicMock()
+        response.__enter__.return_value = io.StringIO(json.dumps(result))
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        with (
+            mock.patch.object(reviewer.urllib.request, "urlopen", return_value=response) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+        ):
+            review = reviewer.review_chunk("test-key", "moonshotai/kimi-k3", (), chunk, 1, 1)
+        self.assertEqual(review["findings"], [])
+        sent = request.call_args.args[0]
+        self.assertEqual(sent.full_url, "https://ollama.com/v1/chat/completions")
+        payload = json.loads(sent.data)
+        self.assertEqual(payload["model"], "moonshotai/kimi-k3")
+        for unsupported in ("provider", "plugins", "reasoning", "response_format"):
+            self.assertNotIn(unsupported, payload)
+        self.assertIn("REQUIRED_JSON_SCHEMA", payload["messages"][0]["content"])
+
     def test_tracks_only_changed_lines_on_the_correct_side(self) -> None:
         review_file = reviewer.annotate_diff(
             "app.py",
@@ -51,6 +76,184 @@ class AnnotatedDiffTest(unittest.TestCase):
             {"choices": [{"message": {"content": f"```json\n{json.dumps(response)}\n```"}}]}
         )
         self.assertEqual(parsed, response)
+
+
+class AutomaticFallbackFormatTest(unittest.TestCase):
+    def test_selects_fallback_format_without_mode_or_primary_schema(self):
+        result = {"summary": "Reviewed.", "findings": []}
+        body = {
+            "model": "primary", "max_tokens": 4096,
+            "provider": {"require_parameters": True},
+            "reasoning": {"effort": "none", "exclude": True},
+            "messages": [{"role": "user", "content": "Return review JSON."}],
+        }
+        for provider, url in (
+            ("ollama-cloud", "https://ollama.com/v1/chat/completions"),
+            ("nvidia", "https://integrate.api.nvidia.com/v1/chat/completions"),
+            ("nous", "https://inference-api.nousresearch.com/v1/chat/completions"),
+            ("openrouter", "https://openrouter.ai/api/v1/chat/completions"),
+        ):
+            response = mock.MagicMock()
+            response.__enter__.return_value = io.StringIO(json.dumps({
+                "choices": [{"message": {"content": json.dumps(result)}}]
+            }))
+            with (
+                self.subTest(provider=provider),
+                mock.patch.dict(reviewer.os.environ, {}, clear=True),
+                mock.patch.object(reviewer, "ACTIVE_PROVIDER", provider),
+                mock.patch.object(reviewer, "OLLAMA_URL", url),
+                mock.patch.object(reviewer.urllib.request, "urlopen", return_value=response) as request,
+                mock.patch("builtins.print"),
+            ):
+                self.assertEqual(reviewer.request_fallback_review("backup", {}, body), result)
+                request.assert_called_once()
+                sent = request.call_args.args[0]
+                self.assertEqual(sent.full_url, url)
+                payload = json.loads(sent.data)
+                self.assertEqual(payload["model"], "backup")
+                self.assertEqual(payload["messages"], body["messages"])
+                if provider == "openrouter":
+                    self.assertEqual(payload["response_format"]["json_schema"], reviewer.REVIEW_RESPONSE_SCHEMA)
+                else:
+                    for field in ("response_format", "provider", "plugins", "reasoning"):
+                        self.assertNotIn(field, payload)
+        self.assertNotIn("response_format", body)
+
+    def test_explicit_unsupported_schema_switches_to_locally_validated_json(self):
+        valid = {"choices": [{"message": {"content": '{"summary":"ok","findings":[]}'}}]}
+        for status, message in (
+            (400, "This model does not support response_format of type json_schema"),
+            (422, "Unsupported parameter: response_format"),
+            (404, reviewer.PARAMETER_ROUTING_ERROR),
+        ):
+            with (
+                self.subTest(status=status),
+                mock.patch.object(reviewer, "ACTIVE_PROVIDER", "openrouter"),
+                mock.patch.object(reviewer, "request_json", side_effect=[
+                    reviewer.RequestError(message, status=status), valid,
+                ]) as request,
+                mock.patch("builtins.print"),
+            ):
+                result = reviewer.request_fallback_review("backup", {}, {"messages": []})
+                self.assertEqual(result["findings"], [])
+                self.assertEqual(request.call_count, 2)
+                self.assertIn("response_format", request.call_args_list[0].args[3])
+                self.assertNotIn("response_format", request.call_args_list[1].args[3])
+
+    def test_does_not_treat_other_api_errors_as_unsupported_schema(self):
+        for status, message in (
+            (401, "unauthorized"), (403, "forbidden"), (404, "model not found"),
+            (400, "invalid json_schema: missing required properties"),
+            (422, "unsupported max_tokens value"),
+        ):
+            with (
+                self.subTest(status=status, message=message),
+                mock.patch.object(reviewer, "ACTIVE_PROVIDER", "openrouter"),
+                mock.patch.object(reviewer, "request_json", side_effect=reviewer.RequestError(message, status=status)) as request,
+                mock.patch("builtins.print"),
+            ):
+                with self.assertRaises(reviewer.RequestError):
+                    reviewer.request_fallback_review("backup", {}, {"messages": []})
+                request.assert_called_once()
+
+
+class RequestPublicationTest(unittest.TestCase):
+    def test_nous_fallback_transport_and_provenance_follow_actual_request(self):
+        from review_execution import ExecutionReport
+        url = "https://inference-api.nousresearch.com/v1/chat/completions"
+        report = ExecutionReport("nous", url, "vendor/primary")
+        result = {"summary": "Reviewed.", "findings": []}
+        response = mock.MagicMock()
+        response.__enter__.return_value = io.StringIO(json.dumps({
+            "id": "nous-response-123", "model": "vendor/backup",
+            "choices": [{"message": {"content": json.dumps(result)}}],
+        }))
+        missing_model = urllib.error.HTTPError(url, 404, "model unavailable", {}, io.BytesIO(b'{}'))
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        with (
+            mock.patch.object(reviewer, "EXECUTION_REPORT", report),
+            mock.patch.object(reviewer, "ACTIVE_PROVIDER", "nous"),
+            mock.patch.object(reviewer, "OLLAMA_URL", url),
+            mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(600)),
+            mock.patch.dict(reviewer.os.environ, {
+                "DIRECT_REVIEW_MODEL_MODE": "ordinary", "DIRECT_REVIEW_FALLBACK_MODEL": "vendor/backup",
+            }, clear=True),
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch.object(reviewer.urllib.request, "urlopen", side_effect=[missing_model, response]) as request,
+            mock.patch("builtins.print"),
+        ):
+            self.assertEqual(reviewer.review_chunk("nous-test-key", "vendor/primary", (), chunk, 1, 1), result)
+        self.assertEqual(request.call_count, 2)
+        models = []
+        for call in request.call_args_list:
+            sent = call.args[0]
+            self.assertEqual(sent.full_url, url)
+            self.assertEqual(sent.get_header("Authorization"), "Bearer nous-test-key")
+            payload = json.loads(sent.data)
+            models.append(payload["model"])
+            self.assertLessEqual(payload["max_tokens"], 32000)
+            self.assertTrue({"provider", "plugins", "reasoning", "response_format"}.isdisjoint(payload))
+            self.assertIn("REQUIRED_JSON_SCHEMA", payload["messages"][0]["content"])
+        self.assertEqual(models, ["vendor/primary", "vendor/backup"])
+        self.assertEqual([a.outcome for a in report.attempts], ["http_404", "valid_json"])
+        self.assertTrue(all(a.format == "ordinary" for a in report.attempts))
+        self.assertIn("request #2", report.footer("chunk 1/1"))
+        self.assertIn("nous-response-123", report.details())
+
+    def test_records_api_attempts_and_attributes_inline_finding_to_its_chunk(self):
+        from review_execution import ExecutionReport
+        url = "https://integrate.api.nvidia.com/v1/chat/completions"
+        report = ExecutionReport("nvidia", url, "primary")
+        files = [
+            reviewer.ReviewFile("app.py", "RIGHT 1|+bad", frozenset({1}), frozenset()),
+            reviewer.ReviewFile("other.py", "RIGHT 2|+ok", frozenset({2}), frozenset()),
+        ]
+        chunks = tuple(reviewer.ReviewChunk(f.rendered_diff, frozenset({f.path}), (f.path,)) for f in files)
+        finding = {"severity": "P2", "path": "app.py", "side": "RIGHT", "line": 1,
+                   "title": "Bad value", "impact": "Breaks callers", "fix": "Use the right value"}
+        fallback = {"id": "response-backup", "choices": [{"message": {"content": json.dumps({
+            "summary": "Found a bug", "findings": [finding],
+        })}}]}
+        good = {"choices": [{"message": {"content": '{"summary":"ok","findings":[]}'}}]}
+        bad = {"choices": [{"message": {"content": 'not JSON'}}]}
+        with (
+            mock.patch.object(reviewer, "EXECUTION_REPORT", report),
+            mock.patch.object(reviewer, "ACTIVE_PROVIDER", "nvidia"),
+            mock.patch.object(reviewer, "OLLAMA_URL", url),
+            mock.patch.dict(reviewer.os.environ, {
+                "DIRECT_REVIEW_MODEL_MODE": "ordinary", "DIRECT_REVIEW_FALLBACK_MODEL": "backup",
+            }, clear=True),
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch.object(reviewer.time, "sleep"),
+            mock.patch("builtins.print"),
+        ):
+            with mock.patch.object(reviewer, "request_json", side_effect=[
+                reviewer.RequestError("secret body", status=429),
+                reviewer.RequestError("secret transport diagnostic"),
+                reviewer.RequestError("secret transport diagnostic"),
+                reviewer.RequestError("secret transport diagnostic"), fallback, bad, good,
+            ]):
+                responses = reviewer.review_chunks("api-secret", "primary", (), chunks)
+            findings = reviewer.validate_findings(responses, chunks, files)
+            publication = reviewer.build_publication_plan(findings, ())
+            plan = reviewer.ReviewPlan(chunks, 2, frozenset({"app.py", "other.py"}), frozenset(), frozenset())
+            with mock.patch.object(reviewer, "request_json", side_effect=[[], {}]) as publish:
+                reviewer.publish_review("owner/repo", "1", "github-secret", "primary", "head", plan, publication)
+            payload = publish.call_args.args[3]
+            summary = reviewer._check_run_summary("primary", "head", plan, findings)
+        self.assertEqual(len(report.attempts), 7)
+        for text in (payload["body"], summary):
+            self.assertIn("Requests: 7", text)
+            self.assertIn("Retries: 5", text)
+            self.assertIn("invalid_json", text)
+            self.assertIn("http_429", text)
+            self.assertNotIn("secret", text)
+        inline = payload["comments"][0]["body"]
+        self.assertIn("chunk 1/2", inline)
+        self.assertIn("backup", inline)
+        self.assertIn("fallback", inline)
+        self.assertIn("request #5", inline)
+        self.assertNotIn("request #7", inline)
 
 
 class ReviewPlanTest(unittest.TestCase):
@@ -95,7 +298,7 @@ class ReviewPlanTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "full-branch review exceeds"):
                 reviewer.ensure_required_coverage(plan)
 
-            with self.assertRaisesRegex(RuntimeError, "OPENROUTER_MAX_REVIEW_CHUNKS"):
+            with self.assertRaisesRegex(RuntimeError, "OLLAMA_MAX_REVIEW_CHUNKS"):
                 reviewer.ensure_required_coverage(plan)
 
     def test_normal_review_allows_partial_coverage(self) -> None:
@@ -111,29 +314,30 @@ class ReviewPlanTest(unittest.TestCase):
 
 
 class ChangedPathsTest(unittest.TestCase):
-    def test_full_review_includes_reviewer_implementation_files(self) -> None:
+    def test_reviewer_implementation_files_require_explicit_inclusion(self) -> None:
         paths = (
-            b".github/scripts/openrouter_pr_review.py\0"
+            b".github/scripts/ai_pr_review.py\0"
             b".github/REVIEWER.md\0app.py\0"
         )
-        with (
-            mock.patch.object(reviewer, "run_git", return_value=paths),
-            mock.patch.dict(
-                reviewer.os.environ,
-                {"REVIEW_INCLUDE_REVIEWER_FILES": "true"},
-                clear=False,
-            ),
-        ):
-            changed = reviewer.changed_paths("base", "head")
-
-        self.assertEqual(
-            changed,
-            [
-                ".github/scripts/openrouter_pr_review.py",
-                ".github/REVIEWER.md",
-                "app.py",
-            ],
-        )
+        for include_reviewer_files in ("false", "true"):
+            with self.subTest(include_reviewer_files=include_reviewer_files):
+                with (
+                    mock.patch.object(reviewer, "run_git", return_value=paths),
+                    mock.patch.dict(
+                        reviewer.os.environ,
+                        {"REVIEW_INCLUDE_REVIEWER_FILES": include_reviewer_files},
+                        clear=False,
+                    ),
+                ):
+                    changed = reviewer.changed_paths("base", "head")
+                expected = ["app.py"]
+                if include_reviewer_files == "true":
+                    expected = [
+                        ".github/scripts/ai_pr_review.py",
+                        ".github/REVIEWER.md",
+                        "app.py",
+                    ]
+                self.assertEqual(changed, expected)
 
 
 class FindingValidationTest(unittest.TestCase):
@@ -210,19 +414,79 @@ class ReviewDeadlineTest(unittest.TestCase):
 
     def test_budget_must_be_a_usable_number(self) -> None:
         with mock.patch.dict(
-            reviewer.os.environ, {"OPENROUTER_REVIEW_BUDGET_SECONDS": "soon"}
+            reviewer.os.environ, {"OLLAMA_REVIEW_BUDGET_SECONDS": "soon"}
         ):
             with self.assertRaises(RuntimeError):
                 reviewer.configured_review_budget()
 
         with mock.patch.dict(
-            reviewer.os.environ, {"OPENROUTER_REVIEW_BUDGET_SECONDS": "5"}
+            reviewer.os.environ, {"OLLAMA_REVIEW_BUDGET_SECONDS": "5"}
         ):
             with self.assertRaises(RuntimeError):
                 reviewer.configured_review_budget()
 
 
-class OpenRouterRequestTest(unittest.TestCase):
+class OllamaCloudRequestTest(unittest.TestCase):
+    def test_four_attempts_are_shared_by_transport_json_and_reasoning_retries(self):
+        valid = {"choices": [{"message": {"content": '{"summary":"Reviewed.","findings":[]}'}}]}
+        malformed = {"choices": [{"message": {"content": "not-json"}}]}
+        rate_limit = reviewer.RequestError("rate limited", status=429)
+        reasoning = reviewer.RequestError(reviewer.MANDATORY_REASONING_ERROR, status=400)
+        scenarios = (
+            ("transport recovers", [rate_limit] * 3 + [valid], 4, 0),
+            ("JSON recovers", [malformed] * 3 + [valid], 4, 0),
+            ("mixed recovers", [rate_limit, malformed, reasoning, valid], 4, 0),
+            ("mixed exhausted", [rate_limit, malformed, rate_limit, malformed, valid], 5, 1),
+            ("compatibility exhausted", [malformed] * 3 + [reasoning, valid], 5, 1),
+        )
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        for name, responses, total, fallbacks in scenarios:
+            report = reviewer.ExecutionReport("openrouter", "https://openrouter.ai/api/v1/chat/completions", "primary")
+            with (
+                self.subTest(name=name),
+                mock.patch.dict(reviewer.os.environ, {"DIRECT_REVIEW_FALLBACK_MODEL": "backup", "DIRECT_REVIEW_MODEL_MODE": "strict"}),
+                mock.patch.object(reviewer, "ACTIVE_PROVIDER", "openrouter"),
+                mock.patch.object(reviewer, "EXECUTION_REPORT", report),
+                mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(600)),
+                mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+                mock.patch.object(reviewer, "request_json", side_effect=responses) as request,
+                mock.patch.object(reviewer.time, "sleep"),
+                mock.patch("builtins.print"),
+            ):
+                result = reviewer.review_chunk("test-key", "primary", (), chunk, 1, 1)
+            self.assertEqual(result["findings"], [])
+            self.assertEqual(request.call_count, total)
+            self.assertEqual([call.args[3]["model"] for call in request.call_args_list], ["primary"] * 4 + ["backup"] * fallbacks)
+            self.assertIn(f"Fallback successes: {fallbacks}", report.summary())
+
+    def test_four_attempts_on_each_model_then_stop_without_a_ninth_request(self):
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        failure = reviewer.RequestError("unavailable", status=503)
+        with (
+            mock.patch.dict(reviewer.os.environ, {"DIRECT_REVIEW_FALLBACK_MODEL": "backup"}),
+            mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(600)),
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch.object(reviewer, "request_json", side_effect=failure) as request,
+            mock.patch.object(reviewer.time, "sleep"),
+            mock.patch("builtins.print"),
+        ):
+            with self.assertRaisesRegex(reviewer.RequestError, "unavailable"):
+                reviewer.review_chunk("test-key", "primary", (), chunk, 1, 1)
+        self.assertEqual([call.args[3]["model"] for call in request.call_args_list], ["primary"] * 4 + ["backup"] * 4)
+
+    def test_fallback_format_changes_share_its_four_attempts(self):
+        malformed = {"choices": [{"message": {"content": "not-json"}}]}
+        routing = reviewer.RequestError("response_format is not supported", status=400)
+        with (
+            mock.patch.object(reviewer, "ACTIVE_PROVIDER", "openrouter"),
+            mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(600)),
+            mock.patch.object(reviewer, "request_json", side_effect=[malformed] * 3 + [routing, malformed]) as request,
+            mock.patch("builtins.print"),
+        ):
+            with self.assertRaises(reviewer.ReviewResponseError):
+                reviewer.request_fallback_review("backup", {}, {"model": "primary", "messages": []})
+        self.assertEqual(request.call_count, 4)
+
     def test_transport_errors_retry_and_eventually_use_fallback(self) -> None:
         result = {"summary": "Reviewed.", "findings": []}
         chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
@@ -240,9 +504,8 @@ class OpenRouterRequestTest(unittest.TestCase):
                         responses = [error if stage == "open" else broken] * failures + [good]
                         with (
                             mock.patch.dict(reviewer.os.environ, {
-                                "OPENROUTER_REVIEW_FALLBACK_MODEL": "fallback-model",
-                                "OPENROUTER_REVIEW_MODEL_MODE": "strict",
-                                "OPENROUTER_REVIEW_FALLBACK_MODE": "strict",
+                                "DIRECT_REVIEW_FALLBACK_MODEL": "fallback-model",
+                                "DIRECT_REVIEW_MODEL_MODE": "strict",
                             }),
                             mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(600)),
                             mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
@@ -259,11 +522,11 @@ class OpenRouterRequestTest(unittest.TestCase):
     def test_http_error_body_timeout_preserves_status(self) -> None:
         body = mock.Mock()
         body.read.side_effect = TimeoutError("read timeout")
-        error = urllib.error.HTTPError(reviewer.OPENROUTER_URL, 429, "rate limited", {}, body)
+        error = urllib.error.HTTPError(reviewer.OLLAMA_URL, 429, "rate limited", {}, body)
         self.addCleanup(error.close)
         with mock.patch.object(reviewer.urllib.request, "urlopen", side_effect=error):
             with self.assertRaises(reviewer.RequestError) as caught:
-                reviewer.request_json(reviewer.OPENROUTER_URL, "POST", {})
+                reviewer.request_json(reviewer.OLLAMA_URL, "POST", {})
         self.assertEqual(caught.exception.status, 429)
 
     def test_extracts_review_json_from_mixed_provider_text(self) -> None:
@@ -316,7 +579,7 @@ class OpenRouterRequestTest(unittest.TestCase):
         )
         self.assertEqual(request_body["plugins"], [{"id": "response-healing"}])
         self.assertIn("rules", request_body["messages"][0]["content"])
-        self.assertIn("OpenRouter adapter instructions", request_body["messages"][0]["content"])
+        self.assertIn("Direct API adapter instructions", request_body["messages"][0]["content"])
         self.assertIn("chunk 1 of 2", request_body["messages"][1]["content"])
         self.assertIn("UNRESOLVED_REVIEW_THREADS", request_body["messages"][1]["content"])
 
@@ -372,7 +635,7 @@ class OpenRouterRequestTest(unittest.TestCase):
         with (
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OPENROUTER_REVIEW_MODEL_MODE": "ordinary"},
+                {"DIRECT_REVIEW_MODEL_MODE": "ordinary"},
             ),
             mock.patch.object(reviewer, "request_json", return_value=response) as request,
             mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
@@ -402,7 +665,7 @@ class OpenRouterRequestTest(unittest.TestCase):
         with (
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OPENROUTER_REVIEW_MODEL_MODE": "ordinary"},
+                {"DIRECT_REVIEW_MODEL_MODE": "ordinary"},
             ),
             mock.patch.object(
                 reviewer,
@@ -465,7 +728,7 @@ class OpenRouterRequestTest(unittest.TestCase):
         retry_body = request.call_args_list[1].args[3]
         self.assertEqual(first_body["max_tokens"], reviewer.MAX_OUTPUT_TOKENS)
         self.assertEqual(retry_body["max_tokens"], reviewer.REASONING_OUTPUT_TOKENS)
-        self.assertGreater(
+        self.assertGreaterEqual(
             reviewer.REASONING_OUTPUT_TOKENS, reviewer.MAX_OUTPUT_TOKENS
         )
 
@@ -484,7 +747,7 @@ class OpenRouterRequestTest(unittest.TestCase):
         with (
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OPENROUTER_REVIEW_FALLBACK_MODEL": "fallback-model"},
+                {"DIRECT_REVIEW_FALLBACK_MODEL": "fallback-model"},
             ),
             mock.patch.object(
                 reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(budget)
@@ -589,12 +852,12 @@ class OpenRouterRequestTest(unittest.TestCase):
         with (
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OPENROUTER_REVIEW_FALLBACK_MODEL": "fallback-model"},
+                {"DIRECT_REVIEW_FALLBACK_MODEL": "fallback-model"},
             ),
             mock.patch.object(
                 reviewer,
                 "request_json",
-                side_effect=[malformed, malformed, valid],
+                side_effect=[malformed] * 4 + [valid],
             ) as request,
             mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
             mock.patch("builtins.print"),
@@ -602,7 +865,7 @@ class OpenRouterRequestTest(unittest.TestCase):
             result = reviewer.review_chunk("api-key", "primary-model", (), chunk, 1, 1)
 
         self.assertEqual(result["findings"], [])
-        self.assertEqual(request.call_count, 3)
+        self.assertEqual(request.call_count, 5)
         self.assertEqual(request.call_args.args[3]["model"], "fallback-model")
 
     def test_relaxes_parameter_filter_for_incompatible_fallback(self) -> None:
@@ -617,9 +880,10 @@ class OpenRouterRequestTest(unittest.TestCase):
             status=404,
         )
         with (
+            mock.patch.object(reviewer, "ACTIVE_PROVIDER", "openrouter"),
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OPENROUTER_REVIEW_FALLBACK_MODEL": "fallback-model"},
+                {"DIRECT_REVIEW_FALLBACK_MODEL": "fallback-model"},
             ),
             mock.patch.object(
                 reviewer,
@@ -654,7 +918,7 @@ class OpenRouterRequestTest(unittest.TestCase):
             {"effort": "none", "exclude": True},
         )
 
-    def test_uses_declared_ordinary_fallback_without_strict_request(self) -> None:
+    def test_automatically_uses_ordinary_ollama_fallback(self) -> None:
         response = {
             "choices": [
                 {
@@ -669,8 +933,7 @@ class OpenRouterRequestTest(unittest.TestCase):
             mock.patch.dict(
                 reviewer.os.environ,
                 {
-                    "OPENROUTER_REVIEW_FALLBACK_MODEL": "fallback-model",
-                    "OPENROUTER_REVIEW_FALLBACK_MODE": "ordinary",
+                    "DIRECT_REVIEW_FALLBACK_MODEL": "fallback-model",
                 },
             ),
             mock.patch.object(
@@ -696,10 +959,10 @@ class OpenRouterRequestTest(unittest.TestCase):
     def test_rejects_unknown_model_mode(self) -> None:
         with mock.patch.dict(
             reviewer.os.environ,
-            {"OPENROUTER_REVIEW_MODEL_MODE": "unknown"},
+            {"DIRECT_REVIEW_MODEL_MODE": "unknown"},
         ):
             with self.assertRaisesRegex(RuntimeError, "must be strict or ordinary"):
-                reviewer.configured_model_mode("OPENROUTER_REVIEW_MODEL_MODE")
+                reviewer.configured_model_mode("DIRECT_REVIEW_MODEL_MODE")
 
     def test_enables_low_reasoning_when_fallback_requires_it(self) -> None:
         response = {
@@ -709,9 +972,10 @@ class OpenRouterRequestTest(unittest.TestCase):
         }
         chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
         with (
+            mock.patch.object(reviewer, "ACTIVE_PROVIDER", "openrouter"),
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OPENROUTER_REVIEW_FALLBACK_MODEL": "fallback-model"},
+                {"DIRECT_REVIEW_FALLBACK_MODEL": "fallback-model"},
             ),
             mock.patch.object(
                 reviewer,
@@ -746,7 +1010,7 @@ class OpenRouterRequestTest(unittest.TestCase):
         with (
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OPENROUTER_REVIEW_FALLBACK_MODEL": "missing-model"},
+                {"DIRECT_REVIEW_FALLBACK_MODEL": "missing-model"},
             ),
             mock.patch.object(
                 reviewer,
@@ -776,9 +1040,10 @@ class OpenRouterRequestTest(unittest.TestCase):
             status=404,
         )
         with (
+            mock.patch.object(reviewer, "ACTIVE_PROVIDER", "openrouter"),
             mock.patch.dict(
                 reviewer.os.environ,
-                {"OPENROUTER_REVIEW_FALLBACK_MODEL": "fallback-model"},
+                {"DIRECT_REVIEW_FALLBACK_MODEL": "fallback-model"},
             ),
             mock.patch.object(
                 reviewer,
@@ -817,7 +1082,7 @@ class OpenRouterRequestTest(unittest.TestCase):
             }
         ).encode()
         http_error = urllib.error.HTTPError(
-            reviewer.OPENROUTER_URL,
+            reviewer.OLLAMA_URL,
             429,
             "Too Many Requests",
             {},
@@ -846,7 +1111,7 @@ class OpenRouterRequestTest(unittest.TestCase):
             reviewer.ReviewChunk("second", frozenset({"b.py"}), ("b.py",)),
         )
         with (
-            mock.patch.dict(reviewer.os.environ, {"OPENROUTER_REVIEW_RPM": "10"}),
+            mock.patch.dict(reviewer.os.environ, {"OLLAMA_REVIEW_RPM": "10"}),
             mock.patch.object(
                 reviewer,
                 "review_chunk",
@@ -865,21 +1130,21 @@ class OpenRouterRequestTest(unittest.TestCase):
         sleep.assert_called_once_with(5.0)
 
     def test_rejects_invalid_rpm_configuration(self) -> None:
-        with mock.patch.dict(reviewer.os.environ, {"OPENROUTER_REVIEW_RPM": "0"}):
+        with mock.patch.dict(reviewer.os.environ, {"OLLAMA_REVIEW_RPM": "0"}):
             with self.assertRaisesRegex(RuntimeError, "between 1 and 60"):
                 reviewer.configured_requests_per_minute()
 
     def test_accepts_manual_full_review_chunk_budget(self) -> None:
         with mock.patch.dict(
             reviewer.os.environ,
-            {"OPENROUTER_MAX_REVIEW_CHUNKS": "60"},
+            {"OLLAMA_MAX_REVIEW_CHUNKS": "60"},
         ):
             self.assertEqual(reviewer.configured_max_review_chunks(), 60)
 
     def test_rejects_excessive_manual_chunk_budget(self) -> None:
         with mock.patch.dict(
             reviewer.os.environ,
-            {"OPENROUTER_MAX_REVIEW_CHUNKS": "101"},
+            {"OLLAMA_MAX_REVIEW_CHUNKS": "101"},
         ):
             with self.assertRaisesRegex(RuntimeError, "between 1 and 100"):
                 reviewer.configured_max_review_chunks()
@@ -1007,14 +1272,14 @@ class GitHubReviewTest(unittest.TestCase):
             "<!-- openrouter-pr-review:azure-devops:head-sha -->",
             payload["body"],
         )
-        self.assertIn("## Azure DevOps · OpenRouterAPI", payload["body"])
+        self.assertIn("## Azure DevOps · DirectAPI", payload["body"])
         self.assertIn("> Source: Azure DevOps manual review", payload["body"])
         self.assertIn(
             "<!-- review-origin:azure-devops -->",
             payload["comments"][0]["body"],
         )
         self.assertIn(
-            "[Azure DevOps · OpenRouterAPI]",
+            "[Azure DevOps · DirectAPI]",
             payload["comments"][0]["body"],
         )
 

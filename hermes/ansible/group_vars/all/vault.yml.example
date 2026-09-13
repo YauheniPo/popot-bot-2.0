@@ -15,12 +15,16 @@ hermes_secret_env: {}
 # ansible_host: "203.0.113.10"
 # ansible_user: "root"
 
-# Replace the empty mapping above with the OpenRouter key and only the
-# non-LLM integration credentials you use:
+# Replace the empty mapping above with all provider and integration credentials
+# you use. Managed .env deployment rejects an empty mapping.
 # hermes_secret_env:
+#   # Optional alternative provider; the managed default remains Ollama Cloud.
 #   OPENROUTER_API_KEY: "replace-inside-ansible-vault"
-#   # NVIDIA NIM / build.nvidia.com. Optional alternative to OpenRouter.
+#   # NVIDIA NIM / build.nvidia.com. Optional alternative to Ollama Cloud.
 #   NVIDIA_API_KEY: "replace-inside-ansible-vault"
+#   # Ollama Cloud / ollama.com/settings/keys. Enables the ollama-cloud provider
+#   # in /model; no local Ollama server or custom endpoint configuration needed.
+#   OLLAMA_API_KEY: "replace-inside-ansible-vault"
 #   # Separate web providers used by the managed config defaults.
 #   BRAVE_SEARCH_API_KEY: "replace-inside-ansible-vault"
 #   FIRECRAWL_API_KEY: "replace-inside-ansible-vault"
@@ -35,9 +39,17 @@ hermes_secret_env: {}
 #   # Preferred name for the bundled Hermes GitHub skills and gh. Use a
 #   # fine-grained PAT limited to the repositories and permissions you need.
 #   GITHUB_TOKEN: "replace-inside-ansible-vault"
+#   # Optional Azure DevOps PAT for terminal REST requests (also recognized by
+#   # Azure DevOps CLI if installed separately). Scope it to the required work.
+#   AZURE_DEVOPS_EXT_PAT: "replace-inside-ansible-vault"
+#   # Optional SonarQube user/PAT token for reading issues and Quality Gates.
+#   # A GitHub Actions SONAR_TOKEN is not automatically available on the VPS.
+#   SONAR_TOKEN: "replace-inside-ansible-vault"
 
 # Non-secret config.yaml policy belongs in
 # config/vps-defaults.yml:vps_hermes.config.managed_overlay, not in Vault.
+# Service URLs, organizations and project IDs belong in vps_integrations in
+# the same config/vps-defaults.yml, not in this secret mapping.
 
 # Required when vps_deploy.features.observability=true. Ansible writes this to the root-only
 # /etc/hermes-grafana.env before Grafana can start. Never use the local Docker
