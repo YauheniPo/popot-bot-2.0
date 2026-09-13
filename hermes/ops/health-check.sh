@@ -16,6 +16,8 @@ HERMES_BACKUP_MAX_AGE_HOURS="${HERMES_BACKUP_MAX_AGE_HOURS:-26}"
 HERMES_FULL_BACKUP_MAX_AGE_HOURS="${HERMES_FULL_BACKUP_MAX_AGE_HOURS:-192}"
 HERMES_METRICS_FILE="${HERMES_METRICS_FILE:-${HERMES_HOME}/ops/metrics/hermes.prom}"
 HERMES_METRICS_MAX_AGE_MINUTES="${HERMES_METRICS_MAX_AGE_MINUTES:-5}"
+HERMES_SEARXNG_URL="${HERMES_SEARXNG_URL:-}"
+HERMES_SEARXNG_TIMEOUT_SECONDS="${HERMES_SEARXNG_TIMEOUT_SECONDS:-5}"
 
 STATE_DIR="${HERMES_HOME}/ops"
 STATE_FILE="${STATE_DIR}/health-state"
@@ -50,6 +52,19 @@ done
 
 if ! systemctl is-active --quiet "${HERMES_GATEWAY_SERVICE}"; then
     add_issue "gateway" "gateway ${HERMES_GATEWAY_SERVICE} не запущен"
+fi
+
+if [[ -n "${HERMES_SEARXNG_URL}" ]]; then
+    if ! [[ "${HERMES_SEARXNG_URL}" =~ ^https?://[^[:space:]]+$ ]] ||
+       ! is_number "${HERMES_SEARXNG_TIMEOUT_SECONDS}"; then
+        add_issue "searxng-configuration" "Некорректный URL или timeout SearXNG"
+    elif ! command -v curl >/dev/null 2>&1; then
+        add_issue "searxng-health" "нельзя проверить SearXNG: curl не установлен"
+    elif ! curl --fail --silent --show-error --max-time "${HERMES_SEARXNG_TIMEOUT_SECONDS}" \
+        --get --data-urlencode 'q=hermes' --data-urlencode 'format=json' \
+        "${HERMES_SEARXNG_URL%/}/search" >/dev/null 2>&1; then
+        add_issue "searxng-health" "SearXNG не отвечает: ${HERMES_SEARXNG_URL}"
+    fi
 fi
 
 if disk_line="$(df -P "${HERMES_DISK_PATH}" 2>/dev/null | awk 'NR==2 {gsub(/%/, "", $5); print $5}')" && is_number "${disk_line}"; then

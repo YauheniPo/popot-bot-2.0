@@ -103,10 +103,14 @@
           '--workspace', hermes_workspace
         ] +
         (
-          ['--capability', 'brave_search']
-          if (hermes_manage_secret_env | bool) and
-             ((hermes_secret_env.BRAVE_SEARCH_API_KEY | default('', true) | string | length) > 0)
-          else []
+          ['--capability', 'searxng_search']
+          if ((hermes_searxng_url | default('', true) | string | length) > 0)
+          else (
+            ['--capability', 'brave_search']
+            if (hermes_manage_secret_env | bool) and
+               ((hermes_secret_env.BRAVE_SEARCH_API_KEY | default('', true) | string | length) > 0)
+            else []
+          )
         ) +
         (
           ['--capability', 'firecrawl_extract']

@@ -212,6 +212,12 @@ vps_runtime:
     firecrawl_extract:
       set:
         web.extract_backend: firecrawl
+    # Selected instead of brave_search when vps_web.searxng_url is set. Hermes
+    # keeps a single search backend, so Brave stays configured but unused until
+    # the SearXNG endpoint is cleared again.
+    searxng_search:
+      set:
+        web.search_backend: searxng
 
 # Managed GitHub access for terminal + bundled Hermes GitHub skills. The token
 # itself belongs in Ansible Vault as GITHUB_TOKEN; this section is non-secret.
@@ -329,6 +335,13 @@ vps_vscode:
   host_port: 3001
   tunnel_port: 8080
   timezone: UTC
+
+# Self-hosted SearXNG search backend. An empty value leaves Brave or automatic
+# selection in place; a value points Hermes at that instance and takes
+# precedence over Brave. SearXNG is search-only, so page extraction still needs
+# Firecrawl or the local browser.
+vps_web:
+  searxng_url: ""
 
 vps_browser:
   agent_browser_version: "0.35.0"

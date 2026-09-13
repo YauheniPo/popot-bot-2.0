@@ -56,6 +56,9 @@
           - vps_observability.prometheus is mapping
           - vps_observability.node_exporter is mapping
           - vps_searxng is mapping
+          - vps_web is mapping
+          - vps_web.searxng_url is string
+          - vps_web.searxng_url == '' or vps_web.searxng_url is match('^https?://[^[:space:]]+$')
           - not (vps_deploy.features.searxng | bool) or (vps_searxng.enabled | bool)
           - vps_vscode.project_name is match('^[a-z0-9][a-z0-9_-]{0,62}$')
           - vps_vscode.image is match('^[A-Za-z0-9._/-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$')
@@ -833,6 +836,12 @@
 
     - name: Complete Hermes deployment and report its result
       block:
+        - name: Install and start private SearXNG search before Hermes runtime configuration
+          ansible.builtin.import_tasks: tasks/searxng.yml
+          when:
+            - hermes_host_admin_enabled | bool
+            - vps_deploy.features.searxng | default(false) | bool
+
         - name: Configure Hermes runtime
           ansible.builtin.import_tasks: tasks/runtime.yml
           when: hermes_venv_python.stat.exists
@@ -842,12 +851,6 @@
 
         - name: Install and reconcile Hermes services
           ansible.builtin.import_tasks: tasks/services.yml
-
-        - name: Install and start private SearXNG search
-          ansible.builtin.import_tasks: tasks/searxng.yml
-          when:
-            - hermes_host_admin_enabled | bool
-            - vps_deploy.features.searxng | default(false) | bool
 
         - name: Install and start the code-server container
           ansible.builtin.import_tasks: tasks/vscode.yml

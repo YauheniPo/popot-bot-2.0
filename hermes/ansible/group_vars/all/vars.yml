@@ -46,6 +46,10 @@ hermes_git_identity: "{{ vps_github.git_identity }}"
 # and blocks the configured public SSH port while allowing it on Tailscale.
 hermes_lock_public_ssh: "{{ vps_deploy.features.lock_public_ssh }}"
 
+# Non-secret SearXNG endpoint. Empty keeps the Brave or automatic search
+# backend; a value selects SearXNG and is written to the managed environment.
+hermes_searxng_url: "{{ vps_web.searxng_url }}"
+
 # Secret values belong in the ignored and encrypted vault.yml, not here.
 hermes_manage_secret_env: "{{ vps_deploy.secret_environment.managed }}"
 hermes_secret_env: {}

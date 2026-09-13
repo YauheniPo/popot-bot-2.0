@@ -111,7 +111,8 @@ class ApplyConfigTests(unittest.TestCase):
             backup_dir=identity["backup_dir"],
         )
         self.assertTrue(values)
-        self.assertTrue(all(isinstance(value, str) and value for value in values.values()))
+        self.assertTrue(all(isinstance(value, str) and (value or key == "SEARXNG_URL") for key, value in values.items()))
+        self.assertEqual(values["SEARXNG_URL"], "")
 
     def assert_runtime_contract(self, runtime: dict) -> None:
         # These are supported modes in the pinned Hermes gateway/display_config.py.
