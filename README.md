@@ -179,7 +179,10 @@ The existing `DIRECT_REVIEW_FALLBACK_MODEL` and `CLAUDE_REVIEW_FALLBACK_MODEL`
 also accept Portal model IDs. Manual GitHub and Azure runs select `provider=nous`
 and supply `model` in their run parameters. For the standard Portal connection,
 leave `CLAUDE_REVIEW_BASE_URL` unset. Direct review uses Chat Completions; Claude
-uses the Portal Messages endpoint and checks tool calling before starting.
+uses the Portal Messages endpoint and runs a short smoke test before starting:
+it checks tool calling and the exact review JSON contract in separate requests.
+The smoke test uses one attempt with a 45-second timeout per check, so an
+unavailable or incompatible model is reported before the full Claude run.
 Model IDs are passed verbatim, and model access is checked using the CI key.
 
 `PR_REVIEWER` selects both reviewers sequentially (`0`/unset), direct API (`1`),

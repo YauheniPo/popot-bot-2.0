@@ -31,6 +31,8 @@ PLAIN_JSON_PROVIDERS = frozenset({"ollama-cloud", "nvidia", "nous"})
 NOUS_MAX_OUTPUT_TOKENS = 32_000
 REQUEST_TIMEOUT_SECONDS = 90
 MAX_ATTEMPTS = 4
+SMOKE_TIMEOUT_SECONDS = 45
+SMOKE_MAX_ATTEMPTS = 1
 RETRYABLE_STATUSES = {408, 429, 500, 502, 503, 504}
 
 
@@ -100,7 +102,9 @@ def messages_url(provider: str) -> str:
 def _probe_request(api_key: str, kind: str, provider: str, model: str) -> urllib.request.Request:
     body: dict[str, object] = {
         "model": model,
-        "max_tokens": 4096,
+        # The preflight response is deliberately tiny; a large completion
+        # budget would make this early availability check slower and costlier.
+        "max_tokens": 512,
         "messages": [{"role": "user", "content": 'Return only {"status":"ok"}.'}],
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
@@ -110,7 +114,7 @@ def _probe_request(api_key: str, kind: str, provider: str, model: str) -> urllib
         "nvidia": NVIDIA_CHAT_COMPLETIONS_URL,
         "nous": NOUS_CHAT_COMPLETIONS_URL,
     }[provider]
-    if kind == "tools":
+    if kind in {"tools", "claude"}:
         # Probe the same Anthropic route used by the Claude action, including
         # an operator-provided base URL. A chat response cannot prove tool support.
         url = messages_url(provider)
@@ -126,6 +130,16 @@ def _probe_request(api_key: str, kind: str, provider: str, model: str) -> urllib
             "tool_choice": {"type": "tool", "name": "review_model_preflight"},
             "messages": [{"role": "user", "content": "Call review_model_preflight with status ok."}],
         })
+        if kind == "claude":
+            body["tools"] = []
+            body.pop("tool_choice", None)
+            body["messages"] = [{
+                "role": "user",
+                "content": (
+                    "Return exactly one JSON object with string summary, an array findings, "
+                    "and an array thread_verdicts. Use empty arrays. No markdown."
+                ),
+            }]
     return urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
 
 
@@ -140,6 +154,21 @@ def _probe_response_valid(result: object, kind: str) -> bool:
             and block.get("input") == {"status": "ok"}
             for block in blocks
         )
+    if kind == "claude":
+        try:
+            content = "".join(
+                block.get("text", "") for block in result.get("content", [])
+                if isinstance(block, dict) and block.get("type") == "text"
+            ).strip()
+            parsed = json.loads(content)
+            return (
+                isinstance(parsed, dict)
+                and isinstance(parsed.get("summary"), str)
+                and isinstance(parsed.get("findings"), list)
+                and isinstance(parsed.get("thread_verdicts"), list)
+            )
+        except (TypeError, AttributeError, ValueError, json.JSONDecodeError):
+            return False
     try:
         content = result["choices"][0]["message"]["content"]
         if content.strip().startswith("```"):
@@ -149,23 +178,33 @@ def _probe_response_valid(result: object, kind: str) -> bool:
         return False
 
 
-def probe(api_key: str, kind: str, provider: str = "ollama-cloud", model: str = MODEL) -> None:
-    request = _probe_request(api_key, kind, provider, model)
+def probe(api_key: str, kind: str, provider: str = "ollama-cloud", model: str = MODEL,
+          *, attempts_override: int | None = None, timeout_override: int | None = None) -> None:
+    attempts = attempts_override or (SMOKE_MAX_ATTEMPTS if kind == "claude" else MAX_ATTEMPTS)
+    timeout = timeout_override or (SMOKE_TIMEOUT_SECONDS if kind == "claude" else REQUEST_TIMEOUT_SECONDS)
+    if kind == "claude":
+        # Run both checks against the same Anthropic route. This catches the
+        # common case where tool use works but Claude cannot emit our JSON contract.
+        probe(api_key, "tools", provider, model,
+              attempts_override=SMOKE_MAX_ATTEMPTS, timeout_override=SMOKE_TIMEOUT_SECONDS)
+        request = _probe_request(api_key, "claude", provider, model)
+    else:
+        request = _probe_request(api_key, kind, provider, model)
     result: object = None
-    for attempt in range(MAX_ATTEMPTS):
+    for attempt in range(attempts):
         print(
-            f"{provider} {model}: {kind} probe attempt {attempt + 1}/{MAX_ATTEMPTS} "
-            f"(timeout {REQUEST_TIMEOUT_SECONDS}s)", file=sys.stderr,
+            f"{provider} {model}: {kind} probe attempt {attempt + 1}/{attempts} "
+            f"(timeout {timeout}s)", file=sys.stderr,
         )
         try:
-            with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 result = json.load(response)
             break
         except urllib.error.HTTPError as error:
-            if error.code not in RETRYABLE_STATUSES or attempt == MAX_ATTEMPTS - 1:
+            if error.code not in RETRYABLE_STATUSES or attempt == attempts - 1:
                 raise RuntimeError(f"{provider} {kind} probe failed with HTTP {error.code}") from None
         except (urllib.error.URLError, TimeoutError, ConnectionError, IncompleteRead):
-            if attempt == MAX_ATTEMPTS - 1:
+            if attempt == attempts - 1:
                 raise RuntimeError(f"{provider} {kind} probe failed or timed out") from None
         except ValueError:
             raise RuntimeError(f"{provider} {kind} probe returned invalid JSON") from None
@@ -203,7 +242,7 @@ def probe_models(api_key: str, kind: str, provider: str, primary: str, fallback:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--probe", choices=["json", "tools"], required=True)
+    parser.add_argument("--probe", choices=["json", "tools", "claude"], required=True)
     args = parser.parse_args(argv)
     provider, api_key, _ = provider_config()
     if not api_key:
@@ -214,7 +253,7 @@ def main(argv: list[str] | None = None) -> int:
         raise RuntimeError(f"{key_name} must be configured as a GitHub Actions secret for {provider}")
     # Reject incompatible transport before probing and export the same normalized
     # base for every Claude stage, including token-counting and Messages requests.
-    base_url = anthropic_base_url(provider) if args.probe == "tools" else ""
+    base_url = anthropic_base_url(provider) if args.probe in {"tools", "claude"} else ""
     model = configured_model()
     fallback = configured_fallback_model()
     primary_ready, fallback_ready = probe_models(api_key, args.probe, provider, model, fallback)

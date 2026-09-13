@@ -462,6 +462,31 @@ class NousReviewTest(unittest.TestCase):
             request = ai_review_preflight._probe_request("test-key", "tools", "nous", "vendor/model")
             self.assertEqual(request.full_url, "https://gateway.example/anthropic/v1/messages")
 
+    def test_claude_smoke_probe_checks_tools_and_review_json_contract(self):
+        tool = {"content": [{"type": "tool_use", "name": "review_model_preflight", "input": {"status": "ok"}}]}
+        structured = {"content": [{"type": "text", "text": '{"summary":"ok","findings":[],"thread_verdicts":[]}'}]}
+        replies = []
+        for data in (tool, structured):
+            response = mock.MagicMock()
+            response.__enter__.return_value = io.StringIO(json.dumps(data))
+            replies.append(response)
+        with mock.patch.object(ai_review_preflight.urllib.request, "urlopen", side_effect=replies) as request:
+            ai_review_preflight.probe("test-key", "claude", "openrouter", "vendor/model")
+        self.assertEqual(request.call_count, 2)
+        self.assertTrue(all(call.args[0].full_url == "https://openrouter.ai/api/v1/messages" for call in request.call_args_list))
+
+    def test_claude_smoke_probe_rejects_non_contract_json(self):
+        tool = {"content": [{"type": "tool_use", "name": "review_model_preflight", "input": {"status": "ok"}}]}
+        invalid = {"content": [{"type": "text", "text": '{"summary":"ok"}'}]}
+        replies = []
+        for data in (tool, invalid):
+            response = mock.MagicMock()
+            response.__enter__.return_value = io.StringIO(json.dumps(data))
+            replies.append(response)
+        with mock.patch.object(ai_review_preflight.urllib.request, "urlopen", side_effect=replies):
+            with self.assertRaisesRegex(RuntimeError, "claude probe"):
+                ai_review_preflight.probe("test-key", "claude", "openrouter", "vendor/model")
+
     def test_nous_payload_respects_api_limit_without_mutating_request(self):
         source = {
             "model": "vendor/model", "max_tokens": 32768,
@@ -492,6 +517,12 @@ class NousReviewTest(unittest.TestCase):
                         self.assertEqual(step["env"]["ANTHROPIC_BASE_URL"], "${{ steps.claude_models.outputs.anthropic_base_url }}")
                         self.assertIn("NOUS_API_KEY", step["with"]["anthropic_api_key"])
                         self.assertEqual(step["with"]["anthropic_api_key"], step["env"]["ANTHROPIC_AUTH_TOKEN"])
+        claude_preflight = next(
+            step for step in automatic["jobs"]["claude-code-plugin-review"]["steps"]
+            if "ai_review_preflight.py" in step.get("run", "")
+        )
+        self.assertIn("--probe claude", claude_preflight["run"])
+        self.assertEqual(claude_preflight["env"]["CLAUDE_REVIEW_BASE_URL"], "${{ env.CLAUDE_REVIEW_BASE_URL }}")
 
 
 if __name__ == "__main__":

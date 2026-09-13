@@ -157,7 +157,10 @@ jobs:
           DIRECT_REVIEW_PROVIDER: ${{ env.CLAUDE_REVIEW_PROVIDER }}
           DIRECT_REVIEW_MODEL: ${{ env.CLAUDE_REVIEW_MODEL }}
           DIRECT_REVIEW_FALLBACK_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
-        run: python3 .github/scripts/ai_review_preflight.py --probe tools
+          CLAUDE_REVIEW_BASE_URL: ${{ env.CLAUDE_REVIEW_BASE_URL }}
+        # A short two-request smoke test checks both tool use and the exact JSON
+        # contract before paying for a full diff review.
+        run: python3 .github/scripts/ai_review_preflight.py --probe claude
 
       - name: Load shared reviewer policy from the pull request
         id: reviewer_policy
