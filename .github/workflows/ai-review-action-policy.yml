@@ -1,0 +1,89 @@
+name: AI review action policy
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-claude-action-allowlist:
+    name: Verify CI Actions are allowed
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      # Do not use checkout here. This job must still start when an external
+      # action is blocked before any runner is assigned.
+      - name: Verify CI Action revisions against the repository policy mirror
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ACTIONS_ALLOWED_PATTERNS: ${{ vars.ACTIONS_ALLOWED_PATTERNS }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import fnmatch
+          import json
+          import os
+          import re
+          import sys
+          import urllib.request
+
+          def api(path):
+              request = urllib.request.Request(
+                  f"https://api.github.com{path}",
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  return json.load(response)
+
+          try:
+              allowed = json.loads(os.environ["ACTIONS_ALLOWED_PATTERNS"])
+          except (KeyError, json.JSONDecodeError):
+              allowed = []
+          if not isinstance(allowed, list) or not all(isinstance(item, str) for item in allowed):
+              print("::error title=CI Action policy mirror is unavailable::ACTIONS_ALLOWED_PATTERNS must contain a JSON array.")
+              sys.exit(1)
+
+          repository = os.environ["REPOSITORY"]
+          tree = api(f"/repos/{repository}/git/trees/{os.environ['HEAD_SHA']}?recursive=1")
+          workflow_blobs = [
+              entry["sha"] for entry in tree["tree"]
+              if entry["type"] == "blob"
+              and entry["path"].startswith(".github/workflows/")
+              and entry["path"].endswith((".yml", ".yaml"))
+          ]
+          references = set()
+          for sha in workflow_blobs:
+              blob = api(f"/repos/{repository}/git/blobs/{sha}")
+              text = base64.b64decode(blob["content"]).decode("utf-8")
+              references.update(re.findall(
+                  r"^\s*uses:\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[^\s#]+)",
+                  text,
+                  flags=re.MULTILINE,
+              ))
+
+          blocked = sorted(ref for ref in references if not any(fnmatch.fnmatchcase(ref, pattern) for pattern in allowed))
+          if blocked:
+              details = "\\n".join(f"- `{ref}`" for ref in blocked)
+              message = (
+                  "These CI Actions are absent from the repository allow-list:\\n"
+                  f"{details}\\n\\n"
+                  "For a Dependabot GitHub-Actions upgrade, merge it into main and the Sync Actions allowlist "
+                  "workflow will add the new pinned revision. For any other change, add the action deliberately "
+                  "in Settings → Actions → General → Allow specified actions and reusable workflows."
+              )
+              print(f"::error title=Blocked CI Action revision::{message}")
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as output:
+                  output.write(f"## Blocked CI Action revision\\n\\n{message}\\n")
+              sys.exit(1)
+          print(f"All {len(references)} CI Action references match the repository policy mirror.")
+          PY

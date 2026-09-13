@@ -193,6 +193,15 @@ the defaults displayed in the launch form. Set both there; changing the PR's
 The direct reviewer uses `DIRECT_REVIEW_MODEL` for every supported provider.
 The model validated by preflight is passed to the review step automatically.
 
+For a pull request opened by someone else, use the `ai-review-approved` label
+after you have inspected the change. Only the repository owner adding that label
+starts the owner-approved direct review. The workflow removes the label before
+reviewing, so every new revision needs a deliberate new approval. It runs trusted
+review tooling from `main` and treats the pull-request checkout as data only;
+the contributor's scripts are never executed with review credentials. A new
+commit cancels an in-progress review of the old revision. The label is created
+in the repository and can be applied from the pull request's Labels menu.
+
 Set a fallback model to select a backup on the same provider. An unset
 `DIRECT_REVIEW_FALLBACK_MODEL` disables switching to a backup model. For Claude,
 an unset `CLAUDE_REVIEW_FALLBACK_MODEL` makes the fallback stage use the primary

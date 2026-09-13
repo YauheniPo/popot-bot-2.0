@@ -321,6 +321,53 @@ class OllamaReviewTest(unittest.TestCase):
         step = next(step for job in workflow["jobs"].values() for step in job["steps"] if step.get("id") == "claude_models")
         self.assertEqual(step["env"].get("DIRECT_REVIEW_FALLBACK_MODEL"), "${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}")
 
+    def test_ai_review_action_policy_check_is_independent_of_claude_action(self):
+        root = Path(__file__).resolve().parents[2]
+        policy = yaml.load(
+            (root / ".github/workflows/ai-review-action-policy.yml").read_text(),
+            Loader=yaml.BaseLoader,
+        )
+        self.assertEqual(policy["name"], "AI review action policy")
+        self.assertIn("synchronize", policy["on"]["pull_request"]["types"])
+        step = policy["jobs"]["verify-claude-action-allowlist"]["steps"][0]
+        self.assertNotIn("uses", step)
+        self.assertEqual(step["env"]["ACTIONS_ALLOWED_PATTERNS"], "${{ vars.ACTIONS_ALLOWED_PATTERNS }}")
+        self.assertIn("git/trees", step["run"])
+        sync = yaml.load(
+            (root / ".github/workflows/sync-actions-allowlist.yml").read_text(),
+            Loader=yaml.BaseLoader,
+        )
+        self.assertEqual(sync["name"], "Sync Actions allowlist")
+        self.assertEqual(sync["on"]["push"]["branches"], ["main"])
+        self.assertIn("dependabot[bot]", sync["jobs"]["sync-dependabot-action-updates"]["if"])
+        sync_step = sync["jobs"]["sync-dependabot-action-updates"]["steps"][0]
+        self.assertNotIn("uses", sync_step)
+        self.assertIn("actions/permissions/selected-actions", sync_step["run"])
+
+    def test_owner_approved_review_uses_a_trusted_workflow_and_reads_pr_as_data(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = yaml.load(
+            (root / ".github/workflows/owner-approved-ai-review.yml").read_text(),
+            Loader=yaml.BaseLoader,
+        )
+        self.assertEqual(workflow["on"]["pull_request_target"]["types"], ["labeled", "synchronize"])
+        job = workflow["jobs"]["review"]
+        self.assertIn("github.event.label.name == 'ai-review-approved'", job["if"])
+        self.assertIn("github.actor == github.repository_owner", job["if"])
+        self.assertEqual(job["permissions"]["contents"], "read")
+        self.assertEqual(job["permissions"]["issues"], "write")
+        self.assertEqual(job["permissions"]["pull-requests"], "write")
+        steps = job["steps"]
+        trusted = next(step for step in steps if step.get("id") == "trusted_tooling")
+        target = next(step for step in steps if step.get("id") == "target")
+        self.assertEqual(trusted["with"]["ref"], "main")
+        self.assertEqual(target["with"]["ref"], "refs/pull/${{ github.event.pull_request.number }}/head")
+        review = next(step for step in steps if step.get("id") == "review")
+        self.assertNotIn("working-directory", review)
+        self.assertIn("python3 -I", review["run"])
+        self.assertIn("runpy.run_path", review["run"])
+        self.assertEqual(review["env"]["REQUIRE_REVIEW_RESULT"], "true")
+
     def test_ci_reviewers_use_provider_neutral_model_settings(self):
         root = Path(__file__).resolve().parents[2]
         automatic = yaml.load((root / ".github/workflows/pr-ai-review.yml").read_text(), Loader=yaml.BaseLoader)
