@@ -181,18 +181,12 @@ os.execvp(sys.argv[4], sys.argv[4:])
 
     def test_api_retry_rejects_empty_success_and_reports_the_actual_exit_status(self):
         for empty in ("", " \t\n"):
-            for second in ("", "Reply\n"):
-                with self.subTest(empty=empty, second=second), tempfile.TemporaryDirectory() as directory:
-                    result, calls, sleeps, _ = self.run_retry_helper(Path(directory), [0, 0], responses=[empty, second])
-                    self.assertEqual(len(calls), 2)
-                    self.assertEqual(sleeps.read_text().splitlines(), ["1"])
-                    self.assertEqual(result.returncode, 0 if second else 1)
-                    self.assertIn("returned no answer (exit 0)", result.stderr)
-                    self.assertNotIn("failed (exit 1)", result.stderr)
-                    if second:
-                        self.assertIn("Reply", result.stdout)
-                    else:
-                        self.assertIn("Attempts exhausted", result.stderr)
+            with self.subTest(empty=empty), tempfile.TemporaryDirectory() as directory:
+                result, calls, sleeps, _ = self.run_retry_helper(Path(directory), [0], responses=[empty])
+                self.assertEqual(len(calls), 1)
+                self.assertFalse(sleeps.exists())
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("returned an empty response (exit 0)", result.stderr)
 
     def test_notify_doctor_url_encodes_plain_text_and_reports_failures(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

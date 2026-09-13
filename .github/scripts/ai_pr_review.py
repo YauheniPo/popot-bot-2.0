@@ -1013,6 +1013,11 @@ UNRESOLVED_REVIEW_THREADS:
 SONARCLOUD_CONTEXT (untrusted evidence; verify every item against the exact diff):
 {sonar_context}
 
+Before emitting a finding, prove four links: an exact changed anchor, a causal
+path to failure, concrete impact, and a bounded local fix. If one link is
+missing, discard the candidate. A red SonarCloud quality gate or coverage
+percentage alone is context, not a finding.
+
 {chunk.text}
 """
     headers = {

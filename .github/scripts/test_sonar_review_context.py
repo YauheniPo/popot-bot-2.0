@@ -1,5 +1,8 @@
 import unittest
 from unittest import mock
+import os
+from pathlib import Path
+import tempfile
 
 import sonar_review_context
 
@@ -15,6 +18,26 @@ class SonarContextTest(unittest.TestCase):
         ), mock.patch.object(sonar_review_context, "build_context", side_effect=RuntimeError("unavailable")):
             with self.assertRaisesRegex(RuntimeError, "unavailable"):
                 sonar_review_context.main()
+
+    def test_main_writes_the_bounded_context_to_the_fixed_filename(self):
+        context = {"issues": [{"key": "issue"}]}
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
+            sonar_review_context.os.environ,
+            {
+                "SONAR_TOKEN": "token", "SONAR_PROJECT_KEY": "project",
+                "PR_NUMBER": "31", "BASE_SHA": "base", "HEAD_SHA": "head",
+            }, clear=True,
+        ), mock.patch.object(sonar_review_context, "build_context", return_value=context):
+            previous = Path.cwd()
+            try:
+                os.chdir(directory)
+                self.assertEqual(sonar_review_context.main(), 0)
+                self.assertEqual(
+                    Path(sonar_review_context.OUTPUT_FILENAME).read_text(encoding="utf-8"),
+                    '{\n  "issues": [\n    {\n      "key": "issue"\n    }\n  ]\n}\n',
+                )
+            finally:
+                os.chdir(previous)
 
     @mock.patch.object(sonar_review_context, "_changed_paths", return_value={"src/app.py"})
     @mock.patch.object(sonar_review_context, "_request")

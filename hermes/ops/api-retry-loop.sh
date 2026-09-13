@@ -80,10 +80,9 @@ for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
             cat "$response_file"
             exit 0
         fi
-        # A partial Hermes result can exit zero without a usable answer. This
-        # helper checks inference, so require text as well as a successful exit.
-        status=0
-        printf 'Hermes CLI attempt %s/%s returned no answer (exit 0).\n' "$attempt" "$MAX_ATTEMPTS" >&2
+        # A zero exit with no answer is a deterministic unusable result. Do not
+        # spend the full retry budget hiding a configuration or model problem.
+        die "Hermes CLI returned an empty response (exit 0)"
     else
         status=$?
         printf 'Hermes CLI attempt %s/%s failed (exit %s).\n' "$attempt" "$MAX_ATTEMPTS" "$status" >&2
