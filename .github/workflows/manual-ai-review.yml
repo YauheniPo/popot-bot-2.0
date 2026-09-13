@@ -31,10 +31,20 @@ on:
           - commit_range
           - full_branch
       model:
-        description: OpenRouter model id, or auto to use repository defaults
+        description: Model for the direct reviewer
         required: true
-        default: auto
+        default: moonshotai/kimi-k3
         type: string
+      provider:
+        description: Provider for the direct reviewer
+        required: true
+        default: nvidia
+        type: choice
+        options:
+          - ollama-cloud
+          - openrouter
+          - nvidia
+          - nous
       publish:
         description: Where review findings should be published
         required: true
@@ -68,7 +78,8 @@ jobs:
       github.actor == github.repository_owner &&
       github.triggering_actor == github.repository_owner
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # 15 minutes for two model probes + 85 for review + five for setup/publication.
+    timeout-minutes: 105
 
     steps:
       - name: Validate manual review inputs
@@ -76,8 +87,17 @@ jobs:
         env:
           TARGET_REF: ${{ inputs.target_ref }}
           BASE_REF: ${{ inputs.base_ref }}
+          PROVIDER: ${{ inputs.provider }}
         run: |
           set -euo pipefail
+
+          case "${PROVIDER}" in
+            ollama-cloud|openrouter|nvidia|nous) ;;
+            *)
+              echo "::error::provider must be ollama-cloud, openrouter, nvidia, or nous."
+              exit 1
+              ;;
+          esac
 
           validate_ref() {
             local value="$1"
@@ -249,49 +269,29 @@ jobs:
             echo "Review findings will be published as a Check Run on ${head_sha}."
           fi
 
-      - name: Select requested OpenRouter model
-        id: requested_model
+      - name: Validate selected review model
         shell: bash
         env:
-          DEFAULT_FALLBACK_MODEL: ${{ vars.OPENROUTER_REVIEW_FALLBACK_MODEL || 'nvidia/nemotron-3-super-120b-a12b:free' }}
-          DEFAULT_PRIMARY_MODEL: ${{ vars.OPENROUTER_REVIEW_MODEL || 'z-ai/glm-5.2:free' }}
           REQUESTED_MODEL: ${{ inputs.model }}
         run: |
           set -euo pipefail
-
-          primary_model="${REQUESTED_MODEL}"
-          if [[ "${primary_model}" == "auto" ]]; then
-            primary_model="${DEFAULT_PRIMARY_MODEL}"
-          fi
-          model_pattern='^[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$'
-          if [[ ! "${primary_model}" =~ ${model_pattern} ]] ||
-             [[ ! "${DEFAULT_FALLBACK_MODEL}" =~ ${model_pattern} ]]; then
-            echo "::error::Models must use a safe provider/model OpenRouter id."
+          if [[ -z "${REQUESTED_MODEL}" || "${REQUESTED_MODEL}" == *$'\n'* ]]; then
+            echo "::error::A non-empty single-line review model is required."
             exit 1
           fi
-          printf 'primary=%s\n' "${primary_model}" >>"${GITHUB_OUTPUT}"
-          printf 'fallback=%s\n' "${DEFAULT_FALLBACK_MODEL}" >>"${GITHUB_OUTPUT}"
 
-      - name: Select a compatible active model endpoint
+      - name: Verify direct API JSON review
         id: models
         shell: bash
         env:
-          FALLBACK_MODEL: ${{ steps.requested_model.outputs.fallback }}
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          PRIMARY_MODEL: ${{ steps.requested_model.outputs.primary }}
-        run: |
-          set -euo pipefail
-          python3 reviewer/.github/scripts/openrouter_model_preflight.py \
-            --primary "${PRIMARY_MODEL}" \
-            --fallback "${FALLBACK_MODEL}" \
-            --discover-free-fallback \
-            --probe-schema \
-            --allow-ordinary-json-fallback \
-            --require max_tokens \
-            --require temperature \
-            --require reasoning \
-            --require response_format \
-            --require structured_outputs
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
+          DIRECT_REVIEW_PROVIDER: ${{ inputs.provider || vars.DIRECT_REVIEW_PROVIDER || 'nvidia' }}
+          DIRECT_REVIEW_MODEL: ${{ inputs.model }}
+          DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || '' }}
+        run: python3 reviewer/.github/scripts/ai_review_preflight.py --probe json
 
       - name: Review selected revision and publish findings
         id: review
@@ -301,24 +301,30 @@ jobs:
           CHECK_RUN_NAME: ${{ startsWith(inputs.request_id, 'ado-') && 'Azure DevOps · Manual AI code review' || 'Manual AI code review' }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HEAD_SHA: ${{ steps.context.outputs.head_sha }}
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OPENROUTER_REVIEW_FALLBACK_MODEL: ${{ steps.models.outputs.secondary_model }}
-          OPENROUTER_REVIEW_FALLBACK_MODE: ${{ steps.models.outputs.secondary_mode }}
-          OPENROUTER_MAX_REVIEW_CHUNKS: ${{ vars.MANUAL_REVIEW_MAX_CHUNKS || '60' }}
-          # This job allows 90 minutes and up to 60 chunks. Without an explicit
-          # budget the script would stop after the 12-minute default meant for
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
+          DIRECT_REVIEW_PROVIDER: ${{ inputs.provider || vars.DIRECT_REVIEW_PROVIDER || 'nvidia' }}
+          DIRECT_REVIEW_MODEL: ${{ steps.models.outputs.selected_model }}
+          # Internal preflight metadata; this is not a repository variable.
+          DIRECT_REVIEW_PRIMARY_MODEL: ${{ steps.models.outputs.primary_model }}
+          DIRECT_REVIEW_FALLBACK_MODEL: ${{ steps.models.outputs.secondary_model }}
+          OLLAMA_MAX_REVIEW_CHUNKS: ${{ vars.MANUAL_REVIEW_MAX_CHUNKS || '100' }}
+          # This job allows 105 minutes and up to 100 chunks. Without an explicit
+          # budget the script would stop after the 40-minute default meant for
           # the automatic PR review and fail a large manual or Azure DevOps run.
-          OPENROUTER_REVIEW_BUDGET_SECONDS: ${{ vars.MANUAL_REVIEW_BUDGET_SECONDS || '4800' }}
-          OPENROUTER_REVIEW_MODEL: ${{ steps.models.outputs.selected_model }}
-          OPENROUTER_REVIEW_MODEL_MODE: ${{ steps.models.outputs.selected_mode }}
-          OPENROUTER_REVIEW_RPM: ${{ vars.OPENROUTER_REVIEW_RPM || '8' }}
+          OLLAMA_REVIEW_BUDGET_SECONDS: ${{ vars.MANUAL_REVIEW_BUDGET_SECONDS || '5100' }}
+          # The response mode is selected by preflight for this run.
+          DIRECT_REVIEW_MODEL_MODE: ${{ steps.models.outputs.selected_mode }}
+          OLLAMA_REVIEW_RPM: ${{ vars.OLLAMA_REVIEW_RPM || '60' }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           REQUIRE_COMPLETE_REVIEW: ${{ inputs.scope == 'full_branch' && 'true' || 'false' }}
           REQUIRE_REVIEW_RESULT: "true"
           REVIEW_INCLUDE_REVIEWER_FILES: ${{ inputs.scope == 'full_branch' && 'true' || 'false' }}
           REVIEW_ORIGIN: ${{ startsWith(inputs.request_id, 'ado-') && 'azure-devops' || 'github-actions' }}
           REVIEW_REQUEST_ID: ${{ inputs.request_id }}
-        run: python3 ../reviewer/.github/scripts/openrouter_pr_review.py
+        run: python3 ../reviewer/.github/scripts/ai_pr_review.py
 
       - name: Summarize manual review
         if: always()
@@ -344,7 +350,7 @@ jobs:
             echo
             echo "- Target: \`${TARGET_REF}\`"
             echo "- Range: \`${BASE_SHA}..${HEAD_SHA}\`"
-            echo "- Model: \`${MODEL}\`"
+            echo "- Requested model: \`${MODEL}\` (actual successful models and retries are listed in the published review)"
             echo "- Source: \`${REVIEW_SOURCE}\`"
             echo "- Publication: \`${PUBLISH_TARGET}\`"
             if [[ -n "${PR_NUMBER}" ]]; then

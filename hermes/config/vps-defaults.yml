@@ -38,10 +38,12 @@ vps_deploy:
     host_admin: true
     lock_public_ssh: false
     vscode_server: true
-  # Enabling this makes encrypted hermes_secret_env authoritative for .env.
-  # It remains false by default so a missing Vault cannot erase live secrets.
+  # Deliver provider keys (including OLLAMA_API_KEY and optional
+  # OPENROUTER_API_KEY) from encrypted Vault.
+  # hermes_secret_env owns the entire .env; retain every active secret there.
+  # Ansible rejects an empty map before replacing the deployed .env.
   secret_environment:
-    managed: false
+    managed: true
 
 # Non-secret nested Hermes config.yaml values can be managed here. Repository
 # policy wins over the deprecated hermes_llm_config Vault variable. The main
@@ -51,27 +53,27 @@ vps_hermes:
   config:
     managed_overlay:
       model:
-        default: google/gemini-3.8-flash
-        provider: openrouter
+        default: deepseek-v4-pro
+        provider: ollama-cloud
+      # Use a separate provider for emergency fallback with NVIDIA_API_KEY.
       fallback_providers:
-        - provider: openrouter
-          model: deepseek/deepseek-v4-flash-0731
+        - provider: nvidia
+          model: deepseek-ai/deepseek-v4-pro-0813
       user_char_limit: 3000
       memory_char_limit: 4000
       # Compact long sessions after 70% of the active model context is used.
       compression:
         threshold: 0.70
-      # Run context compaction on a cheap free model instead of the main
-      # (expensive) model handling the conversation.
+      # Context compaction uses its own route with OPENROUTER_API_KEY.
       auxiliary:
         compression:
-          provider: nous
-          model: upstage/solar-pro4:free
+          provider: openrouter
+          model: nvidia/nemotron-3-ultra-550b-a55b:free
       # Keep scheduled jobs independent from interactive model changes.
       # A per-job provider/model pin still takes precedence.
       cron:
-        model_provider: openrouter
-        model: z-ai/glm-5.3-flash
+        model_provider: nvidia
+        model: deepseek-ai/deepseek-v4-pro-0813
         model_drift_guard: true
       # Let Hermes select only providers whose credentials/capabilities are
       # available. Managed Vault keys still enable Brave and Firecrawl through
@@ -185,10 +187,12 @@ vps_runtime:
     platforms.telegram.extra.command_menu.usage_ranking.refresh_every: 5
     session_reset.mode: idle
     session_reset.idle_minutes: 2880
-    model.max_tokens: 4096
+    # Ollama Cloud has no repository-side token budget; use the largest
+    # output window accepted by the Hermes config contract.
+    model.max_tokens: 32768
     # Prune stale tool-call output from context without an extra LLM call.
     # Starting value; tune based on observed context growth.
-    proactive_prune_tokens: 20000
+    proactive_prune_tokens: 50000
     # Bounded instead of unlimited, so a stuck run fails instead of burning
     # tokens indefinitely. Above the 20-turn default since this agent runs
     # unattended VPS/ops tasks that can legitimately need more steps.
@@ -229,19 +233,32 @@ vps_github:
     push_auto_setup_remote: true
     pull_ff: only
 
+# Non-secret service context published to the Hermes workspace instructions.
+# Credentials are optional and belong in hermes_secret_env in encrypted Vault:
+# AZURE_DEVOPS_EXT_PAT and SONAR_TOKEN.
+vps_integrations:
+  azure_devops:
+    organization_url: https://dev.azure.com/YauheniPo
+    project: popot-bot-2.0
+  sonarqube:
+    url: https://sonarcloud.io
+    organization: yauhenipo
+    project_key: YauheniPo_popot-bot-2.0
+
 # Root-owned operations policy. Ansible/direct deploy renders these values into
 # /etc/hermes-ops.conf and the managed systemd units on every deployment.
 vps_ops:
   alert_target: telegram
   service_restart_sec: 5s
-  # Default parameters for the local API retry helper. The script reads these
+  # Default parameters for the CLI retry helper. The script reads these
   # values from the root-owned /etc/hermes-ops.conf rendered at deployment.
   api_retry:
-    endpoint: http://127.0.0.1:9119/api/execute
-    model: poolside/laguna-s-2.1:free
+    provider: nvidia
+    model: deepseek-ai/deepseek-v4-pro-0813
     message: Hello
     max_attempts: 10
     wait_seconds: 30
+    timeout_seconds: 180
   backup:
     required: true
     retention_days: 14

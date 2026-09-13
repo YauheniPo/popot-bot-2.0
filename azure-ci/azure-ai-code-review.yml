@@ -20,6 +20,9 @@
 #      Use a fine-grained GitHub token restricted to this repository with the
 #      repository permission Actions: Read and write. Read alone cannot start
 #      the workflow; write alone cannot list runs or download the report.
+#      Add the selected provider's API key to the GitHub repository Actions
+#      secrets (see README.md, AI code reviews). Inference runs on GitHub,
+#      so the VPS Vault and Azure variables do not supply that key.
 #   3. The wait is bounded by the waitMinutes parameter and by this job's
 #      timeout. A Microsoft-hosted agent in a private project stops at 60
 #      minutes while the GitHub job may run for 90, so a long full-branch
@@ -55,9 +58,19 @@ parameters:
       - full_branch
 
   - name: model
-    displayName: Model name
+    displayName: Direct reviewer model
     type: string
-    default: tencent/hy4-preview
+    default: moonshotai/kimi-k3
+
+  - name: provider
+    displayName: Direct reviewer provider
+    type: string
+    default: nvidia
+    values:
+      - ollama-cloud
+      - openrouter
+      - nvidia
+      - nous
 
   - name: publishMode
     displayName: Result publication
@@ -108,6 +121,7 @@ jobs:
               --arg base_ref "${BASE_REF}" \
               --arg scope "${REVIEW_SCOPE}" \
               --arg model "${REVIEW_MODEL}" \
+              --arg provider "${REVIEW_PROVIDER}" \
               --arg publish "${PUBLISH_MODE}" \
               --arg request_id "${REQUEST_ID}" \
               '{
@@ -117,6 +131,7 @@ jobs:
                   base_ref: $base_ref,
                   scope: $scope,
                   model: $model,
+                  provider: $provider,
                   publish: $publish,
                   request_id: $request_id
                 }
@@ -149,6 +164,7 @@ jobs:
           BASE_REF: ${{ parameters.baseRef }}
           REVIEW_SCOPE: ${{ parameters.scope }}
           REVIEW_MODEL: ${{ parameters.model }}
+          REVIEW_PROVIDER: ${{ parameters.provider }}
           PUBLISH_MODE: ${{ parameters.publishMode }}
 
       - bash: |

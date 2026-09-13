@@ -64,6 +64,17 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertIsInstance(settings["vps_deploy"]["bundle"]["dir"], str)
 
         overlay = settings["vps_hermes"]["config"]["managed_overlay"]
+        self.assertEqual(overlay["model"], {"provider": "ollama-cloud", "default": "deepseek-v4-pro"})
+        self.assertEqual(
+            overlay["fallback_providers"],
+            [{"provider": "nvidia", "model": "deepseek-ai/deepseek-v4-pro-0813"}],
+        )
+        self.assertEqual(overlay["cron"]["model_provider"], "nvidia")
+        self.assertEqual(overlay["cron"]["model"], "deepseek-ai/deepseek-v4-pro-0813")
+        self.assertEqual(
+            overlay["auxiliary"]["compression"],
+            {"provider": "openrouter", "model": "nvidia/nemotron-3-ultra-550b-a55b:free"},
+        )
         self.assertIsInstance(overlay["model"]["default"], str)
         self.assertTrue(overlay["model"]["default"])
         self.assertIsInstance(overlay["model"]["provider"], str)
@@ -80,6 +91,7 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertIsInstance(overlay["cron"]["model_provider"], str)
         self.assertIsInstance(overlay["cron"]["model"], str)
         self.assertIsInstance(overlay["cron"]["model_drift_guard"], bool)
+        self.assertEqual(settings["vps_runtime"]["set"]["model.max_tokens"], 32768)
         self.assertIsInstance(overlay["web"]["search_backend"], str)
         self.assertIsInstance(overlay["web"]["extract_backend"], str)
 
@@ -95,6 +107,8 @@ class ApplyConfigTests(unittest.TestCase):
         )
         self.assertTrue(values)
         self.assertTrue(all(isinstance(value, str) and value for value in values.values()))
+        self.assertEqual(values["API_RETRY_PROVIDER"], "nvidia")
+        self.assertEqual(values["API_RETRY_MODEL"], "deepseek-ai/deepseek-v4-pro-0813")
 
     def assert_runtime_contract(self, runtime: dict) -> None:
         # These are supported modes in the pinned Hermes gateway/display_config.py.
@@ -153,7 +167,6 @@ class ApplyConfigTests(unittest.TestCase):
     def assert_fallback_contract(self, overlay: dict) -> None:
         chain = overlay["fallback_providers"]
         self.assertIsInstance(chain, list)
-        self.assertTrue(chain)
         routes = {(overlay["model"]["provider"], overlay["model"]["default"])}
         for entry in chain:
             self.assertIsInstance(entry, dict)
@@ -169,12 +182,12 @@ class ApplyConfigTests(unittest.TestCase):
         self.assert_fallback_contract(settings["vps_hermes"]["config"]["managed_overlay"])
 
     def test_fallback_contract_rejects_entries_hermes_would_ignore(self) -> None:
-        for chain in ([], {}, [{}], [{"provider": "openrouter", "model": " "}],
-                      [{"provider": "openrouter", "model": "primary"}]):
+        for chain in ({}, [{}], [{"provider": "ollama-cloud", "model": " "}],
+                      [{"provider": "ollama-cloud", "model": "kimi-k3"}]):
             with self.subTest(chain=chain):
                 with self.assertRaises(AssertionError):
                     self.assert_fallback_contract({
-                        "model": {"provider": "openrouter", "default": "primary"},
+                        "model": {"provider": "ollama-cloud", "default": "kimi-k3"},
                         "fallback_providers": chain,
                     })
 

@@ -10,7 +10,9 @@ ansible_user: "root"
 # Environment credentials managed by Ansible when
 # vps_deploy.secret_environment.managed is true.
 hermes_secret_env:
-  OPENROUTER_API_KEY: "replace-inside-ansible-vault"
+  OLLAMA_API_KEY: "replace-inside-ansible-vault"
+  # Optional alternative provider; Ollama remains the managed default.
+  # OPENROUTER_API_KEY: "replace-inside-ansible-vault"
   # NVIDIA_API_KEY: "replace-inside-ansible-vault"
   # BRAVE_SEARCH_API_KEY: "replace-inside-ansible-vault"
   # FIRECRAWL_API_KEY: "replace-inside-ansible-vault"

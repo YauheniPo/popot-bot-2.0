@@ -1,0 +1,120 @@
+name: Sync Actions allowlist
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - ".github/dependabot.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  sync-dependabot-action-updates:
+    name: Sync Dependabot GitHub Actions updates
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      # This intentionally has no external `uses:` dependency: it must be able
+      # to run when the just-merged action revision is not yet allowlisted.
+      - name: Add approved Dependabot revisions to the selected-actions policy
+        shell: bash
+        env:
+          ACTIONS_POLICY_TOKEN: ${{ secrets.ACTIONS_POLICY_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          BASE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import fnmatch
+          import json
+          import os
+          import re
+          import sys
+          import urllib.error
+          import urllib.request
+
+          token = os.environ.get("ACTIONS_POLICY_TOKEN", "")
+          if not token:
+              print("::error title=Actions policy token is missing::Set ACTIONS_POLICY_TOKEN with Administration: write permission.")
+              sys.exit(1)
+
+          repository = os.environ["REPOSITORY"]
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {token}",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          def api(path, method="GET", payload=None):
+              body = None if payload is None else json.dumps(payload).encode("utf-8")
+              request = urllib.request.Request(f"https://api.github.com{path}", data=body, headers=headers, method=method)
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  return None if response.status == 204 else json.load(response)
+
+          commit = api(f"/repos/{repository}/commits/{os.environ['HEAD_SHA']}")
+          author = commit.get("author") if isinstance(commit, dict) else None
+          if not isinstance(author, dict) or author.get("login") != "dependabot[bot]":
+              print("Dependabot identity could not be verified; refusing to update the allow-list.")
+              sys.exit(0)
+
+          def action_refs(revision):
+              tree = api(f"/repos/{repository}/git/trees/{revision}?recursive=1")
+              if tree.get("truncated"):
+                  raise RuntimeError("GitHub truncated the workflow tree; refusing to synchronize a partial Actions allow-list")
+              blobs = [
+                  entry["sha"] for entry in tree["tree"]
+                  if entry["type"] == "blob"
+                  and entry["path"].startswith(".github/workflows/")
+                  and entry["path"].endswith((".yml", ".yaml"))
+              ]
+              refs = set()
+              for sha in blobs:
+                  blob = api(f"/repos/{repository}/git/blobs/{sha}")
+                  text = base64.b64decode(blob["content"]).decode("utf-8")
+                  refs.update(re.findall(
+                      r"^\s*uses:\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[^\s#]+)", text, flags=re.MULTILINE,
+                  ))
+              return refs
+
+          settings = api(f"/repos/{repository}/actions/permissions/selected-actions")
+          patterns = settings["patterns_allowed"]
+          before = action_refs(os.environ["BASE_SHA"])
+          after = action_refs(os.environ["HEAD_SHA"])
+          before_sources = {item.split("@", 1)[0] for item in before}
+          unsafe = [ref for ref in after if ref.split("@", 1)[0] not in before_sources]
+          if unsafe:
+              print("::error title=Refusing to allow a new Action source::" + ", ".join(unsafe))
+              sys.exit(1)
+
+          additions = sorted(ref for ref in after if not any(fnmatch.fnmatchcase(ref, pattern) for pattern in patterns))
+
+          if additions:
+              patterns.extend(additions)
+              api(
+                  f"/repos/{repository}/actions/permissions/selected-actions",
+                  method="PUT",
+                  payload={
+                      "github_owned_allowed": settings["github_owned_allowed"],
+                      "verified_allowed": settings["verified_allowed"],
+                      "patterns_allowed": patterns,
+                  },
+              )
+
+          mirror = json.dumps(patterns, separators=(",", ":"))
+          variable_path = f"/repos/{repository}/actions/variables/ACTIONS_ALLOWED_PATTERNS"
+          try:
+              api(variable_path, method="PATCH", payload={"name": "ACTIONS_ALLOWED_PATTERNS", "value": mirror})
+          except urllib.error.HTTPError as error:
+              if error.code != 404:
+                  raise
+              api(
+                  f"/repos/{repository}/actions/variables",
+                  method="POST",
+                  payload={"name": "ACTIONS_ALLOWED_PATTERNS", "value": mirror},
+              )
+          print(f"Actions allowlist synchronized; added {len(additions)} revision(s).")
+          PY
