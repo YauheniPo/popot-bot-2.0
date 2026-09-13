@@ -68,13 +68,15 @@ runner+=(env -i HOME="$HERMES_USER_HOME" HERMES_HOME="$HERMES_HOME"
 cd -- "$HERMES_USER_HOME"
 
 printf 'Hermes query: provider=%s model=%s; up to %s CLI attempts\n' "$PROVIDER_NAME" "$MODEL_NAME" "$MAX_ATTEMPTS"
+response_file="$(mktemp)" || die "Cannot create a temporary response file"
+trap 'rm -f -- "$response_file"' EXIT
 for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
     # stdin keeps arbitrary messages literal and out of the process arguments.
     # Quiet mode exits after one query. The empty toolset limits this helper to
     # inference, and timeout bounds the whole CLI attempt including its retries.
-    if response="$(printf '%s' "$USER_MESSAGE" | "${runner[@]}")"; then
-        if [[ -n "${response//[[:space:]]/}" ]]; then
-            printf '%s\n' "$response"
+    if printf '%s' "$USER_MESSAGE" | "${runner[@]}" >"$response_file"; then
+        if [[ -n "$(tr -d '[:space:]' <"$response_file")" ]]; then
+            cat "$response_file"
             exit 0
         fi
         # A partial Hermes result can exit zero without a usable answer. This

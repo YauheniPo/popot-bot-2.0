@@ -73,8 +73,11 @@ class DeploymentStatePolicyTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 return result
 
-            apply()
+            first = apply()
             initial = instructions.read_text()
+            for secret in variables["hermes_secret_env"].values():
+                self.assertNotIn(secret, first.stdout)
+                self.assertNotIn(secret, first.stderr)
             self.assertIn(personal, initial)
             self.assertIn("https://dev.azure.com/YauheniPo", initial)
             self.assertIn("YauheniPo_popot-bot-2.0", initial)
@@ -85,11 +88,17 @@ class DeploymentStatePolicyTests(unittest.TestCase):
 
             variables["hermes_secret_env"] = {}
             second = apply()
+            for secret in ("test-only-azure-secret", "test-only-sonar-secret"):
+                self.assertNotIn(secret, second.stdout)
+                self.assertNotIn(secret, second.stderr)
             self.assertIn("changed=0", second.stdout)
             self.assertEqual(instructions.read_text(), initial)
 
             variables["vps_integrations"]["azure_devops"]["project"] = "another-project"
-            apply()
+            third = apply()
+            for secret in ("test-only-azure-secret", "test-only-sonar-secret"):
+                self.assertNotIn(secret, third.stdout)
+                self.assertNotIn(secret, third.stderr)
             updated = instructions.read_text()
             self.assertIn(personal, updated)
             self.assertIn("another-project", updated)

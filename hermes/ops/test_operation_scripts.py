@@ -46,12 +46,12 @@ with path.open('a') as output:
                              'home': os.environ.get('HOME'), 'hermes_home': os.environ.get('HERMES_HOME'),
                              'inherited_key': 'NVIDIA_API_KEY' in os.environ}}) + '\\n')
 index = len(previous)
-codes = {exit_codes!r}
+codes = {json.dumps(exit_codes)}
 if index >= len(codes):
     sys.exit('Unexpected Hermes CLI invocation')
 code = codes[index]
 if code == 0:
-    sys.stdout.write({responses!r}[index])
+    sys.stdout.write({json.dumps(responses)}[index])
 sys.exit(code)
 """)
         # Simulate the VPS utilities without starting Hermes or calling a model.
@@ -124,6 +124,15 @@ os.execvp(sys.argv[4], sys.argv[4:])
             self.assertEqual(len(calls), 1)
             self.assertFalse(sleeps.exists())
             self.assertIn("failed (exit 2)", result.stderr)
+
+    def test_api_retry_preserves_trailing_response_newlines(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, calls, _, _ = self.run_retry_helper(
+                Path(directory), [0], responses=["Reply\n\n"],
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(result.stdout.endswith("Reply\n\n"), repr(result.stdout))
 
     def test_api_retry_rejects_missing_provider_before_starting_cli(self):
         with tempfile.TemporaryDirectory() as directory:
