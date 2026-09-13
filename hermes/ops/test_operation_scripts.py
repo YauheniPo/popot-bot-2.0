@@ -134,12 +134,16 @@ os.execvp(sys.argv[4], sys.argv[4:])
             self.assertFalse(calls)
 
     def test_api_retry_stops_after_success_or_exhaustion_without_final_sleep(self):
-        for exit_codes, status in (([1, 0], 0), ([1, 1], 1), ([124, 124], 1)):
+        for exit_codes, status in (([1, 0], 0), ([1, 1], 1), ([124], 124)):
             with self.subTest(exit_codes=exit_codes), tempfile.TemporaryDirectory() as directory:
                 result, calls, sleeps, _ = self.run_retry_helper(Path(directory), exit_codes)
                 self.assertEqual(result.returncode, status, result.stderr)
-                self.assertEqual(len(calls), 2)
-                self.assertEqual(sleeps.read_text().splitlines(), ["1"])
+                self.assertEqual(len(calls), len(exit_codes))
+                if status == 124:
+                    self.assertFalse(sleeps.exists())
+                    self.assertIn("timed out", result.stderr)
+                else:
+                    self.assertEqual(sleeps.read_text().splitlines(), ["1"])
 
     def test_api_retry_stops_on_fixed_cli_usage_error(self):
         with tempfile.TemporaryDirectory() as directory:

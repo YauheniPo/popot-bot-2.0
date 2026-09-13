@@ -58,6 +58,8 @@ jobs:
 
           def action_refs(revision):
               tree = api(f"/repos/{repository}/git/trees/{revision}?recursive=1")
+              if tree.get("truncated"):
+                  raise RuntimeError("GitHub truncated the workflow tree; refusing to synchronize a partial Actions allow-list")
               blobs = [
                   entry["sha"] for entry in tree["tree"]
                   if entry["type"] == "blob"

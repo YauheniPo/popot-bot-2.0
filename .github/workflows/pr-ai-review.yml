@@ -491,6 +491,71 @@ jobs:
             --execution-file "${CLAUDE_EXECUTION_FILE}" \
             --output "${CLAUDE_REVIEW_RESULT_FILE}"
 
+      # Free and gateway-routed models can finish an otherwise valid agent run
+      # with a transient SDK error. Give the already-validated fallback the
+      # same one fresh attempt as the primary before declaring it unavailable.
+      - name: Wait before retrying the fallback Claude Code model
+        if: >-
+          always() &&
+          !cancelled() &&
+          steps.claude_models.outputs.fallback_ready == 'true' &&
+          steps.extract_claude_review_primary.outcome != 'success' &&
+          steps.extract_claude_review_primary_retry.outcome != 'success' &&
+          steps.extract_claude_review_fallback.outcome != 'success'
+        shell: bash
+        run: sleep 15
+
+      - name: ClaudeCodePlugin — retry fallback model once
+        id: claude_review_fallback_retry
+        if: >-
+          always() &&
+          !cancelled() &&
+          steps.claude_models.outputs.fallback_ready == 'true' &&
+          steps.extract_claude_review_primary.outcome != 'success' &&
+          steps.extract_claude_review_primary_retry.outcome != 'success' &&
+          steps.extract_claude_review_fallback.outcome != 'success'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@0a8d3c9443bbff909ab973b6a17a340b913f229f # v1
+        with:
+          anthropic_api_key: *claude_api_key
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: *claude_review_prompt
+          claude_args: |
+            --max-turns 48
+            --model "${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}"
+            --tools "Read,Glob,Grep"
+            --allowedTools "Read,Glob,Grep"
+            --disallowedTools "mcp__github_comment__*,mcp__github_ci__*,mcp__github_inline_comment__*,mcp__github_file_ops__*"
+          show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
+        env:
+          ANTHROPIC_BASE_URL: *claude_api_url
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
+          ANTHROPIC_AUTH_TOKEN: *claude_api_key
+          ANTHROPIC_DEFAULT_FABLE_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
+          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
+          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
+          CLAUDE_CODE_SUBAGENT_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
+
+      - name: ClaudeCodePlugin — extract and validate fallback retry response
+        id: extract_claude_review_fallback_retry
+        if: >-
+          always() &&
+          !cancelled() &&
+          steps.claude_review_fallback_retry.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CLAUDE_EXECUTION_FILE: ${{ steps.claude_review_fallback_retry.outputs.execution_file }}
+          CLAUDE_REVIEW_RESULT_FILE: ${{ runner.temp }}/claude-review-result.json
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/pr_review_context.py extract \
+            --execution-file "${CLAUDE_EXECUTION_FILE}" \
+            --output "${CLAUDE_REVIEW_RESULT_FILE}"
+
       - name: ClaudeCodePlugin — validate and publish review
         id: publish_claude_review
         if: >-
@@ -498,7 +563,8 @@ jobs:
           !cancelled() &&
           (steps.extract_claude_review_primary.outcome == 'success' ||
            steps.extract_claude_review_primary_retry.outcome == 'success' ||
-           steps.extract_claude_review_fallback.outcome == 'success')
+           steps.extract_claude_review_fallback.outcome == 'success' ||
+           steps.extract_claude_review_fallback_retry.outcome == 'success')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -515,17 +581,23 @@ jobs:
           CLAUDE_REVIEW_RETRY_VALIDATION: ${{ steps.extract_claude_review_primary_retry.outcome }}
           CLAUDE_REVIEW_FALLBACK_OUTCOME: ${{ steps.claude_review_fallback.outcome }}
           CLAUDE_REVIEW_FALLBACK_VALIDATION: ${{ steps.extract_claude_review_fallback.outcome }}
+          CLAUDE_REVIEW_FALLBACK_RETRY_OUTCOME: ${{ steps.claude_review_fallback_retry.outcome }}
+          CLAUDE_REVIEW_FALLBACK_RETRY_VALIDATION: ${{ steps.extract_claude_review_fallback_retry.outcome }}
           CLAUDE_REVIEW_RUN_ID: ${{ github.run_id }}
           CLAUDE_REVIEW_RESULT_FILE: ${{ runner.temp }}/claude-review-result.json
         run: python3 .github/scripts/pr_review_context.py publish
 
-      - name: Fail when all Claude Code attempts fail
+      # Claude is an additional deep reviewer. A provider outage is visible in
+      # the check summary, but does not report a false failure of the PR code.
+      - name: Report unavailable Claude Code review
+        id: report_claude_review_unavailable
         if: >-
           always() &&
           !cancelled() &&
           steps.extract_claude_review_primary.outcome != 'success' &&
           steps.extract_claude_review_primary_retry.outcome != 'success' &&
-          steps.extract_claude_review_fallback.outcome != 'success'
+          steps.extract_claude_review_fallback.outcome != 'success' &&
+          steps.extract_claude_review_fallback_retry.outcome != 'success'
         shell: bash
         env:
           PRIMARY_MODEL: ${{ steps.claude_models.outputs.primary_model }}
@@ -538,11 +610,21 @@ jobs:
           FALLBACK_READY: ${{ steps.claude_models.outputs.fallback_ready }}
           FALLBACK_OUTCOME: ${{ steps.claude_review_fallback.outcome }}
           FALLBACK_RESULT_OUTCOME: ${{ steps.extract_claude_review_fallback.outcome }}
+          FALLBACK_RETRY_OUTCOME: ${{ steps.claude_review_fallback_retry.outcome }}
+          FALLBACK_RETRY_RESULT_OUTCOME: ${{ steps.extract_claude_review_fallback_retry.outcome }}
         run: |
-          echo "::error::All Claude Code review attempts failed or were unavailable."
-          echo "Primary ${PRIMARY_MODEL}: ready=${PRIMARY_READY}, first=${PRIMARY_OUTCOME}/${PRIMARY_RESULT_OUTCOME}, retry=${PRIMARY_RETRY_OUTCOME}/${PRIMARY_RETRY_RESULT_OUTCOME}"
-          echo "Fallback ${FALLBACK_MODEL}: ready=${FALLBACK_READY}, outcome=${FALLBACK_OUTCOME}/${FALLBACK_RESULT_OUTCOME}"
-          exit 1
+          message="Claude Code review was unavailable; required checks completed independently."
+          echo "::warning::${message}"
+          {
+            echo "## Claude Code review unavailable"
+            echo
+            echo "${message}"
+            echo
+            echo "- Primary \`${PRIMARY_MODEL}\`: ready=${PRIMARY_READY}, first=${PRIMARY_OUTCOME}/${PRIMARY_RESULT_OUTCOME}, retry=${PRIMARY_RETRY_OUTCOME}/${PRIMARY_RETRY_RESULT_OUTCOME}"
+            echo "- Fallback \`${FALLBACK_MODEL}\`: ready=${FALLBACK_READY}, first=${FALLBACK_OUTCOME}/${FALLBACK_RESULT_OUTCOME}, retry=${FALLBACK_RETRY_OUTCOME}/${FALLBACK_RETRY_RESULT_OUTCOME}"
+            echo
+            echo "Set repository variable \`CLAUDE_REVIEW_DEBUG=true\` for one rerun to inspect the provider's SDK output."
+          } >>"${GITHUB_STEP_SUMMARY}"
 
       - name: Verify Claude published a result for this revision
         if: always() && steps.publish_claude_review.outcome == 'success'

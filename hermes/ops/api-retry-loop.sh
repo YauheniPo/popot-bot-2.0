@@ -52,6 +52,7 @@ done
 service_uid="$(id -u "$RUN_AS_USER")" || die "Hermes service user does not exist"
 [[ "$service_uid" != 0 ]] || die "Refusing to run model queries as root"
 TIMEOUT_BIN="$(command -v timeout)" || die "The coreutils timeout command is required"
+[[ -d "$HERMES_USER_HOME" ]] || die "Hermes user home is not a directory: ${HERMES_USER_HOME}"
 
 runner=()
 if [[ "$(id -u)" == 0 ]]; then
@@ -65,7 +66,6 @@ runner+=(env -i HOME="$HERMES_USER_HOME" HERMES_HOME="$HERMES_HOME"
     "$TIMEOUT_BIN" --kill-after=5s "${TIMEOUT_SECONDS}s"
     "$HERMES_BIN" chat --provider "$PROVIDER_NAME" --model "$MODEL_NAME"
     --quiet --toolsets none --max-turns 1 --query-file -)
-[[ -d "$HERMES_USER_HOME" ]] || die "Hermes user home is not a directory: ${HERMES_USER_HOME}"
 cd -- "$HERMES_USER_HOME" || die "Cannot enter Hermes user home: ${HERMES_USER_HOME}"
 
 printf 'Hermes query: provider=%s model=%s; up to %s CLI attempts\n' "$PROVIDER_NAME" "$MODEL_NAME" "$MAX_ATTEMPTS"
@@ -92,6 +92,10 @@ for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
     # argument vector, so retrying it cannot change the failure; 126/127 mean
     # the executable cannot be invoked and are likewise permanent here.
     if (( status == 2 || status == 126 || status == 127 )); then
+        exit "$status"
+    fi
+    if (( status == 124 )); then
+        printf 'Hermes CLI timed out; not retrying a bounded attempt.\n' >&2
         exit "$status"
     fi
     if (( attempt < MAX_ATTEMPTS )); then

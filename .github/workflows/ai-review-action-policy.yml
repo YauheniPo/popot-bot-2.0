@@ -55,6 +55,9 @@ jobs:
 
           repository = os.environ["REPOSITORY"]
           tree = api(f"/repos/{repository}/git/trees/{os.environ['HEAD_SHA']}?recursive=1")
+          if tree.get("truncated"):
+              print("::error title=CI Action policy scan is incomplete::GitHub truncated the workflow tree; refusing to validate a partial allow-list scan.")
+              sys.exit(1)
           workflow_blobs = [
               entry["sha"] for entry in tree["tree"]
               if entry["type"] == "blob"

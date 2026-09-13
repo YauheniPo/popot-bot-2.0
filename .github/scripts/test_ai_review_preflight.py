@@ -333,6 +333,7 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertNotIn("uses", step)
         self.assertEqual(step["env"]["ACTIONS_ALLOWED_PATTERNS"], "${{ vars.ACTIONS_ALLOWED_PATTERNS }}")
         self.assertIn("git/trees", step["run"])
+        self.assertIn('tree.get("truncated")', step["run"])
         sync = yaml.load(
             (root / ".github/workflows/sync-actions-allowlist.yml").read_text(),
             Loader=yaml.BaseLoader,
@@ -361,7 +362,7 @@ class OllamaReviewTest(unittest.TestCase):
         trusted = next(step for step in steps if step.get("id") == "trusted_tooling")
         target = next(step for step in steps if step.get("id") == "target")
         self.assertEqual(trusted["with"]["ref"], "main")
-        self.assertEqual(target["with"]["ref"], "refs/pull/${{ github.event.pull_request.number }}/head")
+        self.assertEqual(target["with"]["ref"], "${{ github.event.pull_request.head.sha }}")
         review = next(step for step in steps if step.get("id") == "review")
         self.assertNotIn("working-directory", review)
         self.assertIn("python3 -I", review["run"])
@@ -435,6 +436,17 @@ class OllamaReviewTest(unittest.TestCase):
             self.assertIn("steps.claude_models.outputs.primary_ready == 'true'", claude_steps[step_id]["if"])
         self.assertIn("steps.claude_models.outputs.fallback_ready == 'true'", claude_steps["claude_review_fallback"]["if"])
         self.assertNotIn("outputs.primary_ready", claude_steps["claude_review_fallback"]["if"])
+        self.assertIn("claude_review_fallback_retry", claude_steps)
+        self.assertIn("steps.claude_models.outputs.fallback_ready == 'true'", claude_steps["claude_review_fallback_retry"]["if"])
+        self.assertIn("steps.extract_claude_review_fallback.outcome != 'success'", claude_steps["claude_review_fallback_retry"]["if"])
+        self.assertIn(
+            "steps.claude_review_fallback_retry.outcome == 'success'",
+            claude_steps["extract_claude_review_fallback_retry"]["if"],
+        )
+        unavailable = next(step for step in claude_steps.values() if step.get("id") == "report_claude_review_unavailable")
+        self.assertIn("::warning::", unavailable["run"])
+        self.assertIn("GITHUB_STEP_SUMMARY", unavailable["run"])
+        self.assertNotIn("exit 1", unavailable["run"])
 
     def test_job_timeouts_fit_two_model_probes_and_the_default_review_budget(self):
         root = Path(__file__).resolve().parents[2]
@@ -458,6 +470,12 @@ class OllamaReviewTest(unittest.TestCase):
                     environment["DIRECT_REVIEW_MODEL"] = selected_model
                 with self.subTest(provider=provider, selected_model=selected_model), mock.patch.dict(os.environ, environment, clear=True):
                     self.assertEqual(ai_review_preflight.configured_model(), expected)
+
+    def test_probe_rejects_non_positive_attempt_and_timeout_overrides(self):
+        for keyword in ("attempts_override", "timeout_override"):
+            with self.subTest(keyword=keyword):
+                with self.assertRaisesRegex(ValueError, f"{keyword} must be positive"):
+                    ai_review_preflight.probe("test-key", "json", **{keyword: 0})
 
 
 class NousReviewTest(unittest.TestCase):
