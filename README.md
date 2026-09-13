@@ -150,6 +150,10 @@ these values and chooses the corresponding GitHub Actions **Secret**:
 | `openrouter` | `OPENROUTER_API_KEY` |
 | `nous` (Nous Portal) | `NOUS_API_KEY` |
 
+The default provider is `nvidia`. If `DIRECT_REVIEW_PROVIDER` is omitted when
+running the preflight script directly, `NVIDIA_API_KEY` is therefore required;
+set the provider explicitly when only another provider is configured.
+
 Add the keys for the providers you intend to use. VPS Ansible Vault credentials
 are separate and do not reach GitHub runners. Azure needs `GITHUB_ACTIONS_TOKEN`
 to launch and collect the GitHub review; the inference key belongs on GitHub.

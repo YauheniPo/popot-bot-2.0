@@ -46,6 +46,11 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertEqual(payload["model"], "moonshotai/kimi-k3")
         self.assertNotIn("response_format", payload)
 
+    def test_default_provider_requires_its_configured_api_key(self):
+        with mock.patch.dict(os.environ, {"DIRECT_REVIEW_PROVIDER": "nvidia"}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "NVIDIA_API_KEY"):
+                ai_review_preflight.main(["--probe", "json"])
+
     def test_tool_probe_uses_anthropic_endpoint_and_checks_tool_input(self):
         response = {"content": [{"type": "tool_use", "name": "review_model_preflight", "input": {"status": "ok"}}]}
         with mock.patch.object(ai_review_preflight.urllib.request, "urlopen", return_value=self.response(response)) as request:

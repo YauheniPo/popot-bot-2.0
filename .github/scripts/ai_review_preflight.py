@@ -169,6 +169,8 @@ def probe(api_key: str, kind: str, provider: str = "ollama-cloud", model: str = 
                 raise RuntimeError(f"{provider} {kind} probe failed or timed out") from None
         except ValueError:
             raise RuntimeError(f"{provider} {kind} probe returned invalid JSON") from None
+        # Pace only the next request; the final retryable response raises above
+        # without an unnecessary sleep because there is no next attempt.
         time.sleep(15 * (attempt + 1))
 
     if not _probe_response_valid(result, kind):

@@ -93,6 +93,8 @@ class DeploymentStatePolicyTests(unittest.TestCase):
                 self.assertNotIn(secret, second.stderr)
             self.assertIn("changed=0", second.stdout)
             self.assertEqual(instructions.read_text(), initial)
+            for secret in ("test-only-azure-secret", "test-only-sonar-secret"):
+                self.assertNotIn(secret, instructions.read_text())
 
             variables["vps_integrations"]["azure_devops"]["project"] = "another-project"
             third = apply()

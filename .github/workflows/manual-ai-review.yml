@@ -87,8 +87,17 @@ jobs:
         env:
           TARGET_REF: ${{ inputs.target_ref }}
           BASE_REF: ${{ inputs.base_ref }}
+          PROVIDER: ${{ inputs.provider }}
         run: |
           set -euo pipefail
+
+          case "${PROVIDER}" in
+            ollama-cloud|openrouter|nvidia|nous) ;;
+            *)
+              echo "::error::provider must be ollama-cloud, openrouter, nvidia, or nous."
+              exit 1
+              ;;
+          esac
 
           validate_ref() {
             local value="$1"
