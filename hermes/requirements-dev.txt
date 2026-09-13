@@ -1,4 +1,4 @@
-ansible-core>=2.21.3,<2.22
+ansible-core>=2.21.4,<2.22
 PyYAML>=6.0.3,<7
 pytest>=9.1.1,<10
 fastapi>=0.141.1,<0.142
