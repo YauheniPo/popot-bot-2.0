@@ -13,7 +13,7 @@ permissions:
 jobs:
   sync-dependabot-action-updates:
     name: Sync Dependabot GitHub Actions updates
-    if: github.event.head_commit.author.username == 'dependabot[bot]'
+    if: github.event.head_commit.author.name == 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -79,12 +79,13 @@ jobs:
           patterns = settings["patterns_allowed"]
           before = action_refs(os.environ["BASE_SHA"])
           after = action_refs(os.environ["HEAD_SHA"])
-          additions = sorted(ref for ref in after if not any(fnmatch.fnmatchcase(ref, pattern) for pattern in patterns))
           before_sources = {item.split("@", 1)[0] for item in before}
-          unsafe = [ref for ref in additions if ref.split("@", 1)[0] not in before_sources]
+          unsafe = [ref for ref in after if ref.split("@", 1)[0] not in before_sources]
           if unsafe:
               print("::error title=Refusing to allow a new Action source::" + ", ".join(unsafe))
               sys.exit(1)
+
+          additions = sorted(ref for ref in after if not any(fnmatch.fnmatchcase(ref, pattern) for pattern in patterns))
 
           if additions:
               patterns.extend(additions)

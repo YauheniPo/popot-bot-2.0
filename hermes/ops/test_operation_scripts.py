@@ -59,10 +59,13 @@ sys.exit(code)
         self.write_executable(executable_dir / "sleep", f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> {shlex.quote(str(sleeps))}\n')
         if root:
             self.write_executable(executable_dir / "id", '''#!/usr/bin/env bash
+if [[ $# == 1 && "$1" == "-un" ]]; then
+  echo root
+  exit 0
+fi
 case "$*" in
   "-u") echo 0 ;;
   "-u hermes") echo 1001 ;;
-  "-un") echo root ;;
   *) exit 1 ;;
 esac
 ''')

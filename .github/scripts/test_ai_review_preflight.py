@@ -341,6 +341,7 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertEqual(sync["name"], "Sync Actions allowlist")
         self.assertEqual(sync["on"]["push"]["branches"], ["main"])
         self.assertIn("dependabot[bot]", sync["jobs"]["sync-dependabot-action-updates"]["if"])
+        self.assertIn("author.name", sync["jobs"]["sync-dependabot-action-updates"]["if"])
         sync_step = sync["jobs"]["sync-dependabot-action-updates"]["steps"][0]
         self.assertNotIn("uses", sync_step)
         self.assertIn("actions/permissions/selected-actions", sync_step["run"])
@@ -368,6 +369,8 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertIn("python3 -I", review["run"])
         self.assertIn("runpy.run_path", review["run"])
         self.assertEqual(review["env"]["REQUIRE_REVIEW_RESULT"], "true")
+        verify = next(step for step in steps if step.get("name", "").startswith("Verify the selected revision"))
+        self.assertEqual(verify["env"]["GH_TOKEN"], "${{ secrets.GITHUB_TOKEN }}")
 
     def test_ci_reviewers_use_provider_neutral_model_settings(self):
         root = Path(__file__).resolve().parents[2]
@@ -432,7 +435,7 @@ class OllamaReviewTest(unittest.TestCase):
             )
 
         claude_steps = {step.get("id"): step for job in automatic["jobs"].values() for step in job["steps"]}
-        self.assertEqual(claude_steps["claude_models"]["continue-on-error"], "true")
+        self.assertNotIn("continue-on-error", claude_steps["claude_models"])
         for step_id in ("claude_review_primary", "claude_review_primary_retry"):
             self.assertIn("steps.claude_models.outputs.primary_ready == 'true'", claude_steps[step_id]["if"])
         self.assertIn("steps.claude_models.outputs.fallback_ready == 'true'", claude_steps["claude_review_fallback"]["if"])

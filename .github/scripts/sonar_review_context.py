@@ -6,7 +6,6 @@ from __future__ import annotations
 import base64
 import json
 import os
-from pathlib import Path
 import urllib.parse
 import urllib.request
 
@@ -14,6 +13,7 @@ import urllib.request
 SONAR_URL = "https://sonarcloud.io"
 MAX_ISSUES = 100
 MAX_MESSAGE = 600
+OUTPUT_FILENAME = "sonar-review-context.json"
 
 
 def _request(path: str, token: str, params: dict[str, str]) -> dict[str, object]:
@@ -107,9 +107,9 @@ def main() -> int:
     if not token or not all(required.values()):
         raise RuntimeError("SONAR_TOKEN, SONAR_PROJECT_KEY, PR_NUMBER, BASE_SHA and HEAD_SHA are required")
     context = build_context(required["SONAR_PROJECT_KEY"], required["PR_NUMBER"], token, required["BASE_SHA"], required["HEAD_SHA"])
-    output = os.environ.get("SONAR_REVIEW_CONTEXT_FILE", "sonar-review-context.json")
-    Path(output).write_text(json.dumps(context, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"Sonar context saved: {output} ({len(context['issues'])} changed-file issues)")
+    with open(OUTPUT_FILENAME, "w", encoding="utf-8") as output_file:
+        output_file.write(json.dumps(context, ensure_ascii=False, indent=2) + "\n")
+    print(f"Sonar context saved: {OUTPUT_FILENAME} ({len(context['issues'])} changed-file issues)")
     return 0
 
 
@@ -118,4 +118,4 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except Exception as error:
         print(f"Sonar review context unavailable: {error}")
-        raise SystemExit(0)
+        raise SystemExit(1)

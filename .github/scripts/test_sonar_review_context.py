@@ -5,6 +5,17 @@ import sonar_review_context
 
 
 class SonarContextTest(unittest.TestCase):
+    def test_main_reports_api_failures_to_the_workflow(self):
+        with mock.patch.dict(
+            sonar_review_context.os.environ,
+            {
+                "SONAR_TOKEN": "token", "SONAR_PROJECT_KEY": "project",
+                "PR_NUMBER": "31", "BASE_SHA": "base", "HEAD_SHA": "head",
+            }, clear=True,
+        ), mock.patch.object(sonar_review_context, "build_context", side_effect=RuntimeError("unavailable")):
+            with self.assertRaisesRegex(RuntimeError, "unavailable"):
+                sonar_review_context.main()
+
     @mock.patch.object(sonar_review_context, "_changed_paths", return_value={"src/app.py"})
     @mock.patch.object(sonar_review_context, "_request")
     def test_context_keeps_only_open_issues_in_changed_files(self, request, _changed):

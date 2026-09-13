@@ -71,6 +71,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Collect SonarCloud context for DirectAPI review
+        continue-on-error: true
         shell: bash
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -157,7 +158,9 @@ jobs:
           SONAR_REVIEW_CONTEXT_FILE: sonar-review-context.json
         run: |
           set -euo pipefail
-          python3 .github/scripts/sonar_review_context.py
+          if ! python3 .github/scripts/sonar_review_context.py; then
+            echo 'Sonar context collection failed; continuing without Sonar findings.' >&2
+          fi
           delimiter="sonar_context_${GITHUB_RUN_ID}_${RANDOM}_${RANDOM}"
           {
             printf 'context<<%s\n' "${delimiter}"
@@ -184,9 +187,8 @@ jobs:
 
       - name: Verify the selected model for Claude tool calling
         id: claude_models
-        # Provider availability is advisory; the deterministic DirectAPI
-        # reviewer remains the required review path.
-        continue-on-error: true
+        # Claude is required whenever this job is selected. A failed smoke
+        # probe must make the job red and retain the provider diagnostics.
         shell: bash
         env:
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
@@ -630,8 +632,8 @@ jobs:
           CLAUDE_REVIEW_RESULT_FILE: ${{ runner.temp }}/claude-review-result.json
         run: python3 .github/scripts/pr_review_context.py publish
 
-      # Claude is an additional deep reviewer. A provider outage is visible in
-      # the check summary, but does not report a false failure of the PR code.
+      # Preserve a readable summary in addition to the failed preflight or
+      # failed model attempts; this step never masks an earlier failure.
       - name: Report unavailable Claude Code review
         id: report_claude_review_unavailable
         if: >-
