@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import io
 import json
+import runpy
 
 import sonar_review_context
 
@@ -84,6 +85,35 @@ class SonarContextTest(unittest.TestCase):
         self.assertEqual(result["conditions"][0]["actual"], "99.8")
         self.assertEqual([issue["key"] for issue in result["issues"]], ["in"])
         self.assertEqual(result["issues"][0]["path"], "src/app.py")
+
+    @mock.patch.object(sonar_review_context, "_changed_paths", return_value=set())
+    @mock.patch.object(sonar_review_context, "_request")
+    def test_context_handles_non_object_status_non_list_conditions_and_bad_issues(self, request, _changed):
+        request.side_effect = [
+            {"projectStatus": {"status": "OK", "conditions": "unexpected"}},
+            {"total": 1, "issues": ["unexpected"]},
+        ]
+        result = sonar_review_context.build_context("project", "31", "token", "base", "head")
+        self.assertEqual(result["quality_gate"], "OK")
+        self.assertEqual(result["conditions"], [])
+        self.assertEqual(result["issues"], [])
+
+    @mock.patch.object(sonar_review_context, "_changed_paths", return_value=set())
+    @mock.patch.object(sonar_review_context, "_request")
+    def test_context_handles_non_object_project_status(self, request, _changed):
+        request.side_effect = [
+            {"projectStatus": "unexpected"},
+            {"total": 0, "issues": []},
+        ]
+        result = sonar_review_context.build_context("project", "31", "token", "base", "head")
+        self.assertEqual(result["quality_gate"], "UNKNOWN")
+        self.assertEqual(result["conditions"], [])
+
+    def test_module_entrypoint_reports_missing_configuration(self):
+        with mock.patch.dict(sonar_review_context.os.environ, {}, clear=True):
+            with self.assertRaises(SystemExit) as exit_info:
+                runpy.run_path(str(sonar_review_context.__file__), run_name="__main__")
+            self.assertEqual(exit_info.exception.code, 1)
 
 
 if __name__ == "__main__":

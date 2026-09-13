@@ -279,6 +279,7 @@ class OllamaReviewTest(unittest.TestCase):
             probe.return_value = None
             ai_review_preflight.probe_models("key", "claude", "openrouter", "primary", "backup")
             fallback_calls = [call for call in probe.call_args_list if call.args[3] == "backup"]
+            self.assertEqual(ai_review_preflight.SMOKE_MAX_ATTEMPTS, 2)
             self.assertEqual(len(fallback_calls), 1)
             self.assertEqual(fallback_calls[0].kwargs["attempts_override"], 2)
 
@@ -348,11 +349,11 @@ class OllamaReviewTest(unittest.TestCase):
         )
         self.assertEqual(sync["name"], "Sync Actions allowlist")
         self.assertEqual(sync["on"]["push"]["branches"], ["main"])
-        self.assertIn("dependabot[bot]", sync["jobs"]["sync-dependabot-action-updates"]["if"])
-        self.assertIn("author.name", sync["jobs"]["sync-dependabot-action-updates"]["if"])
+        self.assertNotIn("if", sync["jobs"]["sync-dependabot-action-updates"])
         sync_step = sync["jobs"]["sync-dependabot-action-updates"]["steps"][0]
         self.assertNotIn("uses", sync_step)
         self.assertIn("actions/permissions/selected-actions", sync_step["run"])
+        self.assertIn('author.get("login") != "dependabot[bot]"', sync_step["run"])
 
     def test_owner_approved_review_uses_a_trusted_workflow_and_reads_pr_as_data(self):
         root = Path(__file__).resolve().parents[2]
@@ -360,7 +361,7 @@ class OllamaReviewTest(unittest.TestCase):
             (root / ".github/workflows/owner-approved-ai-review.yml").read_text(),
             Loader=yaml.BaseLoader,
         )
-        self.assertEqual(workflow["on"]["pull_request_target"]["types"], ["labeled", "synchronize"])
+        self.assertEqual(workflow["on"]["pull_request_target"]["types"], ["labeled"])
         job = workflow["jobs"]["review"]
         self.assertIn("github.event.label.name == 'ai-review-approved'", job["if"])
         self.assertIn("github.actor == github.repository_owner", job["if"])

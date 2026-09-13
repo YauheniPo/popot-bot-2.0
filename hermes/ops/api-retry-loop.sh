@@ -63,8 +63,12 @@ fi
 runner+=(env -i HOME="$HERMES_USER_HOME" HERMES_HOME="$HERMES_HOME"
     USER="$RUN_AS_USER" LOGNAME="$RUN_AS_USER" LANG=C.UTF-8
     LC_ALL="${LC_ALL:-C.UTF-8}" TERM="${TERM:-}"
-    HTTP_PROXY="${HTTP_PROXY:-}" HTTPS_PROXY="${HTTPS_PROXY:-}" NO_PROXY="${NO_PROXY:-}"
+    HTTP_PROXY="${HTTP_PROXY:-}" HTTPS_PROXY="${HTTPS_PROXY:-}" ALL_PROXY="${ALL_PROXY:-}"
+    http_proxy="${http_proxy:-}" https_proxy="${https_proxy:-}" all_proxy="${all_proxy:-}"
+    NO_PROXY="${NO_PROXY:-}" no_proxy="${no_proxy:-}"
     SSL_CERT_FILE="${SSL_CERT_FILE:-}" SSL_CERT_DIR="${SSL_CERT_DIR:-}"
+    REQUESTS_CA_BUNDLE="${REQUESTS_CA_BUNDLE:-}" CURL_CA_BUNDLE="${CURL_CA_BUNDLE:-}"
+    NODE_EXTRA_CA_CERTS="${NODE_EXTRA_CA_CERTS:-}"
     PATH="$HERMES_USER_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
     "$TIMEOUT_BIN" --kill-after=5s "${TIMEOUT_SECONDS}s"
     "$HERMES_BIN" chat --provider "$PROVIDER_NAME" --model "$MODEL_NAME"

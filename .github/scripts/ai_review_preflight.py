@@ -31,8 +31,11 @@ PLAIN_JSON_PROVIDERS = frozenset({"ollama-cloud", "nvidia", "nous"})
 NOUS_MAX_OUTPUT_TOKENS = 32_000
 REQUEST_TIMEOUT_SECONDS = 90
 MAX_ATTEMPTS = 4
-SMOKE_TIMEOUT_SECONDS = 45
-SMOKE_MAX_ATTEMPTS = 1
+# Free OpenRouter routes can queue before producing a response. Keep the
+# smoke check bounded, but allow the configured primary model one retry so a
+# transient queue or gateway timeout does not immediately block the review.
+SMOKE_TIMEOUT_SECONDS = 90
+SMOKE_MAX_ATTEMPTS = 2
 SMOKE_FALLBACK_MAX_ATTEMPTS = 2
 RETRYABLE_STATUSES = {408, 429, 500, 502, 503, 504}
 

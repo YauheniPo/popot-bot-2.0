@@ -4,7 +4,9 @@ name: Owner-approved AI review
 # pull_request_target. A PR author cannot alter this workflow to access secrets.
 on:
   pull_request_target:
-    types: [labeled, synchronize]
+    # A new push must not cancel an already approved immutable revision. The
+    # owner must apply the label again to approve the new SHA.
+    types: [labeled]
 
 permissions:
   contents: read
@@ -13,14 +15,12 @@ permissions:
 
 concurrency:
   group: owner-approved-ai-review-${{ github.event.pull_request.number }}
-  # A synchronize event has no eligible job, but cancels an in-progress review
-  # of the previous revision before it can publish stale findings.
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   review:
     # Only the repository owner applying the explicit label can release review
-    # credentials. The synchronize event exists solely to cancel stale runs.
+    # credentials.
     if: >-
       github.event.action == 'labeled' &&
       github.event.label.name == 'ai-review-approved' &&

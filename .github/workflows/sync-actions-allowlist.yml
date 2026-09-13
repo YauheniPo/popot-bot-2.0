@@ -13,7 +13,6 @@ permissions:
 jobs:
   sync-dependabot-action-updates:
     name: Sync Dependabot GitHub Actions updates
-    if: github.event.head_commit.author.name == 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -55,6 +54,12 @@ jobs:
               request = urllib.request.Request(f"https://api.github.com{path}", data=body, headers=headers, method=method)
               with urllib.request.urlopen(request, timeout=20) as response:
                   return None if response.status == 204 else json.load(response)
+
+          commit = api(f"/repos/{repository}/commits/{os.environ['HEAD_SHA']}")
+          author = commit.get("author") if isinstance(commit, dict) else None
+          if not isinstance(author, dict) or author.get("login") != "dependabot[bot]":
+              print("Dependabot identity could not be verified; refusing to update the allow-list.")
+              sys.exit(0)
 
           def action_refs(revision):
               tree = api(f"/repos/{repository}/git/trees/{revision}?recursive=1")
