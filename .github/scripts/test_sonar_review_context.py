@@ -1,0 +1,120 @@
+import unittest
+from unittest import mock
+import os
+from pathlib import Path
+import tempfile
+import io
+import json
+import runpy
+
+import sonar_review_context
+
+
+class SonarContextTest(unittest.TestCase):
+    def test_request_sets_basic_auth_and_rejects_non_object_payloads(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value = io.StringIO(json.dumps({"ok": True}))
+        with mock.patch.object(sonar_review_context.urllib.request, "urlopen", return_value=response) as urlopen:
+            self.assertEqual(
+                sonar_review_context._request("/api/test", "token", {"q": "a b"}),
+                {"ok": True},
+            )
+        request = urlopen.call_args.args[0]
+        self.assertIn("q=a+b", request.full_url)
+        self.assertTrue(request.get_header("Authorization").startswith("Basic "))
+
+        bad = mock.MagicMock()
+        bad.__enter__.return_value = io.StringIO("[]")
+        with mock.patch.object(sonar_review_context.urllib.request, "urlopen", return_value=bad):
+            with self.assertRaisesRegex(RuntimeError, "invalid response"):
+                sonar_review_context._request("/api/test", "token", {})
+
+    @mock.patch("subprocess.run")
+    def test_changed_paths_uses_nul_delimited_git_output(self, run):
+        # subprocess is imported inside _changed_paths; patch the module object
+        # used by the function after import.
+        completed = mock.Mock(stdout="src/a.py\0README.md\0")
+        run.return_value = completed
+        self.assertEqual(sonar_review_context._changed_paths("base", "head"), {"src/a.py", "README.md"})
+
+    def test_main_reports_api_failures_to_the_workflow(self):
+        with mock.patch.dict(
+            sonar_review_context.os.environ,
+            {
+                "SONAR_TOKEN": "token", "SONAR_PROJECT_KEY": "project",
+                "PR_NUMBER": "31", "BASE_SHA": "base", "HEAD_SHA": "head",
+            }, clear=True,
+        ), mock.patch.object(sonar_review_context, "build_context", side_effect=RuntimeError("unavailable")):
+            with self.assertRaisesRegex(RuntimeError, "unavailable"):
+                sonar_review_context.main()
+
+    def test_main_writes_the_bounded_context_to_the_fixed_filename(self):
+        context = {"issues": [{"key": "issue"}]}
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
+            sonar_review_context.os.environ,
+            {
+                "SONAR_TOKEN": "token", "SONAR_PROJECT_KEY": "project",
+                "PR_NUMBER": "31", "BASE_SHA": "base", "HEAD_SHA": "head",
+            }, clear=True,
+        ), mock.patch.object(sonar_review_context, "build_context", return_value=context):
+            previous = Path.cwd()
+            try:
+                os.chdir(directory)
+                self.assertEqual(sonar_review_context.main(), 0)
+                self.assertEqual(
+                    Path(sonar_review_context.OUTPUT_FILENAME).read_text(encoding="utf-8"),
+                    '{\n  "issues": [\n    {\n      "key": "issue"\n    }\n  ]\n}\n',
+                )
+            finally:
+                os.chdir(previous)
+
+    @mock.patch.object(sonar_review_context, "_changed_paths", return_value={"src/app.py"})
+    @mock.patch.object(sonar_review_context, "_request")
+    def test_context_keeps_only_open_issues_in_changed_files(self, request, _changed):
+        request.side_effect = [
+            {"projectStatus": {"status": "ERROR", "conditions": [{"metricKey": "new_coverage", "status": "ERROR", "actualValue": "99.8", "errorThreshold": "100"}]}},
+            {"total": 2, "issues": [
+                {"key": "in", "component": "project:src/app.py", "severity": "MAJOR", "type": "CODE_SMELL", "line": 8, "textRange": {"startLine": 8}, "message": "Fix this"},
+                {"key": "out", "component": "project:README.md", "severity": "MINOR", "type": "CODE_SMELL", "line": 1, "message": "Ignore this"},
+            ]},
+        ]
+
+        result = sonar_review_context.build_context("project", "31", "token", "base", "head")
+
+        self.assertEqual(result["quality_gate"], "ERROR")
+        self.assertEqual(result["conditions"][0]["actual"], "99.8")
+        self.assertEqual([issue["key"] for issue in result["issues"]], ["in"])
+        self.assertEqual(result["issues"][0]["path"], "src/app.py")
+
+    @mock.patch.object(sonar_review_context, "_changed_paths", return_value=set())
+    @mock.patch.object(sonar_review_context, "_request")
+    def test_context_handles_non_object_status_non_list_conditions_and_bad_issues(self, request, _changed):
+        request.side_effect = [
+            {"projectStatus": {"status": "OK", "conditions": "unexpected"}},
+            {"total": 1, "issues": ["unexpected"]},
+        ]
+        result = sonar_review_context.build_context("project", "31", "token", "base", "head")
+        self.assertEqual(result["quality_gate"], "OK")
+        self.assertEqual(result["conditions"], [])
+        self.assertEqual(result["issues"], [])
+
+    @mock.patch.object(sonar_review_context, "_changed_paths", return_value=set())
+    @mock.patch.object(sonar_review_context, "_request")
+    def test_context_handles_non_object_project_status(self, request, _changed):
+        request.side_effect = [
+            {"projectStatus": "unexpected"},
+            {"total": 0, "issues": []},
+        ]
+        result = sonar_review_context.build_context("project", "31", "token", "base", "head")
+        self.assertEqual(result["quality_gate"], "UNKNOWN")
+        self.assertEqual(result["conditions"], [])
+
+    def test_module_entrypoint_reports_missing_configuration(self):
+        with mock.patch.dict(sonar_review_context.os.environ, {}, clear=True):
+            with self.assertRaises(SystemExit) as exit_info:
+                runpy.run_path(str(sonar_review_context.__file__), run_name="__main__")
+            self.assertEqual(exit_info.exception.code, 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

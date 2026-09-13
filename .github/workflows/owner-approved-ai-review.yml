@@ -1,0 +1,155 @@
+name: Owner-approved AI review
+
+# The workflow definition is read from the default branch because this uses
+# pull_request_target. A PR author cannot alter this workflow to access secrets.
+on:
+  pull_request_target:
+    # A new push must not cancel an already approved immutable revision. The
+    # owner must apply the label again to approve the new SHA.
+    types: [labeled]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: owner-approved-ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    # Only the repository owner applying the explicit label can release review
+    # credentials.
+    if: >-
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'ai-review-approved' &&
+      github.actor == github.repository_owner &&
+      github.event.pull_request.state == 'open' &&
+      github.event.pull_request.draft == false
+    name: Review owner-approved pull request
+    runs-on: ubuntu-latest
+    timeout-minutes: 105
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Check out trusted reviewer tooling from main
+        id: trusted_tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          path: reviewer
+          persist-credentials: false
+          ref: main
+
+      # This checkout is untrusted input. No commands or dependencies from this
+      # directory are executed; trusted scripts below only read Git data from it.
+      - name: Check out the approved pull-request revision as review data
+        id: target
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          path: target
+          persist-credentials: false
+          # This immutable event SHA is the revision the owner approved. Do
+          # not use refs/pull/<number>/head: the PR author can move that ref
+          # after the label event has passed the authorization condition.
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Verify the selected revision and remove the approval label
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          actual_head_sha="$(git -C target rev-parse 'HEAD^{commit}')"
+          if [[ "${actual_head_sha}" != "${EXPECTED_HEAD_SHA}" ]]; then
+            echo "::error::The pull request changed after approval; apply ai-review-approved again to review its latest revision."
+            exit 1
+          fi
+          git -C target cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || \
+            git -C target fetch --no-tags origin "${BASE_SHA}"
+          gh api --method DELETE \
+            "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels/ai-review-approved"
+
+      - name: Verify the configured direct-review model
+        id: models
+        shell: bash
+        env:
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
+          DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'nvidia' }}
+          DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'moonshotai/kimi-k3' }}
+          DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || '' }}
+        run: python3 reviewer/.github/scripts/ai_review_preflight.py --probe json
+
+      - name: Review the approved revision and publish findings
+        id: review
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CHECK_RUN_NAME: Owner-approved AI code review
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          DIRECT_REVIEW_FALLBACK_MODEL: ${{ steps.models.outputs.secondary_model }}
+          DIRECT_REVIEW_MODEL: ${{ steps.models.outputs.selected_model }}
+          DIRECT_REVIEW_MODEL_MODE: ${{ steps.models.outputs.selected_mode }}
+          DIRECT_REVIEW_PRIMARY_MODEL: ${{ steps.models.outputs.primary_model }}
+          DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'nvidia' }}
+          OLLAMA_MAX_REVIEW_CHUNKS: "100"
+          OLLAMA_REVIEW_BUDGET_SECONDS: "5100"
+          OLLAMA_REVIEW_RPM: ${{ vars.OLLAMA_REVIEW_RPM || '60' }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REQUIRE_COMPLETE_REVIEW: "true"
+          REQUIRE_REVIEW_RESULT: "true"
+          REVIEW_ORIGIN: github-actions
+          REVIEW_REQUEST_ID: owner-approved-${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # Start Python outside target and in isolated mode. The reviewed
+          # checkout can influence only the Git data read after imports are
+          # pinned to the trusted main-branch reviewer scripts.
+          python3 -I - <<'PY'
+          import os
+          from pathlib import Path
+          import runpy
+          import sys
+
+          workspace = Path.cwd()
+          trusted_scripts = workspace / "reviewer" / ".github" / "scripts"
+          sys.path.insert(0, str(trusted_scripts))
+          os.chdir(workspace / "target")
+          runpy.run_path(str(trusted_scripts / "ai_pr_review.py"), run_name="__main__")
+          PY
+
+      - name: Summarize the owner-approved review
+        if: always()
+        shell: bash
+        env:
+          CHECK_RUN_URL: ${{ steps.review.outputs.check_run_url }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          {
+            echo '## Owner-approved AI code review'
+            echo
+            echo "- Pull request: #${PR_NUMBER}"
+            echo "- Reviewed revision: \`${HEAD_SHA}\`"
+            echo '- Trigger: repository owner applied `ai-review-approved`'
+            if [[ -n "${CHECK_RUN_URL}" ]]; then
+              echo "- Findings: [Open findings](${CHECK_RUN_URL})"
+            fi
+          } >>"${GITHUB_STEP_SUMMARY}"

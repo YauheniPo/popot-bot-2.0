@@ -74,13 +74,14 @@ Vault password или API keys в чат, Git, issue либо shell history.
 
 ## Типичная конфигурация
 
-Минимальный набор для LLM — `OLLAMA_API_KEY` в `hermes_secret_env`; модельная
-политика `ollama-cloud/kimi-k3` задаётся в `config/vps-defaults.yml`.
-Дополнительно можно добавить:
+Для LLM добавьте в `hermes_secret_env` credentials выбранных providers.
+Основной provider, модели и fallback задаются в
+[`config/vps-defaults.yml`](../../../config/vps-defaults.yml) →
+`vps_hermes.config.managed_overlay`. Добавляйте ключи только нужных интеграций:
 
 - `OLLAMA_API_KEY` — Ollama Cloud, provider `ollama-cloud` в меню `/model`;
-- `OPENROUTER_API_KEY` — необязательная альтернатива для ручного переключения
-  на OpenRouter через `/model` и fallback `openrouter/free`;
+- `OPENROUTER_API_KEY` — OpenRouter для выбранной модели или настроенного fallback;
+- `NVIDIA_API_KEY` — NVIDIA NIM, provider `nvidia` в меню `/model`;
 - `FIRECRAWL_API_KEY` — чтение HTML/PDF и веб-страниц;
 - `BRAVE_SEARCH_API_KEY` — поиск через Brave;
 - `TELEGRAM_BOT_TOKEN` вместе с `TELEGRAM_ALLOWED_USERS` — запуск Telegram
