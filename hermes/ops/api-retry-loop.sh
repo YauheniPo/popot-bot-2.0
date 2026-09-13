@@ -37,7 +37,7 @@ TIMEOUT_SECONDS="$(required_config_value HERMES_API_RETRY_TIMEOUT_SECONDS)"
 [[ "$MODEL_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._:/+-]*$ ]] || die "Invalid model name"
 [[ -n "${USER_MESSAGE//[[:space:]]/}" ]] || die "Request message must not be empty"
 for path in "$HERMES_USER_HOME" "$HERMES_HOME" "$HERMES_BIN"; do
-    [[ "$path" =~ ^/[A-Za-z0-9._/@+-]+$ ]] || die "Invalid Hermes runtime path"
+    [[ "$path" == /* && "$path" != *$'\n'* && "$path" != *$'\r'* ]] || die "Invalid Hermes runtime path"
 done
 [[ -x "$HERMES_BIN" ]] || die "Hermes CLI is not executable: ${HERMES_BIN}"
 if ! [[ "$MAX_ATTEMPTS" =~ ^[1-9][0-9]?$ ]]; then
@@ -65,7 +65,8 @@ runner+=(env -i HOME="$HERMES_USER_HOME" HERMES_HOME="$HERMES_HOME"
     "$TIMEOUT_BIN" --kill-after=5s "${TIMEOUT_SECONDS}s"
     "$HERMES_BIN" chat --provider "$PROVIDER_NAME" --model "$MODEL_NAME"
     --quiet --toolsets none --max-turns 1 --query-file -)
-cd -- "$HERMES_USER_HOME"
+[[ -d "$HERMES_USER_HOME" ]] || die "Hermes user home is not a directory: ${HERMES_USER_HOME}"
+cd -- "$HERMES_USER_HOME" || die "Cannot enter Hermes user home: ${HERMES_USER_HOME}"
 
 printf 'Hermes query: provider=%s model=%s; up to %s CLI attempts\n' "$PROVIDER_NAME" "$MODEL_NAME" "$MAX_ATTEMPTS"
 response_file="$(mktemp)" || die "Cannot create a temporary response file"

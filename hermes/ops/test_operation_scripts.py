@@ -109,6 +109,23 @@ os.execvp(sys.argv[4], sys.argv[4:])
             self.assertEqual(json.loads(runuser_args.read_text())[:3], ["-u", "hermes", "--"])
             self.assertFalse((temporary / "injected").exists())
 
+    def test_api_retry_accepts_absolute_runtime_paths_with_spaces(self):
+        with tempfile.TemporaryDirectory(prefix="hermes home ") as directory:
+            result, calls, _, _ = self.run_retry_helper(Path(directory), [0])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(calls), 1)
+
+    def test_api_retry_reports_a_missing_hermes_home_before_starting_cli(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            missing_home = temporary / "missing home"
+            result, calls, _, _ = self.run_retry_helper(
+                temporary, [], overrides={"HERMES_USER_HOME": str(missing_home)},
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(f"Hermes user home is not a directory: {missing_home}", result.stderr)
+            self.assertFalse(calls)
+
     def test_api_retry_stops_after_success_or_exhaustion_without_final_sleep(self):
         for exit_codes, status in (([1, 0], 0), ([1, 1], 1), ([124, 124], 1)):
             with self.subTest(exit_codes=exit_codes), tempfile.TemporaryDirectory() as directory:

@@ -487,6 +487,18 @@ class NousReviewTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "claude probe"):
                 ai_review_preflight.probe("test-key", "claude", "openrouter", "vendor/model")
 
+    def test_claude_smoke_probe_rejects_malformed_json(self):
+        tool = {"content": [{"type": "tool_use", "name": "review_model_preflight", "input": {"status": "ok"}}]}
+        malformed = {"content": [{"type": "text", "text": '{"summary":'}]}
+        replies = []
+        for data in (tool, malformed):
+            response = mock.MagicMock()
+            response.__enter__.return_value = io.StringIO(json.dumps(data))
+            replies.append(response)
+        with mock.patch.object(ai_review_preflight.urllib.request, "urlopen", side_effect=replies):
+            with self.assertRaisesRegex(RuntimeError, "claude probe"):
+                ai_review_preflight.probe("test-key", "claude", "openrouter", "vendor/model")
+
     def test_nous_payload_respects_api_limit_without_mutating_request(self):
         source = {
             "model": "vendor/model", "max_tokens": 32768,
