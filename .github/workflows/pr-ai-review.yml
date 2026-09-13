@@ -70,6 +70,17 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
 
+      - name: Collect SonarCloud context for DirectAPI review
+        shell: bash
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_PROJECT_KEY: YauheniPo_popot-bot-2.0
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SONAR_REVIEW_CONTEXT_FILE: sonar-review-context.json
+        run: python3 .github/scripts/sonar_review_context.py
+
       - name: Verify direct API JSON review
         id: direct_models
         shell: bash
@@ -97,6 +108,7 @@ jobs:
           DIRECT_REVIEW_MODEL: ${{ steps.direct_models.outputs.selected_model }}
           # Internal preflight metadata; this is not a repository variable.
           DIRECT_REVIEW_PRIMARY_MODEL: ${{ steps.direct_models.outputs.primary_model }}
+          SONAR_REVIEW_CONTEXT_FILE: sonar-review-context.json
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -133,6 +145,30 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
 
+      - name: Collect SonarCloud context for Claude review
+        id: sonar_context
+        shell: bash
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_PROJECT_KEY: YauheniPo_popot-bot-2.0
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SONAR_REVIEW_CONTEXT_FILE: sonar-review-context.json
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/sonar_review_context.py
+          delimiter="sonar_context_${GITHUB_RUN_ID}_${RANDOM}_${RANDOM}"
+          {
+            printf 'context<<%s\n' "${delimiter}"
+            if [[ -s sonar-review-context.json ]]; then
+              cat sonar-review-context.json
+            else
+              echo '{"source":"SonarCloud","status":"unavailable","issues":[]}'
+            fi
+            printf '%s\n' "${delimiter}"
+          } >>"${GITHUB_OUTPUT}"
+
       # Apply the configured pause before Claude preflight in sequential mode.
       - name: Wait for the configured interval between reviewers
         if: vars.PR_REVIEWER == '' || vars.PR_REVIEWER == '0'
@@ -148,6 +184,9 @@ jobs:
 
       - name: Verify the selected model for Claude tool calling
         id: claude_models
+        # Provider availability is advisory; the deterministic DirectAPI
+        # reviewer remains the required review path.
+        continue-on-error: true
         shell: bash
         env:
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
@@ -267,6 +306,10 @@ jobs:
             --- BEGIN UNRESOLVED REVIEW THREADS ---
             ${{ steps.review_threads.outputs.context }}
             --- END UNRESOLVED REVIEW THREADS ---
+
+            --- BEGIN SONARCLOUD CONTEXT ---
+            ${{ steps.sonar_context.outputs.context }}
+            --- END SONARCLOUD CONTEXT ---
 
             Both automated reviewers mark their initial inline findings with
             `<!-- direct-openrouter-inline:<head-sha>:... -->` or

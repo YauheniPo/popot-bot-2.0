@@ -214,12 +214,18 @@ def probe(api_key: str, kind: str, provider: str = "ollama-cloud", model: str = 
         not isinstance(timeout_override, int) or isinstance(timeout_override, bool) or timeout_override < 1
     ):
         raise ValueError("timeout_override must be positive integer")
-    attempts = attempts_override if attempts_override is not None else (
-        SMOKE_MAX_ATTEMPTS if kind == "claude" else MAX_ATTEMPTS
-    )
-    timeout = timeout_override if timeout_override is not None else (
-        SMOKE_TIMEOUT_SECONDS if kind == "claude" else REQUEST_TIMEOUT_SECONDS
-    )
+    if attempts_override is not None:
+        attempts = attempts_override
+    elif kind == "claude":
+        attempts = SMOKE_MAX_ATTEMPTS
+    else:
+        attempts = MAX_ATTEMPTS
+    if timeout_override is not None:
+        timeout = timeout_override
+    elif kind == "claude":
+        timeout = SMOKE_TIMEOUT_SECONDS
+    else:
+        timeout = REQUEST_TIMEOUT_SECONDS
     if kind == "claude":
         # Run both checks against the same Anthropic route. This catches the
         # common case where tool use works but Claude cannot emit our JSON contract.

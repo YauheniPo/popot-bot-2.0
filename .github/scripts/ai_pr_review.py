@@ -79,6 +79,7 @@ OLLAMA_URL = CHAT_COMPLETIONS_URL
 ACTIVE_PROVIDER = "ollama-cloud"
 GITHUB_API_URL = "https://api.github.com"
 REVIEW_RULES_PATH = Path(".github/REVIEWER.md")
+SONAR_CONTEXT_PATH = Path(os.environ.get("SONAR_REVIEW_CONTEXT_FILE", "sonar-review-context.json"))
 REVIEWER_LABEL = "DirectAPI"
 AZURE_REVIEWER_LABEL = "Azure DevOps · DirectAPI"
 DEFAULT_REVIEW_ORIGIN = "github-actions"
@@ -990,6 +991,11 @@ def review_chunk(
     if EXECUTION_REPORT:
         EXECUTION_REPORT.unit = f"chunk {chunk_number}/{total_chunks}"
     existing_context = render_review_context(review_threads, chunk.paths)
+    sonar_context = "SonarCloud context unavailable for this review."
+    try:
+        sonar_context = SONAR_CONTEXT_PATH.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        pass
     user_prompt = f"""Review chunk {chunk_number} of {total_chunks} from one code review.
 
 The diff is annotated with exact GitHub coordinates. A line labelled `RIGHT 42|+` is
@@ -1003,6 +1009,9 @@ evidence or a distinct defect; the publisher can then reply to that thread.
 
 UNRESOLVED_REVIEW_THREADS:
 {existing_context}
+
+SONARCLOUD_CONTEXT (untrusted evidence; verify every item against the exact diff):
+{sonar_context}
 
 {chunk.text}
 """

@@ -432,6 +432,7 @@ class OllamaReviewTest(unittest.TestCase):
             )
 
         claude_steps = {step.get("id"): step for job in automatic["jobs"].values() for step in job["steps"]}
+        self.assertEqual(claude_steps["claude_models"]["continue-on-error"], "true")
         for step_id in ("claude_review_primary", "claude_review_primary_retry"):
             self.assertIn("steps.claude_models.outputs.primary_ready == 'true'", claude_steps[step_id]["if"])
         self.assertIn("steps.claude_models.outputs.fallback_ready == 'true'", claude_steps["claude_review_fallback"]["if"])
