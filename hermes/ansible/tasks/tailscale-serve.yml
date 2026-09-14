@@ -7,11 +7,9 @@
       - item.protocol in ['http', 'https']
       - item.port | int >= 1
       - item.port | int <= 65535
-      # item.protocol is the Serve endpoint scheme (always https); item.target
-      # is the loopback upstream, which is plain HTTP. Validate the target
-      # scheme independently so a clear-text literal never appears here and the
-      # actual loopback targets still pass.
-      - item.target is match('^https?://127\\.0\\.0\\.1:[1-9][0-9]{0,4}$')
+      # item.protocol controls the Tailscale-facing endpoint. The loopback
+      # upstream is always plain HTTP, because Tailscale terminates TLS.
+      - item.target is match('^http://127\\.0\\.0\\.1:[1-9][0-9]{0,4}$')
     fail_msg: Invalid private Tailscale Serve endpoint.
   loop: "{{ vps_tailscale.serve.services }}"
   when:

@@ -181,7 +181,8 @@ class DeploymentStatePolicyTests(unittest.TestCase):
         self.assertIn('[[ "${EUID}" -eq 0 ]]', script)
         self.assertIn("tailscale up --ssh", script)
         # Endpoints are published from the shared managed list, not hardcoded.
-        self.assertIn('tailscale serve --bg "--https=${port}" "${target}"', script)
+        self.assertIn('protocol="${pair%%|*}"', script)
+        self.assertIn('tailscale serve --bg "--${protocol}=${port}" "${target}"', script)
         self.assertIn("HERMES_TAILSCALE_SERVE_ENDPOINTS", script)
         self.assertNotIn("tailscale funnel", script)
 

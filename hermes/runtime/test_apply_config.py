@@ -62,6 +62,7 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertTrue(features)
         self.assertTrue(all(isinstance(value, bool) for value in features.values()))
         self.assertTrue(features["searxng"])
+        self.assertFalse(features["lock_public_ssh"])
         self.assertIsInstance(settings["vps_deploy"]["bundle"]["dir"], str)
         searxng = settings["vps_searxng"]
         self.assertEqual(searxng["image"], "docker.io/searxng/searxng:latest")
@@ -347,11 +348,11 @@ class ApplyConfigTests(unittest.TestCase):
 
         # The repository default renders the managed endpoint list for the script.
         values = self._asset_values(settings)
-        self.assertEqual(values["TAILSCALE_SERVE_ENDPOINTS"], "443 http://127.0.0.1:9119,"
-                         "3000 http://127.0.0.1:3000,"
-                         "9090 http://127.0.0.1:9090,"
-                         "3001 http://127.0.0.1:3001,"
-                         "8888 http://127.0.0.1:8888")
+        self.assertEqual(values["TAILSCALE_SERVE_ENDPOINTS"], "https 443 http://127.0.0.1:9119,"
+                         "https 3000 http://127.0.0.1:3000,"
+                         "https 9090 http://127.0.0.1:9090,"
+                         "https 3001 http://127.0.0.1:3001,"
+                         "https 8888 http://127.0.0.1:8888")
 
         # serve must be a mapping.
         with self.assertRaisesRegex(ValueError, "vps_tailscale.serve must be a mapping"):
@@ -372,21 +373,25 @@ class ApplyConfigTests(unittest.TestCase):
             with self.subTest(port=bad_port):
                 with self.assertRaisesRegex(ValueError, "port must be 1-65535"):
                     self._asset_values(
-                        {**settings, "vps_tailscale": {"serve": {"services": [{"port": bad_port, "target": "http://127.0.0.1:9119"}]}}}
+                        {**settings, "vps_tailscale": {"serve": {"services": [{"protocol": "https", "port": bad_port, "target": "http://127.0.0.1:9119"}]}}}
                     )
-        for bad_target in ("http://0.0.0.0:9119", "http://evil.example:9119", "ftp://127.0.0.1:80", 9119):
+        for bad_target in ("http://0.0.0.0:9119", "http://evil.example:9119", "https://127.0.0.1:9119", "ftp://127.0.0.1:80", 9119):
             with self.subTest(target=bad_target):
                 with self.assertRaisesRegex(ValueError, "target must be a loopback URL"):
                     self._asset_values(
-                        {**settings, "vps_tailscale": {"serve": {"services": [{"port": 443, "target": bad_target}]}}}
+                        {**settings, "vps_tailscale": {"serve": {"services": [{"protocol": "https", "port": 443, "target": bad_target}]}}}
                     )
 
-        # A minimal custom set renders as a single pair.
-        custom = {"serve": {"services": [{"port": 443, "target": "http://127.0.0.1:9119"}]}}
+        # Protocol, port, and target render as one endpoint for the bootstrap script.
+        custom = {"serve": {"services": [{"protocol": "http", "port": 443, "target": "http://127.0.0.1:9119"}]}}
         self.assertEqual(
             self._asset_values({**settings, "vps_tailscale": custom})["TAILSCALE_SERVE_ENDPOINTS"],
-            "443 http://127.0.0.1:9119",
+            "http 443 http://127.0.0.1:9119",
         )
+
+        invalid_protocol = {"serve": {"services": [{"protocol": "tcp", "port": 443, "target": "http://127.0.0.1:9119"}]}}
+        with self.assertRaisesRegex(ValueError, "protocol must be http or https"):
+            self._asset_values({**settings, "vps_tailscale": invalid_protocol})
 
     def test_build_operations_applies_defaults_capabilities_and_unsets_overrides(self) -> None:
         settings = {

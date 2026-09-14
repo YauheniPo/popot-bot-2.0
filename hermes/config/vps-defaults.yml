@@ -37,7 +37,7 @@ vps_deploy:
     tailscale: true
     host_admin: true
     searxng: true
-    lock_public_ssh: true
+    lock_public_ssh: false
     vscode_server: true
   # Deliver provider keys (including OLLAMA_API_KEY and optional
   # OPENROUTER_API_KEY) from encrypted Vault.

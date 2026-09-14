@@ -215,8 +215,8 @@ def _boolean_setting(settings: dict[str, Any], dotted_key: str) -> bool:
 def web_and_serve_assets(settings: dict[str, Any]) -> tuple[str, list[str]]:
     """Validate the managed web settings and return (searxng_url, endpoints).
 
-    Endpoints are rendered as "port target" strings so the Tailscale bootstrap
-    and the playbook share the same source of truth in vps-defaults.yml.
+    Endpoints are rendered as "protocol port target" strings so the Tailscale
+    bootstrap and the playbook share the same source of truth in vps-defaults.yml.
     """
     web_settings = settings.get("vps_web", {})
     if not isinstance(web_settings, dict):
@@ -235,15 +235,18 @@ def web_and_serve_assets(settings: dict[str, Any]) -> tuple[str, list[str]]:
     for service in serve_services:
         if not isinstance(service, dict):
             raise ValueError("vps_tailscale.serve.services entries must be mappings")
+        protocol = service.get("protocol")
         port = service.get("port")
         target = service.get("target", "")
+        if protocol not in {"http", "https"}:
+            raise ValueError("vps_tailscale.serve.services protocol must be http or https")
         if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
             raise ValueError("vps_tailscale.serve.services port must be 1-65535")
         if not isinstance(target, str) or not re.fullmatch(
-            r"https?://127\.0\.0\.1:[1-9]\d{0,4}", target
+            r"http://127\.0\.0\.1:[1-9]\d{0,4}", target
         ):
             raise ValueError("vps_tailscale.serve.services target must be a loopback URL")
-        serve_endpoints.append(f"{port} {target}")
+        serve_endpoints.append(f"{protocol} {port} {target}")
     return searxng_url, serve_endpoints
 
 

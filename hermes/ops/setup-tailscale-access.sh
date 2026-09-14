@@ -11,11 +11,11 @@ readonly OPS_CONFIG="${HERMES_OPS_CONFIG:-/etc/hermes-ops.conf}"
 # the playbook task. The built-in list is only a fallback for a host where the
 # managed config is not present yet.
 DEFAULT_SERVE_ENDPOINTS="$(cat <<'ENDPOINTS'
-443 http://127.0.0.1:9119
-3000 http://127.0.0.1:3000
-9090 http://127.0.0.1:9090
-3001 http://127.0.0.1:3001
-8888 http://127.0.0.1:8888
+https 443 http://127.0.0.1:9119
+https 3000 http://127.0.0.1:3000
+https 9090 http://127.0.0.1:9090
+https 3001 http://127.0.0.1:3001
+https 8888 http://127.0.0.1:8888
 ENDPOINTS
 )"
 readonly DEFAULT_SERVE_ENDPOINTS
@@ -136,13 +136,20 @@ fi
 
 log "Configuring private Tailscale Serve endpoints"
 
-# Derive "port target" pairs from the single source of truth, then only reset
+# Derive "protocol port target" triples from the single source of truth, then only reset
 # and republish when the live Serve state differs. A second run with no config
 # change therefore leaves the endpoints untouched.
 declare -a desired_pairs=()
 while IFS= read -r line; do
     [[ -n "${line// /}" ]] || continue
-    desired_pairs+=("${line%% *}|${line##* }")
+    protocol="${line%% *}"
+    remaining="${line#* }"
+    port="${remaining%% *}"
+    target="${remaining#* }"
+    [[ "${protocol}" == "http" || "${protocol}" == "https" ]] || die "invalid Tailscale Serve protocol: ${protocol}"
+    [[ "${port}" =~ ^[1-9][0-9]{0,4}$ ]] || die "invalid Tailscale Serve port: ${port}"
+    [[ "${target}" =~ ^http://127[.]0[.]0[.]1:[1-9][0-9]{0,4}$ ]] || die "invalid Tailscale Serve target: ${target}"
+    desired_pairs+=("${protocol}|${port}|${target}")
 done < <(serve_endpoints)
 [[ "${#desired_pairs[@]}" -gt 0 ]] || die "no Tailscale Serve endpoints are configured"
 
@@ -153,10 +160,14 @@ try:
 except Exception:
     data = {}
 pairs = []
+tcp = data.get("TCP") or {}
 for host, entry in (data.get("Web") or {}).items():
     proxy = ((entry.get("Handlers") or {}).get("/") or {}).get("Proxy")
-    if proxy:
-        pairs.append(host.rsplit(":", 1)[-1] + "|" + proxy)
+    port = host.rsplit(":", 1)[-1]
+    listener = tcp.get(port) or {}
+    protocol = "https" if listener.get("HTTPS") else "http" if listener.get("HTTP") else ""
+    if proxy and protocol:
+        pairs.append(protocol + "|" + port + "|" + proxy)
 print("\n".join(sorted(pairs)))
 ' || true)"
 
@@ -172,9 +183,11 @@ else
         log "WARNING: tailscale serve reset reported an error; recreating endpoints anyway"
     fi
     for pair in "${desired_pairs[@]}"; do
-        port="${pair%%|*}"
+        protocol="${pair%%|*}"
+        remaining="${pair#*|}"
+        port="${remaining%%|*}"
         target="${pair##*|}"
-        tailscale serve --bg "--https=${port}" "${target}"
+        tailscale serve --bg "--${protocol}=${port}" "${target}"
     done
 fi
 
@@ -185,11 +198,13 @@ fi
 log "Tailscale IP: ${TAILSCALE_IP}"
 log "Open Hermes Dashboard: ${PUBLIC_URL}/"
 for pair in "${desired_pairs[@]}"; do
-    port="${pair%%|*}"
+    protocol="${pair%%|*}"
+    remaining="${pair#*|}"
+    port="${remaining%%|*}"
     target="${pair##*|}"
     if [[ "${port}" == "443" ]]; then
         continue
     fi
-    log "Open https://${TAILSCALE_HOSTNAME}:${port} -> ${target}"
+    log "Open ${protocol}://${TAILSCALE_HOSTNAME}:${port} -> ${target}"
 done
 log "SSH: ssh ${HERMES_USER}@${TAILSCALE_IP}"
