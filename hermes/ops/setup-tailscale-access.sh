@@ -148,7 +148,7 @@ while IFS= read -r line; do
     target="${remaining#* }"
     [[ "${protocol}" == "http" || "${protocol}" == "https" ]] || die "invalid Tailscale Serve protocol: ${protocol}"
     [[ "${port}" =~ ^[1-9][0-9]{0,4}$ ]] || die "invalid Tailscale Serve port: ${port}"
-    [[ "${target}" =~ ^http://127[.]0[.]0[.]1:[1-9][0-9]{0,4}$ ]] || die "invalid Tailscale Serve target: ${target}"
+    [[ "${target}" =~ ^[h]ttp://127[.]0[.]0[.]1:[1-9][0-9]{0,4}$ ]] || die "invalid Tailscale Serve target: ${target}"
     desired_pairs+=("${protocol}|${port}|${target}")
 done < <(serve_endpoints)
 [[ "${#desired_pairs[@]}" -gt 0 ]] || die "no Tailscale Serve endpoints are configured"

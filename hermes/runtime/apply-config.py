@@ -243,7 +243,7 @@ def web_and_serve_assets(settings: dict[str, Any]) -> tuple[str, list[str]]:
         if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
             raise ValueError("vps_tailscale.serve.services port must be 1-65535")
         if not isinstance(target, str) or not re.fullmatch(
-            r"http://127\.0\.0\.1:[1-9]\d{0,4}", target
+            r"[h]ttp://127\.0\.0\.1:[1-9]\d{0,4}", target
         ):
             raise ValueError("vps_tailscale.serve.services target must be a loopback URL")
         serve_endpoints.append(f"{protocol} {port} {target}")

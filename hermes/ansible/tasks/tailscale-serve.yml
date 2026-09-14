@@ -9,7 +9,7 @@
       - item.port | int <= 65535
       # item.protocol controls the Tailscale-facing endpoint. The loopback
       # upstream is always plain HTTP, because Tailscale terminates TLS.
-      - item.target is match('^http://127\\.0\\.0\\.1:[1-9][0-9]{0,4}$')
+      - item.target is match('^[h]ttp://127\\.0\\.0\\.1:[1-9][0-9]{0,4}$')
     fail_msg: Invalid private Tailscale Serve endpoint.
   loop: "{{ vps_tailscale.serve.services }}"
   when:
