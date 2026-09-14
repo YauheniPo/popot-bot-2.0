@@ -119,8 +119,8 @@ class DeploymentStatePolicyTests(unittest.TestCase):
 
         self.assertIn("pre-config-deploy-", playbook)
         self.assertIn("Create the mandatory full config-only deployment backup", playbook)
-        self.assertIn("hermes_config_backup_output", playbook)
-        self.assertIn("hermes_config_backup_result.stderr", playbook)
+        self.assertIn("hermes_config_backup_result.stderr | default('') | trim == ''", playbook)
+        self.assertIn("'Backup complete:' in hermes_config_backup_result.stdout", playbook)
         self.assertIn("Verify the config-only deployment backup contents", playbook)
         self.assertIn("when: hermes_source_update_required | bool", playbook)
 
