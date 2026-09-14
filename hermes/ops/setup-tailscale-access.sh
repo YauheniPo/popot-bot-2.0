@@ -26,7 +26,11 @@ id "${HERMES_USER}" >/dev/null 2>&1 || die "Hermes user does not exist: ${HERMES
 
 if ! command -v tailscale >/dev/null 2>&1; then
     log "Installing Tailscale from the official installer"
-    curl --fail --silent --show-error --location https://tailscale.com/install.sh | sh
+    # Pin the transfer and every redirect to HTTPS so --location cannot follow a
+    # downgrade to a clear-text URL before the script is executed.
+    curl --fail --silent --show-error --location \
+        --proto '=https' --proto-redir '=https' \
+        https://tailscale.com/install.sh | sh
 fi
 
 systemctl enable --now tailscaled.service

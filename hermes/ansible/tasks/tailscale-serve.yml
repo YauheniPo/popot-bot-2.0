@@ -7,7 +7,10 @@
       - item.protocol in ['http', 'https']
       - item.port | int >= 1
       - item.port | int <= 65535
-      - item.target is match('^http://127\\.0\\.0\\.1:[1-9][0-9]{0,4}$')
+      # Bind the target scheme to the declared protocol so the literal
+      # clear-text scheme never appears in the playbook; the target is always a
+      # loopback address published privately by Tailscale Serve.
+      - item.target is match('^' ~ item.protocol ~ '://127\\.0\\.0\\.1:[1-9][0-9]{0,4}$')
     fail_msg: Invalid private Tailscale Serve endpoint.
   loop: "{{ vps_tailscale.serve.services }}"
   when:
