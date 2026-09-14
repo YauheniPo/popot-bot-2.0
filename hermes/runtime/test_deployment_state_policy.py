@@ -193,8 +193,10 @@ class DeploymentStatePolicyTests(unittest.TestCase):
         # The served endpoint set lives in one place and is rendered for the script.
         self.assertIn("HERMES_TAILSCALE_SERVE_ENDPOINTS=@TAILSCALE_SERVE_ENDPOINTS@", conf_template)
         self.assertIn("vps_tailscale:", settings)
-        # Require a working Tailscale address instead of silently skipping publish.
-        self.assertIn("Require a working Tailscale address before publishing services", tasks)
+        # A host without a Tailscale address reports the skip instead of
+        # publishing silently or failing the whole deployment.
+        self.assertIn("Report that Serve publishing is skipped without a Tailscale address", tasks)
+        self.assertIn("tailscale_serve_connection.rc | default(1) != 0", tasks)
 
     def test_broken_existing_install_never_bypasses_backup(self) -> None:
         deploy_runtime = (HERMES_ROOT / "deploy" / "runtime.sh").read_text()

@@ -26,20 +26,18 @@
     - hermes_enable_tailscale | bool
     - vps_tailscale.serve.enabled | bool
 
-- name: Require a working Tailscale address before publishing services
-  # Without this the reset and every publish task are skipped silently while the
-  # deployment still reports success, leaving the endpoints unpublished.
-  ansible.builtin.assert:
-    that:
-      - tailscale_serve_connection.rc | default(1) == 0
-      - tailscale_serve_connection.stdout | default('') | trim | length > 0
-    fail_msg: >-
-      Tailscale is enabled and Serve is configured, but this host has no
-      Tailscale address. Connect the host to the tailnet (tailscale up --ssh)
-      before deploying.
+- name: Report that Serve publishing is skipped without a Tailscale address
+  # A host that is not yet on the tailnet (interactive login pending, or no
+  # auth key at deploy time) must not fail the deployment: joining the tailnet
+  # is a separate, explicit step. Make the skip visible instead of silent.
+  ansible.builtin.debug:
+    msg: >-
+      Tailscale Serve endpoints are not published: this host has no Tailscale
+      address yet. Run 'tailscale up --ssh' and re-run the playbook.
   when:
     - hermes_enable_tailscale | bool
     - vps_tailscale.serve.enabled | bool
+    - tailscale_serve_connection.rc | default(1) != 0
 
 - name: Reset the managed Tailscale Serve configuration before publishing endpoints
   ansible.builtin.command:
