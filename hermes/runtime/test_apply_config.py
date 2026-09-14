@@ -61,7 +61,15 @@ class ApplyConfigTests(unittest.TestCase):
         features = settings["vps_deploy"]["features"]
         self.assertTrue(features)
         self.assertTrue(all(isinstance(value, bool) for value in features.values()))
+        self.assertTrue(features["searxng"])
         self.assertIsInstance(settings["vps_deploy"]["bundle"]["dir"], str)
+        searxng = settings["vps_searxng"]
+        self.assertEqual(searxng["image"], "docker.io/searxng/searxng:latest")
+        self.assertEqual(searxng["bind_address"], "127.0.0.1")
+        self.assertEqual(searxng["host_port"], 8888)
+        self.assertEqual(searxng["valkey_image"], "docker.io/valkey/valkey:8-alpine")
+        self.assertEqual(searxng["valkey_host"], "valkey")
+        self.assertEqual(searxng["valkey_port"], 6379)
 
         overlay = settings["vps_hermes"]["config"]["managed_overlay"]
         self.assertEqual(overlay["model"], {"provider": "ollama-cloud", "default": "deepseek-v4-pro"})
@@ -106,9 +114,10 @@ class ApplyConfigTests(unittest.TestCase):
             backup_dir=identity["backup_dir"],
         )
         self.assertTrue(values)
-        self.assertTrue(all(isinstance(value, str) and value for value in values.values()))
+        self.assertTrue(all(isinstance(value, str) and (value or key == "SEARXNG_URL") for key, value in values.items()))
         self.assertEqual(values["API_RETRY_PROVIDER"], "nvidia")
         self.assertEqual(values["API_RETRY_MODEL"], "deepseek-ai/deepseek-v4-pro-0813")
+        self.assertEqual(values["SEARXNG_URL"], "")
 
     def assert_runtime_contract(self, runtime: dict) -> None:
         # These are supported modes in the pinned Hermes gateway/display_config.py.
@@ -285,6 +294,49 @@ class ApplyConfigTests(unittest.TestCase):
             self.assertIn(f'{variable}="$2"', deploy_script)
         self.assertIn("resolve_user_paths\n  resolve_managed_runtime", deploy_script)
         self.assertIn('systemctl start "$HERMES_GATEWAY_SERVICE"', deploy_script)
+
+    @staticmethod
+    def _asset_values(settings: dict) -> dict:
+        identity = settings["vps_deploy"]["identity"]
+        return apply_config.build_asset_values(
+            settings,
+            hermes_user=identity["user"],
+            hermes_group=identity["user"],
+            user_home=identity["user_home"],
+            hermes_home=identity["hermes_home"],
+            hermes_bin=identity["hermes_bin"],
+            workspace=identity["workspace"],
+            backup_dir=identity["backup_dir"],
+        )
+
+    def test_vps_web_searxng_url_validation_rejects_malformed_values(self) -> None:
+        settings = apply_config.load_settings(
+            MODULE_PATH.parent.parent / "config" / "vps-defaults.yml"
+        )
+
+        # The default carries an empty searxng_url; build_asset_values must keep
+        # SEARXNG_URL as an allowed empty string.
+        values = self._asset_values(settings)
+        self.assertEqual(values["SEARXNG_URL"], "")
+
+        # vps_web must be a mapping.
+        for bad_web in (None, "http://127.0.0.1:8888", 8888, ["http://127.0.0.1:8888"]):
+            with self.subTest(vps_web=bad_web):
+                with self.assertRaisesRegex(ValueError, "vps_web must be a mapping"):
+                    self._asset_values({**settings, "vps_web": bad_web})
+
+        # searxng_url must be a single-line string.
+        for bad_url in (123, ["http://x"], "http://a\nb", "http://a\rb"):
+            with self.subTest(searxng_url=bad_url):
+                with self.assertRaisesRegex(ValueError, "vps_web.searxng_url must be a single-line string"):
+                    self._asset_values({**settings, "vps_web": {"searxng_url": bad_url}})
+
+        # A valid endpoint flows through to the rendered value.
+        endpoint = "http://127.0.0.1:8888"
+        self.assertEqual(
+            self._asset_values({**settings, "vps_web": {"searxng_url": endpoint}})["SEARXNG_URL"],
+            endpoint,
+        )
 
     def test_build_operations_applies_defaults_capabilities_and_unsets_overrides(self) -> None:
         settings = {

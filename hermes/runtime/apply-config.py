@@ -298,6 +298,12 @@ def build_asset_values(
         1,
         1440,
     )
+    web_settings = settings.get("vps_web", {})
+    if not isinstance(web_settings, dict):
+        raise ValueError("vps_web must be a mapping")
+    searxng_url = web_settings.get("searxng_url", "")
+    if not isinstance(searxng_url, str) or "\n" in searxng_url or "\r" in searxng_url:
+        raise ValueError("vps_web.searxng_url must be a single-line string")
 
     timer_values: dict[str, str] = {}
     timer_names = {
@@ -425,6 +431,7 @@ def build_asset_values(
         "LOAD_WARN_PER_CPU": str(load_warn),
         "METRICS_FILE": f"{hermes_home}/ops/metrics/hermes.prom",
         "METRICS_MAX_AGE_MINUTES": str(metrics_max_age),
+        "SEARXNG_URL": searxng_url,
         "OBSERVABILITY_DATABASE_RETENTION_DAYS": str(database_retention_days),
         "OBSERVABILITY_AUDIT_MAX_BYTES": str(audit_max_bytes),
         "OBSERVABILITY_AUDIT_ROTATED_FILES": str(audit_rotated_files),
@@ -442,7 +449,7 @@ def build_asset_values(
     }
     values.update(timer_values)
     for key, value in values.items():
-        if not value or "\n" in value or "\r" in value:
+        if (not value and key != "SEARXNG_URL") or "\n" in value or "\r" in value:
             raise ValueError(f"unsafe rendered VPS setting: {key}")
     return values
 

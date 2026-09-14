@@ -1,0 +1,23 @@
+# Managed by Hermes Ansible. SearXNG is private and serves cron JSON searches.
+use_default_settings: true
+
+general:
+  debug: false
+  instance_name: "Hermes private search"
+
+search:
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: {{ searxng_secret_key | trim | to_json }}
+  bind_address: "0.0.0.0"
+  port: {{ vps_searxng.container_port }}
+  # Keep SearXNG's limiter enabled even on the private endpoint.
+  limiter: true
+  public_instance: false
+  image_proxy: false
+
+valkey:
+  url: "valkey://{{ vps_searxng.valkey_host }}:{{ vps_searxng.valkey_port }}/0"
