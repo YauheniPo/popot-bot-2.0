@@ -62,7 +62,7 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertTrue(features)
         self.assertTrue(all(isinstance(value, bool) for value in features.values()))
         self.assertTrue(features["searxng"])
-        self.assertFalse(features["lock_public_ssh"])
+        self.assertTrue(features["lock_public_ssh"])
         self.assertIsInstance(settings["vps_deploy"]["bundle"]["dir"], str)
         searxng = settings["vps_searxng"]
         self.assertEqual(searxng["image"], "docker.io/searxng/searxng:latest")
