@@ -444,16 +444,11 @@
               stdout: "{{ hermes_config_backup_result.stdout | default('') }}"
               stderr: "{{ hermes_config_backup_result.stderr | default('') }}"
 
-        - name: Combine Hermes backup stdout and stderr for verification
-          ansible.builtin.set_fact:
-            hermes_config_backup_output: >-
-              {{ hermes_config_backup_result.stdout | default('') }}
-              {{ hermes_config_backup_result.stderr | default('') }}
-
-        - name: Require Hermes to report a complete config-only deployment backup
+        - name: Require Hermes to report a clean complete config-only deployment backup
           ansible.builtin.assert:
             that:
-              - "'Backup complete:' in hermes_config_backup_output"
+              - "hermes_config_backup_result.stderr | default('') | trim == ''"
+              - "'Backup complete:' in hermes_config_backup_result.stdout | default('')"
               - hermes_config_backup_file.stat.exists
               - hermes_config_backup_file.stat.size | int > 0
             fail_msg: Hermes did not create a complete full backup; deployment aborted.
