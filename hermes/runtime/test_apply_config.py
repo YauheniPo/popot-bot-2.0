@@ -340,6 +340,54 @@ class ApplyConfigTests(unittest.TestCase):
             endpoint,
         )
 
+    def test_tailscale_serve_endpoints_render_and_reject_malformed_values(self) -> None:
+        settings = apply_config.load_settings(
+            MODULE_PATH.parent.parent / "config" / "vps-defaults.yml"
+        )
+
+        # The repository default renders the managed endpoint list for the script.
+        values = self._asset_values(settings)
+        self.assertEqual(values["TAILSCALE_SERVE_ENDPOINTS"], "443 http://127.0.0.1:9119,"
+                         "3000 http://127.0.0.1:3000,"
+                         "9090 http://127.0.0.1:9090,"
+                         "3001 http://127.0.0.1:3001,"
+                         "8888 http://127.0.0.1:8888")
+
+        # serve must be a mapping.
+        with self.assertRaisesRegex(ValueError, "vps_tailscale.serve must be a mapping"):
+            self._asset_values({**settings, "vps_tailscale": {"serve": "nope"}})
+
+        # services must be a non-empty list.
+        for bad_services in ([], "nope", None):
+            with self.subTest(services=bad_services):
+                with self.assertRaisesRegex(
+                    ValueError, "vps_tailscale.serve.services must be a non-empty list"
+                ):
+                    self._asset_values({**settings, "vps_tailscale": {"serve": {"services": bad_services}}})
+
+        # each entry must be a mapping with a valid port and loopback target.
+        with self.assertRaisesRegex(ValueError, "entries must be mappings"):
+            self._asset_values({**settings, "vps_tailscale": {"serve": {"services": ["nope"]}}})
+        for bad_port in (0, 70000, True, "443"):
+            with self.subTest(port=bad_port):
+                with self.assertRaisesRegex(ValueError, "port must be 1-65535"):
+                    self._asset_values(
+                        {**settings, "vps_tailscale": {"serve": {"services": [{"port": bad_port, "target": "http://127.0.0.1:9119"}]}}}
+                    )
+        for bad_target in ("http://0.0.0.0:9119", "http://evil.example:9119", "ftp://127.0.0.1:80", 9119):
+            with self.subTest(target=bad_target):
+                with self.assertRaisesRegex(ValueError, "target must be a loopback URL"):
+                    self._asset_values(
+                        {**settings, "vps_tailscale": {"serve": {"services": [{"port": 443, "target": bad_target}]}}}
+                    )
+
+        # A minimal custom set renders as a single pair.
+        custom = {"serve": {"services": [{"port": 443, "target": "http://127.0.0.1:9119"}]}}
+        self.assertEqual(
+            self._asset_values({**settings, "vps_tailscale": custom})["TAILSCALE_SERVE_ENDPOINTS"],
+            "443 http://127.0.0.1:9119",
+        )
+
     def test_build_operations_applies_defaults_capabilities_and_unsets_overrides(self) -> None:
         settings = {
             "vps_runtime": {

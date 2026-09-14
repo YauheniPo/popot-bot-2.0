@@ -49,11 +49,6 @@ OAuth (`hermes auth add nous`), а не API key в `hermes_secret_env`.
 зашифрованного Vault в Secure files. Полные шаги — в
 [инструкции Ollama Cloud](README.md#ollama-cloud).
 
-Для Ollama Cloud добавьте `OLLAMA_API_KEY` в Vault и примените deploy, затем
-выберите **Ollama Cloud** через `/model`. Для Azure обновите копию
-зашифрованного Vault в Secure files. Полные шаги — в
-[инструкции Ollama Cloud](README.md#ollama-cloud).
-
 ## Web search и браузер
 
 Для Brave `web_search` задайте `BRAVE_SEARCH_API_KEY`: название backend в

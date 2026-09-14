@@ -121,6 +121,7 @@ class DeploymentStatePolicyTests(unittest.TestCase):
         self.assertIn("Create the mandatory full config-only deployment backup", playbook)
         self.assertIn("hermes_config_backup_result.stderr | default('') | trim == ''", playbook)
         self.assertIn("'Backup complete:' in hermes_config_backup_result.stdout", playbook)
+        self.assertIn("hermes_config_backup_result.stderr", playbook)
         self.assertNotIn("hermes_config_backup_output", playbook)
         self.assertIn("Verify the config-only deployment backup contents", playbook)
         self.assertIn("when: hermes_source_update_required | bool", playbook)
@@ -179,9 +180,20 @@ class DeploymentStatePolicyTests(unittest.TestCase):
         script = (HERMES_ROOT / "ops" / "setup-tailscale-access.sh").read_text()
         self.assertIn('[[ "${EUID}" -eq 0 ]]', script)
         self.assertIn("tailscale up --ssh", script)
-        self.assertIn("tailscale serve --bg --https=443", script)
-        self.assertIn("127.0.0.1:${DASHBOARD_PORT}", script)
+        # Endpoints are published from the shared managed list, not hardcoded.
+        self.assertIn('tailscale serve --bg "--https=${port}" "${target}"', script)
+        self.assertIn("HERMES_TAILSCALE_SERVE_ENDPOINTS", script)
         self.assertNotIn("tailscale funnel", script)
+
+    def test_tailscale_serve_publishing_is_idempotent(self) -> None:
+        tasks = (HERMES_ROOT / "ansible" / "tasks" / "tailscale-serve.yml").read_text()
+        settings = (HERMES_ROOT / "config" / "vps-defaults.yml").read_text()
+        conf_template = (HERMES_ROOT / "ops" / "templates" / "hermes-ops.conf").read_text()
+        # The served endpoint set lives in one place and is rendered for the script.
+        self.assertIn("HERMES_TAILSCALE_SERVE_ENDPOINTS=@TAILSCALE_SERVE_ENDPOINTS@", conf_template)
+        self.assertIn("vps_tailscale:", settings)
+        # Require a working Tailscale address instead of silently skipping publish.
+        self.assertIn("Require a working Tailscale address before publishing services", tasks)
 
     def test_broken_existing_install_never_bypasses_backup(self) -> None:
         deploy_runtime = (HERMES_ROOT / "deploy" / "runtime.sh").read_text()

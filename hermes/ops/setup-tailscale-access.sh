@@ -4,11 +4,21 @@ set -Eeuo pipefail
 
 readonly HERMES_USER="${HERMES_USER:-hermes}"
 readonly HERMES_HOME="${HERMES_HOME:-/home/${HERMES_USER}/.hermes}"
-readonly DASHBOARD_PORT="${HERMES_DASHBOARD_PORT:-9119}"
-readonly GRAFANA_PORT="${HERMES_GRAFANA_PORT:-3000}"
-readonly PROMETHEUS_PORT="${HERMES_PROMETHEUS_PORT:-9090}"
-readonly CODE_SERVER_PORT="${HERMES_CODE_SERVER_PORT:-3001}"
-readonly SEARXNG_PORT="${HERMES_SEARXNG_PORT:-8888}"
+readonly OPS_CONFIG="${HERMES_OPS_CONFIG:-/etc/hermes-ops.conf}"
+
+# Serve endpoints are rendered by Ansible from vps_tailscale.serve.services into
+# the managed ops config, so this bootstrap shares a single source of truth with
+# the playbook task. The built-in list is only a fallback for a host where the
+# managed config is not present yet.
+DEFAULT_SERVE_ENDPOINTS="$(cat <<'ENDPOINTS'
+443 http://127.0.0.1:9119
+3000 http://127.0.0.1:3000
+9090 http://127.0.0.1:9090
+3001 http://127.0.0.1:3001
+8888 http://127.0.0.1:8888
+ENDPOINTS
+)"
+readonly DEFAULT_SERVE_ENDPOINTS
 
 log() {
     printf '[hermes-tailscale] %s\n' "$*"
@@ -17,6 +27,20 @@ log() {
 die() {
     printf '[hermes-tailscale] ERROR: %s\n' "$*" >&2
     exit 1
+}
+
+serve_endpoints() {
+    # Prefer the Ansible-rendered list; fall back to the built-in defaults.
+    if [[ -r "${OPS_CONFIG}" ]]; then
+        local rendered
+        rendered="$(awk -F= '/^HERMES_TAILSCALE_SERVE_ENDPOINTS=/ { print substr($0, length($1) + 2); exit }' "${OPS_CONFIG}")"
+        if [[ -n "${rendered}" ]]; then
+            rendered="$(printf '%s' "${rendered}" | tr ',' '\n' | tr -s ' ')"
+            printf '%s\n' "${rendered}"
+            return 0
+        fi
+    fi
+    printf '%s\n' "${DEFAULT_SERVE_ENDPOINTS}"
 }
 
 [[ "${EUID}" -eq 0 ]] || die "run this script as root"
@@ -51,7 +75,7 @@ HERMES_CLI="${HERMES_HOME%/.hermes}/.local/bin/hermes"
 HERMES_ENV_FILE="${HERMES_HOME}/.env"
 if [[ ! -s "${HERMES_ENV_FILE}" ]] ||
     ! grep -q '^HERMES_DASHBOARD_OAUTH_CLIENT_ID=' "${HERMES_ENV_FILE}" ||
-    ! grep -q "^HERMES_DASHBOARD_PUBLIC_URL=${PUBLIC_URL}$" "${HERMES_ENV_FILE}"; then
+    ! grep -qFx "HERMES_DASHBOARD_PUBLIC_URL=${PUBLIC_URL}" "${HERMES_ENV_FILE}"; then
     if [[ -x "${HERMES_CLI}" ]] && [[ -t 0 ]]; then
         log "Registering Hermes Dashboard OAuth client for ${TAILSCALE_HOSTNAME}"
         runuser --user "${HERMES_USER}" -- env HOME="${HERMES_HOME%/.hermes}" HERMES_HOME="${HERMES_HOME}" \
@@ -76,6 +100,7 @@ if [[ -f "${CONFIG_FILE}" ]] && [[ "${dashboard_auth_ready}" == true ]]; then
 from pathlib import Path
 import os
 import re
+import tempfile
 
 try:
     import yaml
@@ -93,7 +118,15 @@ data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 dashboard = data.setdefault("dashboard", {})
 dashboard["public_url"] = public_url
 dashboard.setdefault("oauth", {})["client_id"] = client_id
-path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+# Replace atomically so an interrupted write cannot leave a truncated
+# config.yaml that would stop Hermes from starting.
+with tempfile.NamedTemporaryFile(
+    mode="w", encoding="utf-8", dir=path.parent,
+    prefix=f".{path.name}.", suffix=".tmp", delete=False,
+) as stream:
+    temporary = Path(stream.name)
+    yaml.safe_dump(data, stream, sort_keys=False, allow_unicode=True)
+os.replace(temporary, path)
 PY
     chown "${HERMES_USER}:${HERMES_USER}" "${CONFIG_FILE}"
     chmod 0600 "${CONFIG_FILE}"
@@ -102,12 +135,48 @@ else
 fi
 
 log "Configuring private Tailscale Serve endpoints"
-tailscale serve reset >/dev/null 2>&1 || true
-tailscale serve --bg --https=443 "http://127.0.0.1:${DASHBOARD_PORT}"
-tailscale serve --bg --https="${GRAFANA_PORT}" "http://127.0.0.1:${GRAFANA_PORT}"
-tailscale serve --bg --https="${PROMETHEUS_PORT}" "http://127.0.0.1:${PROMETHEUS_PORT}"
-tailscale serve --bg --https="${CODE_SERVER_PORT}" "http://127.0.0.1:${CODE_SERVER_PORT}"
-tailscale serve --bg --https="${SEARXNG_PORT}" "http://127.0.0.1:${SEARXNG_PORT}"
+
+# Derive "port target" pairs from the single source of truth, then only reset
+# and republish when the live Serve state differs. A second run with no config
+# change therefore leaves the endpoints untouched.
+declare -a desired_pairs=()
+while IFS= read -r line; do
+    [[ -n "${line// /}" ]] || continue
+    desired_pairs+=("${line%% *}|${line##* }")
+done < <(serve_endpoints)
+[[ "${#desired_pairs[@]}" -gt 0 ]] || die "no Tailscale Serve endpoints are configured"
+
+current_pairs="$(tailscale serve status --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = {}
+pairs = []
+for host, entry in (data.get("Web") or {}).items():
+    proxy = ((entry.get("Handlers") or {}).get("/") or {}).get("Proxy")
+    if proxy:
+        pairs.append(host.rsplit(":", 1)[-1] + "|" + proxy)
+print("\n".join(sorted(pairs)))
+' || true)"
+
+desired_sorted="$(printf '%s\n' "${desired_pairs[@]}" | sort)"
+current_sorted="$(printf '%s\n' "${current_pairs}" | sed '/^$/d' | sort)"
+if [[ "${current_sorted}" == "${desired_sorted}" ]]; then
+    log "Serve endpoints already match the configured set; nothing to change"
+else
+    # Reset is expected to succeed once Tailscale is connected; surface a
+    # failure instead of hiding it, but keep going so stale endpoints are
+    # replaced by the desired set below.
+    if ! tailscale serve reset >/dev/null 2>&1; then
+        log "WARNING: tailscale serve reset reported an error; recreating endpoints anyway"
+    fi
+    for pair in "${desired_pairs[@]}"; do
+        port="${pair%%|*}"
+        target="${pair##*|}"
+        tailscale serve --bg "--https=${port}" "${target}"
+    done
+fi
 
 if systemctl list-unit-files hermes-dashboard.service >/dev/null 2>&1; then
     systemctl try-restart hermes-dashboard.service || true
@@ -115,8 +184,12 @@ fi
 
 log "Tailscale IP: ${TAILSCALE_IP}"
 log "Open Hermes Dashboard: ${PUBLIC_URL}/"
-log "Open Grafana: https://${TAILSCALE_HOSTNAME}:${GRAFANA_PORT}"
-log "Open Prometheus: https://${TAILSCALE_HOSTNAME}:${PROMETHEUS_PORT}"
-log "Open code-server: https://${TAILSCALE_HOSTNAME}:${CODE_SERVER_PORT}"
-log "Open SearXNG: https://${TAILSCALE_HOSTNAME}:${SEARXNG_PORT}"
+for pair in "${desired_pairs[@]}"; do
+    port="${pair%%|*}"
+    target="${pair##*|}"
+    if [[ "${port}" == "443" ]]; then
+        continue
+    fi
+    log "Open https://${TAILSCALE_HOSTNAME}:${port} -> ${target}"
+done
 log "SSH: ssh ${HERMES_USER}@${TAILSCALE_IP}"
