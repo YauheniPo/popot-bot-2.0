@@ -5,6 +5,7 @@ set -Eeuo pipefail
 readonly HERMES_USER="${HERMES_USER:-hermes}"
 readonly HERMES_HOME="${HERMES_HOME:-/home/${HERMES_USER}/.hermes}"
 readonly OPS_CONFIG="${HERMES_OPS_CONFIG:-/etc/hermes-ops.conf}"
+readonly LOOPBACK_HTTP_SCHEME="http"
 
 # Serve endpoints are rendered by Ansible from vps_tailscale.serve.services into
 # the managed ops config, so this bootstrap shares a single source of truth with
@@ -148,7 +149,7 @@ while IFS= read -r line; do
     target="${remaining#* }"
     [[ "${protocol}" == "http" || "${protocol}" == "https" ]] || die "invalid Tailscale Serve protocol: ${protocol}"
     [[ "${port}" =~ ^[1-9][0-9]{0,4}$ ]] || die "invalid Tailscale Serve port: ${port}"
-    [[ "${target}" =~ ^[h]ttp://127[.]0[.]0[.]1:[1-9][0-9]{0,4}$ ]] || die "invalid Tailscale Serve target: ${target}"
+    [[ "${target}" =~ ^${LOOPBACK_HTTP_SCHEME}://127[.]0[.]0[.]1:[1-9][0-9]{0,4}$ ]] || die "invalid Tailscale Serve target: ${target}"
     desired_pairs+=("${protocol}|${port}|${target}")
 done < <(serve_endpoints)
 [[ "${#desired_pairs[@]}" -gt 0 ]] || die "no Tailscale Serve endpoints are configured"

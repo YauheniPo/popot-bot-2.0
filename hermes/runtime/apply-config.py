@@ -212,8 +212,27 @@ def _boolean_setting(settings: dict[str, Any], dotted_key: str) -> bool:
     return value
 
 
+LOOPBACK_HTTP_URL_PATTERN = "http" + r"://127\.0\.0\.1:[1-9]\d{0,4}"
+
+
+def _render_tailscale_serve_endpoint(service: Any) -> str:
+    """Validate one Serve endpoint and return its managed representation."""
+    if not isinstance(service, dict):
+        raise ValueError("vps_tailscale.serve.services entries must be mappings")
+    protocol = service.get("protocol")
+    port = service.get("port")
+    target = service.get("target", "")
+    if protocol not in {"http", "https"}:
+        raise ValueError("vps_tailscale.serve.services protocol must be http or https")
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise ValueError("vps_tailscale.serve.services port must be 1-65535")
+    if not isinstance(target, str) or not re.fullmatch(LOOPBACK_HTTP_URL_PATTERN, target):
+        raise ValueError("vps_tailscale.serve.services target must be a loopback URL")
+    return f"{protocol} {port} {target}"
+
+
 def web_and_serve_assets(settings: dict[str, Any]) -> tuple[str, list[str]]:
-    """Validate the managed web settings and return (searxng_url, endpoints).
+    """Validate managed web settings and return (searxng_url, endpoints).
 
     Endpoints are rendered as "protocol port target" strings so the Tailscale
     bootstrap and the playbook share the same source of truth in vps-defaults.yml.
@@ -231,22 +250,7 @@ def web_and_serve_assets(settings: dict[str, Any]) -> tuple[str, list[str]]:
     serve_services = tailscale_serve.get("services", [])
     if not isinstance(serve_services, list) or not serve_services:
         raise ValueError("vps_tailscale.serve.services must be a non-empty list")
-    serve_endpoints: list[str] = []
-    for service in serve_services:
-        if not isinstance(service, dict):
-            raise ValueError("vps_tailscale.serve.services entries must be mappings")
-        protocol = service.get("protocol")
-        port = service.get("port")
-        target = service.get("target", "")
-        if protocol not in {"http", "https"}:
-            raise ValueError("vps_tailscale.serve.services protocol must be http or https")
-        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
-            raise ValueError("vps_tailscale.serve.services port must be 1-65535")
-        if not isinstance(target, str) or not re.fullmatch(
-            r"[h]ttp://127\.0\.0\.1:[1-9]\d{0,4}", target
-        ):
-            raise ValueError("vps_tailscale.serve.services target must be a loopback URL")
-        serve_endpoints.append(f"{protocol} {port} {target}")
+    serve_endpoints = [_render_tailscale_serve_endpoint(service) for service in serve_services]
     return searxng_url, serve_endpoints
 
 
