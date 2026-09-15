@@ -913,7 +913,7 @@ def main() -> int:
             )
             failures.append(relative_path)
             continue
-        previous_source = patch_state[marker].get("source", "")
+        previous_source = patch_state.get(marker, {}).get("source", "")
         replacement = previous_source if action == "upgrade" else old
         target.write_text(source.replace(replacement, new, 1), encoding="utf-8")
         patch_state[marker] = {"digest": digest, "source": new}

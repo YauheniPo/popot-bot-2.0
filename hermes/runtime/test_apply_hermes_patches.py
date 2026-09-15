@@ -544,6 +544,27 @@ class ApplyHermesPatchesTests(unittest.TestCase):
             self.assertEqual(result, 1)
             self.assertEqual(target.read_text(encoding="utf-8"), "marker\nlocally changed\n")
 
+    def test_main_apply_branch_without_prior_state(self) -> None:
+        # Fresh install: marker absent, old code present, no state entry.
+        # _classify_patch returns "apply"; main() must not KeyError on
+        # patch_state[marker] when that marker is missing from the state dict.
+        with tempfile.TemporaryDirectory() as temp_directory:
+            install_dir = Path(temp_directory)
+            result, target = self._run_main_with_single_patch(
+                install_dir, "old source\n", {}
+            )
+            self.assertEqual(result, 0)
+            self.assertEqual(target.read_text(encoding="utf-8"), "new source\n")
+
+    def test_main_apply_branch_replaces_old_without_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            install_dir = Path(temp_directory)
+            result, target = self._run_main_with_single_patch(
+                install_dir, "prefix old source suffix\n", {}
+            )
+            self.assertEqual(result, 0)
+            self.assertEqual(target.read_text(encoding="utf-8"), "prefix new source suffix\n")
+
     def test_main_upgrade_branch_replaces_previous_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
             install_dir = Path(temp_directory)
