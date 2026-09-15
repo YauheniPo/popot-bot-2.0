@@ -1100,6 +1100,153 @@ def _review_already_posted(comments_url: str, marker: str, token: str) -> bool:
     return False
 
 
+def _reply_if_not_posted(
+    thread: ReviewThread,
+    verdict_marker: str,
+    body: str,
+    repository: str,
+    pr_number: str | int,
+    token: str,
+) -> None:
+    if (
+        thread.reply_to_comment_id is not None
+        and thread.viewer_can_reply
+        and not any(verdict_marker in comment.body for comment in thread.comments)
+    ):
+        reply_to_review_thread(
+            repository,
+            pr_number,
+            token,
+            thread.reply_to_comment_id,
+            body,
+        )
+
+
+def _handle_confirmed_verdict(
+    thread: ReviewThread,
+    verdict_marker: str,
+    verdict: ThreadVerdict,
+    repository: str,
+    pr_number: str | int,
+    token: str,
+    execution_footer: str,
+) -> None:
+    _reply_if_not_posted(
+        thread,
+        verdict_marker,
+        f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] Finding remains valid**\n\n"
+        f"Evidence: {verdict.reason}" + execution_footer,
+        repository,
+        pr_number,
+        token,
+    )
+    print("  -> left open: confirmed still valid")
+
+
+def _handle_needs_human_verdict(
+    thread: ReviewThread,
+    verdict_marker: str,
+    verdict: ThreadVerdict,
+    repository: str,
+    pr_number: str | int,
+    token: str,
+    execution_footer: str,
+) -> None:
+    _reply_if_not_posted(
+        thread,
+        verdict_marker,
+        f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] Human review requested**\n\n"
+        f"Evidence: {verdict.reason}" + execution_footer,
+        repository,
+        pr_number,
+        token,
+    )
+    print("  -> left for human review: needs_human")
+
+
+def _auto_resolve_verdict(
+    thread: ReviewThread,
+    verdict_marker: str,
+    verdict: ThreadVerdict,
+    repository: str,
+    pr_number: str | int,
+    token: str,
+    execution_footer: str,
+    closed_thread_ids: set[str],
+) -> str:
+    """Resolve a fixed/rejected machine thread; return the outcome kind."""
+    comment_id = thread.reply_to_comment_id
+    if comment_id is None or not thread.viewer_can_reply:
+        print("  -> skipped: thread has no repliable comment")
+        return "skipped"
+    heading = (
+        "Resolved — the requested change is present in this revision"
+        if verdict.verdict == "fixed"
+        else "Rejected finding"
+    )
+    reply_to_review_thread(
+        repository,
+        pr_number,
+        token,
+        comment_id,
+        f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] {heading}**\n\nReason: {verdict.reason}" + execution_footer,
+    )
+    resolve_review_thread(token, thread.node_id)
+    closed_thread_ids.add(thread.node_id)
+    print(f"  -> auto-resolved: {verdict.verdict}")
+    return verdict.verdict
+
+
+def _process_single_verdict(
+    verdict: ThreadVerdict,
+    threads_by_id: dict[str, ReviewThread],
+    head_sha: str,
+    changed_paths: set[str],
+    repository: str,
+    pr_number: str | int,
+    token: str,
+    execution_footer: str,
+    closed_thread_ids: set[str],
+) -> str:
+    """Handle one thread verdict; return its outcome category."""
+    thread = threads_by_id.get(verdict.thread_id)
+    print(
+        f"Thread verdict: id={verdict.thread_id} verdict={verdict.verdict} "
+        f"reason={verdict.reason!r}"
+    )
+    # Only a reviewer-authored thread that no human has joined may be closed
+    # automatically. Threads from earlier revisions qualify on purpose:
+    # closing them after the fix lands is the point of this pass.
+    if thread is None or not is_machine_thread(thread):
+        print(f"  -> skipped: thread {verdict.thread_id} not a machine thread")
+        return "skipped"
+    verdict_marker = f"<!-- claude-thread-verdict:{head_sha}:{thread.node_id} -->"
+    if verdict.verdict == "confirmed":
+        _handle_confirmed_verdict(
+            thread, verdict_marker, verdict, repository, pr_number, token, execution_footer
+        )
+        return "confirmed"
+    if verdict.verdict == "fixed" and not may_be_auto_fixed(
+        thread,
+        head_sha,
+        changed_paths,
+    ):
+        print("  -> downgraded to human review: fixed verdict not eligible for auto-resolve")
+        return "needs_human"
+    if verdict.verdict == "needs_human":
+        _handle_needs_human_verdict(
+            thread, verdict_marker, verdict, repository, pr_number, token, execution_footer
+        )
+        return "needs_human"
+    if any(verdict_marker in comment.body for comment in thread.comments):
+        print("  -> skipped: verdict already posted for this head SHA")
+        return "skipped"
+    return _auto_resolve_verdict(
+        thread, verdict_marker, verdict, repository, pr_number, token,
+        execution_footer, closed_thread_ids,
+    )
+
+
 def _process_thread_verdicts(
     verdicts: list[ThreadVerdict],
     threads_by_id: dict[str, ReviewThread],
@@ -1116,86 +1263,18 @@ def _process_thread_verdicts(
     needing_human = 0
     closed_thread_ids: set[str] = set()
     for verdict in verdicts:
-        thread = threads_by_id.get(verdict.thread_id)
-        print(
-            f"Thread verdict: id={verdict.thread_id} verdict={verdict.verdict} "
-            f"reason={verdict.reason!r}"
+        outcome = _process_single_verdict(
+            verdict, threads_by_id, head_sha, changed_paths,
+            repository, pr_number, token, execution_footer, closed_thread_ids,
         )
-        # Only a reviewer-authored thread that no human has joined may be closed
-        # automatically. Threads from earlier revisions qualify on purpose:
-        # closing them after the fix lands is the point of this pass.
-        if thread is None or not is_machine_thread(thread):
-            print(f"  -> skipped: thread {verdict.thread_id} not a machine thread")
-            continue
-        verdict_marker = f"<!-- claude-thread-verdict:{head_sha}:{thread.node_id} -->"
-        if verdict.verdict == "confirmed":
+        if outcome == "confirmed":
             confirmed += 1
-            if (
-                thread.reply_to_comment_id is not None
-                and thread.viewer_can_reply
-                and not any(verdict_marker in comment.body for comment in thread.comments)
-            ):
-                reply_to_review_thread(
-                    repository,
-                    pr_number,
-                    token,
-                    thread.reply_to_comment_id,
-                    f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] Finding remains valid**\n\n"
-                    f"Evidence: {verdict.reason}" + execution_footer,
-                )
-            print("  -> left open: confirmed still valid")
-            continue
-        if verdict.verdict == "fixed" and not may_be_auto_fixed(
-            thread,
-            head_sha,
-            changed_paths,
-        ):
-            needing_human += 1
-            print("  -> downgraded to human review: fixed verdict not eligible for auto-resolve")
-            continue
-        if verdict.verdict == "needs_human":
-            needing_human += 1
-            if (
-                thread.reply_to_comment_id is not None
-                and thread.viewer_can_reply
-                and not any(verdict_marker in comment.body for comment in thread.comments)
-            ):
-                reply_to_review_thread(
-                    repository,
-                    pr_number,
-                    token,
-                    thread.reply_to_comment_id,
-                    f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] Human review requested**\n\n"
-                    f"Evidence: {verdict.reason}" + execution_footer,
-                )
-            print("  -> left for human review: needs_human")
-            continue
-        if any(verdict_marker in comment.body for comment in thread.comments):
-            print("  -> skipped: verdict already posted for this head SHA")
-            continue
-        comment_id = thread.reply_to_comment_id
-        if comment_id is None or not thread.viewer_can_reply:
-            print("  -> skipped: thread has no repliable comment")
-            continue
-        heading = (
-            "Resolved — the requested change is present in this revision"
-            if verdict.verdict == "fixed"
-            else "Rejected finding"
-        )
-        reply_to_review_thread(
-            repository,
-            pr_number,
-            token,
-            comment_id,
-            f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] {heading}**\n\nReason: {verdict.reason}" + execution_footer,
-        )
-        resolve_review_thread(token, thread.node_id)
-        closed_thread_ids.add(thread.node_id)
-        if verdict.verdict == "fixed":
+        elif outcome == "fixed":
             fixed += 1
-        else:
+        elif outcome == "rejected":
             rejected += 1
-        print(f"  -> auto-resolved: {verdict.verdict}")
+        elif outcome == "needs_human":
+            needing_human += 1
     return confirmed, fixed, rejected, needing_human, closed_thread_ids
 
 

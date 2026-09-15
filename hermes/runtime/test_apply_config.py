@@ -466,6 +466,15 @@ class ApplyConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "vps-defaults.yml"):
             apply_config.load_settings(Path("/tmp/not-vps-defaults.yml"))
 
+    def test_build_operations_rejects_non_mapping_runtime(self) -> None:
+        with self.assertRaisesRegex(ValueError, "vps_runtime must be a mapping"):
+            apply_config.build_operations({"vps_runtime": []}, {}, {}, set())
+
+    def test_build_operations_rejects_non_mapping_capabilities(self) -> None:
+        settings = {"vps_runtime": {"capabilities": []}}
+        with self.assertRaisesRegex(ValueError, "capabilities must be a mapping"):
+            apply_config.build_operations(settings, {}, {}, set())
+
     def test_load_settings_accepts_a_literal_dotdot_path(self) -> None:
         # install/common.sh builds --settings as "${SCRIPT_DIR}/../config/
         # vps-defaults.yml" -- a literal ".." component, never normalized by

@@ -47,6 +47,22 @@ class VerificationError(RuntimeError):
     """Raised when an update safety invariant is not satisfied."""
 
 
+def _archivable_file(root: Path, current: Path, name: str) -> Path | None:
+    """Return the file if it is archivable, or None if it must be skipped."""
+    path = current / name
+    if path.is_symlink():
+        return None
+    if name in EXCLUDED_FILE_NAMES or name.endswith(EXCLUDED_FILE_SUFFIXES):
+        return None
+    if not path.is_file():
+        return None
+    try:
+        path.resolve().relative_to(root)
+    except ValueError as exc:
+        raise VerificationError(f"backup file escapes HERMES_HOME: {path}") from exc
+    return path
+
+
 def _inventory_directory(root: Path) -> list[Path]:
     """Walk HERMES_HOME and return every archivable file, fail-closed on escapes."""
     files: list[Path] = []
@@ -58,18 +74,9 @@ def _inventory_directory(root: Path) -> list[Path]:
             if name not in EXCLUDED_DIRECTORIES and not (current / name).is_symlink()
         ]
         for name in file_names:
-            path = current / name
-            if path.is_symlink():
-                continue
-            if name in EXCLUDED_FILE_NAMES or name.endswith(EXCLUDED_FILE_SUFFIXES):
-                continue
-            if not path.is_file():
-                continue
-            try:
-                path.resolve().relative_to(root)
-            except ValueError as exc:
-                raise VerificationError(f"backup file escapes HERMES_HOME: {path}") from exc
-            files.append(path)
+            path = _archivable_file(root, current, name)
+            if path is not None:
+                files.append(path)
     return files
 
 
