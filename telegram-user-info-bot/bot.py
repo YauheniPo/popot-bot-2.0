@@ -364,33 +364,40 @@ def _text_scalar(value: Any) -> str:
 
 
 def _render_text_tree(value: Any, level: int = 0) -> list[str]:
-    indent = "  " * level
     if isinstance(value, dict):
-        if not value:
-            return [f"{indent}no data"]
-        lines: list[str] = []
-        for key, item in value.items():
-            label = str(key)
-            if isinstance(item, (dict, list)):
-                lines.append(f"{indent}{label}:")
-                lines.extend(_render_text_tree(item, level + 1))
-            else:
-                lines.append(f"{indent}{label}: {_text_scalar(item)}")
-        return lines
-
+        return _render_text_mapping(value, level)
     if isinstance(value, list):
-        if not value:
-            return [f"{indent}empty list"]
-        lines = []
-        for index, item in enumerate(value, start=1):
-            if isinstance(item, (dict, list)):
-                lines.append(f"{indent}Item {index}:")
-                lines.extend(_render_text_tree(item, level + 1))
-            else:
-                lines.append(f"{indent}{_text_scalar(item)}")
-        return lines
+        return _render_text_sequence(value, level)
+    return ["  " * level + _text_scalar(value)]
 
-    return [f"{indent}{_text_scalar(value)}"]
+
+def _render_text_mapping(value: dict[str, Any], level: int) -> list[str]:
+    indent = "  " * level
+    if not value:
+        return [f"{indent}no data"]
+    lines: list[str] = []
+    for key, item in value.items():
+        label = str(key)
+        if isinstance(item, (dict, list)):
+            lines.append(f"{indent}{label}:")
+            lines.extend(_render_text_tree(item, level + 1))
+        else:
+            lines.append(f"{indent}{label}: {_text_scalar(item)}")
+    return lines
+
+
+def _render_text_sequence(value: list[Any], level: int) -> list[str]:
+    indent = "  " * level
+    if not value:
+        return [f"{indent}empty list"]
+    lines: list[str] = []
+    for index, item in enumerate(value, start=1):
+        if isinstance(item, (dict, list)):
+            lines.append(f"{indent}Item {index}:")
+            lines.extend(_render_text_tree(item, level + 1))
+        else:
+            lines.append(f"{indent}{_text_scalar(item)}")
+    return lines
 
 
 def render_report_text(report: dict[str, Any]) -> str:
@@ -894,6 +901,19 @@ def _send_user_report(
         LOGGER.warning("User report sent with %s unavailable section(s)", len(report_errors))
 
 
+def _collect_section_errors(
+    errors: list[tuple[str, str]],
+    sections: dict[str, Any],
+    section_names: dict[str, str],
+) -> None:
+    for section_name, section_label in section_names.items():
+        section = sections.get(section_name)
+        if isinstance(section, dict) and section.get("ok") is False:
+            errors.append(
+                (section_label, str(section.get("error", "unknown error")))
+            )
+
+
 def _report_errors(report: dict[str, Any]) -> list[tuple[str, str]]:
     section_names = {
         "chat_full_info": "Complete chat information",
@@ -903,12 +923,7 @@ def _report_errors(report: dict[str, Any]) -> list[tuple[str, str]]:
         "personal_chat_messages": "Personal channel messages",
     }
     errors: list[tuple[str, str]] = []
-    for section_name, section_label in section_names.items():
-        section = report.get(section_name)
-        if isinstance(section, dict) and section.get("ok") is False:
-            errors.append(
-                (section_label, str(section.get("error", "unknown error")))
-            )
+    _collect_section_errors(errors, report, section_names)
 
     shared_data = report.get("explicitly_shared_data")
     location_details = (
@@ -921,16 +936,69 @@ def _report_errors(report: dict[str, Any]) -> list[tuple[str, str]]:
             "reverse_geocoding": "Place lookup",
             "timezone": "Time zone lookup",
         }
-        for section_name, section_label in location_section_names.items():
-            section = location_details.get(section_name)
-            if isinstance(section, dict) and section.get("ok") is False:
-                errors.append(
-                    (
-                        section_label,
-                        str(section.get("error", "unknown error")),
-                    )
-                )
+        _collect_section_errors(errors, location_details, location_section_names)
     return errors
+
+
+def _send_share_instructions(api: TelegramBotAPI, chat_id: int | str) -> None:
+    api.send_message(
+        chat_id,
+        (
+            "Choose which data to share voluntarily. Telegram will display "
+            "a system confirmation. If you choose Share location and confirm, "
+            "the bot will send your exact latitude and longitude to the public "
+            "OpenStreetMap Nominatim service to identify the place. The time "
+            "zone is determined locally. The bot will return the data in a "
+            "text file and will not save it to disk."
+        ),
+        reply_markup=_consent_keyboard(),
+    )
+    LOGGER.info("Consent keyboard sent")
+
+
+def _send_location_received(api: TelegramBotAPI, chat_id: int | str) -> None:
+    api.send_message(
+        chat_id,
+        "Location received. Identifying the place and time zone...",
+    )
+
+
+def _handle_shared_data(
+    api: TelegramBotAPI,
+    update: dict[str, Any],
+    message: dict[str, Any],
+    user: dict[str, Any],
+    chat: dict[str, Any],
+    chat_id: int | str,
+    user_id: int,
+) -> bool:
+    explicitly_shared_data, validation_error = _explicitly_shared_data(
+        message,
+        user_id,
+    )
+    if validation_error is not None:
+        LOGGER.warning("Explicitly shared data was rejected during validation")
+        api.send_message(chat_id, validation_error)
+        return True
+    if explicitly_shared_data is None:
+        return False
+    LOGGER.info("Explicitly shared data accepted: %s", explicitly_shared_data["type"])
+    if explicitly_shared_data["type"] == "location":
+        _send_location_received(api, chat_id)
+        location = explicitly_shared_data["data"]
+        location_details = enrich_location(
+            location["latitude"],
+            location["longitude"],
+        )
+        explicitly_shared_data["location_details"] = location_details
+        api.send_message(chat_id, _location_summary(location_details))
+    else:
+        api.send_message(
+            chat_id,
+            "Data received. Generating a new text report...",
+        )
+    _send_user_report(api, update, user, chat, explicitly_shared_data)
+    return True
 
 
 def handle_update(api: TelegramBotAPI, update: dict[str, Any]) -> None:
@@ -964,11 +1032,14 @@ def handle_update(api: TelegramBotAPI, update: dict[str, Any]) -> None:
     ):
         return
 
-    event_name = command or (
-        "contact"
-        if isinstance(message.get("contact"), dict)
-        else "location" if isinstance(message.get("location"), dict) else "close_keyboard"
-    )
+    if command:
+        event_name = command
+    elif isinstance(message.get("contact"), dict):
+        event_name = "contact"
+    elif isinstance(message.get("location"), dict):
+        event_name = "location"
+    else:
+        event_name = "close_keyboard"
     LOGGER.info("Handling user request: %s", event_name)
 
     if chat.get("type") != "private":
@@ -990,49 +1061,10 @@ def handle_update(api: TelegramBotAPI, update: dict[str, Any]) -> None:
         return
 
     if command == SHARE_COMMAND:
-        api.send_message(
-            chat_id,
-            (
-                "Choose which data to share voluntarily. Telegram will display "
-                "a system confirmation. If you choose Share location and confirm, "
-                "the bot will send your exact latitude and longitude to the public "
-                "OpenStreetMap Nominatim service to identify the place. The time "
-                "zone is determined locally. The bot will return the data in a "
-                "text file and will not save it to disk."
-            ),
-            reply_markup=_consent_keyboard(),
-        )
-        LOGGER.info("Consent keyboard sent")
+        _send_share_instructions(api, chat_id)
         return
 
-    explicitly_shared_data, validation_error = _explicitly_shared_data(
-        message,
-        user_id,
-    )
-    if validation_error is not None:
-        LOGGER.warning("Explicitly shared data was rejected during validation")
-        api.send_message(chat_id, validation_error)
-        return
-    if explicitly_shared_data is not None:
-        LOGGER.info("Explicitly shared data accepted: %s", explicitly_shared_data["type"])
-        if explicitly_shared_data["type"] == "location":
-            api.send_message(
-                chat_id,
-                "Location received. Identifying the place and time zone...",
-            )
-            location = explicitly_shared_data["data"]
-            location_details = enrich_location(
-                location["latitude"],
-                location["longitude"],
-            )
-            explicitly_shared_data["location_details"] = location_details
-            api.send_message(chat_id, _location_summary(location_details))
-        else:
-            api.send_message(
-                chat_id,
-                "Data received. Generating a new text report...",
-            )
-        _send_user_report(api, update, user, chat, explicitly_shared_data)
+    if _handle_shared_data(api, update, message, user, chat, chat_id, user_id):
         return
 
     api.send_message(
@@ -1138,6 +1170,34 @@ def _delete_webhook(api: TelegramBotAPI) -> bool:
     return True
 
 
+def _fetch_updates(
+    api: TelegramBotAPI,
+    payload: dict[str, Any],
+    poll_timeout: int,
+) -> list[Any]:
+    updates = api.call(
+        "getUpdates",
+        payload,
+        timeout=poll_timeout + 10,
+    )
+    if not isinstance(updates, list):
+        raise BotAPIError("getUpdates: unexpected result type")
+    if updates:
+        LOGGER.info("Received %s Telegram update(s)", len(updates))
+    return updates
+
+
+def _process_updates(api: TelegramBotAPI, updates: list[Any], offset: int | None) -> int | None:
+    for update in updates:
+        if not isinstance(update, dict):
+            continue
+        update_id = update.get("update_id")
+        if isinstance(update_id, int):
+            offset = max(offset or 0, update_id + 1)
+        process_update(api, update)
+    return offset
+
+
 def run_bot(api: TelegramBotAPI, poll_timeout: int) -> None:
     bot_user = api.call("getMe")
     username = bot_user.get("username") if isinstance(bot_user, dict) else None
@@ -1155,17 +1215,7 @@ def run_bot(api: TelegramBotAPI, poll_timeout: int) -> None:
             payload["offset"] = offset
 
         try:
-            updates = api.call(
-                "getUpdates",
-                payload,
-                timeout=poll_timeout + 10,
-            )
-            if not isinstance(updates, list):
-                raise BotAPIError("getUpdates: unexpected result type")
-            if updates:
-                LOGGER.info("Received %s Telegram update(s)", len(updates))
-            retry_delay = 1
-            webhook_cleanup_attempted = False
+            updates = _fetch_updates(api, payload, poll_timeout)
         except BotAPIError as error:
             if _is_webhook_conflict(error) and not webhook_cleanup_attempted:
                 webhook_cleanup_attempted = _delete_webhook(api)
@@ -1174,13 +1224,9 @@ def run_bot(api: TelegramBotAPI, poll_timeout: int) -> None:
             retry_delay = min(retry_delay * 2, 30)
             continue
 
-        for update in updates:
-            if not isinstance(update, dict):
-                continue
-            update_id = update.get("update_id")
-            if isinstance(update_id, int):
-                offset = max(offset or 0, update_id + 1)
-            process_update(api, update)
+        retry_delay = 1
+        webhook_cleanup_attempted = False
+        offset = _process_updates(api, updates, offset)
 
 
 def main() -> None:

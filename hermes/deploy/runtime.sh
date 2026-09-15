@@ -43,6 +43,7 @@ resolve_user_paths() {
 
   install -d -o "$HERMES_USER" -g "$HERMES_GROUP" -m 0750 "$HERMES_WORKSPACE"
   install -d -o "$HERMES_USER" -g "$HERMES_GROUP" -m 0700 "$HERMES_BACKUP_DIR"
+  return
 }
 
 run_as_hermes_impl() {
@@ -71,14 +72,17 @@ run_as_hermes_impl() {
     # instead of hanging forever waiting for input nobody can supply here.
     setsid runuser "${runuser_args[@]}" </dev/null
   fi
+  return
 }
 
 run_as_hermes() {
   run_as_hermes_impl false "$@"
+  return
 }
 
 run_as_hermes_interactive() {
   run_as_hermes_impl true "$@"
+  return
 }
 
 resolve_managed_runtime() {
@@ -97,6 +101,7 @@ resolve_managed_runtime() {
     --settings "$VPS_SETTINGS_FILE" vps_deploy.hermes_source.raw_base_url)"
   [[ "$HERMES_RAW_BASE_URL" == "https://raw.githubusercontent.com/NousResearch/hermes-agent" ]] ||
     die "unsupported Hermes source base URL: $HERMES_RAW_BASE_URL"
+  return
 }
 
 quiesce_existing_gateway_for_update() {
@@ -126,6 +131,7 @@ download_installer() {
   [[ "$actual_sha256" == "$INSTALLER_SHA256" ]] ||
     die "installer checksum mismatch (got $actual_sha256)"
   log "Installer checksum verified"
+  return
 }
 
 backup_existing_installation() {
@@ -216,6 +222,7 @@ install_hermes() {
   [[ "$actual_version" == "$HERMES_VERSION" ]] ||
     die "installed Hermes version mismatch (got $actual_version)"
   log "Hermes source identity verified"
+  return
 }
 
 verify_updated_kanban_state() {
@@ -389,6 +396,7 @@ run_setup() {
     log "Starting the interactive Hermes setup wizard"
     run_as_hermes_interactive "$HERMES_BIN" setup --quick
   fi
+  return
 }
 
 run_mcp_picker() {
@@ -398,6 +406,7 @@ run_mcp_picker() {
   if ! run_as_hermes_interactive "$HERMES_BIN" mcp; then
     warn "MCP picker was cancelled or did not complete; run 'hermes mcp' later"
   fi
+  return
 }
 
 initialize_skills_hub() {
@@ -405,6 +414,7 @@ initialize_skills_hub() {
   if ! run_as_hermes "$HERMES_BIN" skills list >/dev/null; then
     warn "Skills Hub initialization did not complete; run 'hermes skills list' as ${HERMES_USER}"
   fi
+  return
 }
 
 apply_recommended_defaults() {
@@ -429,4 +439,5 @@ apply_recommended_defaults() {
 
   log "Applying shared VPS runtime settings"
   run_as_hermes "$hermes_python" "$VPS_CONFIG_APPLIER" "${args[@]}"
+  return
 }

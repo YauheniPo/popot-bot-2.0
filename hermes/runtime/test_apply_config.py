@@ -11,7 +11,8 @@ from unittest import mock
 
 MODULE_PATH = Path(__file__).with_name("apply-config.py")
 SPEC = importlib.util.spec_from_file_location("apply_config", MODULE_PATH)
-assert SPEC and SPEC.loader
+assert SPEC is not None
+assert SPEC.loader is not None
 apply_config = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(apply_config)
 
@@ -465,6 +466,15 @@ class ApplyConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "vps-defaults.yml"):
             apply_config.load_settings(Path("/tmp/not-vps-defaults.yml"))
 
+    def test_build_operations_rejects_non_mapping_runtime(self) -> None:
+        with self.assertRaisesRegex(ValueError, "vps_runtime must be a mapping"):
+            apply_config.build_operations({"vps_runtime": []}, {}, {}, set())
+
+    def test_build_operations_rejects_non_mapping_capabilities(self) -> None:
+        settings = {"vps_runtime": {"capabilities": []}}
+        with self.assertRaisesRegex(ValueError, "capabilities must be a mapping"):
+            apply_config.build_operations(settings, {}, {}, set())
+
     def test_load_settings_accepts_a_literal_dotdot_path(self) -> None:
         # install/common.sh builds --settings as "${SCRIPT_DIR}/../config/
         # vps-defaults.yml" -- a literal ".." component, never normalized by
@@ -501,6 +511,18 @@ class ApplyConfigTests(unittest.TestCase):
             apply_config.service_names(settings, ["gateway", "ops"]),
             ["gateway.service", "a.service"],
         )
+
+    def test_set_operations_reject_non_string_keys(self) -> None:
+        with self.assertRaisesRegex(ValueError, "set keys must be non-empty"):
+            apply_config._set_operations({"set": {1: "value"}}, {}, {})
+
+    def test_set_if_missing_operations_reject_non_string_keys(self) -> None:
+        with self.assertRaisesRegex(ValueError, "set_if_missing keys must be non-empty"):
+            apply_config._set_if_missing_operations({"set_if_missing": {1: "value"}}, {}, {})
+
+    def test_capability_operations_reject_non_string_capability(self) -> None:
+        with self.assertRaisesRegex(ValueError, "each capability must have a name"):
+            apply_config._capability_operations({1: {"a": "b"}}, set(), {}, {})
 
 
 if __name__ == "__main__":

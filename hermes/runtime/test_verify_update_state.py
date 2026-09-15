@@ -13,7 +13,8 @@ import zipfile
 
 MODULE_PATH = Path(__file__).with_name("verify-update-state.py")
 SPEC = importlib.util.spec_from_file_location("verify_update_state", MODULE_PATH)
-assert SPEC and SPEC.loader
+assert SPEC is not None
+assert SPEC.loader is not None
 verify_update_state = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(verify_update_state)
 
@@ -234,6 +235,35 @@ class VerifyUpdateStateTests(unittest.TestCase):
         self.assertEqual(snapshot_args.command, "snapshot")
         self.assertEqual(backup_args.command, "verify-backup")
         self.assertEqual(compare_args.command, "compare")
+
+    def test_archivable_file_skips_symlinks_excluded_names_and_directories(self) -> None:
+        # symlink file
+        link = self.home / "config-link.yaml"
+        link.symlink_to(self.home / "config.yaml")
+        self.assertIsNone(
+            verify_update_state._archivable_file(self.home, self.home, "config-link.yaml")
+        )
+        # excluded file name
+        (self.home / ".backup.lock").write_text("lock", encoding="utf-8")
+        self.assertIsNone(
+            verify_update_state._archivable_file(self.home, self.home, ".backup.lock")
+        )
+        # excluded file suffix
+        (self.home / "data.db-wal").write_text("wal", encoding="utf-8")
+        self.assertIsNone(
+            verify_update_state._archivable_file(self.home, self.home, "data.db-wal")
+        )
+        # a directory, not a file
+        subdir = self.home / "subdir"
+        subdir.mkdir()
+        self.assertIsNone(
+            verify_update_state._archivable_file(self.home, self.home, "subdir")
+        )
+        # a file that resolves outside the inventory root
+        outside = self.root / "outside.txt"
+        outside.write_text("escape", encoding="utf-8")
+        with self.assertRaisesRegex(verify_update_state.VerificationError, "escapes HERMES_HOME"):
+            verify_update_state._archivable_file(self.home, self.root, "outside.txt")
 
 
 if __name__ == "__main__":

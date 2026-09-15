@@ -85,6 +85,38 @@ def gateway_up() -> float:
         return 0
 
 
+def _newest_archive_time(configured: Path) -> float:
+    """Return the newest non-partial archive mtime, or 0.0 when none exists."""
+    newest = 0.0
+    if not configured.is_dir():
+        return newest
+    for path in configured.iterdir():
+        if not path.is_file() or path.name.endswith(".partial.zip"):
+            continue
+        newest = max(newest, path.stat().st_mtime)
+    return newest
+
+
+def _newest_scheduled_full_time(configured: Path) -> float:
+    newest = 0.0
+    if not configured.is_dir():
+        return newest
+    for path in configured.iterdir():
+        if path.is_file() and path.name.startswith("scheduled-full-") and path.name.endswith(".zip"):
+            newest = max(newest, path.stat().st_mtime)
+    return newest
+
+
+def _newest_snapshot_time(snapshots: Path) -> float:
+    newest = 0.0
+    if not snapshots.is_dir():
+        return newest
+    for path in snapshots.iterdir():
+        if path.is_dir():
+            newest = max(newest, path.stat().st_mtime)
+    return newest
+
+
 def backup_ages() -> tuple[int, float, float]:
     configured = Path(os.environ.get("HERMES_BACKUP_DIR", str(home().parent / "hermes-backups"))).expanduser()
     snapshots = home() / "state-snapshots"
@@ -93,16 +125,9 @@ def backup_ages() -> tuple[int, float, float]:
     newest = 0.0
     newest_full = 0.0
     try:
-        if configured.is_dir():
-            for path in configured.iterdir():
-                if path.is_file() and not path.name.endswith(".partial.zip"):
-                    newest = max(newest, path.stat().st_mtime)
-                    if path.name.startswith("scheduled-full-") and path.name.endswith(".zip"):
-                        newest_full = max(newest_full, path.stat().st_mtime)
-        if snapshots.is_dir():
-            for path in snapshots.iterdir():
-                if path.is_dir():
-                    newest = max(newest, path.stat().st_mtime)
+        newest = _newest_archive_time(configured)
+        newest_full = _newest_scheduled_full_time(configured)
+        newest = max(newest, _newest_snapshot_time(snapshots))
     except OSError:
         return 1, -1, -1
     return (
@@ -191,7 +216,12 @@ def main() -> int:
         "SELECT COALESCE(model,'unknown'),COALESCE(platform,'unknown'),completed,failed,interrupted,COUNT(*) "
         "FROM sessions WHERE event='end' GROUP BY model,platform,completed,failed,interrupted",
     ):
-        outcome = "completed" if completed else ("interrupted" if interrupted else "failed")
+        if completed:
+            outcome = "completed"
+        elif interrupted:
+            outcome = "interrupted"
+        else:
+            outcome = "failed"
         lines.append(metric("hermes_turns_total", turns, {"model": model, "platform": platform, "outcome": outcome}))
     for choice, responses in rows(
         database,

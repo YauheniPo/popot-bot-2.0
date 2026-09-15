@@ -60,6 +60,7 @@ install_observability_dependencies() {
     chown root:root /etc/hermes-grafana.env
     chmod 0600 /etc/hermes-grafana.env
 
+    return
 }
 
 install_grafana_password_file() {

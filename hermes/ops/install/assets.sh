@@ -58,4 +58,5 @@ install_operations_assets() {
         render "${SCRIPT_DIR}/systemd/${unit}" "/etc/systemd/system/${unit}" 0644
     done
 
+    return
 }

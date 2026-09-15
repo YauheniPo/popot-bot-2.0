@@ -8,7 +8,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -55,8 +55,14 @@ def _number(value: Any) -> int | float:
     return value if isinstance(value, (int, float)) else 0
 
 
-@router.get("/summary")
-def summary(period: str = Query("24h", max_length=8)) -> dict[str, Any]:
+@router.get(
+    "/summary",
+    responses={
+        422: {"description": "The period query parameter is malformed or out of range"},
+        503: {"description": "The metrics database is temporarily unavailable"},
+    },
+)
+def summary(period: Annotated[str, Query(max_length=8)] = "24h") -> dict[str, Any]:
     """Return aggregated, non-sensitive observability data for the dashboard."""
 
     label, seconds = _period(period)

@@ -33,7 +33,8 @@ add_issue() {
 }
 
 is_number() {
-    [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]]
+    local value="$1"
+    [[ "${value}" =~ ^[0-9]+([.][0-9]+)?$ ]]
 }
 
 for threshold in \
@@ -75,10 +76,10 @@ else
     add_issue "disk-check" "не удалось проверить диск ${HERMES_DISK_PATH}"
 fi
 
-if inode_line="$(df -Pi "${HERMES_DISK_PATH}" 2>/dev/null | awk 'NR==2 {gsub(/%/, "", $5); print $5}')" && is_number "${inode_line}"; then
-    if awk -v used="${inode_line}" -v limit="${HERMES_INODE_WARN_PERCENT}" 'BEGIN {exit !(used >= limit)}'; then
-        add_issue "inodes" "inode заняты на ${inode_line}% (порог ${HERMES_INODE_WARN_PERCENT}%)"
-    fi
+if inode_line="$(df -Pi "${HERMES_DISK_PATH}" 2>/dev/null | awk 'NR==2 {gsub(/%/, "", $5); print $5}')" \
+    && is_number "${inode_line}" \
+    && awk -v used="${inode_line}" -v limit="${HERMES_INODE_WARN_PERCENT}" 'BEGIN {exit !(used >= limit)}'; then
+    add_issue "inodes" "inode заняты на ${inode_line}% (порог ${HERMES_INODE_WARN_PERCENT}%)"
 fi
 
 memory_total="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || true)"

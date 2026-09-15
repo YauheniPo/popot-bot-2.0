@@ -11,7 +11,8 @@ from unittest import mock
 
 MODULE_PATH = Path(__file__).with_name("apply-hermes-patches.py")
 SPEC = importlib.util.spec_from_file_location("apply_hermes_patches", MODULE_PATH)
-assert SPEC and SPEC.loader
+assert SPEC is not None
+assert SPEC.loader is not None
 apply_hermes_patches = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(apply_hermes_patches)
 
@@ -438,6 +439,141 @@ class ApplyHermesPatchesTests(unittest.TestCase):
             ):
                 self.assertEqual(apply_hermes_patches.main(), 1)
             self.assertEqual(target.read_text(encoding="utf-8"), "upstream changed\n")
+
+    def test_classify_patch_reports_apply_for_fresh_change(self) -> None:
+        action = apply_hermes_patches._classify_patch(
+            "old source", "marker", "old source", "new source", None
+        )
+        self.assertEqual(action, "apply")
+
+    def test_classify_patch_reports_old_missing_when_marker_and_old_absent(self) -> None:
+        action = apply_hermes_patches._classify_patch(
+            "unrelated", "marker", "old", "new", None
+        )
+        self.assertEqual(action, "old-missing")
+
+    def test_classify_patch_reports_record_when_marker_present_without_state(self) -> None:
+        action = apply_hermes_patches._classify_patch(
+            "marker\nnew source", "marker", "old", "new source", None
+        )
+        self.assertEqual(action, "record")
+
+    def test_classify_patch_reports_skip_when_digest_matches(self) -> None:
+        digest = apply_hermes_patches._patch_digest("new source")
+        state = {"digest": digest, "source": "new source"}
+        action = apply_hermes_patches._classify_patch(
+            "marker\nnew source", "marker", "old", "new source", state
+        )
+        self.assertEqual(action, "skip")
+
+    def test_classify_patch_reports_refresh_when_new_already_present(self) -> None:
+        state = {"digest": "stale", "source": "old source"}
+        action = apply_hermes_patches._classify_patch(
+            "marker\nnew source", "marker", "old", "new source", state
+        )
+        self.assertEqual(action, "refresh")
+
+    def test_classify_patch_reports_locally_changed(self) -> None:
+        state = {"digest": "stale", "source": "old source"}
+        action = apply_hermes_patches._classify_patch(
+            "marker\nlocally changed", "marker", "old", "new source", state
+        )
+        self.assertEqual(action, "locally-changed")
+
+    def test_classify_patch_reports_upgrade_when_previous_source_present(self) -> None:
+        state = {"digest": "stale", "source": "old source"}
+        action = apply_hermes_patches._classify_patch(
+            "marker\nold source", "marker", "old", "new source", state
+        )
+        self.assertEqual(action, "upgrade")
+
+    def _run_main_with_single_patch(
+        self,
+        install_dir: Path,
+        file_content: str,
+        state: dict[str, dict[str, str]],
+    ) -> tuple[int, Path]:
+        target = install_dir / "gateway" / "run.py"
+        target.parent.mkdir(parents=True)
+        target.write_text(file_content, encoding="utf-8")
+        with (
+            mock.patch.object(apply_hermes_patches, "HERMES_AGENT_DIR", install_dir),
+            mock.patch.object(
+                apply_hermes_patches,
+                "_PATCHES",
+                [("gateway/run.py", "marker", "old source", "new source")],
+            ),
+            mock.patch.object(apply_hermes_patches, "_load_patch_state", return_value=state),
+            mock.patch.object(apply_hermes_patches, "_save_patch_state"),
+            mock.patch(
+                "sys.stdout",
+                new_callable=lambda: __import__("io").StringIO(),
+            ),
+        ):
+            result = apply_hermes_patches.main()
+        return result, target
+
+    def test_main_skip_branch_when_digest_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            install_dir = Path(temp_directory)
+            digest = apply_hermes_patches._patch_digest("new source")
+            state = {"marker": {"digest": digest, "source": "new source"}}
+            result, target = self._run_main_with_single_patch(
+                install_dir, "marker\nnew source\n", state
+            )
+            self.assertEqual(result, 0)
+            self.assertEqual(target.read_text(encoding="utf-8"), "marker\nnew source\n")
+
+    def test_main_refresh_branch_when_new_already_present(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            install_dir = Path(temp_directory)
+            state = {"marker": {"digest": "stale", "source": "old source"}}
+            result, target = self._run_main_with_single_patch(
+                install_dir, "marker\nnew source\n", state
+            )
+            self.assertEqual(result, 0)
+            self.assertEqual(target.read_text(encoding="utf-8"), "marker\nnew source\n")
+
+    def test_main_locally_changed_branch_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            install_dir = Path(temp_directory)
+            state = {"marker": {"digest": "stale", "source": "old source"}}
+            result, target = self._run_main_with_single_patch(
+                install_dir, "marker\nlocally changed\n", state
+            )
+            self.assertEqual(result, 1)
+            self.assertEqual(target.read_text(encoding="utf-8"), "marker\nlocally changed\n")
+
+    def test_main_apply_branch_without_prior_state(self) -> None:
+        # Fresh install: marker absent, old code present, no state entry.
+        # _classify_patch returns "apply"; main() must not KeyError on
+        # patch_state[marker] when that marker is missing from the state dict.
+        with tempfile.TemporaryDirectory() as temp_directory:
+            install_dir = Path(temp_directory)
+            result, target = self._run_main_with_single_patch(
+                install_dir, "old source\n", {}
+            )
+            self.assertEqual(result, 0)
+            self.assertEqual(target.read_text(encoding="utf-8"), "new source\n")
+
+    def test_main_apply_branch_replaces_old_without_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            install_dir = Path(temp_directory)
+            result, target = self._run_main_with_single_patch(
+                install_dir, "prefix old source suffix\n", {}
+            )
+            self.assertEqual(result, 0)
+            self.assertEqual(target.read_text(encoding="utf-8"), "prefix new source suffix\n")
+
+    def test_main_upgrade_branch_replaces_previous_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            install_dir = Path(temp_directory)
+            state = {"marker": {"digest": "stale", "source": "old source"}}
+            result, target = self._run_main_with_single_patch(
+                install_dir, "marker\nold source\n", state
+            )
+            self.assertEqual(result, 0)
+            self.assertEqual(target.read_text(encoding="utf-8"), "marker\nnew source\n")
 
 
 if __name__ == "__main__":

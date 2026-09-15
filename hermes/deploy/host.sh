@@ -39,6 +39,7 @@ install_host_dependencies() {
   if [[ "$WITH_BROWSER" == true ]]; then
     install_browser_os_dependencies
   fi
+  return
 }
 
 install_tailscale() {
@@ -132,6 +133,7 @@ install_development_clis() {
   if ((${#available_packages[@]} > 0)); then
     apt-get install -y --no-install-recommends "${available_packages[@]}"
   fi
+  return
 }
 
 install_browser_os_dependencies() {
@@ -189,6 +191,7 @@ install_browser_os_dependencies() {
   done
 
   apt-get install -y --no-install-recommends "${resolved_packages[@]}"
+  return
 }
 
 ensure_service_user() {
@@ -210,6 +213,7 @@ ensure_service_user() {
   if id -nG "$HERMES_USER" | tr ' ' '\n' | grep -Eq '^(sudo|wheel)$'; then
     warn "$HERMES_USER belongs to an administrative group; a dedicated non-sudo user is recommended"
   fi
+  return
 }
 
 enable_host_administration() {

@@ -98,6 +98,42 @@ def _db() -> sqlite3.Connection:
     return connection
 
 
+def _rotate_audit_files(path: Path, rotated_files: int) -> None:
+    for index in range(rotated_files, 0, -1):
+        source = path if index == 1 else path.with_name(f"{path.name}.{index - 1}")
+        target = path.with_name(f"{path.name}.{index}")
+        if not source.exists() or source.is_symlink():
+            continue
+        if target.exists() or target.is_symlink():
+            target.unlink()
+        source.replace(target)
+
+
+def _append_audit_payload(path: Path, payload: bytes) -> None:
+    flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        os.write(descriptor, payload)
+    finally:
+        os.close(descriptor)
+
+
+def _journald_copy(payload: bytes) -> None:
+    # Best-effort second copy in the root-managed system journal. The local
+    # JSONL remains the convenient query source; journald is harder for the
+    # unprivileged agent account to erase.
+    if not Path("/dev/log").exists():
+        return
+    try:
+        import syslog
+
+        syslog.syslog(syslog.LOG_INFO, "hermes_audit " + payload.decode().rstrip())
+    except Exception:
+        pass
+
+
 def _write_audit(payload: bytes) -> None:
     """Append a privacy-filtered audit event and keep its size bounded."""
 
@@ -109,32 +145,9 @@ def _write_audit(payload: bytes) -> None:
         if path.is_symlink():
             return
         if path.exists() and path.stat().st_size + len(payload) > max_bytes:
-            for index in range(rotated_files, 0, -1):
-                source = path if index == 1 else path.with_name(f"{path.name}.{index - 1}")
-                target = path.with_name(f"{path.name}.{index}")
-                if not source.exists() or source.is_symlink():
-                    continue
-                if target.exists() or target.is_symlink():
-                    target.unlink()
-                source.replace(target)
-        flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        descriptor = os.open(path, flags, 0o600)
-        try:
-            os.write(descriptor, payload)
-        finally:
-            os.close(descriptor)
-        # Best-effort second copy in the root-managed system journal. The local
-        # JSONL remains the convenient query source; journald is harder for the
-        # unprivileged agent account to erase.
-        if Path("/dev/log").exists():
-            try:
-                import syslog
-
-                syslog.syslog(syslog.LOG_INFO, "hermes_audit " + payload.decode().rstrip())
-            except Exception:
-                pass
+            _rotate_audit_files(path, rotated_files)
+        _append_audit_payload(path, payload)
+        _journald_copy(payload)
     except Exception:
         # Observability must never break the worker or an agent turn.
         pass
