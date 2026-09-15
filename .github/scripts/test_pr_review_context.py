@@ -106,6 +106,29 @@ class ReviewThreadFetchTest(unittest.TestCase):
 
 
 class MachineThreadTest(unittest.TestCase):
+    def test_review_summary_groups_outcome_activity_and_metadata(self) -> None:
+        body = context._render_review_summary(
+            head_sha="b" * 40,
+            summary="No additional findings were found.",
+            new_inline_findings=0,
+            unanchored_findings=1,
+            follow_ups=0,
+            duplicate_findings=2,
+            previously_settled_findings=3,
+            confirmed_machine_findings=1,
+            fixed_machine_findings=4,
+            rejected_machine_findings=5,
+            machine_findings_needing_human=6,
+        )
+
+        self.assertIn("### Review outcome", body)
+        self.assertIn("**Action required**", body)
+        self.assertIn("### Finding activity", body)
+        self.assertIn("| New inline findings | 0 |", body)
+        self.assertIn("### Existing machine-review threads", body)
+        self.assertIn("| Confirmed and still open | 1 |", body)
+        self.assertIn("Reviewed head: `" + "b" * 40 + "`", body)
+
     def test_execution_metadata_does_not_enter_future_model_context_or_duplicate_matching(self):
         finding = "The API returns a stale account status."
         metadata = "\n<!-- review-execution -->\nConnection nvidia fallback transport_error\n<!-- /review-execution -->"
@@ -553,6 +576,7 @@ class InlineCommentTest(unittest.TestCase):
         summary_payload = request.call_args_list[1].args[3]
         self.assertIn("Found one issue.", summary_payload["body"])
         self.assertIn(context.CLAUDE_REVIEWER_LABEL, summary_payload["body"])
+        self.assertIn("### Technical metadata", summary_payload["body"])
         self.assertIn("<!-- claude-pr-review:" + "b" * 40 + ":123 -->", summary_payload["body"])
         for body in (summary_payload["body"], create.call_args.args[7]):
             self.assertIn("openrouter", body)
@@ -607,7 +631,7 @@ class InlineCommentTest(unittest.TestCase):
             context._command_publish()
 
         summary_payload = request.call_args_list[1].args[3]
-        self.assertIn("New inline findings: 0.", summary_payload["body"])
+        self.assertIn("| New inline findings | 0 |", summary_payload["body"])
         self.assertIn("Findings without inline anchors:", summary_payload["body"])
         self.assertIn("`app.py:12`", summary_payload["body"])
         self.assertIn("The API returns stale data.", summary_payload["body"])
@@ -669,7 +693,7 @@ class InlineCommentTest(unittest.TestCase):
         self.assertIn("Rejected finding", reply.call_args.args[4])
         resolve.assert_called_once_with("token", "direct-thread")
         summary_payload = request.call_args_list[1].args[3]
-        self.assertIn("rejected and auto-resolved: 1", summary_payload["body"])
+        self.assertIn("| Rejected and auto-resolved | 1 |", summary_payload["body"])
 
     def test_publisher_replies_to_confirmed_machine_thread(self) -> None:
         self._publish_thread_verdict("confirmed")
@@ -785,7 +809,7 @@ class InlineCommentTest(unittest.TestCase):
         reply.assert_called_once()
         self.assertIn("the requested change is present", reply.call_args.args[4])
         resolve.assert_called_once_with("token", "stale-thread")
-        self.assertIn("fixed and auto-resolved: 1", request.call_args_list[1].args[3]["body"])
+        self.assertIn("| Fixed and auto-resolved | 1 |", request.call_args_list[1].args[3]["body"])
 
     def test_publisher_downgrades_fixed_when_the_file_is_untouched(self) -> None:
         reply, resolve, request = self._publish_verdict(
@@ -796,8 +820,8 @@ class InlineCommentTest(unittest.TestCase):
         reply.assert_not_called()
         resolve.assert_not_called()
         summary_payload = request.call_args_list[1].args[3]
-        self.assertIn("left for human review: 1", summary_payload["body"])
-        self.assertIn("fixed and auto-resolved: 0", summary_payload["body"])
+        self.assertIn("| Waiting for human review | 1 |", summary_payload["body"])
+        self.assertIn("| Fixed and auto-resolved | 0 |", summary_payload["body"])
 
     def test_publisher_suppresses_a_finding_that_repeats_a_resolved_thread(self) -> None:
         result = {
@@ -862,7 +886,7 @@ class InlineCommentTest(unittest.TestCase):
 
         create.assert_not_called()
         summary_payload = request.call_args_list[1].args[3]
-        self.assertIn("Previously resolved findings not re-raised: 1.", summary_payload["body"])
+        self.assertIn("| Resolved findings not re-raised | 1 |", summary_payload["body"])
         self.assertIn("Repeats of already-resolved threads, suppressed:", summary_payload["body"])
 
     def test_machine_thread_never_auto_resolves_after_a_human_reply(self) -> None:

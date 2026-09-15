@@ -252,7 +252,7 @@ sudo systemctl restart hermes-gateway.service
 | Web dashboard | Включён в полной установке | Для OAuth зарегистрировать Tailscale `.ts.net` URL и сохранить `HERMES_DASHBOARD_OAUTH_CLIENT_ID` + `HERMES_DASHBOARD_PUBLIC_URL` в Vault |
 | `/update` и auto-restart | Включено | Писать `/update` только из разрешённого аккаунта |
 | Tailscale | Установлено | Подтвердить login и проверить tailnet SSH policy |
-| Закрытие публичного SSH | Подготовлено в Ansible | Сначала проверить вторую SSH-сессию, затем `hermes_lock_public_ssh: true` |
+| Закрытие публичного SSH | Включено по умолчанию после проверки Tailscale IP | Перед deploy убедиться, что VPS уже подключён к tailnet и Tailscale SSH проверен |
 | Local backups | Включено | Следить за диском и тестировать restore |
 | Audit, SQLite и `/ops` | Включено | При compliance отправлять journald во внешнее immutable/SIEM-хранилище |
 | Стоимость моделей | Частично автоматически | Если provider не сообщает cost, заполнить `model-prices.json` |
@@ -678,12 +678,15 @@ Tailscale означало бы риск потерять доступ к VPS. �
 Эти адреса доступны только внутри tailnet и не открывают порты на публичном
 интерфейсе VPS.
 
-В Ansible для уже проверенного сервера можно задать
-`hermes_lock_public_ssh: true`: playbook сначала проверит Tailscale IP, затем
-включит UFW, разрешит SSH только через `tailscale0` и запретит TCP/22 на
-публичных интерфейсах. Для первого запуска оставьте `false`, иначе ошибка в
-tailnet policy или auth key может отрезать административный доступ. Отдельно
-закройте порт 22 в cloud firewall/security group провайдера VPS.
+В managed-конфигурации `hermes_lock_public_ssh: true` включён по умолчанию.
+Перед запуском Ansible VPS должен быть подключён к tailnet, а вход по Tailscale
+SSH — проверен из второй сессии. Тогда playbook проверит Tailscale IP, включит
+UFW, разрешит SSH только через `tailscale0` и запретит TCP/22 на публичных
+интерфейсах. Если это первый deploy и Tailscale ещё не авторизован, сначала
+выполните bootstrap ниже либо временно переопределите
+`vps_deploy.features.lock_public_ssh: false`; не включайте firewall до проверки
+доступа. Отдельно закройте порт 22 в cloud firewall/security group провайдера
+VPS.
 
 Для неинтерактивной установки используйте `--skip-tailscale-login`, затем
 выполните `sudo tailscale up --ssh`. Полностью отказаться можно флагом
@@ -725,7 +728,9 @@ Prometheus, code-server и SearXNG, а также добавляет полны�
    web-адреса Dashboard, Grafana, Prometheus, code-server и SearXNG.
 
 Скрипт не закрывает временный публичный SSH. После проверки Tailscale переведите
-Ansible на Tailscale-адрес и только затем включайте `lock_public_ssh: true`.
+Ansible на Tailscale-адрес; стандартное значение `lock_public_ssh: true` при
+следующем deploy закроет публичный SSH. На сервере без подтверждённого
+Tailscale-доступа временно задайте `lock_public_ssh: false`.
 
 ### Управляемое обновление и автоподъём
 
