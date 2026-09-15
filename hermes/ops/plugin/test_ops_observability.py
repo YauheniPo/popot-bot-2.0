@@ -15,7 +15,8 @@ from unittest import mock
 
 MODULE_PATH = Path(__file__).with_name("ops-observability") / "__init__.py"
 SPEC = importlib.util.spec_from_file_location("ops_observability", MODULE_PATH)
-assert SPEC and SPEC.loader
+assert SPEC is not None
+assert SPEC.loader is not None
 observability = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = observability
 SPEC.loader.exec_module(observability)

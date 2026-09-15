@@ -72,8 +72,10 @@ def main() -> int:
         return 127
     hermes_home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
     environment = github_environment(dict(os.environ), hermes_home)
+    # execve replaces the current process on success and never returns; the
+    # explicit 127 below only covers a failure of execve itself.
     os.execve(REAL_GH, [str(REAL_GH), *sys.argv[1:]], environment)
-    return 127
+    raise SystemExit(127)
 
 
 if __name__ == "__main__":

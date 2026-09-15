@@ -13,7 +13,7 @@ def _pre_tool_call(tool_name: str = "", args: Any = None, task_id: str = "", tur
 
 
 def _post_tool_call(
-    tool_name: str = "", args: Any = None, result: Any = None, task_id: str = "",
+    tool_name: str = "", task_id: str = "",
     turn_id: str = "", duration_ms: Any = 0, status: str = "", **kwargs: Any
 ) -> None:
     final_status = _id(status or "ok")

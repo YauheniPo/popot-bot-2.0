@@ -128,4 +128,5 @@ install_observability_plugin() {
     else
         log "Hermes CLI not found yet; enable later by adding ops-observability to plugins.enabled in config.yaml"
     fi
+    return
 }

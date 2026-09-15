@@ -47,31 +47,37 @@ class VerificationError(RuntimeError):
     """Raised when an update safety invariant is not satisfied."""
 
 
+def _inventory_directory(root: Path) -> list[Path]:
+    """Walk HERMES_HOME and return every archivable file, fail-closed on escapes."""
+    files: list[Path] = []
+    for directory, directory_names, file_names in os.walk(root, followlinks=False):
+        current = Path(directory)
+        directory_names[:] = [
+            name
+            for name in directory_names
+            if name not in EXCLUDED_DIRECTORIES and not (current / name).is_symlink()
+        ]
+        for name in file_names:
+            path = current / name
+            if path.is_symlink():
+                continue
+            if name in EXCLUDED_FILE_NAMES or name.endswith(EXCLUDED_FILE_SUFFIXES):
+                continue
+            if not path.is_file():
+                continue
+            try:
+                path.resolve().relative_to(root)
+            except ValueError as exc:
+                raise VerificationError(f"backup file escapes HERMES_HOME: {path}") from exc
+            files.append(path)
+    return files
+
+
 def discover_backup_files(hermes_home: Path) -> list[Path]:
     """Return every live file the pinned Hermes full-backup walker must archive."""
     root = hermes_home.expanduser().resolve()
-    files: list[Path] = []
     try:
-        for directory, directory_names, file_names in os.walk(root, followlinks=False):
-            current = Path(directory)
-            directory_names[:] = [
-                name
-                for name in directory_names
-                if name not in EXCLUDED_DIRECTORIES and not (current / name).is_symlink()
-            ]
-            for name in file_names:
-                path = current / name
-                if path.is_symlink():
-                    continue
-                if name in EXCLUDED_FILE_NAMES or name.endswith(EXCLUDED_FILE_SUFFIXES):
-                    continue
-                if not path.is_file():
-                    continue
-                try:
-                    path.resolve().relative_to(root)
-                except ValueError as exc:
-                    raise VerificationError(f"backup file escapes HERMES_HOME: {path}") from exc
-                files.append(path)
+        files = _inventory_directory(root)
     except OSError as exc:
         raise VerificationError(f"cannot inventory HERMES_HOME for backup: {exc}") from exc
     return sorted(set(files), key=lambda item: item.relative_to(root).as_posix())

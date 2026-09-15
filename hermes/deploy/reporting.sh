@@ -10,6 +10,7 @@ run_diagnostics() {
   if ! run_as_hermes "$HERMES_BIN" doctor; then
     warn "Hermes doctor reported items that may still need configuration"
   fi
+  return
 }
 
 print_summary() {
@@ -103,4 +104,5 @@ print_summary() {
 
   printf '\nRun diagnostics:\n'
   printf '  sudo -u %q -H %q doctor\n' "$HERMES_USER" "$HERMES_BIN"
+  return
 }

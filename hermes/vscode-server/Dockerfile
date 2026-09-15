@@ -9,7 +9,11 @@ ARG HERMES_GID=1000
 # git and gh are needed for repository work inside the IDE; gh doubles as the
 # Git credential helper via GIT_CONFIG_* env vars from docker-compose.yml.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git gh python3 python3-venv \
+    && apt-get install -y --no-install-recommends \
+        gh \
+        git \
+        python3 \
+        python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 # Match bind-mounted file ownership even when the host Hermes account is not

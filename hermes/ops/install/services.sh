@@ -46,4 +46,5 @@ reconcile_observability_services() {
     grafana_address="$(managed_value vps_observability.grafana.bind_address)"
     grafana_port="$(managed_value vps_observability.grafana.port)"
     log "Grafana: http://${grafana_address}:${grafana_port} (credentials are in /etc/hermes-grafana.env)"
+    return
 }

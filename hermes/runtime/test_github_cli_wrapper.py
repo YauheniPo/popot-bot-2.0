@@ -10,7 +10,8 @@ import unittest
 
 MODULE_PATH = Path(__file__).with_name("github-cli-wrapper.py")
 SPEC = importlib.util.spec_from_file_location("github_cli_wrapper", MODULE_PATH)
-assert SPEC and SPEC.loader
+assert SPEC is not None
+assert SPEC.loader is not None
 wrapper = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(wrapper)
 

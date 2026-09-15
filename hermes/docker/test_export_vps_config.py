@@ -15,7 +15,8 @@ import yaml
 
 MODULE_PATH = Path(__file__).with_name("export-vps-config.py")
 SPEC = importlib.util.spec_from_file_location("export_vps_config", MODULE_PATH)
-assert SPEC and SPEC.loader
+assert SPEC is not None
+assert SPEC.loader is not None
 exporter = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(exporter)
 

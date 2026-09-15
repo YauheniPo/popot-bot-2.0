@@ -16,7 +16,8 @@ from unittest import mock
 
 MODULE_PATH = Path(__file__).with_name("export-metrics.py")
 SPEC = importlib.util.spec_from_file_location("export_metrics", MODULE_PATH)
-assert SPEC and SPEC.loader
+assert SPEC is not None
+assert SPEC.loader is not None
 metrics = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(metrics)
 

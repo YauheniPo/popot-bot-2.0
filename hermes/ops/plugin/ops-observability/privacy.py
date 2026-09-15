@@ -15,7 +15,10 @@ _SECRET_TEXT = re.compile(
     r"((?:password|passwd|secret|token|api[_-]?key)\s*[=:]\s*)[^\s&;]+"
 )
 _SECRET_FLAG = re.compile(
-    r"(?i)(--(?:password|passwd|secret|token|api[-_]?key|authorization|auth)\s+)(?:\"[^\"]*\"|'[^']*'|\S+)"
+    r"(?i)(--(?:password|passwd|secret|token|api[_-]?key)\s+)(?:\"[^\"]*\"|'[^']*'|\S+)"
+)
+_SECRET_AUTH_FLAG = re.compile(
+    r"(?i)(--(?:authorization|auth)\s+)(?:\"[^\"]*\"|'[^']*'|\S+)"
 )
 _BASIC_AUTH_FLAG = re.compile(r"(?i)(\b(?:curl|wget)\b.*?\s-u\s+)(?:\"[^\"]*\"|'[^']*'|\S+)")
 _SSHPASS_FLAG = re.compile(r"(?i)(\bsshpass\s+-p\s+)(?:\"[^\"]*\"|'[^']*'|\S+)")
@@ -31,6 +34,7 @@ def _short(value: Any, limit: int = 500) -> str:
     text = str(value or "").replace("\x00", "").replace("\r", " ").replace("\n", " ")
     text = _SECRET_TEXT.sub(lambda match: (match.group(1) or match.group(2) or "") + REDACTED, text)
     text = _SECRET_FLAG.sub(lambda match: match.group(1) + REDACTED, text)
+    text = _SECRET_AUTH_FLAG.sub(lambda match: match.group(1) + REDACTED, text)
     text = _BASIC_AUTH_FLAG.sub(lambda match: match.group(1) + REDACTED, text)
     text = _SSHPASS_FLAG.sub(lambda match: match.group(1) + REDACTED, text)
     text = _URL_USERINFO.sub(r"\1" + REDACTED + "@", text)
@@ -117,6 +121,21 @@ def _nested_number(data: dict[str, Any], *names: str) -> float | None:
     return None
 
 
+def _safe_arg_value(key_text: str, value: Any) -> tuple[str, Any] | None:
+    """Return a sanitized (key, value) pair for one allowlisted scalar arg."""
+    if not isinstance(value, (str, int, float, bool)):
+        return None
+    if key_text.lower() == "url":
+        try:
+            parsed = urlsplit(str(value))
+            value = f"{parsed.scheme}://{parsed.hostname or ''}"
+        except ValueError:
+            value = "[invalid-url]"
+    if key_text.lower() == "command":
+        return "command_program", _command_program(value)
+    return key_text[:80], _short(value, 240)
+
+
 def _safe_args(args: Any) -> dict[str, Any]:
     data = _mapping(args)
     summary: dict[str, Any] = {"arg_keys": sorted(str(key)[:80] for key in data.keys())[:40]}
@@ -124,17 +143,9 @@ def _safe_args(args: Any) -> dict[str, Any]:
         key_text = str(key)
         if _SENSITIVE_KEY.search(key_text) or key_text.lower() not in _SAFE_ARG_KEYS:
             continue
-        if isinstance(value, (str, int, float, bool)):
-            if key_text.lower() == "url":
-                try:
-                    parsed = urlsplit(str(value))
-                    value = f"{parsed.scheme}://{parsed.hostname or ''}"
-                except ValueError:
-                    value = "[invalid-url]"
-            if key_text.lower() == "command":
-                summary["command_program"] = _command_program(value)
-            else:
-                summary[key_text[:80]] = _short(value, 240)
+        sanitized = _safe_arg_value(key_text, value)
+        if sanitized is not None:
+            summary[sanitized[0]] = sanitized[1]
     return summary
 
 

@@ -24,6 +24,7 @@ render() {
         --backup-dir "${BACKUP_DIR}" >"${temporary}"
     install -o root -g root -m "${mode}" "${temporary}" "${target}"
     rm -f "${temporary}"
+    return
 }
 
 managed_services() {
@@ -36,6 +37,7 @@ managed_services() {
     [[ -f "${settings_file}" ]] || die "VPS settings are missing: ${settings_file}"
     [[ -f "${config_applier}" ]] || die "VPS config applier is missing: ${config_applier}"
     "${hermes_python}" "${config_applier}" services --settings "${settings_file}" "${group}"
+    return
 }
 
 managed_value() {
@@ -45,4 +47,5 @@ managed_value() {
     local config_applier="${SCRIPT_DIR}/../runtime/apply-config.py"
 
     "${hermes_python}" "${config_applier}" value --settings "${settings_file}" "${key}"
+    return
 }

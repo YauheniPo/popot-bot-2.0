@@ -13,7 +13,8 @@ import zipfile
 
 MODULE_PATH = Path(__file__).with_name("verify-update-state.py")
 SPEC = importlib.util.spec_from_file_location("verify_update_state", MODULE_PATH)
-assert SPEC and SPEC.loader
+assert SPEC is not None
+assert SPEC.loader is not None
 verify_update_state = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(verify_update_state)
 
