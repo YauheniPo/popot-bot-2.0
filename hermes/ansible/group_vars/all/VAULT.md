@@ -5,6 +5,17 @@
 Шаблон структуры и названий полей находится в
 [`vault.yml.example`](vault.yml.example).
 
+В репозитории есть два безопасных примера:
+
+- `group_vars/all/vault.yml.example` — основной шаблон для локального запуска
+  Ansible с `ansible-playbook`;
+- `azure-secure-files/vault.yml.example` — отдельный шаблон для подготовки
+  зашифрованного `vault.yml`, который загружается в Azure DevOps Secure Files.
+
+Выберите один workflow и заполните только его рабочий `vault.yml`. Не нужно
+объединять эти два примера или хранить оба рабочих файла в Git: настоящий
+`vault.yml` должен быть зашифрован и находиться вне репозитория.
+
 Все команды ниже запускаются прямо из этого каталога:
 `hermes/ansible/group_vars/all`.
 
@@ -91,6 +102,10 @@ Vault password или API keys в чат, Git, issue либо shell history.
 - `AZURE_DEVOPS_EXT_PAT` — Azure DevOps REST API: builds, logs, repositories
   и другие операции в пределах выданных прав;
 - `SONAR_TOKEN` — SonarQube API: issues, metrics и Quality Gate;
+- `HERMES_DASHBOARD_OAUTH_CLIENT_ID` — client ID, выданный командой
+  `hermes dashboard register` для зарегистрированного Tailscale hostname;
+- `HERMES_DASHBOARD_PUBLIC_URL` — полный HTTPS URL этого hostname, например
+  `https://your-hermes-host.tailnet-example.ts.net`;
 - `hermes_grafana_admin_password` — пароль администратора Grafana;
 - `hermes_code_server_password` — пароль браузерного IDE code-server
   (`vps_vscode.host_port` доступен только через SSH-туннель); допускаются любые
@@ -140,7 +155,17 @@ hermes_secret_env:
   TELEGRAM_BOT_TOKEN: "replace-inside-ansible-vault"
   TELEGRAM_ALLOWED_USERS: "123456789"
   GITHUB_TOKEN: "replace-inside-ansible-vault"
+  HERMES_DASHBOARD_OAUTH_CLIENT_ID: "agent:replace-with-registered-client-id"
+  HERMES_DASHBOARD_PUBLIC_URL: "https://your-hermes-host.tailnet-example.ts.net"
 ```
+
+Параметры `HERMES_DASHBOARD_*` — настройки OAuth dashboard, а не API tokens:
+client ID является идентификатором, а не паролем. Они находятся в
+`hermes_secret_env`, потому что при `hermes_manage_secret_env: true` Ansible
+полностью пересоздаёт `.env`; это сохраняет вход в dashboard после повторного
+deploy. `HERMES_DASHBOARD_PUBLIC_URL` должен совпадать с URL, зарегистрированным
+в Nous Portal, включая `https://` и домен `.ts.net`; для входа используйте
+только этот полный HTTPS hostname.
 
 ## Применить изменения
 

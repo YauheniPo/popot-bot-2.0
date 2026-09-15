@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from ansible.plugins.callback import CallbackBase
 
 
@@ -45,8 +47,9 @@ class CallbackModule(CallbackBase):
             self._dynamic_tasks += 1
             number = self._planned_tasks + self._dynamic_tasks
         total = self._planned_tasks + self._dynamic_tasks
+        started_at = datetime.now().strftime("%H:%M:%S")
         self._display.display(
-            f"[progress {number}/{total}] {task.get_name().strip()}"
+            f"[progress {number}/{total}] [{started_at}] {task.get_name().strip()}"
         )
 
     def v2_playbook_on_stats(self, stats) -> None:

@@ -114,17 +114,18 @@ class DeploymentStatePolicyTests(unittest.TestCase):
         variables = (HERMES_ROOT / "ansible" / "group_vars" / "all" / "vars.yml").read_text()
         self.assertIn("combine(vps_hermes.config.managed_overlay", variables)
 
-    def test_config_only_deploy_requires_a_verified_full_backup(self) -> None:
+    def test_full_deploy_requires_a_verified_config_backup(self) -> None:
         playbook = (HERMES_ROOT / "ansible" / "playbook.yml").read_text()
 
         self.assertIn("pre-config-deploy-", playbook)
         self.assertIn("Create the mandatory full config-only deployment backup", playbook)
         self.assertIn("hermes_config_backup_result.stderr | default('') | trim == ''", playbook)
         self.assertIn("'Backup complete:' in hermes_config_backup_result.stdout", playbook)
-        self.assertNotIn("hermes_config_backup_output", playbook)
         self.assertIn("hermes_config_backup_result.stderr", playbook)
+        self.assertNotIn("hermes_config_backup_output", playbook)
         self.assertIn("Verify the config-only deployment backup contents", playbook)
-        self.assertIn("when: hermes_source_update_required | bool", playbook)
+        self.assertIn("- not (hermes_source_update_required | bool)", playbook)
+        self.assertIn("- hermes_deploy_mode == 'full'", playbook)
 
     def test_workspace_agents_uses_selective_managed_block_reconciliation(self) -> None:
         playbook = (HERMES_ROOT / "ansible" / "playbook.yml").read_text()
@@ -154,6 +155,10 @@ class DeploymentStatePolicyTests(unittest.TestCase):
         settings = (HERMES_ROOT / "ansible" / "templates" / "searxng-settings.yml.j2").read_text()
         self.assertIn("tasks/searxng.yml", playbook)
         self.assertIn("vps_deploy.features.searxng", playbook)
+        self.assertIn("tasks/tailscale-serve.yml", playbook)
+        self.assertIn("- serve", (HERMES_ROOT / "ansible" / "tasks" / "tailscale-serve.yml").read_text())
+        self.assertIn('"--{{ item.protocol }}={{ item.port }}"', (HERMES_ROOT / "ansible" / "tasks" / "tailscale-serve.yml").read_text())
+        self.assertIn("/usr/local/sbin/hermes-setup-tailscale-access", playbook)
         self.assertIn("vps_searxng.bind_address == '127.0.0.1'", tasks)
         self.assertIn("vps_searxng.bind_address", compose)
         self.assertIn("valkey:", compose)
@@ -171,6 +176,28 @@ class DeploymentStatePolicyTests(unittest.TestCase):
         self.assertIn("ANSIBLE MANAGED SEARXNG ACCESS", playbook)
         self.assertIn("format=json", template)
         self.assertNotIn("BRAVE_SEARCH_API_KEY={{", template)
+
+    def test_tailscale_bootstrap_is_root_only_and_private(self) -> None:
+        script = (HERMES_ROOT / "ops" / "setup-tailscale-access.sh").read_text()
+        self.assertIn('[[ "${EUID}" -eq 0 ]]', script)
+        self.assertIn("tailscale up --ssh", script)
+        # Endpoints are published from the shared managed list, not hardcoded.
+        self.assertIn('protocol="${pair%%|*}"', script)
+        self.assertIn('tailscale serve --bg "--${protocol}=${port}" "${target}"', script)
+        self.assertIn("HERMES_TAILSCALE_SERVE_ENDPOINTS", script)
+        self.assertNotIn("tailscale funnel", script)
+
+    def test_tailscale_serve_publishing_is_idempotent(self) -> None:
+        tasks = (HERMES_ROOT / "ansible" / "tasks" / "tailscale-serve.yml").read_text()
+        settings = (HERMES_ROOT / "config" / "vps-defaults.yml").read_text()
+        conf_template = (HERMES_ROOT / "ops" / "templates" / "hermes-ops.conf").read_text()
+        # The served endpoint set lives in one place and is rendered for the script.
+        self.assertIn("HERMES_TAILSCALE_SERVE_ENDPOINTS=@TAILSCALE_SERVE_ENDPOINTS@", conf_template)
+        self.assertIn("vps_tailscale:", settings)
+        # A host without a Tailscale address reports the skip instead of
+        # publishing silently or failing the whole deployment.
+        self.assertIn("Report that Serve publishing is skipped without a Tailscale address", tasks)
+        self.assertIn("tailscale_serve_connection.rc | default(1) != 0", tasks)
 
     def test_broken_existing_install_never_bypasses_backup(self) -> None:
         deploy_runtime = (HERMES_ROOT / "deploy" / "runtime.sh").read_text()

@@ -148,6 +148,10 @@ stages:
                     python3 -m pip install \
                       --disable-pip-version-check \
                       --requirement hermes/requirements-dev.txt
+                    # Static, repository-owned path (no untrusted input); the
+                    # playbook needs ansible.posix for ansible.posix.synchronize.
+                    ansible-galaxy collection install \
+                      --requirements-file hermes/ansible/requirements.yml
                   displayName: Install Ansible dependencies
 
                 - bash: |

@@ -32,6 +32,7 @@
           - hermes_release is match('^v[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}$')
           - hermes_commit is match('^[0-9a-f]{40}$')
           - hermes_installer_sha256 is match('^[0-9a-f]{64}$')
+          - hermes_deploy_mode in ['full', 'config-only', 'runtime-only']
           - vps_deploy.hermes_source.raw_base_url == 'https://raw.githubusercontent.com/NousResearch/hermes-agent'
           - not (hermes_lock_public_ssh | bool) or (hermes_enable_tailscale | bool)
           - vps_ops is mapping
@@ -145,6 +146,23 @@
           - (vps_observability.prometheus.port | int) != (vps_observability.node_exporter.port | int)
         fail_msg: This playbook supports Debian/Ubuntu and a non-root Hermes user.
 
+    - name: Validate Tailscale Serve settings
+      ansible.builtin.assert:
+        that:
+          - vps_tailscale is mapping
+          - vps_tailscale.serve is mapping
+          - vps_tailscale.serve.enabled is boolean
+          - vps_tailscale.serve.services is sequence
+          - vps_tailscale.serve.services | length > 0
+        fail_msg: Tailscale Serve requires a non-empty vps_tailscale.serve.services list.
+      when: vps_deploy.features.tailscale | bool
+
+    - name: Install rsync for incremental bundle synchronization
+      ansible.builtin.apt:
+        name: rsync
+        state: present
+        update_cache: true
+
     - name: Validate managed operations timer settings
       ansible.builtin.assert:
         that:
@@ -183,6 +201,35 @@
           account home; refusing to split Hermes state across two paths.
       when: hermes_existing_passwd.rc == 0
 
+  handlers:
+    - name: restart Hermes gateway
+      ansible.builtin.systemd_service:
+        name: "{{ hermes_gateway_service }}"
+        state: restarted
+      when: hermes_gateway_enabled | default(false) | bool
+
+    - name: restart Grafana
+      ansible.builtin.systemd_service:
+        name: grafana-server.service
+        state: restarted
+      when: hermes_enable_ops | bool
+
+    - name: restart managed observability services
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: restarted
+      loop: "{{ vps_services.observability }}"
+      when: hermes_enable_ops | bool
+
+    - name: restart monitoring timers
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: restarted
+      loop: "{{ vps_services.timers }}"
+      when:
+        - hermes_enable_ops | bool
+        - hermes_gateway_enabled | bool
+
   tasks:
     - name: Create the remote Hermes infrastructure bundle directory
       ansible.builtin.file:
@@ -200,50 +247,50 @@
         group: root
         mode: "0755"
 
-    - name: Copy the versioned deployment domain modules
-      ansible.builtin.copy:
+    - name: Synchronize the versioned deployment domain modules
+      ansible.posix.synchronize:
         src: ../deploy/
         dest: "{{ hermes_bundle_dir }}/deploy/"
-        owner: root
-        group: root
-        mode: preserve
-        directory_mode: "0755"
+        archive: true
+        checksum: true
 
-    - name: Copy the versioned operations layer without controller secrets
-      ansible.builtin.copy:
+    - name: Synchronize the versioned operations layer without controller secrets
+      ansible.posix.synchronize:
         src: ../ops/
         dest: "{{ hermes_bundle_dir }}/ops/"
+        archive: true
+        checksum: true
+      notify: restart managed observability services
+
+    - name: Install the one-command Tailscale access bootstrap
+      ansible.builtin.copy:
+        src: ../ops/setup-tailscale-access.sh
+        dest: /usr/local/sbin/hermes-setup-tailscale-access
         owner: root
         group: root
-        mode: preserve
-        directory_mode: "0755"
+        mode: "0755"
 
-    - name: Copy versioned Grafana and Prometheus provisioning files
-      ansible.builtin.copy:
+    - name: Synchronize versioned Grafana and Prometheus provisioning files
+      ansible.posix.synchronize:
         src: ../observability/
         dest: "{{ hermes_bundle_dir }}/observability/"
-        owner: root
-        group: root
-        mode: preserve
-        directory_mode: "0755"
+        archive: true
+        checksum: true
+      notify: restart managed observability services
 
-    - name: Copy shared VPS runtime configuration
-      ansible.builtin.copy:
+    - name: Synchronize shared VPS runtime configuration
+      ansible.posix.synchronize:
         src: ../config/
         dest: "{{ hermes_bundle_dir }}/config/"
-        owner: root
-        group: root
-        mode: preserve
-        directory_mode: "0755"
+        archive: true
+        checksum: true
 
-    - name: Copy shared VPS runtime helpers
-      ansible.builtin.copy:
+    - name: Synchronize shared VPS runtime helpers
+      ansible.posix.synchronize:
         src: ../runtime/
         dest: "{{ hermes_bundle_dir }}/runtime/"
-        owner: root
-        group: root
-        mode: preserve
-        directory_mode: "0755"
+        archive: true
+        checksum: true
 
     - name: Copy repository-owned Hermes workspace instructions
       ansible.builtin.copy:
@@ -253,14 +300,20 @@
         group: root
         mode: "0644"
 
-    - name: Copy the versioned code-server deployment files
-      ansible.builtin.copy:
+    - name: Synchronize the versioned code-server deployment files
+      ansible.posix.synchronize:
         src: ../vscode-server/
         dest: "{{ hermes_bundle_dir }}/vscode-server/"
+        archive: true
+        checksum: true
+
+    - name: Normalize synchronized bundle ownership
+      ansible.builtin.file:
+        path: "{{ hermes_bundle_dir }}"
+        state: directory
         owner: root
         group: root
-        mode: preserve
-        directory_mode: "0755"
+        recurse: true
 
     - name: Check whether Hermes is already installed
       ansible.builtin.stat:
@@ -341,6 +394,16 @@
              (hermes_installed_commit.stdout | default('') != hermes_commit) or
              (not hermes_venv_python.stat.exists) }}
 
+    - name: Require a current Hermes source for a fast deployment mode
+      ansible.builtin.assert:
+        that:
+          - hermes_binary.stat.exists
+          - not (hermes_source_update_required | bool)
+        fail_msg: >-
+          Fast deployment modes require the installed Hermes source and venv to
+          match the pinned commit. Run with -e hermes_deploy_mode=full instead.
+      when: hermes_deploy_mode != 'full'
+
     - name: Prepare the mandatory config-only deployment backup location
       ansible.builtin.file:
         path: "{{ hermes_backup_dir }}"
@@ -351,6 +414,7 @@
       when:
         - hermes_binary.stat.exists
         - not (hermes_source_update_required | bool)
+        - hermes_deploy_mode == 'full'
 
     - name: Define the mandatory config-only deployment backup paths
       ansible.builtin.set_fact:
@@ -361,6 +425,7 @@
       when:
         - hermes_binary.stat.exists
         - not (hermes_source_update_required | bool)
+        - hermes_deploy_mode == 'full'
 
     - name: Check whether the gateway is active before a config-only deployment
       ansible.builtin.command:
@@ -371,6 +436,7 @@
       when:
         - hermes_binary.stat.exists
         - not (hermes_source_update_required | bool)
+        - hermes_deploy_mode == 'full'
 
     - name: Create and verify the mandatory config-only deployment backup
       block:
@@ -480,6 +546,7 @@
       when:
         - hermes_binary.stat.exists
         - not (hermes_source_update_required | bool)
+        - hermes_deploy_mode == 'full'
 
     - name: Install or update Hermes to the pinned commit
       ansible.builtin.command:
@@ -520,10 +587,17 @@
             ) +
             ([] if (hermes_host_admin_enabled | bool) else ['--without-host-admin'])
           }}
-      when: hermes_source_update_required | bool
+      when:
+        - hermes_source_update_required | bool
+        - hermes_deploy_mode == 'full'
 
     - name: Configure private networking and firewall
       ansible.builtin.import_tasks: tasks/network.yml
+      when: hermes_deploy_mode != 'runtime-only'
+
+    - name: Configure private Tailscale web services
+      ansible.builtin.import_tasks: tasks/tailscale-serve.yml
+      when: hermes_deploy_mode != 'runtime-only'
 
     - name: Stop the gateway before restoring a backup
       ansible.builtin.systemd_service:
@@ -838,6 +912,7 @@
           when:
             - hermes_host_admin_enabled | bool
             - vps_deploy.features.searxng | default(false) | bool
+            - hermes_deploy_mode != 'runtime-only'
 
         - name: Configure Hermes runtime
           ansible.builtin.import_tasks: tasks/runtime.yml
@@ -845,6 +920,7 @@
 
         - name: Configure managed GitHub tooling and access
           ansible.builtin.import_tasks: tasks/github.yml
+          when: hermes_deploy_mode != 'runtime-only'
 
         - name: Install and reconcile Hermes services
           ansible.builtin.import_tasks: tasks/services.yml
@@ -854,6 +930,7 @@
           when:
             - hermes_host_admin_enabled | bool
             - vps_deploy.features.vscode_server | default(false) | bool
+            - hermes_deploy_mode != 'runtime-only'
       rescue:
         - name: Capture the failed Hermes deployment task
           ansible.builtin.set_fact:

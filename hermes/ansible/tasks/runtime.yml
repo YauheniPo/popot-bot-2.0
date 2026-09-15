@@ -9,6 +9,7 @@
   when: hermes_manage_secret_env | bool
   no_log: true
   diff: false
+  notify: restart Hermes gateway
 
 - name: Install the managed development and VPS diagnostic CLI bundle
   ansible.builtin.apt:
@@ -88,6 +89,7 @@
   when: hermes_managed_config | length > 0
   no_log: true
   diff: false
+  notify: restart Hermes gateway
 
 - name: Apply shared Hermes VPS runtime configuration
   ansible.builtin.command:
@@ -128,6 +130,7 @@
   changed_when: "'0 change(s)' not in hermes_runtime_configuration.stdout"
   no_log: true
   when: hermes_venv_python.stat.exists
+  notify: restart Hermes gateway
 
 - name: Read the installed Google Workspace CLI version
   ansible.builtin.command:

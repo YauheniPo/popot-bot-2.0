@@ -15,6 +15,10 @@ hermes_installer_sha256: "{{ vps_deploy.hermes_source.installer_sha256 }}"
 hermes_bundle_dir: "{{ vps_deploy.bundle.dir }}"
 hermes_gateway_service: "{{ vps_services.gateway | first }}"
 
+# full keeps the conservative deployment path. config-only and runtime-only
+# are explicit operator opt-ins passed with -e hermes_deploy_mode=<mode>.
+hermes_deploy_mode: full
+
 # A full `hermes backup` zip on the Ansible controller. Keep it encrypted at
 # rest and never commit it. Empty means "install infrastructure only".
 hermes_backup_archive: ""

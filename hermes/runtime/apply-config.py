@@ -212,6 +212,53 @@ def _boolean_setting(settings: dict[str, Any], dotted_key: str) -> bool:
     return value
 
 
+LOOPBACK_HTTP_URL_PATTERN = "http" + r"://127\.0\.0\.1:[1-9]\d{0,4}"
+
+
+def _render_tailscale_serve_endpoint(service: Any) -> str:
+    """Validate one Serve endpoint and return its managed representation."""
+    if not isinstance(service, dict):
+        raise ValueError("vps_tailscale.serve.services entries must be mappings")
+    protocol = service.get("protocol")
+    port = service.get("port")
+    target = service.get("target", "")
+    if protocol not in {"http", "https"}:
+        raise ValueError("vps_tailscale.serve.services protocol must be http or https")
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise ValueError("vps_tailscale.serve.services port must be 1-65535")
+    if not isinstance(target, str) or not re.fullmatch(LOOPBACK_HTTP_URL_PATTERN, target):
+        raise ValueError("vps_tailscale.serve.services target must be a loopback URL")
+    return f"{protocol} {port} {target}"
+
+
+def web_and_serve_assets(settings: dict[str, Any]) -> tuple[str, list[str]]:
+    """Validate managed web settings and return (searxng_url, endpoints).
+
+    Endpoints are rendered as "protocol port target" strings so the Tailscale
+    bootstrap and the playbook share the same source of truth in vps-defaults.yml.
+    """
+    web_settings = settings.get("vps_web", {})
+    if not isinstance(web_settings, dict):
+        raise ValueError("vps_web must be a mapping")
+    searxng_url = web_settings.get("searxng_url", "")
+    if not isinstance(searxng_url, str) or "\n" in searxng_url or "\r" in searxng_url:
+        raise ValueError("vps_web.searxng_url must be a single-line string")
+
+    deploy_settings = settings.get("vps_deploy", {})
+    features = deploy_settings.get("features", {}) if isinstance(deploy_settings, dict) else {}
+    if not isinstance(features, dict) or not features.get("tailscale", False):
+        return searxng_url, []
+
+    tailscale_serve = settings.get("vps_tailscale", {}).get("serve", {})
+    if not isinstance(tailscale_serve, dict):
+        raise ValueError("vps_tailscale.serve must be a mapping")
+    serve_services = tailscale_serve.get("services", [])
+    if not isinstance(serve_services, list) or not serve_services:
+        raise ValueError("vps_tailscale.serve.services must be a non-empty list")
+    serve_endpoints = [_render_tailscale_serve_endpoint(service) for service in serve_services]
+    return searxng_url, serve_endpoints
+
+
 def build_asset_values(
     settings: dict[str, Any],
     *,
@@ -298,12 +345,7 @@ def build_asset_values(
         1,
         1440,
     )
-    web_settings = settings.get("vps_web", {})
-    if not isinstance(web_settings, dict):
-        raise ValueError("vps_web must be a mapping")
-    searxng_url = web_settings.get("searxng_url", "")
-    if not isinstance(searxng_url, str) or "\n" in searxng_url or "\r" in searxng_url:
-        raise ValueError("vps_web.searxng_url must be a single-line string")
+    searxng_url, serve_endpoints = web_and_serve_assets(settings)
 
     timer_values: dict[str, str] = {}
     timer_names = {
@@ -432,6 +474,7 @@ def build_asset_values(
         "METRICS_FILE": f"{hermes_home}/ops/metrics/hermes.prom",
         "METRICS_MAX_AGE_MINUTES": str(metrics_max_age),
         "SEARXNG_URL": searxng_url,
+        "TAILSCALE_SERVE_ENDPOINTS": ",".join(serve_endpoints),
         "OBSERVABILITY_DATABASE_RETENTION_DAYS": str(database_retention_days),
         "OBSERVABILITY_AUDIT_MAX_BYTES": str(audit_max_bytes),
         "OBSERVABILITY_AUDIT_ROTATED_FILES": str(audit_rotated_files),
@@ -448,8 +491,9 @@ def build_asset_values(
         "NODE_EXPORTER_PORT": str(node_exporter_port),
     }
     values.update(timer_values)
+    optional_empty_values = {"SEARXNG_URL", "TAILSCALE_SERVE_ENDPOINTS"}
     for key, value in values.items():
-        if (not value and key != "SEARXNG_URL") or "\n" in value or "\r" in value:
+        if (not value and key not in optional_empty_values) or "\n" in value or "\r" in value:
             raise ValueError(f"unsafe rendered VPS setting: {key}")
     return values
 

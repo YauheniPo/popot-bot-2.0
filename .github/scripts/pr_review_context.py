@@ -984,6 +984,60 @@ def _is_unresolvable_inline_anchor(error: GitHubRequestError) -> bool:
     return "HTTP 422" in message and "could not be resolved" in message
 
 
+def _render_review_summary(
+    *,
+    head_sha: str,
+    summary: str,
+    new_inline_findings: int,
+    unanchored_findings: int,
+    follow_ups: int,
+    duplicate_findings: int,
+    previously_settled_findings: int,
+    confirmed_machine_findings: int,
+    fixed_machine_findings: int,
+    rejected_machine_findings: int,
+    machine_findings_needing_human: int,
+) -> str:
+    """Render the human-facing Claude review summary in scan-friendly sections."""
+    action_required = any(
+        (
+            new_inline_findings,
+            unanchored_findings,
+            follow_ups,
+            confirmed_machine_findings,
+            machine_findings_needing_human,
+        )
+    )
+    outcome = "Action required" if action_required else "No new actionable findings"
+    lines = [
+        f"## {CLAUDE_REVIEWER_LABEL}",
+        "",
+        "### Review outcome",
+        f"**{outcome}**",
+        f"Reviewed head: `{head_sha}`",
+        "",
+        summary,
+        "",
+        "### Finding activity",
+        "| Activity | Count |",
+        "|---|---:|",
+        f"| New inline findings | {new_inline_findings} |",
+        f"| Findings without an inline anchor | {unanchored_findings} |",
+        f"| Material follow-ups on existing threads | {follow_ups} |",
+        f"| Existing findings not repeated | {duplicate_findings} |",
+        f"| Resolved findings not re-raised | {previously_settled_findings} |",
+        "",
+        "### Existing machine-review threads",
+        "| Status | Count |",
+        "|---|---:|",
+        f"| Confirmed and still open | {confirmed_machine_findings} |",
+        f"| Fixed and auto-resolved | {fixed_machine_findings} |",
+        f"| Rejected and auto-resolved | {rejected_machine_findings} |",
+        f"| Waiting for human review | {machine_findings_needing_human} |",
+    ]
+    return "\n".join(lines)
+
+
 def _command_publish() -> None:
     repository = _required_env("GITHUB_REPOSITORY")
     pr_number = _required_env("PR_NUMBER")
@@ -1200,26 +1254,19 @@ def _command_publish() -> None:
         )
         posted_follow_ups.append(finding)
 
-    lines = [
-        f"## {CLAUDE_REVIEWER_LABEL}",
-        "",
-        execution.summary(),
-        "> Execution: Claude Code agent via SDK",
-        f"> Reviewed Head SHA: `{head_sha}`",
-        "",
-        f"Summary: {summary}",
-        "",
-        f"New inline findings: {len(new_findings) - len(unanchored_findings)}.",
-        f"Material thread follow-ups: {len(posted_follow_ups)}.",
-        f"Existing unresolved findings not repeated: {len(duplicates)}.",
-        f"Previously resolved findings not re-raised: {len(previously_settled)}.",
-        f"Earlier machine findings confirmed as still open: {confirmed_direct_findings}.",
-        f"Earlier machine findings fixed and auto-resolved: {fixed_direct_findings}.",
-        f"Earlier machine findings rejected and auto-resolved: {rejected_direct_findings}.",
-        f"Earlier machine findings left for human review: {direct_findings_needing_human}.",
-    ]
-    if not new_findings and not posted_follow_ups:
-        lines.extend(["", "Findings: No new actionable findings."])
+    lines = _render_review_summary(
+        head_sha=head_sha,
+        summary=summary,
+        new_inline_findings=len(new_findings) - len(unanchored_findings),
+        unanchored_findings=len(unanchored_findings),
+        follow_ups=len(posted_follow_ups),
+        duplicate_findings=len(duplicates),
+        previously_settled_findings=len(previously_settled),
+        confirmed_machine_findings=confirmed_direct_findings,
+        fixed_machine_findings=fixed_direct_findings,
+        rejected_machine_findings=rejected_direct_findings,
+        machine_findings_needing_human=direct_findings_needing_human,
+    ).splitlines()
     if new_findings:
         lines.extend(["", "New findings:"])
         lines.extend(
@@ -1248,7 +1295,10 @@ def _command_publish() -> None:
             f"- **{finding.severity} — `{finding.path}:{finding.line}`**: {finding.title}."
             for finding in posted_follow_ups
         )
-    lines.extend([execution.details(), "", marker])
+    lines.extend(["", "### Technical metadata", execution.summary()])
+    if execution.details():
+        lines.append(execution.details())
+    lines.extend(["", marker])
     _request_json(comments_url, "POST", token, {"body": "\n".join(lines)})
     print(
         "Published the validated Claude review with "

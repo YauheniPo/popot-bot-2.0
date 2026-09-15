@@ -249,10 +249,10 @@ sudo systemctl restart hermes-gateway.service
 | `web_search` | Автоматический выбор backend Hermes | Для Brave задать `BRAVE_SEARCH_API_KEY`; либо войти в Nous Portal/настроить другой backend |
 | Gmail и Calendar | CLI и skill готовы | Google Cloud project и OAuth consent |
 | Telegram gateway | Автоматически стартует, если Vault содержит Bot token и allowlist | Для запуска задать оба Telegram значения в Vault |
-| Web dashboard | Включён в полной установке | Открывать только через SSH/Tailscale tunnel на `127.0.0.1:9119` |
+| Web dashboard | Включён в полной установке | Для OAuth зарегистрировать Tailscale `.ts.net` URL и сохранить `HERMES_DASHBOARD_OAUTH_CLIENT_ID` + `HERMES_DASHBOARD_PUBLIC_URL` в Vault |
 | `/update` и auto-restart | Включено | Писать `/update` только из разрешённого аккаунта |
 | Tailscale | Установлено | Подтвердить login и проверить tailnet SSH policy |
-| Закрытие публичного SSH | Подготовлено в Ansible | Сначала проверить вторую SSH-сессию, затем `hermes_lock_public_ssh: true` |
+| Закрытие публичного SSH | Включено по умолчанию после проверки Tailscale IP | Перед deploy убедиться, что VPS уже подключён к tailnet и Tailscale SSH проверен |
 | Local backups | Включено | Следить за диском и тестировать restore |
 | Audit, SQLite и `/ops` | Включено | При compliance отправлять journald во внешнее immutable/SIEM-хранилище |
 | Стоимость моделей | Частично автоматически | Если provider не сообщает cost, заполнить `model-prices.json` |
@@ -273,7 +273,7 @@ terminal и не создают отдельные MCP schemas в model context.
 | Поиск и данные | `ripgrep`, `jq`, `sqlite3` | Быстрый поиск, JSON и локальная аналитика |
 | Сборка | `build-essential`, `pkg-config` | Компиляция C/C++ dependencies и многих language packages |
 | Shell quality | `shellcheck` | Проверка Bash-скриптов |
-| Проверка качества | `ansible-core`, `python3-pytest`, `python3-yaml` | Локальный запуск полного `hermes/check.sh` (синтаксис Ansible, pytest, YAML-скрипты) |
+| Проверка качества | `ansible-core`, `python3-pytest`, `python3-yaml` | Локальный запуск полного `hermes/check.sh` (синтаксис Ansible, pytest, YAML-скрипты); коллекция `ansible.posix` ставится из `hermes/ansible/requirements.yml` |
 | Файлы и архивы | `file`, `tree`, `rsync`, `zip`, `unzip`, `xz-utils` | Диагностика, копирование и архивирование |
 | Сеть и процессы | `dnsutils`, `lsof`, `netcat-openbsd`, `util-linux` | DNS, порты, процессы, locks и VPS diagnostics |
 | Медиа | `ffmpeg` | Audio/video conversion и подготовка voice/media |
@@ -653,7 +653,7 @@ sudo -u hermes sqlite3 /home/hermes/.hermes/ops/metrics.db '.tables'
 
 Скрипт подключает официальный apt repository Tailscale, запускает `tailscaled`
 и выполняет `tailscale up --ssh`. Откройте показанную ссылку и авторизуйте VPS.
-После этого используйте Tailscale IP или MagicDNS-имя:
+После этого используйте Tailscale IP:
 
 ```bash
 tailscale ip -4
@@ -666,18 +666,92 @@ Tailscale означало бы риск потерять доступ к VPS. �
 закройте публичный TCP/22. Dashboard и внутренний API также слушайте только на
 `127.0.0.1` и открывайте через Tailscale/SSH tunnel.
 
-В Ansible для уже проверенного сервера можно задать
-`hermes_lock_public_ssh: true`: playbook сначала проверит Tailscale IP, затем
-включит UFW, разрешит SSH только через `tailscale0` и запретит TCP/22 на
-публичных интерфейсах. Для первого запуска оставьте `false`, иначе ошибка в
-tailnet policy или auth key может отрезать административный доступ. Отдельно
-закройте порт 22 в cloud firewall/security group провайдера VPS.
+В managed-профиле Ansible автоматически настраивает полные HTTPS MagicDNS
+адреса через Tailscale Serve для локальных web-сервисов VPS:
+
+- `https://your-hermes-host.tailnet-example.ts.net/` — Hermes Dashboard;
+- `https://your-hermes-host.tailnet-example.ts.net:3000` — Grafana;
+- `https://your-hermes-host.tailnet-example.ts.net:9090` — Prometheus;
+- `https://your-hermes-host.tailnet-example.ts.net:3001` — code-server;
+- `https://your-hermes-host.tailnet-example.ts.net:8888` — приватный SearXNG.
+
+Эти адреса доступны только внутри tailnet и не открывают порты на публичном
+интерфейсе VPS.
+
+В managed-конфигурации `hermes_lock_public_ssh: true` включён по умолчанию.
+Перед запуском Ansible VPS должен быть подключён к tailnet, а вход по Tailscale
+SSH — проверен из второй сессии. Тогда playbook проверит Tailscale IP, включит
+UFW, разрешит SSH только через `tailscale0` и запретит TCP/22 на публичных
+интерфейсах. Если это первый deploy и Tailscale ещё не авторизован, сначала
+выполните bootstrap ниже либо временно переопределите
+`vps_deploy.features.lock_public_ssh: false`; не включайте firewall до проверки
+доступа. Отдельно закройте порт 22 в cloud firewall/security group провайдера
+VPS.
 
 Для неинтерактивной установки используйте `--skip-tailscale-login`, затем
 выполните `sudo tailscale up --ssh`. Полностью отказаться можно флагом
 `--without-tailscale`.
 
+Если Hermes уже установлен и нужно одним SSH-сеансом подключить VPS к tailnet
+и открыть локальные web-сервисы только внутри Tailscale, запустите:
+
+```bash
+sudo ./ops/setup-tailscale-access.sh
+```
+
+Скрипт устанавливает Tailscale при необходимости, запускает интерактивную
+авторизацию с Tailscale SSH, настраивает Serve для Dashboard, Grafana,
+Prometheus, code-server и SearXNG, а также добавляет полный MagicDNS hostname в
+`~/.hermes/config.yaml`, чтобы Hermes принимал Host header от Serve. Публичные
+порты VPS скрипт не открывает.
+
+Для нового VPS полный порядок такой:
+
+1. Установите Hermes обычным способом и войдите на VPS по временному
+   публичному SSH.
+2. Передайте bootstrap-скрипт и запустите его одной командой:
+
+   ```bash
+   scp hermes/ops/setup-tailscale-access.sh root@VPS_PUBLIC_IP:/root/
+   ssh root@VPS_PUBLIC_IP 'chmod 0755 /root/setup-tailscale-access.sh && /root/setup-tailscale-access.sh'
+   ```
+
+   Если скрипт уже находится на VPS, достаточно выполнить:
+
+   ```bash
+   sudo hermes-setup-tailscale-access
+   ```
+
+3. Откройте ссылку авторизации Tailscale, которую напечатает скрипт, и
+   подтвердите VPS в том же tailnet, где находится iPhone.
+4. Проверьте SSH по адресу `100.x.y.z` и откройте выведенные полные HTTPS
+   web-адреса Dashboard, Grafana, Prometheus, code-server и SearXNG.
+
+Скрипт не закрывает временный публичный SSH. После проверки Tailscale переведите
+Ansible на Tailscale-адрес; стандартное значение `lock_public_ssh: true` при
+следующем deploy закроет публичный SSH. На сервере без подтверждённого
+Tailscale-доступа временно задайте `lock_public_ssh: false`.
+
 ### Управляемое обновление и автоподъём
+
+#### Режимы deploy
+
+По умолчанию playbook запускается в консервативном режиме `full`: он может
+обновить pinned Hermes, применяет всю инфраструктурную конфигурацию и создаёт
+полный backup перед config-only изменениями. Для уже проверенного VPS доступны
+явные быстрые режимы:
+
+```bash
+# Изменить managed-конфигурацию и инфраструктурные настройки без upstream update
+ansible-playbook -i inventory.yml playbook.yml -e hermes_deploy_mode=config-only
+
+# Применить только Hermes runtime и service configuration; сеть, SearXNG,
+# GitHub tooling и code-server не изменяются
+ansible-playbook -i inventory.yml playbook.yml -e hermes_deploy_mode=runtime-only
+```
+
+Оба быстрых режима откажутся запускаться, если установленный Hermes или его
+venv не совпадает с pinned commit. В этом случае сначала запустите `full`.
 
 Production VPS обновляется повторным запуском Ansible playbook. Playbook
 сравнивает установленный commit с `vps_deploy.hermes_source.commit` и запускает
@@ -851,6 +925,14 @@ Hermes в группу `docker`. Поэтому Hermes сможет устана
 playbook. Сохраняйте в Vault все используемые ключи; пустой `hermes_secret_env`
 останавливает deploy до перезаписи `.env`. Добавление и ротация ключей описаны в
 [`ansible/group_vars/all/VAULT.md`](ansible/group_vars/all/VAULT.md).
+
+Для dashboard с Nous OAuth добавьте в тот же `hermes_secret_env` два значения:
+`HERMES_DASHBOARD_OAUTH_CLIENT_ID` из вывода `hermes dashboard register` и
+`HERMES_DASHBOARD_PUBLIC_URL` с полным адресом вида
+`https://your-hermes-host.tailnet-example.ts.net`. Это не API tokens, но Ansible
+управляет ими вместе с `.env`, поэтому они не исчезнут при следующем deploy.
+URL должен совпадать с зарегистрированным redirect URI. Для входа используйте
+только полный HTTPS hostname tailnet с доменом `.ts.net`.
 
 Если Vault содержит оба значения `TELEGRAM_BOT_TOKEN` и
 `TELEGRAM_ALLOWED_USERS`, playbook автоматически поднимет gateway уже с

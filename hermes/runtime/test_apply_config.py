@@ -62,6 +62,7 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertTrue(features)
         self.assertTrue(all(isinstance(value, bool) for value in features.values()))
         self.assertTrue(features["searxng"])
+        self.assertTrue(features["lock_public_ssh"])
         self.assertIsInstance(settings["vps_deploy"]["bundle"]["dir"], str)
         searxng = settings["vps_searxng"]
         self.assertEqual(searxng["image"], "docker.io/searxng/searxng:latest")
@@ -70,6 +71,8 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertEqual(searxng["valkey_image"], "docker.io/valkey/valkey:8-alpine")
         self.assertEqual(searxng["valkey_host"], "valkey")
         self.assertEqual(searxng["valkey_port"], 6379)
+        self.assertTrue(settings["vps_tailscale"]["serve"]["enabled"])
+        self.assertEqual(len(settings["vps_tailscale"]["serve"]["services"]), 5)
 
         overlay = settings["vps_hermes"]["config"]["managed_overlay"]
         self.assertEqual(overlay["model"], {"provider": "ollama-cloud", "default": "deepseek-v4-pro"})
@@ -337,6 +340,67 @@ class ApplyConfigTests(unittest.TestCase):
             self._asset_values({**settings, "vps_web": {"searxng_url": endpoint}})["SEARXNG_URL"],
             endpoint,
         )
+
+    def test_tailscale_serve_endpoints_render_and_reject_malformed_values(self) -> None:
+        settings = apply_config.load_settings(
+            MODULE_PATH.parent.parent / "config" / "vps-defaults.yml"
+        )
+
+        # The repository default renders the managed endpoint list for the script.
+        values = self._asset_values(settings)
+        self.assertEqual(values["TAILSCALE_SERVE_ENDPOINTS"], "https 443 http://127.0.0.1:9119,"
+                         "https 3000 http://127.0.0.1:3000,"
+                         "https 9090 http://127.0.0.1:9090,"
+                         "https 3001 http://127.0.0.1:3001,"
+                         "https 8888 http://127.0.0.1:8888")
+
+        # serve must be a mapping.
+        with self.assertRaisesRegex(ValueError, "vps_tailscale.serve must be a mapping"):
+            self._asset_values({**settings, "vps_tailscale": {"serve": "nope"}})
+
+        # services must be a non-empty list.
+        for bad_services in ([], "nope", None):
+            with self.subTest(services=bad_services):
+                with self.assertRaisesRegex(
+                    ValueError, "vps_tailscale.serve.services must be a non-empty list"
+                ):
+                    self._asset_values({**settings, "vps_tailscale": {"serve": {"services": bad_services}}})
+
+        # each entry must be a mapping with a valid port and loopback target.
+        with self.assertRaisesRegex(ValueError, "entries must be mappings"):
+            self._asset_values({**settings, "vps_tailscale": {"serve": {"services": ["nope"]}}})
+        for bad_port in (0, 70000, True, "443"):
+            with self.subTest(port=bad_port):
+                with self.assertRaisesRegex(ValueError, "port must be 1-65535"):
+                    self._asset_values(
+                        {**settings, "vps_tailscale": {"serve": {"services": [{"protocol": "https", "port": bad_port, "target": "http://127.0.0.1:9119"}]}}}
+                    )
+        for bad_target in ("http://0.0.0.0:9119", "http://evil.example:9119", "https://127.0.0.1:9119", "ftp://127.0.0.1:80", 9119):
+            with self.subTest(target=bad_target):
+                with self.assertRaisesRegex(ValueError, "target must be a loopback URL"):
+                    self._asset_values(
+                        {**settings, "vps_tailscale": {"serve": {"services": [{"protocol": "https", "port": 443, "target": bad_target}]}}}
+                    )
+
+        # Protocol, port, and target render as one endpoint for the bootstrap script.
+        custom = {"serve": {"services": [{"protocol": "http", "port": 443, "target": "http://127.0.0.1:9119"}]}}
+        self.assertEqual(
+            self._asset_values({**settings, "vps_tailscale": custom})["TAILSCALE_SERVE_ENDPOINTS"],
+            "http 443 http://127.0.0.1:9119",
+        )
+
+        invalid_protocol = {"serve": {"services": [{"protocol": "tcp", "port": 443, "target": "http://127.0.0.1:9119"}]}}
+        with self.assertRaisesRegex(ValueError, "protocol must be http or https"):
+            self._asset_values({**settings, "vps_tailscale": invalid_protocol})
+
+    def test_tailscale_disabled_does_not_require_serve_settings(self) -> None:
+        settings = apply_config.load_settings(
+            MODULE_PATH.parent.parent / "config" / "vps-defaults.yml"
+        )
+        settings["vps_deploy"]["features"]["tailscale"] = False
+        settings.pop("vps_tailscale")
+
+        self.assertEqual(self._asset_values(settings)["TAILSCALE_SERVE_ENDPOINTS"], "")
 
     def test_build_operations_applies_defaults_capabilities_and_unsets_overrides(self) -> None:
         settings = {

@@ -1,0 +1,64 @@
+---
+- name: Validate private Tailscale Serve endpoints
+  ansible.builtin.assert:
+    that:
+      - vps_tailscale.serve.enabled | bool
+      - item.name is match('^[a-z][a-z0-9-]+$')
+      - item.protocol in ['http', 'https']
+      - item.port | int >= 1
+      - item.port | int <= 65535
+      # item.protocol controls the Tailscale-facing endpoint. The loopback
+      # upstream is always plain HTTP, because Tailscale terminates TLS.
+      - item.target is match('^' ~ 'http' ~ '://127\\.0\\.0\\.1:[1-9][0-9]{0,4}$')
+    fail_msg: Invalid private Tailscale Serve endpoint.
+  loop: "{{ vps_tailscale.serve.services }}"
+  when:
+    - hermes_enable_tailscale | bool
+    - vps_tailscale.serve.enabled | bool
+
+- name: Check that Tailscale is connected before publishing services
+  ansible.builtin.command:
+    argv: [tailscale, ip, "-4"]
+  register: tailscale_serve_connection
+  changed_when: false
+  failed_when: false
+  when:
+    - hermes_enable_tailscale | bool
+    - vps_tailscale.serve.enabled | bool
+
+- name: Report that Serve publishing is skipped without a Tailscale address
+  # A host that is not yet on the tailnet (interactive login pending, or no
+  # auth key at deploy time) must not fail the deployment: joining the tailnet
+  # is a separate, explicit step. Make the skip visible instead of silent.
+  ansible.builtin.debug:
+    msg: >-
+      Tailscale Serve endpoints are not published: this host has no Tailscale
+      address yet. Run 'tailscale up --ssh' and re-run the playbook.
+  when:
+    - hermes_enable_tailscale | bool
+    - vps_tailscale.serve.enabled | bool
+    - tailscale_serve_connection.rc | default(1) != 0
+
+- name: Reset the managed Tailscale Serve configuration before publishing endpoints
+  ansible.builtin.command:
+    argv: [tailscale, serve, reset]
+  changed_when: true
+  when:
+    - hermes_enable_tailscale | bool
+    - vps_tailscale.serve.enabled | bool
+    - tailscale_serve_connection.rc == 0
+
+- name: Publish local web services privately through Tailscale Serve
+  ansible.builtin.command:
+    argv:
+      - tailscale
+      - serve
+      - --bg
+      - "--{{ item.protocol }}={{ item.port }}"
+      - "{{ item.target }}"
+  loop: "{{ vps_tailscale.serve.services }}"
+  when:
+    - hermes_enable_tailscale | bool
+    - vps_tailscale.serve.enabled | bool
+    - tailscale_serve_connection.rc == 0
+  changed_when: true

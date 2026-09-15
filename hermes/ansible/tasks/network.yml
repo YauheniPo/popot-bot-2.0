@@ -33,7 +33,7 @@
 
 - name: Check whether the VPS is already connected to Tailscale
   ansible.builtin.command:
-    argv: [tailscale, ip, -4]
+    argv: [tailscale, ip, "-4"]
   register: tailscale_connection
   changed_when: false
   failed_when: false
@@ -67,7 +67,7 @@
 
 - name: Verify private connectivity before any firewall lock-down
   ansible.builtin.command:
-    argv: [tailscale, ip, -4]
+    argv: [tailscale, ip, "-4"]
   register: tailscale_connected_after
   changed_when: false
   failed_when: false
@@ -101,7 +101,11 @@
           sed -n '/Hermes private SSH\|Hermes deny public SSH/s/^\[[[:space:]]*\([0-9][0-9]*\)\].*/\1/p' |
           sort -rn
       )
-      ufw insert 1 allow in on {{ vps_network.tailscale.interface }} to any port {{ vps_network.ssh_port }} proto tcp comment 'Hermes private SSH'
+      if ufw status numbered | grep -q '^\['; then
+        ufw insert 1 allow in on {{ vps_network.tailscale.interface }} to any port {{ vps_network.ssh_port }} proto tcp comment 'Hermes private SSH'
+      else
+        ufw allow in on {{ vps_network.tailscale.interface }} to any port {{ vps_network.ssh_port }} proto tcp comment 'Hermes private SSH'
+      fi
       ufw insert 2 deny in to any port {{ vps_network.ssh_port }} proto tcp comment 'Hermes deny public SSH'
     executable: /bin/bash
   when: hermes_lock_public_ssh | bool
@@ -121,4 +125,3 @@
     argv: [ufw, --force, enable]
   when: hermes_lock_public_ssh | bool
   changed_when: true
-
