@@ -1,0 +1,7 @@
+---
+# Ansible collections required by playbook.yml at syntax-check and run time.
+# ansible.posix.synchronize is used for the fast deployment synchronization
+# paths, so the collection must be installed alongside ansible-core.
+collections:
+  - name: ansible.posix
+    version: ">=1.5.0,<3.0.0"
