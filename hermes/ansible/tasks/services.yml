@@ -126,6 +126,9 @@
       }}
   when: hermes_enable_ops | bool
   changed_when: true
+  notify:
+    - restart managed observability services
+    - restart monitoring timers
 
 - name: Validate the final managed Hermes configuration
   ansible.builtin.command:

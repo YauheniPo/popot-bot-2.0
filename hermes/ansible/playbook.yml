@@ -221,6 +221,15 @@
       loop: "{{ vps_services.observability }}"
       when: hermes_enable_ops | bool
 
+    - name: restart monitoring timers
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: restarted
+      loop: "{{ vps_services.timers }}"
+      when:
+        - hermes_enable_ops | bool
+        - hermes_gateway_enabled | bool
+
   tasks:
     - name: Create the remote Hermes infrastructure bundle directory
       ansible.builtin.file:
