@@ -114,7 +114,7 @@ class DeploymentStatePolicyTests(unittest.TestCase):
         variables = (HERMES_ROOT / "ansible" / "group_vars" / "all" / "vars.yml").read_text()
         self.assertIn("combine(vps_hermes.config.managed_overlay", variables)
 
-    def test_config_only_deploy_requires_a_verified_full_backup(self) -> None:
+    def test_full_deploy_requires_a_verified_config_backup(self) -> None:
         playbook = (HERMES_ROOT / "ansible" / "playbook.yml").read_text()
 
         self.assertIn("pre-config-deploy-", playbook)
@@ -124,7 +124,8 @@ class DeploymentStatePolicyTests(unittest.TestCase):
         self.assertIn("hermes_config_backup_result.stderr", playbook)
         self.assertNotIn("hermes_config_backup_output", playbook)
         self.assertIn("Verify the config-only deployment backup contents", playbook)
-        self.assertIn("when: hermes_source_update_required | bool", playbook)
+        self.assertIn("- not (hermes_source_update_required | bool)", playbook)
+        self.assertIn("- hermes_deploy_mode == 'full'", playbook)
 
     def test_workspace_agents_uses_selective_managed_block_reconciliation(self) -> None:
         playbook = (HERMES_ROOT / "ansible" / "playbook.yml").read_text()
