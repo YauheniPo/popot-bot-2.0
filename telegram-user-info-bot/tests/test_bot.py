@@ -597,11 +597,11 @@ class LocationLookupTest(unittest.TestCase):
 
 class RenderTextTreeTest(unittest.TestCase):
     def test_empty_dict_and_list_render_placeholders(self) -> None:
-        self.assertEqual(_render_text_tree({}), ["no data"])
-        self.assertEqual(_render_text_tree([]), ["empty list"])
+        self.assertEqual(["no data"], _render_text_tree({}))
+        self.assertEqual(["empty list"], _render_text_tree([]))
 
     def test_flat_list_renders_scalar_items(self) -> None:
-        self.assertEqual(_render_text_tree([1, "two"]), ["1", "two"])
+        self.assertEqual(["1", "two"], _render_text_tree([1, "two"]))
 
     def test_close_keyboard_text_uses_close_keyboard_event_name(self) -> None:
         api = FakeHandlerAPI()
@@ -631,15 +631,15 @@ class FetchProcessUpdatesTest(unittest.TestCase):
         api = FakeAPI()
         api.call = MagicMock(return_value=[{"update_id": 1}])  # type: ignore[method-assign]
         self.assertEqual(
-            _fetch_updates(api, {"timeout": 1}, 1),  # type: ignore[arg-type]
             [{"update_id": 1}],
+            _fetch_updates(api, {"timeout": 1}, 1),  # type: ignore[arg-type]
         )
 
     def test_process_updates_skips_non_dict_entries(self) -> None:
         api = FakeAPI()
         with patch("bot.process_update") as process:
             result = _process_updates(api, ["not-a-dict", {"update_id": 5}], None)  # type: ignore[arg-type]
-        self.assertEqual(result, 6)
+        self.assertEqual(6, result)
         process.assert_called_once_with(api, {"update_id": 5})
 
 

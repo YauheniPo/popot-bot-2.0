@@ -512,6 +512,18 @@ class ApplyConfigTests(unittest.TestCase):
             ["gateway.service", "a.service"],
         )
 
+    def test_set_operations_reject_non_string_keys(self) -> None:
+        with self.assertRaisesRegex(ValueError, "set keys must be non-empty"):
+            apply_config._set_operations({"set": {1: "value"}}, {}, {})
+
+    def test_set_if_missing_operations_reject_non_string_keys(self) -> None:
+        with self.assertRaisesRegex(ValueError, "set_if_missing keys must be non-empty"):
+            apply_config._set_if_missing_operations({"set_if_missing": {1: "value"}}, {}, {})
+
+    def test_capability_operations_reject_non_string_capability(self) -> None:
+        with self.assertRaisesRegex(ValueError, "each capability must have a name"):
+            apply_config._capability_operations({1: {"a": "b"}}, set(), {}, {})
+
 
 if __name__ == "__main__":
     unittest.main()

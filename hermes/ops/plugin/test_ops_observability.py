@@ -108,6 +108,12 @@ class ObservabilityRedactionTests(unittest.TestCase):
             ("path", "/tmp/file"),
         )
 
+    def test_safe_args_skips_sensitive_keys(self) -> None:
+        self.assertEqual(
+            observability._safe_args({"api_key": "secret-value"}),
+            {"arg_keys": ["api_key"]},
+        )
+
     def test_rotate_audit_files_skips_missing_and_replaces_existing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "ops-audit.jsonl"
