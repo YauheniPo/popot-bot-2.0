@@ -393,6 +393,15 @@ class ApplyConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "protocol must be http or https"):
             self._asset_values({**settings, "vps_tailscale": invalid_protocol})
 
+    def test_tailscale_disabled_does_not_require_serve_settings(self) -> None:
+        settings = apply_config.load_settings(
+            MODULE_PATH.parent.parent / "config" / "vps-defaults.yml"
+        )
+        settings["vps_deploy"]["features"]["tailscale"] = False
+        settings.pop("vps_tailscale")
+
+        self.assertEqual(self._asset_values(settings)["TAILSCALE_SERVE_ENDPOINTS"], "")
+
     def test_build_operations_applies_defaults_capabilities_and_unsets_overrides(self) -> None:
         settings = {
             "vps_runtime": {

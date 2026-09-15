@@ -734,6 +734,25 @@ Tailscale-доступа временно задайте `lock_public_ssh: false
 
 ### Управляемое обновление и автоподъём
 
+#### Режимы deploy
+
+По умолчанию playbook запускается в консервативном режиме `full`: он может
+обновить pinned Hermes, применяет всю инфраструктурную конфигурацию и создаёт
+полный backup перед config-only изменениями. Для уже проверенного VPS доступны
+явные быстрые режимы:
+
+```bash
+# Изменить managed-конфигурацию и инфраструктурные настройки без upstream update
+ansible-playbook -i inventory.yml playbook.yml -e hermes_deploy_mode=config-only
+
+# Применить только Hermes runtime и service configuration; сеть, SearXNG,
+# GitHub tooling и code-server не изменяются
+ansible-playbook -i inventory.yml playbook.yml -e hermes_deploy_mode=runtime-only
+```
+
+Оба быстрых режима откажутся запускаться, если установленный Hermes или его
+venv не совпадает с pinned commit. В этом случае сначала запустите `full`.
+
 Production VPS обновляется повторным запуском Ansible playbook. Playbook
 сравнивает установленный commit с `vps_deploy.hermes_source.commit` и запускает
 обновление только при расхождении. Перед изменением кода deploy обязательно:

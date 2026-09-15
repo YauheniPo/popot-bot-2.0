@@ -244,6 +244,11 @@ def web_and_serve_assets(settings: dict[str, Any]) -> tuple[str, list[str]]:
     if not isinstance(searxng_url, str) or "\n" in searxng_url or "\r" in searxng_url:
         raise ValueError("vps_web.searxng_url must be a single-line string")
 
+    deploy_settings = settings.get("vps_deploy", {})
+    features = deploy_settings.get("features", {}) if isinstance(deploy_settings, dict) else {}
+    if not isinstance(features, dict) or not features.get("tailscale", False):
+        return searxng_url, []
+
     tailscale_serve = settings.get("vps_tailscale", {}).get("serve", {})
     if not isinstance(tailscale_serve, dict):
         raise ValueError("vps_tailscale.serve must be a mapping")
@@ -486,8 +491,9 @@ def build_asset_values(
         "NODE_EXPORTER_PORT": str(node_exporter_port),
     }
     values.update(timer_values)
+    optional_empty_values = {"SEARXNG_URL", "TAILSCALE_SERVE_ENDPOINTS"}
     for key, value in values.items():
-        if (not value and key != "SEARXNG_URL") or "\n" in value or "\r" in value:
+        if (not value and key not in optional_empty_values) or "\n" in value or "\r" in value:
             raise ValueError(f"unsafe rendered VPS setting: {key}")
     return values
 

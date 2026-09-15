@@ -93,6 +93,7 @@
   when: hermes_enable_ops | bool
   no_log: true
   diff: false
+  notify: restart Grafana
 
 - name: Install audit, metrics, reporting, and health checks
   ansible.builtin.command:
@@ -163,31 +164,34 @@
     daemon_reload: true
   when: (hermes_gateway_enabled | bool) or (hermes_enable_ops | bool)
 
-- name: Restart managed Hermes observability services after deployment
+- name: Ensure managed Hermes observability services are enabled and started
   ansible.builtin.systemd_service:
     name: "{{ item }}"
-    state: restarted
+    state: started
     enabled: true
   loop: "{{ vps_services.observability }}"
   when: hermes_enable_ops | bool
 
-- name: Restart monitoring timers after gateway configuration
+- name: Ensure monitoring timers are enabled and started
   ansible.builtin.systemd_service:
     name: "{{ item }}"
-    state: restarted
+    state: started
     enabled: true
   loop: "{{ vps_services.timers }}"
   when:
     - hermes_enable_ops | bool
     - hermes_gateway_enabled | bool
 
-- name: Restart the Hermes gateway as the final deployment mutation
+- name: Ensure the Hermes gateway is enabled and started
   ansible.builtin.systemd_service:
     name: "{{ item }}"
-    state: restarted
+    state: started
     enabled: true
   loop: "{{ vps_services.gateway }}"
   when: hermes_gateway_enabled | bool
+
+- name: Apply notified service restarts before health checks
+  ansible.builtin.meta: flush_handlers
 
 - name: Verify the loopback-only dashboard is active
   ansible.builtin.command:
