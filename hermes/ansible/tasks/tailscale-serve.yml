@@ -18,7 +18,7 @@
 
 - name: Check that Tailscale is connected before publishing services
   ansible.builtin.command:
-    argv: [tailscale, ip, -4]
+    argv: [tailscale, ip, "-4"]
   register: tailscale_serve_connection
   changed_when: false
   failed_when: false

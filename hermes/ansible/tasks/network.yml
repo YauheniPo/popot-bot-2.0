@@ -33,7 +33,7 @@
 
 - name: Check whether the VPS is already connected to Tailscale
   ansible.builtin.command:
-    argv: [tailscale, ip, -4]
+    argv: [tailscale, ip, "-4"]
   register: tailscale_connection
   changed_when: false
   failed_when: false
@@ -67,7 +67,7 @@
 
 - name: Verify private connectivity before any firewall lock-down
   ansible.builtin.command:
-    argv: [tailscale, ip, -4]
+    argv: [tailscale, ip, "-4"]
   register: tailscale_connected_after
   changed_when: false
   failed_when: false
