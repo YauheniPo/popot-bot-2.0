@@ -562,39 +562,9 @@ sudo journalctl -u hermes-health.service -n 50 --no-pager
 перегенерирует `/etc/hermes-ops.conf` и systemd timers; ручные изменения этого
 root-owned файла намеренно не сохраняются.
 
-В Telegram доступны отчёты, которые читают SQLite напрямую и тоже не вызывают
-модель:
-
-```text
-/ops summary 24h
-/ops system 24h
-/ops models 7d
-/ops tools 24h
-/ops costs 30d
-/ops commands 7d
-/ops health
-```
-
-Когда в обычном диалоге вы спрашиваете о состоянии Hermes, VPS, расходе
-токенов, tool errors или стоимости, агенту доступен read-only tool
-`ops_metrics`. Он получает только заранее заданные агрегаты из локальной
-SQLite-базы и private Prometheus: gateway, memory, disk, load, calls, tokens,
-costs, модели и tools. Произвольный PromQL, URL, записи в Grafana/Prometheus и
-изменения VPS этим tool недоступны. На VPS он обращается только к
-`http://127.0.0.1:9090`; в Docker — к внутреннему имени `prometheus`, без
-новых открытых портов.
-
-В Dashboard есть такая же read-only вкладка **Metrics**: выберите период 24h,
-7d или 30d, чтобы посмотреть calls, tokens, cost, модели, tools и состояние
-health. Вкладка появляется автоматически после полного deploy; при первом
-запуске она заполнится после первых событий Hermes.
-
-Из SSH тот же отчёт:
-
-```bash
-sudo -u hermes HERMES_HOME=/home/hermes/.hermes \
-  hermes-ops-report --period 7d --format markdown
-```
+Метрики доступны только в Grafana: откройте dashboard **Hermes Overview**.
+Он показывает gateway, host resources, backup freshness, API/tool error rate,
+latency, usage и стоимость по provider/model.
 
 Prometheus textfile создаётся в
 `/home/hermes/.hermes/ops/metrics/hermes.prom`. Полная установка автоматически

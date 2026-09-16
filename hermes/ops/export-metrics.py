@@ -85,6 +85,28 @@ def gateway_up() -> float:
         return 0
 
 
+def gateway_process_metrics() -> tuple[float, float]:
+    """Return gateway CPU time and RSS from /proc, or NaN when unavailable."""
+    service = os.environ.get("HERMES_GATEWAY_SERVICE", "hermes-gateway.service")
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", "--property=MainPID", "--value", service],
+            check=False, capture_output=True, text=True, timeout=5,
+        )
+        pid = int(result.stdout.strip())
+        if result.returncode or pid <= 0:
+            raise ValueError("gateway has no main PID")
+        fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()
+        cpu_seconds = (int(fields[13]) + int(fields[14])) / os.sysconf("SC_CLK_TCK")
+        rss_kib = next(
+            int(line.split()[1]) for line in Path(f"/proc/{pid}/status").read_text(encoding="utf-8").splitlines()
+            if line.startswith("VmRSS:")
+        )
+        return cpu_seconds, rss_kib * 1024
+    except (OSError, ValueError, IndexError, StopIteration, subprocess.TimeoutExpired):
+        return float("nan"), float("nan")
+
+
 def _newest_archive_time(configured: Path) -> float:
     """Return the newest non-partial archive mtime, or 0.0 when none exists."""
     newest = 0.0
@@ -163,10 +185,13 @@ def main() -> int:
     )
     backup_configured, backup_seconds, full_backup_seconds = backup_ages()
     load1, load5, load15 = os.getloadavg()
+    gateway_cpu_seconds, gateway_rss_bytes = gateway_process_metrics()
     lines = [
         "# HELP hermes_gateway_up Whether the Hermes gateway is active; NaN means this collector cannot observe it.",
         "# TYPE hermes_gateway_up gauge",
         metric("hermes_gateway_up", gateway_up()),
+        metric("hermes_gateway_process_cpu_seconds_total", gateway_cpu_seconds),
+        metric("hermes_gateway_process_resident_memory_bytes", gateway_rss_bytes),
         "# HELP hermes_host_disk_used_ratio Filesystem used fraction for the Hermes disk.",
         "# TYPE hermes_host_disk_used_ratio gauge",
         metric("hermes_host_disk_used_ratio", (disk.total - disk.free) / max(disk.total, 1)),

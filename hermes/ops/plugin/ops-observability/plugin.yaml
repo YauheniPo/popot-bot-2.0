@@ -1,8 +1,6 @@
 name: ops-observability
 version: 1.1.0
-description: Privacy-aware audit log, model/tool metrics, /ops, and a read-only metrics tool
-provides_tools:
-  - ops_metrics
+description: Privacy-aware audit log and model/tool metrics exported only to Prometheus and Grafana
 provides_hooks:
   - pre_tool_call
   - post_tool_call

@@ -77,8 +77,7 @@ print_summary() {
     grafana_address="$(python3 "$VPS_CONFIG_APPLIER" value --settings "$VPS_SETTINGS_FILE" vps_observability.grafana.bind_address)"
     grafana_port="$(python3 "$VPS_CONFIG_APPLIER" value --settings "$VPS_SETTINGS_FILE" vps_observability.grafana.port)"
     printf '\nMonitoring and audit:\n'
-    printf '  Telegram: /ops summary 24h  (also: models, tools, costs, commands, health)\n'
-    printf '  Report:   sudo -u %q HERMES_HOME=%q hermes-ops-report --period 7d\n' "$HERMES_USER" "$HERMES_HOME"
+    printf '  Metrics:  Grafana (via the private Tailscale Serve endpoint)\n'
     printf '  Audit:    %s/logs/ops-audit.jsonl\n' "$HERMES_HOME"
     printf '  Metrics:  %s/ops/metrics/hermes.prom\n' "$HERMES_HOME"
     printf '  Hermes Dashboard: http://%s:%s (via SSH or Tailscale tunnel)\n' "$dashboard_address" "$dashboard_port"
