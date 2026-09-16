@@ -143,6 +143,17 @@
     PATH: "{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   changed_when: false
 
+- name: Mark planned Hermes gateway maintenance
+  ansible.builtin.file:
+    path: "{{ hermes_home }}/ops/gateway-maintenance"
+    state: touch
+    owner: "{{ hermes_user }}"
+    group: "{{ hermes_user }}"
+    mode: "0600"
+  when:
+    - hermes_enable_ops | bool
+    - hermes_gateway_enabled | bool
+
 - name: Install the Hermes system gateway unit
   ansible.builtin.command:
     argv:
@@ -219,6 +230,14 @@
   ansible.builtin.command:
     argv: [systemctl, is-enabled, --quiet, hermes-startup-notify.service]
   changed_when: false
+  when:
+    - hermes_enable_ops | bool
+    - hermes_gateway_enabled | bool
+
+- name: Clear planned Hermes gateway maintenance marker
+  ansible.builtin.file:
+    path: "{{ hermes_home }}/ops/gateway-maintenance"
+    state: absent
   when:
     - hermes_enable_ops | bool
     - hermes_gateway_enabled | bool

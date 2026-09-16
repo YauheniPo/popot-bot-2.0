@@ -8,6 +8,8 @@ ANSIBLE = Path(__file__).parent
 PLAYBOOK = (ANSIBLE / "playbook.yml").read_text()
 SERVICES = (ANSIBLE / "tasks" / "services.yml").read_text()
 RUNTIME = (ANSIBLE / "tasks" / "runtime.yml").read_text()
+STARTUP_NOTIFY = (ANSIBLE.parent / "ops" / "startup-notify.sh").read_text()
+HEALTH_CHECK = (ANSIBLE.parent / "ops" / "health-check.sh").read_text()
 
 
 class DeployOptimizationTests(unittest.TestCase):
@@ -32,6 +34,13 @@ class DeployOptimizationTests(unittest.TestCase):
         self.assertIn("meta: flush_handlers", SERVICES)
         self.assertIn("restart Hermes gateway", PLAYBOOK)
         self.assertIn("restart managed observability services", PLAYBOOK)
+
+    def test_deployment_avoids_duplicate_gateway_alerts(self) -> None:
+        self.assertNotIn("notify: restart Hermes gateway", RUNTIME)
+        self.assertIn("Mark planned Hermes gateway maintenance", SERVICES)
+        self.assertIn("Clear planned Hermes gateway maintenance marker", SERVICES)
+        self.assertIn("gateway-maintenance", STARTUP_NOTIFY)
+        self.assertIn("gateway-maintenance", HEALTH_CHECK)
 
     def test_pinned_external_engineering_skills_preserve_existing_directories(self) -> None:
         self.assertIn("Install pinned Matt Pocock engineering skills for Hermes", RUNTIME)
