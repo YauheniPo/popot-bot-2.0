@@ -52,8 +52,8 @@
     path: "{{ vps_external_skills.matt_pocock_engineering.checkout_dir | dirname }}"
     state: directory
     owner: root
-    group: root
-    mode: "0755"
+    group: "{{ hermes_user }}"
+    mode: "0750"
   when: vps_external_skills.matt_pocock_engineering.enabled | bool
 
 - name: Install pinned Matt Pocock engineering skills for Hermes
@@ -72,8 +72,8 @@
     path: "{{ vps_external_skills.matt_pocock_engineering.checkout_dir }}"
     state: directory
     owner: root
-    group: root
-    mode: "u=rwX,go=rX"
+    group: "{{ hermes_user }}"
+    mode: "u=rwX,g=rX,o="
     recurse: true
   when: vps_external_skills.matt_pocock_engineering.enabled | bool
 

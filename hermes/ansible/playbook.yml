@@ -52,7 +52,8 @@
           - vps_external_skills.matt_pocock_engineering.enabled is boolean
           - vps_external_skills.matt_pocock_engineering.repository == 'https://github.com/mattpocock/skills.git'
           - vps_external_skills.matt_pocock_engineering.revision is match('^[0-9a-f]{40}$')
-          - vps_external_skills.matt_pocock_engineering.checkout_dir is match('^/opt/[A-Za-z0-9._/-]+$')
+          - vps_external_skills.matt_pocock_engineering.checkout_dir is match('^/opt/hermes-external-skills/[A-Za-z0-9][A-Za-z0-9._-]*$')
+          - "'..' not in vps_external_skills.matt_pocock_engineering.checkout_dir.split('/')"
           - vps_external_skills.matt_pocock_engineering.skills_dir == vps_external_skills.matt_pocock_engineering.checkout_dir + '/skills/engineering'
           - vps_tools is mapping
           - vps_ops.backup is mapping

@@ -850,31 +850,49 @@ def request_with_transient_retries(
                 timeout=min(REQUEST_TIMEOUT_SECONDS, available),
             )
         except RequestError as error:
-            retryable = error.status is None or error.status in RETRYABLE_HTTP_STATUSES
-            fallback_model = os.environ.get("DIRECT_REVIEW_FALLBACK_MODEL", "").strip()
-            fallback_provider = os.environ.get("DIRECT_REVIEW_FALLBACK_PROVIDER", "").strip() or ACTIVE_PROVIDER
-            independent_fallback = bool(fallback_model) and (
-                fallback_model != body.get("model") or fallback_provider != ACTIVE_PROVIDER
-            )
-            transport_fallback_due = (
-                ACTIVE_ROUTE == "primary" and error.status is None and independent_fallback
-                and attempt >= MAX_PRIMARY_TRANSPORT_ATTEMPTS_WITH_FALLBACK
-            )
-            if transport_fallback_due:
+            if _should_switch_primary_transport_to_fallback(error, attempt, body):
                 print(
                     f"  primary transport failed {attempt} times; switching to fallback route",
                     file=sys.stderr,
                 )
                 raise
-            if not retryable or attempt == MAX_REQUEST_ATTEMPTS:
+            if not _retryable_request_error(error) or attempt == MAX_REQUEST_ATTEMPTS:
                 raise
-            fallback_delay = float(2 ** (attempt - 1))
-            if error.status == 429:
-                fallback_delay = max(
-                    fallback_delay,
-                    DEFAULT_RATE_LIMIT_RETRY_SECONDS,
-                )
-            REVIEW_DEADLINE.bounded_sleep(error.retry_after_seconds or fallback_delay)
+            REVIEW_DEADLINE.bounded_sleep(
+                error.retry_after_seconds or _retry_delay_seconds(error, attempt)
+            )
+
+
+def _has_independent_configured_fallback(body: dict[str, object]) -> bool:
+    """Return whether the configured fallback changes model or provider."""
+    fallback_model = os.environ.get("DIRECT_REVIEW_FALLBACK_MODEL", "").strip()
+    fallback_provider = os.environ.get("DIRECT_REVIEW_FALLBACK_PROVIDER", "").strip() or ACTIVE_PROVIDER
+    return bool(fallback_model) and (
+        fallback_model != body.get("model") or fallback_provider != ACTIVE_PROVIDER
+    )
+
+
+def _should_switch_primary_transport_to_fallback(
+    error: RequestError,
+    attempt: int,
+    body: dict[str, object],
+) -> bool:
+    """Reserve the latter half of a failed primary route for an alternate route."""
+    return (
+        ACTIVE_ROUTE == "primary"
+        and error.status is None
+        and attempt >= MAX_PRIMARY_TRANSPORT_ATTEMPTS_WITH_FALLBACK
+        and _has_independent_configured_fallback(body)
+    )
+
+
+def _retryable_request_error(error: RequestError) -> bool:
+    return error.status is None or error.status in RETRYABLE_HTTP_STATUSES
+
+
+def _retry_delay_seconds(error: RequestError, attempt: int) -> float:
+    delay = float(2 ** (attempt - 1))
+    return max(delay, DEFAULT_RATE_LIMIT_RETRY_SECONDS) if error.status == 429 else delay
 
 
 def request_valid_review(
@@ -888,31 +906,15 @@ def request_valid_review(
     attempts = attempts or ReviewAttempts()
     repair_body: dict[str, object] | None = None
     while True:
-        if repair_body is None:
-            response = request_with_transient_retries(headers, body, attempts)
-        else:
-            global ACTIVE_ROUTE
-            original_route = ACTIVE_ROUTE
-            ACTIVE_ROUTE = f"{original_route}:repair"
-            try:
-                response = request_with_transient_retries(headers, repair_body, attempts)
-            finally:
-                ACTIVE_ROUTE = original_route
+        response = _request_review_or_repair(headers, body, repair_body, attempts)
         try:
             parsed = parse_review_response(response, has_expected_shape)
         except ReviewResponseError as error:
             if EXECUTION_REPORT:
                 EXECUTION_REPORT.validate_last("invalid_json")
-            if repair_body is None:
-                repair_body = repair_review_body(body, response)
-                if repair_body is not None:
-                    print(
-                        f"  {model_label} returned invalid structured JSON; "
-                        f"attempting one bounded repair ({_safe_log_message(error)})",
-                        file=sys.stderr,
-                    )
-                    continue
-            repair_body = None
+            repair_body = _repair_invalid_review(body, response, repair_body, model_label, error)
+            if repair_body is not None:
+                continue
             if attempts.used == MAX_REQUEST_ATTEMPTS:
                 raise
             print(
@@ -924,6 +926,50 @@ def request_valid_review(
             if EXECUTION_REPORT:
                 EXECUTION_REPORT.validate_last("valid_json")
             return parsed
+
+
+@contextlib.contextmanager
+def _review_request_route(suffix: str):
+    """Temporarily annotate a request route without changing its provider."""
+    global ACTIVE_ROUTE
+    original_route = ACTIVE_ROUTE
+    ACTIVE_ROUTE = f"{original_route}{suffix}"
+    try:
+        yield
+    finally:
+        ACTIVE_ROUTE = original_route
+
+
+def _request_review_or_repair(
+    headers: dict[str, str],
+    body: dict[str, object],
+    repair_body: dict[str, object] | None,
+    attempts: ReviewAttempts,
+) -> object:
+    if repair_body is None:
+        return request_with_transient_retries(headers, body, attempts)
+    with _review_request_route(":repair"):
+        return request_with_transient_retries(headers, repair_body, attempts)
+
+
+def _repair_invalid_review(
+    body: dict[str, object],
+    response: object,
+    repair_body: dict[str, object] | None,
+    model_label: str,
+    error: ReviewResponseError,
+) -> dict[str, object] | None:
+    """Prepare exactly one bounded repair request for malformed model output."""
+    if repair_body is not None:
+        return None
+    repair_body = repair_review_body(body, response)
+    if repair_body is not None:
+        print(
+            f"  {model_label} returned invalid structured JSON; "
+            f"attempting one bounded repair ({_safe_log_message(error)})",
+            file=sys.stderr,
+        )
+    return repair_body
 
 
 def _structured_output_unavailable(error: RequestError) -> bool:
@@ -1620,7 +1666,7 @@ def _review_marker(head_sha: str, model: str) -> str:
         # operator repeats the same provider/model against the same PR SHA.
         # GITHUB_RUN_ID is assigned by GitHub and cannot collide between runs.
         run_id = required_env("GITHUB_RUN_ID")
-        if not re.fullmatch(r"[0-9]+", run_id):
+        if not re.fullmatch(r"\d+", run_id):
             raise RuntimeError("GITHUB_RUN_ID must be a decimal GitHub Actions run ID")
         return (
             "<!-- openrouter-pr-review:azure-devops:"

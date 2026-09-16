@@ -501,6 +501,22 @@ class OllamaCloudRequestTest(unittest.TestCase):
             ["primary", "primary", "backup"],
         )
 
+    def test_detects_a_fallback_on_a_different_provider_as_independent(self) -> None:
+        with (
+            mock.patch.dict(
+                reviewer.os.environ,
+                {
+                    "DIRECT_REVIEW_FALLBACK_MODEL": "same-model",
+                    "DIRECT_REVIEW_FALLBACK_PROVIDER": "nvidia",
+                },
+                clear=True,
+            ),
+            mock.patch.object(reviewer, "ACTIVE_PROVIDER", "ollama-cloud"),
+        ):
+            self.assertTrue(
+                reviewer._has_independent_configured_fallback({"model": "same-model"})
+            )
+
     def test_fallback_can_switch_provider_and_credentials(self) -> None:
         chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
         response = {"choices": [{"message": {"content": '{"summary":"Reviewed.","findings":[]}'}}]}
