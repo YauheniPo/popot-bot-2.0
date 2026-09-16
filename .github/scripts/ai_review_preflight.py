@@ -56,14 +56,16 @@ def completion_payload(body: dict[str, object], provider: str = "ollama-cloud") 
     return payload
 
 
-def provider_config() -> tuple[str, str, str]:
-    """Return provider, API key and chat endpoint from environment.
+def provider_config(provider_name: str | None = None) -> tuple[str, str, str]:
+    """Return provider, API key and chat endpoint for a configured route.
 
     DIRECT_REVIEW_* selects the provider and model; REVIEW_PROVIDER remains a
     compatibility alias for the provider. Credentials are selected by provider
     without changing workflow code.
     """
-    provider = os.environ.get("DIRECT_REVIEW_PROVIDER", os.environ.get("REVIEW_PROVIDER", "nvidia")).strip().lower()
+    provider = (provider_name if provider_name is not None else os.environ.get(
+        "DIRECT_REVIEW_PROVIDER", os.environ.get("REVIEW_PROVIDER", "nvidia"),
+    )).strip().lower()
     if provider in {"ollama", "ollama_cloud", "ollama-cloud"}:
         return "ollama-cloud", os.environ.get("OLLAMA_API_KEY", "").strip(), CHAT_COMPLETIONS_URL
     if provider in {"openrouter", "open-router"}:
@@ -81,6 +83,11 @@ def configured_model() -> str:
 
 def configured_fallback_model() -> str:
     return os.environ.get("DIRECT_REVIEW_FALLBACK_MODEL", "").strip()
+
+
+def configured_fallback_provider(primary_provider: str) -> str:
+    """Use the primary route unless an independent fallback was configured."""
+    return os.environ.get("DIRECT_REVIEW_FALLBACK_PROVIDER", "").strip() or primary_provider
 
 
 def anthropic_base_url(provider: str) -> str:
@@ -256,16 +263,21 @@ def probe_ready(api_key: str, kind: str, provider: str, model: str, role: str,
     return True
 
 
-def probe_models(api_key: str, kind: str, provider: str, primary: str, fallback: str) -> tuple[bool, bool]:
+def probe_models(
+    api_key: str, kind: str, provider: str, primary: str, fallback: str,
+    *, fallback_provider: str | None = None, fallback_api_key: str | None = None,
+) -> tuple[bool, bool]:
     primary_ready = probe_ready(api_key, kind, provider, primary, "primary")
+    fallback_provider = fallback_provider or provider
+    fallback_api_key = fallback_api_key if fallback_api_key is not None else api_key
     if not fallback:
         fallback_ready = False
-    elif fallback == primary:
+    elif fallback == primary and fallback_provider == provider:
         # Reuse failures as well as successes; the same model gets no extra tries.
         fallback_ready = primary_ready
     else:
         fallback_ready = probe_ready(
-            api_key, kind, provider, fallback, "fallback",
+            fallback_api_key, kind, fallback_provider, fallback, "fallback",
             attempts_override=SMOKE_FALLBACK_MAX_ATTEMPTS if kind == "claude" else None,
         )
     if not primary_ready and not fallback_ready:
@@ -289,23 +301,32 @@ def main(argv: list[str] | None = None) -> int:
     base_url = anthropic_base_url(provider) if args.probe in {"tools", "claude"} else ""
     model = configured_model()
     fallback = configured_fallback_model()
-    primary_ready, fallback_ready = probe_models(api_key, args.probe, provider, model, fallback)
+    fallback_provider = configured_fallback_provider(provider)
+    normalized_fallback_provider, fallback_api_key, _ = provider_config(fallback_provider)
+    primary_ready, fallback_ready = probe_models(
+        api_key, args.probe, provider, model, fallback,
+        fallback_provider=normalized_fallback_provider,
+        fallback_api_key=fallback_api_key,
+    )
     selected_model = model if primary_ready else fallback
+    selected_provider = provider if primary_ready else normalized_fallback_provider
     output_path = os.environ.get("GITHUB_OUTPUT")
     if output_path:
         # A configured fallback is selectable only after the matching API probe.
         values = {
             "provider": provider,
+            "selected_provider": selected_provider,
             "anthropic_base_url": base_url,
             "primary_model": model, "primary_ready": str(primary_ready).lower(),
             "fallback_model": fallback, "fallback_ready": str(fallback_ready).lower(),
             "selected_model": selected_model, "selected_mode": "ordinary",
             "secondary_model": fallback if primary_ready and fallback_ready else "",
+            "secondary_provider": normalized_fallback_provider if primary_ready and fallback_ready else "",
         }
         with open(output_path, "a", encoding="utf-8") as output:
             for key, value in values.items():
                 output.write(f"{key}={value}\n")
-    print(f"{provider}: selected {selected_model} for review")
+    print(f"{selected_provider}: selected {selected_model} for review")
     return 0
 
 

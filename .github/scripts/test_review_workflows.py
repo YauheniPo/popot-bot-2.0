@@ -260,6 +260,7 @@ class ReviewWorkflowTest(unittest.TestCase):
                 with mock.patch.dict(reviewer.os.environ, environment), mock.patch.object(reviewer, "request_json", side_effect=respond), mock.patch.object(reviewer, "read_review_files", return_value=[self.file]), mock.patch.object(reviewer, "fetch_unresolved_review_threads", return_value=[]) as unresolved, mock.patch.object(reviewer, "fetch_resolved_machine_threads", return_value=[]):
                     reviewer.main()
                 self.assertEqual(len([r for r in requests if r[0] == preflight.NVIDIA_CHAT_COMPLETIONS_URL]), 1)
+                self.assertIn("findings_count=0", output.read_text())
                 final = requests[-1]
                 self.assertIn(f"Fallback successes: {int(bool(primary))}", json.dumps(final[3]))
                 self.assertTrue(final[0].endswith("/reviews" if pr else "/check-runs"))
