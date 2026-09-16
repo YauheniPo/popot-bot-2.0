@@ -11,13 +11,13 @@ env:
   # 0/unset = both sequentially, 1 = direct API, 2 = Claude Code.
   PR_REVIEWER: ${{ vars.PR_REVIEWER || '0' }}
   # Provider/model are independently configurable for both reviewers.
-  DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'nvidia' }}
-  DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'moonshotai/kimi-k3' }}
-  DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || '' }}
-  DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || '' }}
-  CLAUDE_REVIEW_PROVIDER: ${{ vars.CLAUDE_REVIEW_PROVIDER || 'nvidia' }}
-  CLAUDE_REVIEW_MODEL: ${{ vars.CLAUDE_REVIEW_MODEL || 'moonshotai/kimi-k3' }}
-  CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.CLAUDE_REVIEW_FALLBACK_MODEL || vars.CLAUDE_REVIEW_MODEL || 'moonshotai/kimi-k3' }}
+  DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'openrouter' }}
+  DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'inclusionai/ling-3.0-flash-fin:free' }}
+  DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'nvidia/nemotron-3-ultra-550b-a55b:free' }}
+  DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'nvidia' }}
+  CLAUDE_REVIEW_PROVIDER: ${{ vars.CLAUDE_REVIEW_PROVIDER || 'openrouter' }}
+  CLAUDE_REVIEW_MODEL: ${{ vars.CLAUDE_REVIEW_MODEL || 'inclusionai/ling-3.0-flash-fin:free' }}
+  CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.CLAUDE_REVIEW_FALLBACK_MODEL || 'nvidia/nemotron-3-ultra-550b-a55b:free' }}
   CLAUDE_REVIEW_BASE_URL: ${{ vars.CLAUDE_REVIEW_BASE_URL || '' }}
   # Pace direct API requests; tune for the selected provider and account.
   OLLAMA_REVIEW_RPM: ${{ vars.OLLAMA_REVIEW_RPM || '60' }}

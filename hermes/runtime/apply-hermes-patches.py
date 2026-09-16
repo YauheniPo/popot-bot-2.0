@@ -409,6 +409,30 @@ _PATCHES: list[tuple[str, str, str, str]] = [
 ''',
         '''            t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),
         ])
+        # Local Hermes: status subagent activity
+        active_delegations = []
+        try:
+            from tools.async_delegation import list_async_delegations
+
+            status_session_key = str(session_key or "")
+            status_session_id = str(session_entry.session_id or "")
+            active_delegations = [
+                d for d in list_async_delegations()
+                if d.get("status") in ("running", "stalling", "finalizing") and (
+                    (status_session_key and str(d.get("session_key") or "") == status_session_key) or
+                    (status_session_id and str(d.get("parent_session_id") or "") == status_session_id)
+                )
+            ]
+        except Exception:
+            active_delegations = []
+        if active_delegations:
+            # The parent turn can finish immediately after delegation. Report
+            # its children as active work rather than a misleading idle state.
+            lines[-1] = t("gateway.status.agent_running", state=t("gateway.status.state_yes"))
+            lines.append(
+                f"**Subagents:** {len(active_delegations)} active — "
+                "results will be delivered to this chat automatically."
+            )
         # Local Hermes: status reasoning
         reasoning_cfg = getattr(self, "_reasoning_config", None)
         if isinstance(reasoning_cfg, dict) and reasoning_cfg.get("enabled") is False:

@@ -78,8 +78,8 @@ os.execvp(sys.argv[4], sys.argv[4:])
         settings = {
             "HERMES_RUN_AS_USER": "hermes" if root else getpass.getuser(),
             "HERMES_USER_HOME": str(temporary), "HERMES_HOME": str(temporary / ".hermes"),
-            "HERMES_BIN": str(hermes), "HERMES_API_RETRY_PROVIDER": "nvidia",
-            "HERMES_API_RETRY_MODEL": "deepseek-ai/deepseek-v4-pro-0813",
+            "HERMES_BIN": str(hermes), "HERMES_API_RETRY_PROVIDER": "test-provider",
+            "HERMES_API_RETRY_MODEL": "vendor/test-model",
             "HERMES_API_RETRY_MESSAGE": "Hello", "HERMES_API_RETRY_MAX_ATTEMPTS": "2",
             "HERMES_API_RETRY_WAIT_SECONDS": "1", "HERMES_API_RETRY_TIMEOUT_SECONDS": "180",
         }
@@ -100,8 +100,8 @@ os.execvp(sys.argv[4], sys.argv[4:])
             result, calls, sleeps, _ = self.run_retry_helper(temporary, [0])
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(len(calls), 1)
-            self.assertEqual(calls[0]["args"], ["chat", "--provider", "nvidia", "--model",
-                                              "deepseek-ai/deepseek-v4-pro-0813", "--quiet",
+            self.assertEqual(calls[0]["args"], ["chat", "--provider", "test-provider", "--model",
+                                              "vendor/test-model", "--quiet",
                                               "--toolsets", "none", "--max-turns", "1", "--query-file", "-"])
             self.assertEqual(calls[0]["query"], "Hello")
             self.assertEqual(calls[0]["home"], str(temporary))

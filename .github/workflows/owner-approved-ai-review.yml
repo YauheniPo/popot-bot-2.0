@@ -87,9 +87,10 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
-          DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'nvidia' }}
-          DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'moonshotai/kimi-k3' }}
-          DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || '' }}
+          DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'openrouter' }}
+          DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'inclusionai/ling-3.0-flash-fin:free' }}
+          DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'nvidia/nemotron-3-ultra-550b-a55b:free' }}
+          DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'nvidia' }}
         run: python3 reviewer/.github/scripts/ai_review_preflight.py --probe json
 
       - name: Review the approved revision and publish findings
@@ -104,10 +105,11 @@ jobs:
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           DIRECT_REVIEW_FALLBACK_MODEL: ${{ steps.models.outputs.secondary_model }}
+          DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ steps.models.outputs.secondary_provider }}
           DIRECT_REVIEW_MODEL: ${{ steps.models.outputs.selected_model }}
           DIRECT_REVIEW_MODEL_MODE: ${{ steps.models.outputs.selected_mode }}
           DIRECT_REVIEW_PRIMARY_MODEL: ${{ steps.models.outputs.primary_model }}
-          DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'nvidia' }}
+          DIRECT_REVIEW_PROVIDER: ${{ steps.models.outputs.selected_provider }}
           OLLAMA_MAX_REVIEW_CHUNKS: "100"
           OLLAMA_REVIEW_BUDGET_SECONDS: "5100"
           OLLAMA_REVIEW_RPM: ${{ vars.OLLAMA_REVIEW_RPM || '60' }}

@@ -33,12 +33,12 @@ on:
       model:
         description: Model for the direct reviewer
         required: true
-        default: moonshotai/kimi-k3
+        default: inclusionai/ling-3.0-flash-fin:free
         type: string
       provider:
         description: Provider for the direct reviewer
         required: true
-        default: nvidia
+        default: openrouter
         type: choice
         options:
           - ollama-cloud
@@ -288,10 +288,10 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
-          DIRECT_REVIEW_PROVIDER: ${{ inputs.provider || vars.DIRECT_REVIEW_PROVIDER || 'nvidia' }}
+          DIRECT_REVIEW_PROVIDER: ${{ inputs.provider || vars.DIRECT_REVIEW_PROVIDER || 'openrouter' }}
           DIRECT_REVIEW_MODEL: ${{ inputs.model }}
-          DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || '' }}
-          DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || '' }}
+          DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'nvidia/nemotron-3-ultra-550b-a55b:free' }}
+          DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'nvidia' }}
         run: python3 reviewer/.github/scripts/ai_review_preflight.py --probe json
 
       - name: Review selected revision and publish findings

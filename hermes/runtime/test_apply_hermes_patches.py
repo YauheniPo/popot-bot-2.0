@@ -335,6 +335,18 @@ class ApplyHermesPatchesTests(unittest.TestCase):
             'session_model = (getattr(self, "_session_model_overrides"', status
         )
 
+    def test_status_reports_live_subagents_for_the_current_chat(self) -> None:
+        status = next(
+            new
+            for _path, marker, _old, new in apply_hermes_patches._PATCHES
+            if marker == "# Local Hermes: status reasoning"
+        )
+
+        self.assertIn("list_async_delegations", status)
+        self.assertIn('d.get("session_key")', status)
+        self.assertIn('d.get("parent_session_id")', status)
+        self.assertIn("results will be delivered to this chat automatically", status)
+
     def test_status_includes_portal_provider_and_tool_info(self) -> None:
         patches = {
             marker: new
