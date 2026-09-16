@@ -291,6 +291,7 @@ jobs:
           DIRECT_REVIEW_PROVIDER: ${{ inputs.provider || vars.DIRECT_REVIEW_PROVIDER || 'nvidia' }}
           DIRECT_REVIEW_MODEL: ${{ inputs.model }}
           DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || '' }}
+          DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || '' }}
         run: python3 reviewer/.github/scripts/ai_review_preflight.py --probe json
 
       - name: Review selected revision and publish findings
@@ -305,11 +306,12 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
-          DIRECT_REVIEW_PROVIDER: ${{ inputs.provider || vars.DIRECT_REVIEW_PROVIDER || 'nvidia' }}
+          DIRECT_REVIEW_PROVIDER: ${{ steps.models.outputs.selected_provider }}
           DIRECT_REVIEW_MODEL: ${{ steps.models.outputs.selected_model }}
           # Internal preflight metadata; this is not a repository variable.
           DIRECT_REVIEW_PRIMARY_MODEL: ${{ steps.models.outputs.primary_model }}
           DIRECT_REVIEW_FALLBACK_MODEL: ${{ steps.models.outputs.secondary_model }}
+          DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ steps.models.outputs.secondary_provider }}
           OLLAMA_MAX_REVIEW_CHUNKS: ${{ vars.MANUAL_REVIEW_MAX_CHUNKS || '100' }}
           # This job allows 105 minutes and up to 100 chunks. Without an explicit
           # budget the script would stop after the 40-minute default meant for
@@ -332,9 +334,17 @@ jobs:
         env:
           BASE_SHA: ${{ steps.context.outputs.base_sha }}
           CHECK_RUN_URL: ${{ steps.review.outputs.check_run_url }}
+          FINDINGS_COUNT: ${{ steps.review.outputs.findings_count }}
           HEAD_SHA: ${{ steps.context.outputs.head_sha }}
           MODEL: ${{ steps.models.outputs.selected_model }}
+          PROVIDER: ${{ steps.models.outputs.selected_provider }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          REQUESTED_MODEL: ${{ inputs.model }}
+          REQUESTED_PROVIDER: ${{ inputs.provider }}
+          REQUEST_ID: ${{ inputs.request_id }}
+          REVIEW_SCOPE: ${{ inputs.scope }}
+          BASE_REF: ${{ inputs.base_ref }}
+          REQUESTED_PUBLISH_TARGET: ${{ inputs.publish }}
           PUBLISH_TARGET: ${{ steps.context.outputs.publish_target }}
           # GITHUB_STEP_SUMMARY is a distinct file per step, so a later step
           # cannot re-read what this step wrote there. Write the same text to
@@ -350,9 +360,13 @@ jobs:
             echo
             echo "- Target: \`${TARGET_REF}\`"
             echo "- Range: \`${BASE_SHA}..${HEAD_SHA}\`"
-            echo "- Requested model: \`${MODEL}\` (actual successful models and retries are listed in the published review)"
+            echo "- Scope: \`${REVIEW_SCOPE}\` (base input: \`${BASE_REF}\`)"
+            echo "- Requested provider/model: \`${REQUESTED_PROVIDER}\` / \`${REQUESTED_MODEL}\`"
+            echo "- Effective provider/model: \`${PROVIDER}\` / \`${MODEL}\`"
+            echo "- Requested publication: \`${REQUESTED_PUBLISH_TARGET}\`"
             echo "- Source: \`${REVIEW_SOURCE}\`"
             echo "- Publication: \`${PUBLISH_TARGET}\`"
+            [[ -n "${REQUEST_ID}" ]] && echo "- Request ID: \`${REQUEST_ID}\`"
             if [[ -n "${PR_NUMBER}" ]]; then
               echo "- Pull request: #${PR_NUMBER}"
             fi
@@ -376,10 +390,16 @@ jobs:
           HEAD_SHA: ${{ steps.context.outputs.head_sha }}
           JOB_STATUS: ${{ job.status }}
           MODEL: ${{ steps.models.outputs.selected_model }}
+          PROVIDER: ${{ steps.models.outputs.selected_provider }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           PUBLISH_TARGET: ${{ steps.context.outputs.publish_target }}
           REPORT_DIR: ${{ github.workspace }}/review-report
           REQUEST_ID: ${{ inputs.request_id }}
+          REVIEW_SCOPE: ${{ inputs.scope }}
+          BASE_REF: ${{ inputs.base_ref }}
+          REQUESTED_MODEL: ${{ inputs.model }}
+          REQUESTED_PROVIDER: ${{ inputs.provider }}
+          REQUESTED_PUBLISH_TARGET: ${{ inputs.publish }}
           TARGET_REF: ${{ inputs.target_ref }}
         run: |
           set -euo pipefail
@@ -392,9 +412,16 @@ jobs:
             --arg base_sha "${BASE_SHA}" \
             --arg head_sha "${HEAD_SHA}" \
             --arg model "${MODEL}" \
+            --arg provider "${PROVIDER}" \
+            --arg scope "${REVIEW_SCOPE}" \
+            --arg base_ref "${BASE_REF}" \
+            --arg requested_model "${REQUESTED_MODEL}" \
+            --arg requested_provider "${REQUESTED_PROVIDER}" \
+            --arg requested_publish_target "${REQUESTED_PUBLISH_TARGET}" \
             --arg publish_target "${PUBLISH_TARGET}" \
             --arg pr_number "${PR_NUMBER}" \
             --arg check_run_url "${CHECK_RUN_URL}" \
+            --arg findings_count "${FINDINGS_COUNT}" \
             '$ARGS.named' >"${REPORT_DIR}/report.json"
 
       - name: Upload the review report

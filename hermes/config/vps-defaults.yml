@@ -138,6 +138,19 @@ vps_hermes:
           - github-pr-workflow
           - github-repo-management
 
+# Third-party skills are fetched by Ansible, never by a running Hermes session.
+# Pinning a commit makes a deploy repeatable and keeps a later upstream change
+# from silently changing the instructions available to the agent.
+vps_external_skills:
+  matt_pocock_engineering:
+    enabled: true
+    repository: https://github.com/mattpocock/skills.git
+    revision: 3cca18b368ae95cdbdebbff572ccafa662551015
+    checkout_dir: /opt/hermes-external-skills/mattpocock-skills
+    # Hermes discovers each immediate directory that contains a SKILL.md.
+    # This exposes the repository's engineering skills, not unrelated domains.
+    skills_dir: /opt/hermes-external-skills/mattpocock-skills/skills/engineering
+
 vps_tools:
   google_workspace_cli:
     version: "0.22.5"

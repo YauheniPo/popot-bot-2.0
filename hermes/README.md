@@ -259,7 +259,14 @@ sudo systemctl restart hermes-gateway.service
 | Grafana + Prometheus | Включено | Открывать через SSH/Tailscale tunnel на `127.0.0.1:3000`; password хранится root-only в `/etc/hermes-grafana.env` |
 | LLM-анализ расходов | По запросу | Выбрать модель через `/model` и попросить проанализировать JSON report |
 | MCP catalog | Picker открывается при deploy | Установить только реально нужные integrations после review |
-| Skills Hub | Инициализируется при deploy | Внешние skills не устанавливаются |
+| Skills Hub | Инициализируется при deploy | Engineering-навыки из [mattpocock/skills](https://github.com/mattpocock/skills/tree/main/skills/engineering) подключаются автоматически из закреплённой ревизии; остальные внешние skills можно добавлять в `skills.external_dirs` |
+
+Engineering-навыки находятся на VPS в
+`/opt/hermes-external-skills/mattpocock-skills/skills/engineering`. Их исходный
+репозиторий и SHA закреплены в `vps_external_skills.matt_pocock_engineering` в
+`config/vps-defaults.yml`; чтобы обновить набор, сначала меняйте SHA в этом
+файле, затем запускайте обычный deploy. Каталог принадлежит `root`: Hermes
+может читать навыки, но не может незаметно изменить закреплённый источник.
 
 ### Установленные CLI и системные инструменты
 

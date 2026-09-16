@@ -96,7 +96,7 @@ variables:
 
 jobs:
   - job: RequestReview
-    displayName: Request and collect the GitHub AI code review
+    displayName: Azure DevOps → GitHub AI review
     # The GitHub job allows up to 90 minutes, but a Microsoft-hosted agent in a
     # private project is capped at 60. Waiting is therefore bounded and always
     # ends with the run link, never with a lost review.
@@ -154,7 +154,7 @@ jobs:
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/${GITHUB_WORKFLOW_FILE}/dispatches"
 
           echo "GitHub code review requested for ${TARGET_REF} against ${BASE_REF} as ${REQUEST_ID}."
-        displayName: Start GitHub AI code review
+        displayName: Start GitHub AI review from Azure DevOps
         env:
           GITHUB_ACTIONS_TOKEN: $(GITHUB_ACTIONS_TOKEN)
           GITHUB_REPOSITORY: $(githubRepository)
@@ -250,31 +250,67 @@ jobs:
           curl "${auth[@]}" --location --output "${report_dir}/report.zip" "${archive_url}"
           unzip -o -q "${report_dir}/report.zip" -d "${report_dir}"
 
-          {
-            echo "## GitHub AI code review"
-            echo
-            echo "- Run: [${run_id}](${run_url})"
-            echo "- Conclusion: \`${conclusion:-unknown}\`"
-            echo "- Request id: \`${REQUEST_ID}\`"
-            if [[ -s "${report_dir}/report.json" ]]; then
-              pr_number="$(jq -r '.pr_number // ""' "${report_dir}/report.json")"
-              # The downloaded GitHub summary already contains the findings
-              # link. Keep this outer summary free of a duplicate link.
-              [[ -n "${pr_number}" ]] &&
-                echo "- Pull request: [#${pr_number}](https://github.com/${GITHUB_REPOSITORY}/pull/${pr_number})"
-            fi
-            echo
-            if [[ -s "${report_dir}/summary.md" ]]; then
-              # Keep a reachable fallback when an older or malformed report
-              # does not include the findings/check-run link.
-              if ! grep -Eq '^[[:space:]]*-[[:space:]]*Findings:' "${report_dir}/summary.md"; then
-                echo "- Findings: [Open findings](${run_url})"
-                echo
-              fi
-              cat "${report_dir}/summary.md"
+          pr_number=""
+          model=""
+          provider=""
+          review_scope=""
+          base_ref=""
+          requested_model=""
+          requested_provider=""
+          requested_publish_target=""
+          target_ref=""
+          review_url="${run_url}"
+          findings_count=""
+          review_result="The review was published outside a pull request; open the GitHub run for its result."
+          if [[ -s "${report_dir}/report.json" ]]; then
+            pr_number="$(jq -r '.pr_number // ""' "${report_dir}/report.json")"
+            model="$(jq -r '.model // ""' "${report_dir}/report.json")"
+            provider="$(jq -r '.provider // ""' "${report_dir}/report.json")"
+            review_scope="$(jq -r '.scope // ""' "${report_dir}/report.json")"
+            base_ref="$(jq -r '.base_ref // ""' "${report_dir}/report.json")"
+            requested_model="$(jq -r '.requested_model // ""' "${report_dir}/report.json")"
+            requested_provider="$(jq -r '.requested_provider // ""' "${report_dir}/report.json")"
+            requested_publish_target="$(jq -r '.requested_publish_target // ""' "${report_dir}/report.json")"
+            target_ref="$(jq -r '.target_ref // ""' "${report_dir}/report.json")"
+            findings_count="$(jq -r '.findings_count // ""' "${report_dir}/report.json")"
+          fi
+          if [[ -n "${pr_number}" ]]; then
+            pr_url="https://github.com/${GITHUB_REPOSITORY}/pull/${pr_number}"
+            review_url="${pr_url}"
+            if [[ "${findings_count}" == "0" ]]; then
+              review_result="No new actionable findings."
+            elif [[ "${findings_count}" =~ ^[1-9][0-9]*$ ]]; then
+              review_result="${findings_count} actionable finding(s) were published; open the pull request to inspect them."
             else
-              echo "- Findings: [Open findings](${run_url})"
+              review_result="The review was published to the pull request; open the pull request to inspect it."
             fi
+          fi
+
+          {
+            echo "## Azure DevOps → GitHub AI review"
+            echo
+            echo "> Azure DevOps started this review; GitHub Actions executed it and published the result on GitHub."
+            echo
+            echo "### Status"
+            echo
+            echo "- **Execution:** [completed successfully](${run_url})"
+            echo "- **Review result:** ${review_result}"
+            echo "- **Request ID:** \`${REQUEST_ID}\`"
+            [[ -n "${target_ref}" ]] && echo "- **Target:** \`${target_ref}\`"
+            [[ -n "${review_scope}" ]] && echo "- **Scope:** \`${review_scope}\`"
+            [[ -n "${base_ref}" ]] && echo "- **Base input:** \`${base_ref}\`"
+            [[ -n "${requested_provider}" || -n "${requested_model}" ]] && echo "- **Requested provider/model:** \`${requested_provider:-unknown}\` / \`${requested_model:-unknown}\`"
+            [[ -n "${provider}" || -n "${model}" ]] && echo "- **Effective provider/model:** \`${provider:-unknown}\` / \`${model:-unknown}\`"
+            [[ -n "${requested_publish_target}" ]] && echo "- **Requested publication:** \`${requested_publish_target}\`"
+            echo
+            echo "### Links"
+            echo
+            echo "- [GitHub workflow run](${run_url})"
+            [[ -n "${pr_number}" ]] && echo "- [Pull request #${pr_number}](${pr_url})"
+            echo "- [Published review](${review_url})"
+            echo "- [Review-report artifact](${run_url}/artifacts)"
+            echo
+            echo "`Execution: ${conclusion:-unknown}` means the reviewer completed. The published review above contains its findings."
           } >"${summary_file}"
 
           echo "##vso[task.uploadsummary]${summary_file}"
@@ -283,7 +319,7 @@ jobs:
             echo "##vso[task.logissue type=error]The GitHub review run concluded ${conclusion:-unknown}: ${run_url}"
             exit 1
           fi
-        displayName: Wait for the GitHub review and publish its report
+        displayName: Collect the GitHub review result and publish a clear summary
         condition: and(succeeded(), gt(${{ parameters.waitMinutes }}, 0))
         env:
           GITHUB_ACTIONS_TOKEN: $(GITHUB_ACTIONS_TOKEN)

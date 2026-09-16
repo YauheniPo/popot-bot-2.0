@@ -98,7 +98,7 @@ class ExecutionReport:
             lines.append(f"> Requested model: `{safe_label(self.primary_model)}` · Successful request not recorded")
         lines.append(
             f"> {label}: {len(self.attempts)} · Validated: {len(successes)} · Retries: {retries} · "
-            f"Fallback successes: {sum(a.route == 'fallback' for a in successes)}"
+            f"Fallback successes: {sum(a.route.startswith('fallback') for a in successes)}"
         )
         if self.kind == "api":
             lines.append(f"> API time: {sum(a.seconds or 0 for a in self.attempts):.1f}s (excludes retry waits). "

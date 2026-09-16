@@ -6,6 +6,7 @@ import unittest
 
 
 NETWORK_TASKS = Path(__file__).with_name("tasks") / "network.yml"
+PLAYBOOK = Path(__file__).with_name("playbook.yml")
 
 
 class NetworkPlaybookTests(unittest.TestCase):
@@ -29,6 +30,19 @@ class NetworkPlaybookTests(unittest.TestCase):
                 r" proto tcp comment 'Hermes deny public SSH'"
             ),
         )
+
+    def test_public_ssh_lockdown_requires_the_controller_port_to_match(self) -> None:
+        playbook = PLAYBOOK.read_text()
+
+        self.assertIn(
+            "Refuse public SSH lock-down when Ansible uses another port",
+            playbook,
+        )
+        self.assertIn(
+            "(ansible_port | default(22, true) | int) == (vps_network.ssh_port | int)",
+            playbook,
+        )
+        self.assertIn("when: hermes_lock_public_ssh | bool", playbook)
 
 
 if __name__ == "__main__":

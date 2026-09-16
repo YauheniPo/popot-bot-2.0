@@ -7,6 +7,7 @@ import unittest
 ANSIBLE = Path(__file__).parent
 PLAYBOOK = (ANSIBLE / "playbook.yml").read_text()
 SERVICES = (ANSIBLE / "tasks" / "services.yml").read_text()
+RUNTIME = (ANSIBLE / "tasks" / "runtime.yml").read_text()
 
 
 class DeployOptimizationTests(unittest.TestCase):
@@ -27,9 +28,17 @@ class DeployOptimizationTests(unittest.TestCase):
 
     def test_services_restart_only_via_notified_handlers(self) -> None:
         self.assertNotIn("state: restarted", SERVICES)
+        self.assertNotIn("--start-now", SERVICES)
         self.assertIn("meta: flush_handlers", SERVICES)
         self.assertIn("restart Hermes gateway", PLAYBOOK)
         self.assertIn("restart managed observability services", PLAYBOOK)
+
+    def test_pinned_external_engineering_skills_preserve_existing_directories(self) -> None:
+        self.assertIn("Install pinned Matt Pocock engineering skills for Hermes", RUNTIME)
+        self.assertIn("version: \"{{ vps_external_skills.matt_pocock_engineering.revision }}\"", RUNTIME)
+        self.assertIn("Protect pinned Matt Pocock engineering skills from Hermes writes", RUNTIME)
+        self.assertIn("Combine managed and existing external Hermes skill directories", RUNTIME)
+        self.assertIn("hermes_existing_config.get('skills', {}).get('external_dirs', [])", RUNTIME)
 
 
 if __name__ == "__main__":

@@ -474,6 +474,63 @@ class OllamaCloudRequestTest(unittest.TestCase):
                 reviewer.review_chunk("test-key", "primary", (), chunk, 1, 1)
         self.assertEqual([call.args[3]["model"] for call in request.call_args_list], ["primary"] * 4 + ["backup"] * 4)
 
+    def test_switches_to_fallback_after_two_transport_failures(self) -> None:
+        """Do not spend the whole retry budget on an unavailable endpoint."""
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        response = {"choices": [{"message": {"content": '{"summary":"Reviewed.","findings":[]}'}}]}
+        with (
+            mock.patch.dict(reviewer.os.environ, {
+                "DIRECT_REVIEW_FALLBACK_MODEL": "backup",
+                "DIRECT_REVIEW_MODEL_MODE": "ordinary",
+            }),
+            mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(600)),
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch.object(reviewer, "request_json", side_effect=[
+                reviewer.RequestError("connection lost"),
+                reviewer.RequestError("connection lost"),
+                response,
+            ]) as request,
+            mock.patch.object(reviewer.time, "sleep"),
+            mock.patch("builtins.print"),
+        ):
+            result = reviewer.review_chunk("test-key", "primary", (), chunk, 1, 1)
+
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(
+            [call.args[3]["model"] for call in request.call_args_list],
+            ["primary", "primary", "backup"],
+        )
+
+    def test_fallback_can_switch_provider_and_credentials(self) -> None:
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        response = {"choices": [{"message": {"content": '{"summary":"Reviewed.","findings":[]}'}}]}
+        with (
+            mock.patch.dict(reviewer.os.environ, {
+                "DIRECT_REVIEW_FALLBACK_MODEL": "nvidia/backup",
+                "DIRECT_REVIEW_FALLBACK_PROVIDER": "nvidia",
+                "NVIDIA_API_KEY": "fallback-key",
+                "DIRECT_REVIEW_MODEL_MODE": "ordinary",
+            }, clear=True),
+            mock.patch.object(reviewer, "ACTIVE_PROVIDER", "ollama-cloud"),
+            mock.patch.object(reviewer, "OLLAMA_URL", "https://ollama.com/v1/chat/completions"),
+            mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(600)),
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch.object(reviewer, "request_json", side_effect=[
+                reviewer.RequestError("connection lost"),
+                reviewer.RequestError("connection lost"),
+                response,
+            ]) as request,
+            mock.patch.object(reviewer.time, "sleep"),
+            mock.patch("builtins.print"),
+        ):
+            result = reviewer.review_chunk("primary-key", "ollama/primary", (), chunk, 1, 1)
+
+        self.assertEqual(result["findings"], [])
+        fallback_call = request.call_args_list[-1]
+        self.assertEqual(fallback_call.args[0], "https://integrate.api.nvidia.com/v1/chat/completions")
+        self.assertEqual(fallback_call.args[2]["Authorization"], "Bearer fallback-key")
+        self.assertEqual(fallback_call.args[3]["model"], "nvidia/backup")
+
     def test_fallback_format_changes_share_its_four_attempts(self):
         malformed = {"choices": [{"message": {"content": "not-json"}}]}
         routing = reviewer.RequestError("response_format is not supported", status=400)
@@ -516,8 +573,21 @@ class OllamaCloudRequestTest(unittest.TestCase):
                             actual = reviewer.review_chunk("test-key", "primary-model", (), chunk, 1, 1)
                         self.assertEqual(actual, result)
                         models = [json.loads(call.args[0].data)["model"] for call in request.call_args_list]
-                        expected_last = "fallback-model" if failures == reviewer.MAX_REQUEST_ATTEMPTS else "primary-model"
-                        self.assertEqual(models, ["primary-model"] * failures + [expected_last])
+                        primary_attempts = min(
+                            failures,
+                            reviewer.MAX_PRIMARY_TRANSPORT_ATTEMPTS_WITH_FALLBACK,
+                        )
+                        expected_last = (
+                            "fallback-model"
+                            if failures >= reviewer.MAX_PRIMARY_TRANSPORT_ATTEMPTS_WITH_FALLBACK
+                            else "primary-model"
+                        )
+                        self.assertEqual(
+                            models,
+                            ["primary-model"] * primary_attempts
+                            + ["fallback-model"] * (failures - primary_attempts)
+                            + [expected_last],
+                        )
 
     def test_http_error_body_timeout_preserves_status(self) -> None:
         body = mock.Mock()
@@ -810,7 +880,32 @@ class OllamaCloudRequestTest(unittest.TestCase):
 
         self.assertEqual(result["findings"], [])
         self.assertEqual(request.call_count, 2)
-        self.assertIn("finish_reason=length", output.call_args.args[0])
+        self.assertTrue(
+            any("finish_reason=length" in call.args[0] for call in output.call_args_list)
+        )
+
+    def test_repairs_one_received_malformed_json_before_regenerating_the_review(self) -> None:
+        malformed_text = '{"summary":"Reviewed.","findings":['
+        malformed = {
+            "choices": [{"message": {"content": malformed_text}, "finish_reason": "length"}]
+        }
+        valid = {
+            "choices": [
+                {"message": {"content": '{"summary":"Reviewed.","findings":[]}'}}
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        with (
+            mock.patch.object(reviewer, "request_json", side_effect=[malformed, valid]) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch("builtins.print"),
+        ):
+            result = reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
+
+        self.assertEqual(result["findings"], [])
+        repair_prompt = request.call_args_list[1].args[3]["messages"][1]["content"]
+        self.assertIn("untrusted previous model output", repair_prompt)
+        self.assertIn(malformed_text, repair_prompt)
 
     def test_regenerates_after_empty_review_message(self) -> None:
         empty = {
@@ -1251,7 +1346,7 @@ class GitHubReviewTest(unittest.TestCase):
             ) as request,
             mock.patch.dict(
                 reviewer.os.environ,
-                {"REVIEW_ORIGIN": "azure-devops"},
+                {"REVIEW_ORIGIN": "azure-devops", "GITHUB_RUN_ID": "1001"},
                 clear=False,
             ),
             mock.patch("builtins.print"),
@@ -1269,7 +1364,7 @@ class GitHubReviewTest(unittest.TestCase):
         self.assertEqual(request.call_count, 2)
         payload = request.call_args_list[1].args[3]
         self.assertIn(
-            "<!-- openrouter-pr-review:azure-devops:head-sha -->",
+            "<!-- openrouter-pr-review:azure-devops:head-sha:ollama-cloud:review-model:1001 -->",
             payload["body"],
         )
         self.assertIn("## Azure DevOps · DirectAPI", payload["body"])
@@ -1282,6 +1377,31 @@ class GitHubReviewTest(unittest.TestCase):
             "[Azure DevOps · DirectAPI]",
             payload["comments"][0]["body"],
         )
+
+    def test_azure_manual_rerun_with_the_same_model_is_not_a_duplicate(self) -> None:
+        existing = [
+            {"body": "<!-- openrouter-pr-review:azure-devops:head-sha:ollama-cloud:model-one:1001 -->"}
+        ]
+        with (
+            mock.patch.object(reviewer, "request_json", side_effect=[existing, {}]) as request,
+            mock.patch.dict(
+                reviewer.os.environ,
+                {"REVIEW_ORIGIN": "azure-devops", "GITHUB_RUN_ID": "1002"},
+                clear=False,
+            ),
+            mock.patch("builtins.print"),
+        ):
+            reviewer.publish_review(
+                "owner/repository",
+                "2",
+                "token",
+                "model-one",
+                "head-sha",
+                self.plan,
+                self.publication(),
+            )
+
+        self.assertEqual(request.call_count, 2)
 
     def test_rejects_unknown_review_origin(self) -> None:
         with mock.patch.dict(
