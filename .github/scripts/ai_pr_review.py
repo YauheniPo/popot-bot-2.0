@@ -907,25 +907,46 @@ def request_valid_review(
     repair_body: dict[str, object] | None = None
     while True:
         response = _request_review_or_repair(headers, body, repair_body, attempts)
-        try:
-            parsed = parse_review_response(response, has_expected_shape)
-        except ReviewResponseError as error:
-            if EXECUTION_REPORT:
-                EXECUTION_REPORT.validate_last("invalid_json")
-            repair_body = _repair_invalid_review(body, response, repair_body, model_label, error)
-            if repair_body is not None:
-                continue
-            if attempts.used == MAX_REQUEST_ATTEMPTS:
-                raise
-            print(
-                f"  {model_label} returned invalid structured JSON; "
-                f"regenerating after attempt {attempts.used}/{MAX_REQUEST_ATTEMPTS} ({error})",
-                file=sys.stderr,
-            )
-        else:
-            if EXECUTION_REPORT:
-                EXECUTION_REPORT.validate_last("valid_json")
+        parsed, repair_body = _parse_or_schedule_review_repair(
+            response,
+            body,
+            repair_body,
+            model_label,
+            has_expected_shape,
+            attempts,
+        )
+        if parsed is not None:
             return parsed
+
+
+def _parse_or_schedule_review_repair(
+    response: object,
+    body: dict[str, object],
+    repair_body: dict[str, object] | None,
+    model_label: str,
+    has_expected_shape: Callable[[object], bool],
+    attempts: ReviewAttempts,
+) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+    """Return valid JSON or prepare the next bounded request after invalid JSON."""
+    try:
+        parsed = parse_review_response(response, has_expected_shape)
+    except ReviewResponseError as error:
+        if EXECUTION_REPORT:
+            EXECUTION_REPORT.validate_last("invalid_json")
+        repair_body = _repair_invalid_review(body, response, repair_body, model_label, error)
+        if repair_body is not None:
+            return None, repair_body
+        if attempts.used == MAX_REQUEST_ATTEMPTS:
+            raise
+        print(
+            f"  {model_label} returned invalid structured JSON; "
+            f"regenerating after attempt {attempts.used}/{MAX_REQUEST_ATTEMPTS} ({error})",
+            file=sys.stderr,
+        )
+        return None, None
+    if EXECUTION_REPORT:
+        EXECUTION_REPORT.validate_last("valid_json")
+    return parsed, None
 
 
 @contextlib.contextmanager

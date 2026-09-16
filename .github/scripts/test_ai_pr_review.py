@@ -923,6 +923,30 @@ class OllamaCloudRequestTest(unittest.TestCase):
         self.assertIn("untrusted previous model output", repair_prompt)
         self.assertIn(malformed_text, repair_prompt)
 
+    def test_parses_a_valid_review_without_scheduling_a_repair(self) -> None:
+        expected = {"summary": "Reviewed.", "findings": []}
+        with mock.patch.object(reviewer, "parse_review_response", return_value=expected):
+            parsed, repair_body = reviewer._parse_or_schedule_review_repair(
+                {"choices": []},
+                {"model": "review-model", "messages": []},
+                None,
+                "review-model",
+                reviewer._has_review_shape,
+                reviewer.ReviewAttempts(),
+            )
+        self.assertEqual(parsed, expected)
+        self.assertIsNone(repair_body)
+
+    def test_refuses_an_oversized_model_response_for_json_repair(self) -> None:
+        response = {
+            "choices": [
+                {"message": {"content": "x" * (reviewer.MAX_REPAIR_CONTENT_CHARACTERS + 1)}}
+            ]
+        }
+        self.assertIsNone(
+            reviewer.repair_review_body({"messages": [{"role": "system", "content": "rules"}]}, response)
+        )
+
     def test_regenerates_after_empty_review_message(self) -> None:
         empty = {
             "choices": [
@@ -1393,6 +1417,15 @@ class GitHubReviewTest(unittest.TestCase):
             "[Azure DevOps · DirectAPI]",
             payload["comments"][0]["body"],
         )
+
+    def test_rejects_a_non_numeric_azure_run_id_in_the_review_marker(self) -> None:
+        with mock.patch.dict(
+            reviewer.os.environ,
+            {"REVIEW_ORIGIN": reviewer.AZURE_REVIEW_ORIGIN, "GITHUB_RUN_ID": "not-a-run-id"},
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "decimal GitHub Actions run ID"):
+                reviewer._review_marker("head-sha", "review-model")
 
     def test_azure_manual_rerun_with_the_same_model_is_not_a_duplicate(self) -> None:
         existing = [
