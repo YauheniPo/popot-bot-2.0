@@ -137,7 +137,9 @@ class OllamaReviewTest(unittest.TestCase):
             self.assertEqual(values["fallback_ready"], "false")
             self.assertEqual(values["selected_mode"], "ordinary")
             self.assertEqual(values["provider"], "ollama-cloud")
+            self.assertEqual(values["selected_provider"], "ollama-cloud")
             self.assertEqual(values["secondary_model"], "")
+            self.assertEqual(values["secondary_provider"], "")
 
     def test_missing_key_stops_before_network_access(self):
         with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(ai_review_preflight, "probe") as probe:
@@ -162,8 +164,31 @@ class OllamaReviewTest(unittest.TestCase):
             ])
             values = dict(line.split("=", 1) for line in output.read_text().splitlines())
             self.assertEqual(values["secondary_model"], "backup")
+            self.assertEqual(values["secondary_provider"], "nvidia")
             self.assertEqual(values["fallback_ready"], "true")
             self.assertNotIn("secondary_mode", values)
+
+    def test_fallback_provider_is_probed_and_exported_as_an_independent_route(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "outputs"
+            with (
+                mock.patch.dict(os.environ, {
+                    "OLLAMA_API_KEY": "primary-key", "NVIDIA_API_KEY": "fallback-key",
+                    "DIRECT_REVIEW_PROVIDER": "ollama-cloud",
+                    "DIRECT_REVIEW_FALLBACK_PROVIDER": "nvidia",
+                    "DIRECT_REVIEW_FALLBACK_MODEL": "nvidia/backup",
+                    "GITHUB_OUTPUT": str(output),
+                }, clear=True),
+                mock.patch.object(ai_review_preflight, "probe") as probe,
+            ):
+                self.assertEqual(ai_review_preflight.main(["--probe", "json"]), 0)
+            self.assertEqual(probe.call_args_list, [
+                mock.call("primary-key", "json", "ollama-cloud", ai_review_preflight.MODEL),
+                mock.call("fallback-key", "json", "nvidia", "nvidia/backup"),
+            ])
+            values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+            self.assertEqual(values["selected_provider"], "ollama-cloud")
+            self.assertEqual(values["secondary_provider"], "nvidia")
 
     def test_fallback_readiness_requires_a_valid_response_on_the_reviewers_api(self):
         for kind, response in (
@@ -435,6 +460,14 @@ class OllamaReviewTest(unittest.TestCase):
                 "${{ steps." + preflight_id + ".outputs.selected_model }}",
             )
             self.assertEqual(
+                review_step["env"]["DIRECT_REVIEW_PROVIDER"],
+                "${{ steps." + preflight_id + ".outputs.selected_provider }}",
+            )
+            self.assertEqual(
+                review_step["env"]["DIRECT_REVIEW_FALLBACK_PROVIDER"],
+                "${{ steps." + preflight_id + ".outputs.secondary_provider }}",
+            )
+            self.assertEqual(
                 review_step["env"]["DIRECT_REVIEW_MODEL_MODE"],
                 "${{ steps." + preflight_id + ".outputs.selected_mode }}",
             )
@@ -460,6 +493,16 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertIn("::warning::", unavailable["run"])
         self.assertIn("GITHUB_STEP_SUMMARY", unavailable["run"])
         self.assertNotIn("exit 1", unavailable["run"])
+
+        manual_summary = next(
+            step for job in manual["jobs"].values() for step in job["steps"]
+            if step.get("name") == "Summarize manual review"
+        )
+        for label in (
+            "Requested provider/model", "Effective provider/model", "Requested publication",
+            "Request ID", "Scope:",
+        ):
+            self.assertIn(label, manual_summary["run"])
 
     def test_job_timeouts_fit_two_model_probes_and_the_default_review_budget(self):
         root = Path(__file__).resolve().parents[2]
@@ -613,6 +656,15 @@ class NousReviewTest(unittest.TestCase):
         )
         self.assertIn("--probe claude", claude_preflight["run"])
         self.assertEqual(claude_preflight["env"]["CLAUDE_REVIEW_BASE_URL"], "${{ env.CLAUDE_REVIEW_BASE_URL }}")
+
+    def test_azure_review_summary_explains_the_cross_platform_flow(self):
+        root = Path(__file__).resolve().parents[2]
+        launcher = (root / "azure-ci/azure-ai-code-review.yml").read_text()
+
+        self.assertIn("## Azure DevOps → GitHub AI review", launcher)
+        self.assertIn("Azure DevOps started this review; GitHub Actions executed it", launcher)
+        self.assertIn("Published review", launcher)
+        self.assertIn("No new actionable findings", launcher)
 
 
 if __name__ == "__main__":

@@ -110,7 +110,12 @@ class DeploymentStatePolicyTests(unittest.TestCase):
     def test_llm_overlay_merges_only_explicit_nested_keys(self) -> None:
         runtime_tasks = (HERMES_ROOT / "ansible" / "tasks" / "runtime.yml").read_text()
 
-        self.assertIn("combine(hermes_managed_config, recursive=true, list_merge='replace')", runtime_tasks)
+        self.assertIn("Combine managed and existing external Hermes skill directories", runtime_tasks)
+        self.assertIn("hermes_existing_config |", runtime_tasks)
+        self.assertIn("hermes_managed_config |", runtime_tasks)
+        self.assertIn("{'skills': {'external_dirs': hermes_external_skill_dirs}}", runtime_tasks)
+        self.assertIn("recursive=true", runtime_tasks)
+        self.assertIn("list_merge='replace'", runtime_tasks)
         variables = (HERMES_ROOT / "ansible" / "group_vars" / "all" / "vars.yml").read_text()
         self.assertIn("combine(vps_hermes.config.managed_overlay", variables)
 
@@ -144,7 +149,7 @@ class DeploymentStatePolicyTests(unittest.TestCase):
         services = (HERMES_ROOT / "ansible" / "tasks" / "services.yml").read_text()
 
         check_position = services.index("Validate the final managed Hermes configuration")
-        gateway_position = services.index("Install and start the Hermes system gateway")
+        gateway_position = services.index("Install the Hermes system gateway unit")
         self.assertLess(check_position, gateway_position)
         self.assertIn("ANSIBLE MANAGED RESPONSE LANGUAGE", services)
 

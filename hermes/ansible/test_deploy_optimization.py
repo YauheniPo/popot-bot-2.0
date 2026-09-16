@@ -7,6 +7,7 @@ import unittest
 ANSIBLE = Path(__file__).parent
 PLAYBOOK = (ANSIBLE / "playbook.yml").read_text()
 SERVICES = (ANSIBLE / "tasks" / "services.yml").read_text()
+RUNTIME = (ANSIBLE / "tasks" / "runtime.yml").read_text()
 
 
 class DeployOptimizationTests(unittest.TestCase):
@@ -27,9 +28,36 @@ class DeployOptimizationTests(unittest.TestCase):
 
     def test_services_restart_only_via_notified_handlers(self) -> None:
         self.assertNotIn("state: restarted", SERVICES)
+        self.assertNotIn("--start-now", SERVICES)
         self.assertIn("meta: flush_handlers", SERVICES)
         self.assertIn("restart Hermes gateway", PLAYBOOK)
         self.assertIn("restart managed observability services", PLAYBOOK)
+
+    def test_pinned_external_engineering_skills_preserve_existing_directories(self) -> None:
+        self.assertIn("Install pinned Matt Pocock engineering skills for Hermes", RUNTIME)
+        self.assertIn("version: \"{{ vps_external_skills.matt_pocock_engineering.revision }}\"", RUNTIME)
+        self.assertIn("Protect pinned Matt Pocock engineering skills from Hermes writes", RUNTIME)
+        self.assertIn("Combine managed and existing external Hermes skill directories", RUNTIME)
+        self.assertIn("hermes_existing_config.get('skills', {}).get('external_dirs', [])", RUNTIME)
+
+    def test_external_skill_sources_are_not_world_readable(self) -> None:
+        parent_task = RUNTIME.split(
+            "- name: Create the root-owned external Hermes skills directory", 1
+        )[1].split("- name: Install pinned Matt Pocock engineering skills for Hermes", 1)[0]
+        protect_task = RUNTIME.split(
+            "- name: Protect pinned Matt Pocock engineering skills from Hermes writes", 1
+        )[1].split("- name: Verify required Matt Pocock engineering skill sources", 1)[0]
+        self.assertIn('group: "{{ hermes_user }}"', parent_task)
+        self.assertIn('mode: "0750"', parent_task)
+        self.assertIn('group: "{{ hermes_user }}"', protect_task)
+        self.assertIn('mode: "u=rwX,g=rX,o="', protect_task)
+
+    def test_external_skill_checkout_is_confined_to_its_managed_prefix(self) -> None:
+        self.assertIn(
+            "vps_external_skills.matt_pocock_engineering.checkout_dir is match('^/opt/hermes-external-skills/",
+            PLAYBOOK,
+        )
+        self.assertIn("'..' not in vps_external_skills.matt_pocock_engineering.checkout_dir.split('/')", PLAYBOOK)
 
 
 if __name__ == "__main__":

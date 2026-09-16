@@ -39,6 +39,56 @@
     cache_valid_time: 3600
   when: vps_deploy.features.development_clis | bool
 
+- name: Install Git for pinned external Hermes skills
+  ansible.builtin.apt:
+    name: git
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: vps_external_skills.matt_pocock_engineering.enabled | bool
+
+- name: Create the root-owned external Hermes skills directory
+  ansible.builtin.file:
+    path: "{{ vps_external_skills.matt_pocock_engineering.checkout_dir | dirname }}"
+    state: directory
+    owner: root
+    group: "{{ hermes_user }}"
+    mode: "0750"
+  when: vps_external_skills.matt_pocock_engineering.enabled | bool
+
+- name: Install pinned Matt Pocock engineering skills for Hermes
+  ansible.builtin.git:
+    repo: "{{ vps_external_skills.matt_pocock_engineering.repository }}"
+    dest: "{{ vps_external_skills.matt_pocock_engineering.checkout_dir }}"
+    version: "{{ vps_external_skills.matt_pocock_engineering.revision }}"
+    update: true
+    force: false
+  environment:
+    GIT_TERMINAL_PROMPT: "0"
+  when: vps_external_skills.matt_pocock_engineering.enabled | bool
+
+- name: Protect pinned Matt Pocock engineering skills from Hermes writes
+  ansible.builtin.file:
+    path: "{{ vps_external_skills.matt_pocock_engineering.checkout_dir }}"
+    state: directory
+    owner: root
+    group: "{{ hermes_user }}"
+    mode: "u=rwX,g=rX,o="
+    recurse: true
+  when: vps_external_skills.matt_pocock_engineering.enabled | bool
+
+- name: Verify required Matt Pocock engineering skill sources
+  ansible.builtin.stat:
+    path: "{{ vps_external_skills.matt_pocock_engineering.skills_dir }}/{{ item }}/SKILL.md"
+  loop:
+    - tdd
+    - diagnosing-bugs
+    - code-review
+    - codebase-design
+  register: hermes_matt_pocock_skill_sources
+  failed_when: not hermes_matt_pocock_skill_sources.stat.exists
+  when: vps_external_skills.matt_pocock_engineering.enabled | bool
+
 - name: Inspect the existing Hermes configuration
   ansible.builtin.stat:
     path: "{{ hermes_home }}/config.yaml"
@@ -76,11 +126,53 @@
   when: hermes_managed_config | length > 0
   no_log: true
 
+- name: Preserve valid externally configured Hermes skill directories
+  ansible.builtin.assert:
+    that:
+      - hermes_existing_config.get('skills', {}) is mapping
+      - hermes_existing_config.get('skills', {}).get('external_dirs', []) is sequence
+      - hermes_existing_config.get('skills', {}).get('external_dirs', []) is not string
+      - >-
+        hermes_existing_config.get('skills', {}).get('external_dirs', []) |
+        select('string') | map('trim') | select | list | length ==
+        hermes_existing_config.get('skills', {}).get('external_dirs', []) | length
+    fail_msg: Existing skills.external_dirs must be a list of non-empty strings.
+  when: hermes_managed_config | length > 0
+  no_log: true
+
+- name: Combine managed and existing external Hermes skill directories
+  ansible.builtin.set_fact:
+    hermes_external_skill_dirs: >-
+      {{
+        (
+          ([vps_external_skills.matt_pocock_engineering.skills_dir]
+           if (vps_external_skills.matt_pocock_engineering.enabled | bool)
+           else []
+          ) +
+          (
+            hermes_existing_config.get('skills', {}).get('external_dirs', []) |
+            reject('equalto', vps_external_skills.matt_pocock_engineering.skills_dir) |
+            list
+          )
+        ) | map('trim') | unique | list
+      }}
+  when: hermes_managed_config | length > 0
+  no_log: true
+
 - name: Apply the managed Hermes model and voice configuration
   ansible.builtin.copy:
     content: >-
       {{ hermes_existing_config |
-         combine(hermes_managed_config, recursive=true, list_merge='replace') |
+         combine(
+           hermes_managed_config |
+           combine(
+             {'skills': {'external_dirs': hermes_external_skill_dirs}},
+             recursive=true,
+             list_merge='replace'
+           ),
+           recursive=true,
+           list_merge='replace'
+         ) |
          to_nice_yaml(indent=2, sort_keys=false) }}
     dest: "{{ hermes_home }}/config.yaml"
     owner: "{{ hermes_user }}"

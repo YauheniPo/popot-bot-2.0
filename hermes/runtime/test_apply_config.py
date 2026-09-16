@@ -226,6 +226,19 @@ class ApplyConfigTests(unittest.TestCase):
         ):
             self.assertNotIn(kept, disabled)
 
+    def test_matt_pocock_engineering_skills_are_pinned_and_enabled(self) -> None:
+        settings = apply_config.load_settings(MODULE_PATH.parent.parent / "config" / "vps-defaults.yml")
+
+        source = settings["vps_external_skills"]["matt_pocock_engineering"]
+        self.assertIs(source["enabled"], True)
+        self.assertEqual(source["repository"], "https://github.com/mattpocock/skills.git")
+        self.assertRegex(source["revision"], r"^[0-9a-f]{40}$")
+        self.assertTrue(source["checkout_dir"].startswith("/opt/"))
+        self.assertEqual(
+            source["skills_dir"],
+            f"{source['checkout_dir']}/skills/engineering",
+        )
+
     def test_repository_security_policy_requires_approval_and_github_auth(self) -> None:
         settings = apply_config.load_settings(MODULE_PATH.parent.parent / "config" / "vps-defaults.yml")
         # Security invariants are intentionally separate from tunable defaults.
