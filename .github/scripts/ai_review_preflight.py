@@ -285,6 +285,37 @@ def probe_models(
     return primary_ready, fallback_ready
 
 
+def _export_outputs(
+    output_path: str,
+    provider: str,
+    selected_provider: str,
+    base_url: str,
+    model: str,
+    fallback: str,
+    primary_ready: bool,
+    fallback_ready: bool,
+    selected_model: str,
+    normalized_fallback_provider: str,
+    secondary_base_url: str,
+) -> None:
+    # A configured fallback is selectable only after the matching API probe.
+    values = {
+        "provider": provider,
+        "selected_provider": selected_provider,
+        "anthropic_base_url": base_url,
+        "primary_model": model, "primary_ready": str(primary_ready).lower(),
+        "fallback_model": fallback, "fallback_ready": str(fallback_ready).lower(),
+        "selected_model": selected_model, "selected_mode": "ordinary",
+        "secondary_model": fallback if primary_ready and fallback_ready else "",
+        "secondary_provider": normalized_fallback_provider if primary_ready and fallback_ready else "",
+        "fallback_provider": normalized_fallback_provider if fallback else "",
+        "secondary_anthropic_base_url": secondary_base_url,
+    }
+    with open(output_path, "a", encoding="utf-8") as output:
+        for key, value in values.items():
+            output.write(f"{key}={value}\n")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--probe", choices=["json", "tools", "claude"], required=True)
@@ -310,22 +341,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     selected_model = model if primary_ready else fallback
     selected_provider = provider if primary_ready else normalized_fallback_provider
+    secondary_base_url = ""
+    if args.probe in {"tools", "claude"} and fallback and fallback_ready:
+        secondary_base_url = anthropic_base_url(normalized_fallback_provider)
     output_path = os.environ.get("GITHUB_OUTPUT")
     if output_path:
-        # A configured fallback is selectable only after the matching API probe.
-        values = {
-            "provider": provider,
-            "selected_provider": selected_provider,
-            "anthropic_base_url": base_url,
-            "primary_model": model, "primary_ready": str(primary_ready).lower(),
-            "fallback_model": fallback, "fallback_ready": str(fallback_ready).lower(),
-            "selected_model": selected_model, "selected_mode": "ordinary",
-            "secondary_model": fallback if primary_ready and fallback_ready else "",
-            "secondary_provider": normalized_fallback_provider if primary_ready and fallback_ready else "",
-        }
-        with open(output_path, "a", encoding="utf-8") as output:
-            for key, value in values.items():
-                output.write(f"{key}={value}\n")
+        _export_outputs(
+            output_path, provider, selected_provider, base_url, model, fallback,
+            primary_ready, fallback_ready, selected_model,
+            normalized_fallback_provider, secondary_base_url,
+        )
     print(f"{selected_provider}: selected {selected_model} for review")
     return 0
 

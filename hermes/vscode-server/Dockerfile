@@ -14,12 +14,8 @@ RUN apt-get update \
         git \
         python3 \
         python3-venv \
-    && rm -rf /var/lib/apt/lists/*
-
-# Match bind-mounted file ownership even when the host Hermes account is not
-# UID/GID 1000. Keep the image user name so the upstream entrypoint continues
-# to initialize code-server normally.
-RUN current_uid="$(id -u coder)" \
+    && rm -rf /var/lib/apt/lists/* \
+    && current_uid="$(id -u coder)" \
     && current_gid="$(id -g coder)" \
     && if [ "${current_gid}" != "${HERMES_GID}" ]; then groupmod -o -g "${HERMES_GID}" coder; fi \
     && if [ "${current_uid}" != "${HERMES_UID}" ]; then usermod -o -u "${HERMES_UID}" coder; fi \

@@ -189,6 +189,8 @@ class OllamaReviewTest(unittest.TestCase):
             values = dict(line.split("=", 1) for line in output.read_text().splitlines())
             self.assertEqual(values["selected_provider"], "ollama-cloud")
             self.assertEqual(values["secondary_provider"], "nvidia")
+            self.assertEqual(values["fallback_provider"], "nvidia")
+            self.assertEqual(values["secondary_anthropic_base_url"], "")
 
     def test_fallback_readiness_requires_a_valid_response_on_the_reviewers_api(self):
         for kind, response in (
@@ -430,12 +432,23 @@ class OllamaReviewTest(unittest.TestCase):
         for job in automatic["jobs"].values():
             for step in job["steps"]:
                 if "anthropics/claude-code-action@" in step.get("uses", ""):
-                    self.assertEqual(step["env"]["ANTHROPIC_BASE_URL"], "${{ steps.claude_models.outputs.anthropic_base_url }}")
-                    self.assertIn("steps.claude_models.outputs.provider", step["with"]["anthropic_api_key"])
+                    step_id = step.get("id", "")
+                    is_fallback = step_id in ("claude_review_fallback", "claude_review_fallback_retry")
+                    if is_fallback:
+                        self.assertEqual(step["env"]["ANTHROPIC_BASE_URL"], "${{ steps.claude_models.outputs.secondary_anthropic_base_url }}")
+                        self.assertIn("steps.claude_models.outputs.fallback_provider", step["with"]["anthropic_api_key"])
+                    else:
+                        self.assertEqual(step["env"]["ANTHROPIC_BASE_URL"], "${{ steps.claude_models.outputs.anthropic_base_url }}")
+                        self.assertIn("steps.claude_models.outputs.provider", step["with"]["anthropic_api_key"])
                     self.assertIn("OPENROUTER_API_KEY", step["with"]["anthropic_api_key"])
                     self.assertIn("OPENROUTER_API_KEY", step["env"]["ANTHROPIC_AUTH_TOKEN"])
                 if "CLAUDE_REVIEW_ENDPOINT" in step.get("env", {}):
-                    self.assertEqual(step["env"]["CLAUDE_REVIEW_ENDPOINT"], "${{ steps.claude_models.outputs.anthropic_base_url }}")
+                    endpoint = step["env"]["CLAUDE_REVIEW_ENDPOINT"]
+                    self.assertIn("steps.claude_models.outputs.anthropic_base_url", endpoint)
+                    self.assertIn("steps.claude_models.outputs.secondary_anthropic_base_url", endpoint)
+                    provider = step["env"]["CLAUDE_REVIEW_PROVIDER"]
+                    self.assertIn("steps.claude_models.outputs.provider", provider)
+                    self.assertIn("steps.claude_models.outputs.fallback_provider", provider)
         manual_text = (root / ".github/workflows/manual-ai-review.yml").read_text()
         manual = yaml.load(manual_text, Loader=yaml.BaseLoader)
         manual_inputs = manual["on"]["workflow_dispatch"]["inputs"]
@@ -520,6 +533,27 @@ class OllamaReviewTest(unittest.TestCase):
             "Request ID", "Scope:",
         ):
             self.assertIn(label, manual_summary["run"])
+
+    def test_claude_review_has_a_bounded_turn_and_wall_clock_budget(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = yaml.load(
+            (root / ".github/workflows/pr-ai-review.yml").read_text(),
+            Loader=yaml.BaseLoader,
+        )
+        job = workflow["jobs"]["claude-code-plugin-review"]
+        self.assertEqual(job["timeout-minutes"], "45")
+        action_steps = [
+            step for step in job["steps"]
+            if "anthropics/claude-code-action@" in step.get("uses", "")
+        ]
+        self.assertEqual(len(action_steps), 4)
+        for step in action_steps:
+            with self.subTest(step=step["id"]):
+                self.assertIn("--max-turns 48", step["with"]["claude_args"])
+                self.assertEqual(
+                    step["with"]["show_full_output"],
+                    "${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}",
+                )
 
     def test_job_timeouts_fit_two_model_probes_and_the_default_review_budget(self):
         root = Path(__file__).resolve().parents[2]
@@ -664,7 +698,11 @@ class NousReviewTest(unittest.TestCase):
                     if any(name in step.get("run", "") for name in ("ai_pr_review.py", "ai_review_preflight.py")):
                         self.assertEqual(step["env"]["NOUS_API_KEY"], "${{ secrets.NOUS_API_KEY }}")
                     if "anthropics/claude-code-action@" in step.get("uses", ""):
-                        self.assertEqual(step["env"]["ANTHROPIC_BASE_URL"], "${{ steps.claude_models.outputs.anthropic_base_url }}")
+                        step_id = step.get("id", "")
+                        if step_id in ("claude_review_fallback", "claude_review_fallback_retry"):
+                            self.assertEqual(step["env"]["ANTHROPIC_BASE_URL"], "${{ steps.claude_models.outputs.secondary_anthropic_base_url }}")
+                        else:
+                            self.assertEqual(step["env"]["ANTHROPIC_BASE_URL"], "${{ steps.claude_models.outputs.anthropic_base_url }}")
                         self.assertIn("NOUS_API_KEY", step["with"]["anthropic_api_key"])
                         self.assertEqual(step["with"]["anthropic_api_key"], step["env"]["ANTHROPIC_AUTH_TOKEN"])
         claude_preflight = next(

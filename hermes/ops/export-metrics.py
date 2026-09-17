@@ -10,7 +10,7 @@ import sqlite3
 import subprocess
 import time
 from pathlib import Path
-from typing import Iterable, Optional, Union
+from typing import Iterable
 
 
 def home() -> Path:
@@ -24,8 +24,8 @@ def label(value: object) -> str:
 
 def metric(
     name: str,
-    value: Union[float, int],
-    labels: Optional[dict[str, object]] = None,
+    value: float | int,
+    labels: dict[str, object] | None = None,
 ) -> str:
     suffix = ""
     if labels:

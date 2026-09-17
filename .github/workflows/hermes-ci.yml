@@ -49,9 +49,32 @@ jobs:
           python -m pip install --requirement hermes/requirements-dev.txt
           # Static, repository-owned path (no untrusted input); installs
           # ansible.posix so the playbook syntax-check can resolve
-          # ansible.posix.synchronize.
-          ansible-galaxy collection install --requirements-file hermes/ansible/requirements.yml
-          sudo apt-get update
+          # ansible.posix.synchronize. Retry transient network resets against
+          # galaxy.ansible.com instead of failing the whole job on the first hit.
+          for attempt in 1 2 3; do
+            if ansible-galaxy collection install --requirements-file hermes/ansible/requirements.yml; then
+              installed=1
+              break
+            fi
+            echo "ansible-galaxy attempt ${attempt} failed; retrying..." >&2
+            sleep $((attempt * 10))
+          done
+          if [ -z "${installed:-}" ]; then
+            echo "ansible-galaxy failed after 3 attempts" >&2
+            exit 1
+          fi
+          for attempt in 1 2 3; do
+            if sudo apt-get update; then
+              updated=1
+              break
+            fi
+            echo "apt-get update attempt ${attempt} failed; retrying..." >&2
+            sleep $((attempt * 10))
+          done
+          if [ -z "${updated:-}" ]; then
+            echo "apt-get update failed after 3 attempts" >&2
+            exit 1
+          fi
           sudo apt-get install --yes ripgrep shellcheck
 
       - name: Run Hermes checks

@@ -1001,6 +1001,16 @@ def _handle_shared_data(
     return True
 
 
+def _event_name(command: str | None, message: dict[str, Any]) -> str:
+    if command:
+        return command
+    if isinstance(message.get("contact"), dict):
+        return "contact"
+    if isinstance(message.get("location"), dict):
+        return "location"
+    return "close_keyboard"
+
+
 def handle_update(api: TelegramBotAPI, update: dict[str, Any]) -> None:
     message = update.get("message")
     if not isinstance(message, dict):
@@ -1032,14 +1042,7 @@ def handle_update(api: TelegramBotAPI, update: dict[str, Any]) -> None:
     ):
         return
 
-    if command:
-        event_name = command
-    elif isinstance(message.get("contact"), dict):
-        event_name = "contact"
-    elif isinstance(message.get("location"), dict):
-        event_name = "location"
-    else:
-        event_name = "close_keyboard"
+    event_name = _event_name(command, message)
     LOGGER.info("Handling user request: %s", event_name)
 
     if chat.get("type") != "private":
