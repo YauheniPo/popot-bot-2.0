@@ -310,7 +310,7 @@ jobs:
             echo "- [Published review](${review_url})"
             echo "- [Review-report artifact](${run_url}/artifacts)"
             echo
-            echo "`Execution: ${conclusion:-unknown}` means the reviewer completed. The published review above contains its findings."
+            echo "\`Execution: ${conclusion:-unknown}\` means the reviewer completed. The published review above contains its findings."
           } >"${summary_file}"
 
           echo "##vso[task.uploadsummary]${summary_file}"
