@@ -259,6 +259,7 @@ jobs:
           requested_provider=""
           requested_publish_target=""
           target_ref=""
+          check_run_url=""
           review_url="${run_url}"
           findings_count=""
           review_result="The review was published outside a pull request; open the GitHub run for its result."
@@ -272,6 +273,7 @@ jobs:
             requested_provider="$(jq -r '.requested_provider // ""' "${report_dir}/report.json")"
             requested_publish_target="$(jq -r '.requested_publish_target // ""' "${report_dir}/report.json")"
             target_ref="$(jq -r '.target_ref // ""' "${report_dir}/report.json")"
+            check_run_url="$(jq -r '.check_run_url // ""' "${report_dir}/report.json")"
             findings_count="$(jq -r '.findings_count // ""' "${report_dir}/report.json")"
           fi
           if [[ -n "${pr_number}" ]]; then
@@ -308,6 +310,7 @@ jobs:
             echo "- [GitHub workflow run](${run_url})"
             [[ -n "${pr_number}" ]] && echo "- [Pull request #${pr_number}](${pr_url})"
             echo "- [Published review](${review_url})"
+            [[ -n "${check_run_url}" ]] && echo "- [Findings](${check_run_url})"
             echo "- [Review-report artifact](${run_url}/artifacts)"
             echo
             echo "\`Execution: ${conclusion:-unknown}\` means the reviewer completed. The published review above contains its findings."
