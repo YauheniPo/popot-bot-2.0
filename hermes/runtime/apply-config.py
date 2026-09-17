@@ -60,7 +60,7 @@ def nested_value(data: dict[str, Any], dotted_key: str) -> tuple[bool, Any]:
     return True, current
 
 
-_UNRESOLVED_PLACEHOLDER = re.compile(r"\$\{|\$[A-Za-z_][A-Za-z0-9_]*")
+_UNRESOLVED_PLACEHOLDER = re.compile(r"\$\{|\$[A-Za-z_]\w*")
 
 
 def render_value(value: Any, variables: dict[str, str]) -> Any:
@@ -90,6 +90,78 @@ def _string_list(section: dict[str, Any], key: str) -> list[str]:
     return value
 
 
+def _set_operations(
+    settings: dict[str, Any],
+    current_config: dict[str, Any],
+    variables: dict[str, str],
+) -> list[Operation]:
+    operations: list[Operation] = []
+    for key, raw_value in _mapping(settings, "set").items():
+        if not isinstance(key, str) or not key:
+            raise ValueError("vps_runtime.set keys must be non-empty strings")
+        value = render_value(raw_value, variables)
+        exists, current = nested_value(current_config, key)
+        if not exists or current != value:
+            operations.append(Operation("set", key, value))
+    return operations
+
+
+def _set_if_missing_operations(
+    settings: dict[str, Any],
+    current_config: dict[str, Any],
+    variables: dict[str, str],
+) -> list[Operation]:
+    operations: list[Operation] = []
+    for key, raw_value in _mapping(settings, "set_if_missing").items():
+        if not isinstance(key, str) or not key:
+            raise ValueError("vps_runtime.set_if_missing keys must be non-empty strings")
+        exists, _ = nested_value(current_config, key)
+        if not exists:
+            operations.append(Operation("set", key, render_value(raw_value, variables)))
+    return operations
+
+
+def _unset_operations(
+    settings: dict[str, Any],
+    current_config: dict[str, Any],
+) -> list[Operation]:
+    operations: list[Operation] = []
+    for key in _string_list(settings, "unset"):
+        exists, _ = nested_value(current_config, key)
+        if exists:
+            operations.append(Operation("unset", key))
+    return operations
+
+
+def _capability_operations(
+    capability_settings: dict[str, Any],
+    capabilities: set[str],
+    current_config: dict[str, Any],
+    variables: dict[str, str],
+) -> list[Operation]:
+    operations: list[Operation] = []
+    for capability, raw_rules in capability_settings.items():
+        if not isinstance(capability, str) or not isinstance(raw_rules, dict):
+            raise ValueError("each capability must have a name and mapping rules")
+        if capability in capabilities:
+            operations.extend(_set_operations(raw_rules, current_config, variables))
+        else:
+            operations.extend(_unset_operations_when_missing(raw_rules, current_config))
+    return operations
+
+
+def _unset_operations_when_missing(
+    rules: dict[str, Any],
+    current_config: dict[str, Any],
+) -> list[Operation]:
+    operations: list[Operation] = []
+    for key in _string_list(rules, "unset_when_missing"):
+        exists, _ = nested_value(current_config, key)
+        if exists:
+            operations.append(Operation("unset", key))
+    return operations
+
+
 def build_operations(
     settings: dict[str, Any],
     current_config: dict[str, Any],
@@ -100,44 +172,16 @@ def build_operations(
     if not isinstance(runtime, dict):
         raise ValueError("vps_runtime must be a mapping")
 
-    operations: list[Operation] = []
-    for key, raw_value in _mapping(runtime, "set").items():
-        if not isinstance(key, str) or not key:
-            raise ValueError("vps_runtime.set keys must be non-empty strings")
-        value = render_value(raw_value, variables)
-        exists, current = nested_value(current_config, key)
-        if not exists or current != value:
-            operations.append(Operation("set", key, value))
-
-    for key, raw_value in _mapping(runtime, "set_if_missing").items():
-        if not isinstance(key, str) or not key:
-            raise ValueError("vps_runtime.set_if_missing keys must be non-empty strings")
-        exists, _ = nested_value(current_config, key)
-        if not exists:
-            operations.append(Operation("set", key, render_value(raw_value, variables)))
-
-    for key in _string_list(runtime, "unset"):
-        exists, _ = nested_value(current_config, key)
-        if exists:
-            operations.append(Operation("unset", key))
+    operations = _set_operations(runtime, current_config, variables)
+    operations.extend(_set_if_missing_operations(runtime, current_config, variables))
+    operations.extend(_unset_operations(runtime, current_config))
 
     capability_settings = runtime.get("capabilities", {})
     if not isinstance(capability_settings, dict):
         raise ValueError("vps_runtime.capabilities must be a mapping")
-    for capability, raw_rules in capability_settings.items():
-        if not isinstance(capability, str) or not isinstance(raw_rules, dict):
-            raise ValueError("each capability must have a name and mapping rules")
-        if capability in capabilities:
-            for key, raw_value in _mapping(raw_rules, "set").items():
-                value = render_value(raw_value, variables)
-                exists, current = nested_value(current_config, key)
-                if not exists or current != value:
-                    operations.append(Operation("set", key, value))
-        else:
-            for key in _string_list(raw_rules, "unset_when_missing"):
-                exists, _ = nested_value(current_config, key)
-                if exists:
-                    operations.append(Operation("unset", key))
+    operations.extend(
+        _capability_operations(capability_settings, capabilities, current_config, variables)
+    )
 
     return operations
 

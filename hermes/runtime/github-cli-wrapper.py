@@ -72,8 +72,12 @@ def main() -> int:
         return 127
     hermes_home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
     environment = github_environment(dict(os.environ), hermes_home)
-    os.execve(REAL_GH, [str(REAL_GH), *sys.argv[1:]], environment)
-    return 127
+    # execve replaces the current process on success and never returns.
+    try:
+        os.execve(REAL_GH, [str(REAL_GH), *sys.argv[1:]], environment)
+    except OSError as error:
+        print(f"managed gh wrapper: cannot start {REAL_GH}: {error}", file=sys.stderr)
+        return 127
 
 
 if __name__ == "__main__":

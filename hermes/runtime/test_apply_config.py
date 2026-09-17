@@ -11,7 +11,8 @@ from unittest import mock
 
 MODULE_PATH = Path(__file__).with_name("apply-config.py")
 SPEC = importlib.util.spec_from_file_location("apply_config", MODULE_PATH)
-assert SPEC and SPEC.loader
+assert SPEC is not None
+assert SPEC.loader is not None
 apply_config = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(apply_config)
 
@@ -75,21 +76,11 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertEqual(len(settings["vps_tailscale"]["serve"]["services"]), 5)
 
         overlay = settings["vps_hermes"]["config"]["managed_overlay"]
-        self.assertEqual(overlay["model"], {"provider": "ollama-cloud", "default": "deepseek-v4-pro"})
-        self.assertEqual(
-            overlay["fallback_providers"],
-            [{"provider": "nvidia", "model": "deepseek-ai/deepseek-v4-pro-0813"}],
-        )
-        self.assertEqual(overlay["cron"]["model_provider"], "nvidia")
-        self.assertEqual(overlay["cron"]["model"], "deepseek-ai/deepseek-v4-pro-0813")
-        self.assertEqual(
-            overlay["auxiliary"]["compression"],
-            {"provider": "openrouter", "model": "nvidia/nemotron-3-ultra-550b-a55b:free"},
-        )
         self.assertIsInstance(overlay["model"]["default"], str)
         self.assertTrue(overlay["model"]["default"])
         self.assertIsInstance(overlay["model"]["provider"], str)
         self.assertTrue(overlay["model"]["provider"])
+        self.assert_fallback_contract(overlay)
         self.assertIs(type(overlay["user_char_limit"]), int)
         self.assertGreater(overlay["user_char_limit"], 0)
         self.assertIs(type(overlay["memory_char_limit"]), int)
@@ -118,8 +109,8 @@ class ApplyConfigTests(unittest.TestCase):
         )
         self.assertTrue(values)
         self.assertTrue(all(isinstance(value, str) and (value or key == "SEARXNG_URL") for key, value in values.items()))
-        self.assertEqual(values["API_RETRY_PROVIDER"], "nvidia")
-        self.assertEqual(values["API_RETRY_MODEL"], "deepseek-ai/deepseek-v4-pro-0813")
+        self.assertEqual(values["API_RETRY_PROVIDER"], settings["vps_ops"]["api_retry"]["provider"])
+        self.assertEqual(values["API_RETRY_MODEL"], settings["vps_ops"]["api_retry"]["model"])
         self.assertEqual(values["SEARXNG_URL"], "")
 
     def assert_runtime_contract(self, runtime: dict) -> None:
@@ -194,12 +185,12 @@ class ApplyConfigTests(unittest.TestCase):
         self.assert_fallback_contract(settings["vps_hermes"]["config"]["managed_overlay"])
 
     def test_fallback_contract_rejects_entries_hermes_would_ignore(self) -> None:
-        for chain in ({}, [{}], [{"provider": "ollama-cloud", "model": " "}],
-                      [{"provider": "ollama-cloud", "model": "kimi-k3"}]):
+        for chain in ({}, [{}], [{"provider": "primary-provider", "model": " "}],
+                      [{"provider": "primary-provider", "model": "primary-model"}]):
             with self.subTest(chain=chain):
                 with self.assertRaises(AssertionError):
                     self.assert_fallback_contract({
-                        "model": {"provider": "ollama-cloud", "default": "kimi-k3"},
+                        "model": {"provider": "primary-provider", "default": "primary-model"},
                         "fallback_providers": chain,
                     })
 
@@ -478,6 +469,15 @@ class ApplyConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "vps-defaults.yml"):
             apply_config.load_settings(Path("/tmp/not-vps-defaults.yml"))
 
+    def test_build_operations_rejects_non_mapping_runtime(self) -> None:
+        with self.assertRaisesRegex(ValueError, "vps_runtime must be a mapping"):
+            apply_config.build_operations({"vps_runtime": []}, {}, {}, set())
+
+    def test_build_operations_rejects_non_mapping_capabilities(self) -> None:
+        settings = {"vps_runtime": {"capabilities": []}}
+        with self.assertRaisesRegex(ValueError, "capabilities must be a mapping"):
+            apply_config.build_operations(settings, {}, {}, set())
+
     def test_load_settings_accepts_a_literal_dotdot_path(self) -> None:
         # install/common.sh builds --settings as "${SCRIPT_DIR}/../config/
         # vps-defaults.yml" -- a literal ".." component, never normalized by
@@ -514,6 +514,18 @@ class ApplyConfigTests(unittest.TestCase):
             apply_config.service_names(settings, ["gateway", "ops"]),
             ["gateway.service", "a.service"],
         )
+
+    def test_set_operations_reject_non_string_keys(self) -> None:
+        with self.assertRaisesRegex(ValueError, "set keys must be non-empty"):
+            apply_config._set_operations({"set": {1: "value"}}, {}, {})
+
+    def test_set_if_missing_operations_reject_non_string_keys(self) -> None:
+        with self.assertRaisesRegex(ValueError, "set_if_missing keys must be non-empty"):
+            apply_config._set_if_missing_operations({"set_if_missing": {1: "value"}}, {}, {})
+
+    def test_capability_operations_reject_non_string_capability(self) -> None:
+        with self.assertRaisesRegex(ValueError, "each capability must have a name"):
+            apply_config._capability_operations({1: {"a": "b"}}, set(), {}, {})
 
 
 if __name__ == "__main__":

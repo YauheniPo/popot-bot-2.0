@@ -206,8 +206,10 @@ sudo systemctl restart hermes-gateway.service
   journald; при переполнении отбрасывается только telemetry, а не работа агента.
 - **Отчёты без модели.** `/status`, `/ops` и `hermes-ops-report` анализируют
   локальные данные обычным кодом и не вызывают LLM. `/status` показывает
-  gateway, токены последней активной сессии и общий учтённый расход; при
-  нескольких параллельных сессиях выбор активной сессии приблизительный.
+  gateway, токены последней активной сессии и общий учтённый расход, а также
+  учитывает активных subagents текущего чата: их результат автоматически
+  вернётся в этот же диалог. При нескольких параллельных сессиях выбор
+  активной сессии приблизительный.
 - **Grafana + Prometheus.** Полная установка поднимает versioned dashboard с
   30-дневной историей model/token/cost/tool и VPS metrics. Grafana,
   Prometheus и node exporter слушают только `127.0.0.1`; текущий textfile
@@ -369,7 +371,7 @@ GitHub permissions и messenger tokens подключаются отдельно
 | [`observability/`](observability) | Versioned Prometheus scrape config и Grafana datasource/dashboard provisioning |
 | [`ops/ops-report.py`](ops/ops-report.py) | Read-only Markdown/JSON отчёты из SQLite |
 | [`ops/status-report.py`](ops/status-report.py) | Компактный `/status` без LLM: gateway, токены активной сессии и общий учтённый расход |
-| [`ops/startup-notify.sh`](ops/startup-notify.sh) | Нефатальное сообщение в alert target после запуска gateway: VPS, default model и время |
+| [`ops/startup-notify.sh`](ops/startup-notify.sh) | Нефатальное сообщение в alert target после запуска gateway вне окна deploy: VPS, default model и время; во время deploy оно подавляется, чтобы итоговое сообщение было единственным |
 | [`ops/systemd`](ops/systemd) | Hardened services и timers для backup, health, metrics и startup notification |
 | [`ops/templates/hermes-ops.conf`](ops/templates/hermes-ops.conf) | Шаблон root-owned ops config, который каждый deploy рендерит из `vps-defaults.yml` |
 | [`ops/templates/model-prices.json`](ops/templates/model-prices.json) | Fallback-цены моделей за 1M tokens |
@@ -536,7 +538,7 @@ Hermes работает как отдельный пользователь `herm
 | `grafana-server.service` | Versioned Hermes dashboard на `127.0.0.1:3000` | постоянно |
 | `hermes-backup.timer` | Делает daily quick и первый/еженедельный full backup | 1 день |
 | `hermes-observability-prune.timer` | Удаляет строки локальной SQLite старше 90 дней | 1 день |
-| `hermes-startup-notify.service` | После каждого запуска gateway отправляет VPS, default model и время в alert target; ошибка доставки не влияет на gateway | на каждый старт gateway |
+| `hermes-startup-notify.service` | После запуска gateway вне окна deploy отправляет VPS, default model и время в alert target; во время deploy уведомление подавляется, ошибка доставки не влияет на gateway | на каждый старт вне окна deploy |
 | `ops-observability` | Считает вызовы моделей/tools/команд, токены, ошибки, latency и стоимость | по событиям |
 | audit rotation | Ограничивает основной log и 2 ротации размером 5 MiB каждая | при записи и ежедневно |
 

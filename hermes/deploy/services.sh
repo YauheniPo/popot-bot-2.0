@@ -43,6 +43,7 @@ enable_gateway() {
     systemctl status --no-pager "$HERMES_GATEWAY_SERVICE" >&2 || true
     die "$HERMES_GATEWAY_SERVICE did not start"
   }
+  return
 }
 
 install_operations_layer() {

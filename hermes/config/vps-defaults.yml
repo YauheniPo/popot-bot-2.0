@@ -59,7 +59,7 @@ vps_hermes:
       # Use a separate provider for emergency fallback with NVIDIA_API_KEY.
       fallback_providers:
         - provider: nvidia
-          model: deepseek-ai/deepseek-v4-pro-0813
+          model: nvidia/nemotron-3-ultra-550b-a55b
       user_char_limit: 3000
       memory_char_limit: 4000
       # Compact long sessions after 70% of the active model context is used.
@@ -74,7 +74,7 @@ vps_hermes:
       # A per-job provider/model pin still takes precedence.
       cron:
         model_provider: nvidia
-        model: deepseek-ai/deepseek-v4-pro-0813
+        model: nvidia/nemotron-3-ultra-550b-a55b
         model_drift_guard: true
       # Let Hermes select only providers whose credentials/capabilities are
       # available. Managed Vault keys still enable Brave and Firecrawl through

@@ -15,7 +15,8 @@ from unittest import mock
 
 MODULE_PATH = Path(__file__).with_name("ops-observability") / "__init__.py"
 SPEC = importlib.util.spec_from_file_location("ops_observability", MODULE_PATH)
-assert SPEC and SPEC.loader
+assert SPEC is not None
+assert SPEC.loader is not None
 observability = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = observability
 SPEC.loader.exec_module(observability)
@@ -87,6 +88,56 @@ class ObservabilityRedactionTests(unittest.TestCase):
             observability._safe_args({"command": command}),
             {"arg_keys": ["command"], "command_program": "curl"},
         )
+
+    def test_safe_arg_value_rejects_non_scalars(self) -> None:
+        self.assertIsNone(observability.privacy._safe_arg_value("path", ["a", "b"]))
+
+    def test_safe_arg_value_normalizes_and_invalidates_urls(self) -> None:
+        self.assertEqual(
+            observability.privacy._safe_arg_value("url", "https://example.com/a/b"),
+            ("url", "https://example.com"),
+        )
+        self.assertEqual(
+            observability.privacy._safe_arg_value("url", "http://["),
+            ("url", "[invalid-url]"),
+        )
+
+    def test_safe_arg_value_passes_through_other_scalars(self) -> None:
+        self.assertEqual(
+            observability.privacy._safe_arg_value("path", "/tmp/file"),
+            ("path", "/tmp/file"),
+        )
+
+    def test_safe_args_skips_sensitive_keys(self) -> None:
+        self.assertEqual(
+            observability._safe_args({"api_key": "secret-value"}),
+            {"arg_keys": ["api_key"]},
+        )
+
+    def test_rotate_audit_files_skips_missing_and_replaces_existing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "ops-audit.jsonl"
+            # No files present: every source is missing -> continue branch.
+            observability.storage._rotate_audit_files(path, 2)
+
+            path.write_bytes(b"current")
+            path.with_name("ops-audit.jsonl.1").write_bytes(b"one")
+            path.with_name("ops-audit.jsonl.2").write_bytes(b"two")
+            observability.storage._rotate_audit_files(path, 2)
+            # Shift up: current -> .1, .1 -> .2, old .2 discarded.
+            self.assertFalse(path.exists())
+            self.assertEqual(path.with_name("ops-audit.jsonl.1").read_bytes(), b"current")
+            self.assertEqual(path.with_name("ops-audit.jsonl.2").read_bytes(), b"one")
+
+    def test_journald_copy_skips_when_dev_log_missing(self) -> None:
+        with mock.patch.object(observability.storage.Path, "exists", return_value=False):
+            observability.storage._journald_copy(b"payload")
+
+    def test_journald_copy_swallows_syslog_errors(self) -> None:
+        fake_syslog = mock.MagicMock()
+        fake_syslog.syslog.side_effect = Exception("journal unavailable")
+        with mock.patch.dict(sys.modules, {"syslog": fake_syslog}):
+            observability.storage._journald_copy(b"payload")
 
     def test_audit_record_omits_passwords_from_commands_and_nested_metadata(self) -> None:
         events: list[tuple[str, object]] = []

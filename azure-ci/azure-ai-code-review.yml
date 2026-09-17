@@ -60,12 +60,12 @@ parameters:
   - name: model
     displayName: Direct reviewer model
     type: string
-    default: moonshotai/kimi-k3
+    default: inclusionai/ling-3.0-flash-fin:free
 
   - name: provider
     displayName: Direct reviewer provider
     type: string
-    default: nvidia
+    default: openrouter
     values:
       - ollama-cloud
       - openrouter

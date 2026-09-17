@@ -12,7 +12,8 @@ from pathlib import Path
 
 MODULE_PATH = Path(__file__).with_name("prune-backups.py")
 SPEC = importlib.util.spec_from_file_location("prune_backups", MODULE_PATH)
-assert SPEC and SPEC.loader
+assert SPEC is not None
+assert SPEC.loader is not None
 prune_backups = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(prune_backups)
 

@@ -913,5 +913,148 @@ class InlineCommentTest(unittest.TestCase):
         self.assertFalse(context.is_machine_thread(thread))
 
 
+class PublisherHelpersTest(unittest.TestCase):
+    def test_fetch_review_threads_rejects_non_integer_pr_number(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "PR_NUMBER must be an integer"):
+            context._fetch_review_threads(
+                "owner/repo", "not-a-number", "token", resolved=False, limit=1
+            )
+
+    def test_fetch_review_threads_stops_at_limit(self) -> None:
+        nodes = [thread(thread_id="a"), thread(thread_id="b")]
+        response = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "nodes": nodes,
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        }
+                    }
+                }
+            }
+        }
+        with mock.patch.object(context, "_request_json", return_value=response):
+            threads = context._fetch_review_threads(
+                "owner/repo", "2", "token", resolved=False, limit=1
+            )
+        self.assertEqual(len(threads), 1)
+
+    def test_result_event_text_raises_on_error_result(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "unsuccessful result"):
+            context._result_event_text({"type": "result", "is_error": True})
+
+    def test_assistant_event_text_handles_missing_and_non_text_content(self) -> None:
+        self.assertIsNone(context._assistant_event_text({"type": "assistant"}))
+        self.assertIsNone(
+            context._assistant_event_text({"type": "assistant", "message": {"content": "  "}})
+        )
+        self.assertIsNone(
+            context._assistant_event_text(
+                {"type": "assistant", "message": {"content": [{"type": "tool", "text": "x"}]}}
+            )
+        )
+        self.assertEqual(
+            context._assistant_event_text(
+                {"type": "assistant", "message": {"content": "final text"}}
+            ),
+            "final text",
+        )
+
+    def test_review_already_posted_detects_marker_and_short_page(self) -> None:
+        with mock.patch.object(context, "_request_json", return_value=[{"body": "has-marker"}]):
+            self.assertTrue(context._review_already_posted("url", "has-marker", "token"))
+        with mock.patch.object(context, "_request_json", return_value=[]):
+            self.assertFalse(context._review_already_posted("url", "marker", "token"))
+
+    def test_review_already_posted_returns_false_after_exhausting_pages(self) -> None:
+        # 100 comment objects without the marker on every page: the loop never
+        # breaks on a short page and falls through to the final return False.
+        full_page = [{"body": "unrelated comment"} for _ in range(100)]
+        with mock.patch.object(context, "_request_json", return_value=full_page) as request:
+            self.assertFalse(context._review_already_posted("url", "needle-marker", "token"))
+        self.assertEqual(request.call_count, 50)
+
+    def test_auto_resolve_verdict_skips_without_reply_comment(self) -> None:
+        thread = context.ReviewThread(
+            node_id="t", path="p", side="RIGHT", line=1, original_line=1,
+            outdated=False, viewer_can_reply=False, comments=(),
+        )
+        verdict = context.ThreadVerdict("t", "rejected", "reason")
+        result = context._auto_resolve_verdict(
+            thread, "marker", verdict, "owner/repo", "1", "token", "", set()
+        )
+        self.assertEqual(result, "skipped")
+
+    def test_process_single_verdict_skips_non_machine_thread(self) -> None:
+        human_thread = context.ReviewThread(
+            node_id="t", path="p", side="RIGHT", line=1, original_line=1,
+            outdated=False, viewer_can_reply=True,
+            comments=(context.ReviewComment("c", 101, "human", "body"),),
+        )
+        verdict = context.ThreadVerdict("t", "rejected", "reason")
+        result = context._process_single_verdict(
+            verdict, {"t": human_thread}, "b" * 40, set(),
+            "owner/repo", "1", "token", "", set(),
+        )
+        self.assertEqual(result, "skipped")
+
+    def test_process_single_verdict_skips_already_posted_marker(self) -> None:
+        machine_body = f"<!-- claude-inline:{'a' * 40}:0123456789abcdef -->\nFinding"
+        machine_thread = context.ReviewThread(
+            node_id="t", path="p", side="RIGHT", line=1, original_line=1,
+            outdated=False, viewer_can_reply=True,
+            comments=(
+                context.ReviewComment("c", 101, context.AUTOMATED_REVIEW_AUTHOR, machine_body),
+            ),
+        )
+        verdict = context.ThreadVerdict("t", "rejected", "reason")
+        with mock.patch.object(context, "may_be_auto_fixed", return_value=True), \
+                mock.patch.object(context, "_auto_resolve_verdict") as auto:
+            auto.return_value = "skipped"
+            # Mark the verdict marker as already present by mocking any() via comments
+            # containing the marker. We craft the marker to appear in the body.
+            verdict_marker = f"<!-- claude-thread-verdict:{'b' * 40}:t -->"
+            thread_with_marker = context.ReviewThread(
+                node_id="t", path="p", side="RIGHT", line=1, original_line=1,
+                outdated=False, viewer_can_reply=True,
+                comments=(
+                    context.ReviewComment(
+                        "c", 101, context.AUTOMATED_REVIEW_AUTHOR,
+                        f"{machine_body}\n{verdict_marker}",
+                    ),
+                ),
+            )
+            result = context._process_single_verdict(
+                verdict, {"t": thread_with_marker}, "b" * 40, set(),
+                "owner/repo", "1", "token", "", set(),
+            )
+        self.assertEqual(result, "skipped")
+        auto.assert_not_called()
+
+    def test_command_publish_rejects_non_numeric_run_id(self) -> None:
+        environment = {
+            "GITHUB_REPOSITORY": "owner/repo", "PR_NUMBER": "2",
+            "GITHUB_TOKEN": "token", "BASE_SHA": "a" * 40, "HEAD_SHA": "b" * 40,
+            "CLAUDE_REVIEW_MODEL": "review-model", "CLAUDE_REVIEW_RUN_ID": "abc",
+        }
+        with mock.patch.dict(context.os.environ, environment, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "CLAUDE_REVIEW_RUN_ID must be numeric"):
+                context._command_publish()
+
+    def test_command_publish_skips_when_review_already_posted(self) -> None:
+        environment = {
+            "GITHUB_REPOSITORY": "owner/repo", "PR_NUMBER": "2",
+            "GITHUB_TOKEN": "token", "BASE_SHA": "a" * 40, "HEAD_SHA": "b" * 40,
+            "CLAUDE_REVIEW_MODEL": "review-model", "CLAUDE_REVIEW_RUN_ID": "123",
+        }
+        with (
+            mock.patch.dict(context.os.environ, environment, clear=True),
+            mock.patch.object(context, "_review_already_posted", return_value=True),
+            mock.patch("builtins.print"),
+        ):
+            context._command_publish()
+
+
 if __name__ == "__main__":
     unittest.main()

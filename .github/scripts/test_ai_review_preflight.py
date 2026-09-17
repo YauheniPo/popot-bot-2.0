@@ -412,12 +412,21 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertIn("direct-api-review", automatic["jobs"])
         self.assertNotIn("ollama-api-review", automatic["jobs"])
         self.assertEqual(automatic["jobs"]["claude-code-plugin-review"]["needs"], "direct-api-review")
-        self.assertEqual(automatic["env"]["DIRECT_REVIEW_MODEL"], "${{ vars.DIRECT_REVIEW_MODEL || 'moonshotai/kimi-k3' }}")
+        for key in (
+            "DIRECT_REVIEW_PROVIDER",
+            "DIRECT_REVIEW_MODEL",
+            "DIRECT_REVIEW_FALLBACK_MODEL",
+            "DIRECT_REVIEW_FALLBACK_PROVIDER",
+            "CLAUDE_REVIEW_PROVIDER",
+            "CLAUDE_REVIEW_MODEL",
+            "CLAUDE_REVIEW_FALLBACK_MODEL",
+        ):
+            with self.subTest(key=key):
+                self.assertIsInstance(automatic["env"][key], str)
+                self.assertIn(f"vars.{key}", automatic["env"][key])
         self.assertEqual(automatic["env"]["OLLAMA_REVIEW_RPM"], "${{ vars.OLLAMA_REVIEW_RPM || '60' }}")
         self.assertEqual(automatic["env"]["OLLAMA_REVIEW_COOLDOWN_SECONDS"], "${{ vars.OLLAMA_REVIEW_COOLDOWN_SECONDS || '0' }}")
         self.assertEqual(automatic["env"]["OLLAMA_REVIEW_BUDGET_SECONDS"], "${{ vars.OLLAMA_REVIEW_BUDGET_SECONDS || '2400' }}")
-        self.assertEqual(automatic["env"]["DIRECT_REVIEW_PROVIDER"], "${{ vars.DIRECT_REVIEW_PROVIDER || 'nvidia' }}")
-        self.assertEqual(automatic["env"]["CLAUDE_REVIEW_PROVIDER"], "${{ vars.CLAUDE_REVIEW_PROVIDER || 'nvidia' }}")
         for job in automatic["jobs"].values():
             for step in job["steps"]:
                 if "anthropics/claude-code-action@" in step.get("uses", ""):
@@ -429,7 +438,11 @@ class OllamaReviewTest(unittest.TestCase):
                     self.assertEqual(step["env"]["CLAUDE_REVIEW_ENDPOINT"], "${{ steps.claude_models.outputs.anthropic_base_url }}")
         manual_text = (root / ".github/workflows/manual-ai-review.yml").read_text()
         manual = yaml.load(manual_text, Loader=yaml.BaseLoader)
-        self.assertEqual(manual["on"]["workflow_dispatch"]["inputs"]["model"]["default"], "moonshotai/kimi-k3")
+        manual_inputs = manual["on"]["workflow_dispatch"]["inputs"]
+        self.assertEqual(manual_inputs["model"]["type"], "string")
+        self.assertIsInstance(manual_inputs["model"]["default"], str)
+        self.assertTrue(manual_inputs["model"]["default"].strip())
+        self.assertIn(manual_inputs["provider"]["default"], manual_inputs["provider"]["options"])
         validation = next(
             step for job in manual["jobs"].values() for step in job["steps"]
             if "REQUESTED_MODEL" in step.get("env", {})
@@ -443,7 +456,11 @@ class OllamaReviewTest(unittest.TestCase):
                 self.assertEqual(result.returncode, expected_status, result.stdout + result.stderr)
         azure = yaml.load((root / "azure-ci/azure-ai-code-review.yml").read_text(), Loader=yaml.BaseLoader)
         model = next(parameter for parameter in azure["parameters"] if parameter["name"] == "model")
-        self.assertEqual(model["default"], "moonshotai/kimi-k3")
+        self.assertEqual(model["type"], "string")
+        self.assertIsInstance(model["default"], str)
+        self.assertTrue(model["default"].strip())
+        provider = next(parameter for parameter in azure["parameters"] if parameter["name"] == "provider")
+        self.assertIn(provider["default"], provider["values"])
         for workflow in (manual_text, (root / ".github/workflows/pr-ai-review.yml").read_text()):
             self.assertIn("OPENROUTER_API_KEY", workflow)
             self.assertNotIn("vars.OPENROUTER_REVIEW_MODEL", workflow)

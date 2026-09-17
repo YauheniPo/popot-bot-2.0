@@ -16,7 +16,8 @@ from unittest import mock
 
 MODULE_PATH = Path(__file__).with_name("export-metrics.py")
 SPEC = importlib.util.spec_from_file_location("export_metrics", MODULE_PATH)
-assert SPEC and SPEC.loader
+assert SPEC is not None
+assert SPEC.loader is not None
 metrics = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(metrics)
 
@@ -142,6 +143,11 @@ class ExportMetricsTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HERMES_HOME": " "}), \
                 mock.patch.object(Path, "home", return_value=self.root):
             self.assertEqual(metrics.home(), self.root / ".hermes")
+
+    def test_newest_helpers_return_zero_for_missing_directory(self) -> None:
+        missing = self.root / "does-not-exist"
+        self.assertEqual(metrics._newest_archive_time(missing), 0.0)
+        self.assertEqual(metrics._newest_scheduled_full_time(missing), 0.0)
 
 
 if __name__ == "__main__":

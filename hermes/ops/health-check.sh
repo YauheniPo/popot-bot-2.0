@@ -18,6 +18,8 @@ HERMES_METRICS_FILE="${HERMES_METRICS_FILE:-${HERMES_HOME}/ops/metrics/hermes.pr
 HERMES_METRICS_MAX_AGE_MINUTES="${HERMES_METRICS_MAX_AGE_MINUTES:-5}"
 HERMES_SEARXNG_URL="${HERMES_SEARXNG_URL:-}"
 HERMES_SEARXNG_TIMEOUT_SECONDS="${HERMES_SEARXNG_TIMEOUT_SECONDS:-5}"
+HERMES_GATEWAY_MAINTENANCE_FILE="${HERMES_HOME}/ops/gateway-maintenance"
+HERMES_GATEWAY_MAINTENANCE_MAX_AGE_SECONDS="${HERMES_GATEWAY_MAINTENANCE_MAX_AGE_SECONDS:-900}"
 
 STATE_DIR="${HERMES_HOME}/ops"
 STATE_FILE="${STATE_DIR}/health-state"
@@ -33,8 +35,24 @@ add_issue() {
 }
 
 is_number() {
-    [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]]
+    local value="$1"
+    [[ "${value}" =~ ^[0-9]+([.][0-9]+)?$ ]]
 }
+
+gateway_maintenance_active() {
+    local modified_epoch now_epoch age_seconds
+    [[ -f "${HERMES_GATEWAY_MAINTENANCE_FILE}" ]] || return 1
+    modified_epoch="$(stat -c '%Y' "${HERMES_GATEWAY_MAINTENANCE_FILE}" 2>/dev/null || stat -f '%m' "${HERMES_GATEWAY_MAINTENANCE_FILE}" 2>/dev/null || true)"
+    [[ "${modified_epoch}" =~ ^[0-9]+$ ]] || return 1
+    now_epoch="$(date +%s)"
+    age_seconds=$((now_epoch - modified_epoch))
+    ((age_seconds >= 0 && age_seconds <= HERMES_GATEWAY_MAINTENANCE_MAX_AGE_SECONDS))
+}
+
+if gateway_maintenance_active; then
+    logger -t hermes-health "Health notification suppressed during planned deployment maintenance"
+    exit 0
+fi
 
 for threshold in \
     "${HERMES_DISK_WARN_PERCENT}" \
@@ -75,10 +93,10 @@ else
     add_issue "disk-check" "не удалось проверить диск ${HERMES_DISK_PATH}"
 fi
 
-if inode_line="$(df -Pi "${HERMES_DISK_PATH}" 2>/dev/null | awk 'NR==2 {gsub(/%/, "", $5); print $5}')" && is_number "${inode_line}"; then
-    if awk -v used="${inode_line}" -v limit="${HERMES_INODE_WARN_PERCENT}" 'BEGIN {exit !(used >= limit)}'; then
-        add_issue "inodes" "inode заняты на ${inode_line}% (порог ${HERMES_INODE_WARN_PERCENT}%)"
-    fi
+if inode_line="$(df -Pi "${HERMES_DISK_PATH}" 2>/dev/null | awk 'NR==2 {gsub(/%/, "", $5); print $5}')" \
+    && is_number "${inode_line}" \
+    && awk -v used="${inode_line}" -v limit="${HERMES_INODE_WARN_PERCENT}" 'BEGIN {exit !(used >= limit)}'; then
+    add_issue "inodes" "inode заняты на ${inode_line}% (порог ${HERMES_INODE_WARN_PERCENT}%)"
 fi
 
 memory_total="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || true)"

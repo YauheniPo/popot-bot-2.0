@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-from typing import cast
+from typing import Any, cast
 import urllib.error
 import urllib.request
 
@@ -173,7 +173,7 @@ def _request_json(
     method: str,
     token: str,
     body: object | None = None,
-) -> object:
+) -> Any:
     encoded_body = None if body is None else json.dumps(body).encode("utf-8")
     request = urllib.request.Request(
         url,
@@ -258,21 +258,7 @@ def _parse_thread(raw: object) -> ReviewThread | None:
     )
 
 
-def _fetch_review_threads(
-    repository: str,
-    pr_number: str | int,
-    token: str,
-    *,
-    resolved: bool,
-    limit: int,
-) -> list[ReviewThread]:
-    owner, name = _repository_parts(repository)
-    try:
-        number = int(pr_number)
-    except (TypeError, ValueError) as error:
-        raise RuntimeError("PR_NUMBER must be an integer") from error
-
-    query = """
+_REVIEW_THREADS_QUERY = """
 query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
@@ -301,30 +287,63 @@ query ReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: Str
   }
 }
 """
+
+
+def _fetch_review_threads_page(
+    owner: str,
+    name: str,
+    number: int,
+    token: str,
+    cursor: str | None,
+) -> tuple[list[object], dict[str, object]]:
+    response = _request_json(
+        f"{GITHUB_API_URL}/graphql",
+        "POST",
+        token,
+        {
+            "query": _REVIEW_THREADS_QUERY,
+            "variables": {
+                "owner": owner,
+                "name": name,
+                "number": number,
+                "cursor": cursor,
+            },
+        },
+    )
+    return _review_thread_page(response)
+
+
+def _collect_resolved_threads(nodes: list[object], resolved: bool) -> list[ReviewThread]:
+    collected: list[ReviewThread] = []
+    for raw_thread in nodes:
+        thread = _parse_thread(raw_thread)
+        if thread is not None and thread.resolved is resolved:
+            collected.append(thread)
+    return collected
+
+
+def _fetch_review_threads(
+    repository: str,
+    pr_number: str | int,
+    token: str,
+    *,
+    resolved: bool,
+    limit: int,
+) -> list[ReviewThread]:
+    owner, name = _repository_parts(repository)
+    try:
+        number = int(pr_number)
+    except (TypeError, ValueError) as error:
+        raise RuntimeError("PR_NUMBER must be an integer") from error
+
     cursor: str | None = None
     threads: list[ReviewThread] = []
     while len(threads) < limit:
-        response = _request_json(
-            f"{GITHUB_API_URL}/graphql",
-            "POST",
-            token,
-            {
-                "query": query,
-                "variables": {
-                    "owner": owner,
-                    "name": name,
-                    "number": number,
-                    "cursor": cursor,
-                },
-            },
-        )
-        nodes, page_info = _review_thread_page(response)
-        for raw_thread in nodes:
-            thread = _parse_thread(raw_thread)
-            if thread is not None and thread.resolved is resolved:
-                threads.append(thread)
-                if len(threads) == limit:
-                    break
+        nodes, page_info = _fetch_review_threads_page(owner, name, number, token, cursor)
+        for thread in _collect_resolved_threads(nodes, resolved):
+            threads.append(thread)
+            if len(threads) == limit:
+                break
         if page_info.get("hasNextPage") is not True:
             break
         next_cursor = page_info.get("endCursor")
@@ -746,6 +765,10 @@ def _validate_claude_result_contract(result: object) -> dict:
     return document
 
 
+def _finding_line_ok(line: object) -> bool:
+    return not isinstance(line, bool) and isinstance(line, int) and line >= 1
+
+
 def _parse_review_findings(raw_findings: list[object], base_sha: str, head_sha: str) -> list[ReviewFinding]:
     findings: list[ReviewFinding] = []
     seen_locations: set[tuple[str, str, int]] = set()
@@ -757,7 +780,7 @@ def _parse_review_findings(raw_findings: list[object], base_sha: str, head_sha: 
         severity, path, side, line = (raw.get(key) for key in ("severity", "path", "side", "line"))
         if severity not in {"P1", "P2"} or not isinstance(path, str) or side not in {"LEFT", "RIGHT"}:
             continue
-        if isinstance(line, bool) or not isinstance(line, int) or line < 1:
+        if not _finding_line_ok(line):
             continue
         path = path[2:] if path.startswith("./") else path
         location = (path, side, line)
@@ -852,35 +875,54 @@ def _claude_execution_events(execution_file: Path) -> list[object]:
         raise RuntimeError("Claude execution output is not valid JSON") from error
 
 
+def _result_event_text(event: dict[str, object]) -> str | None:
+    if event.get("type") != "result":
+        return None
+    if event.get("is_error") is True:
+        raise RuntimeError("Claude Code reported an unsuccessful result")
+    result = event.get("result")
+    if isinstance(result, str) and result.strip():
+        return result.strip()
+    return None
+
+
+def _assistant_event_text(event: dict[str, object]) -> str | None:
+    if event.get("type") != "assistant":
+        return None
+    message = event.get("message")
+    if not isinstance(message, dict):
+        return None
+    content = message.get("content")
+    if isinstance(content, str) and content.strip():
+        return content.strip()
+    if isinstance(content, list):
+        text = "".join(
+            block.get("text", "") for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+        ).strip()
+        if text:
+            return text
+    return None
+
+
 def _claude_final_response(execution_file: Path) -> str:
     """Extract the final text from Claude Code's execution event stream."""
     events = _claude_execution_events(execution_file)
     for event in reversed(events):
-        if isinstance(event, dict) and event.get("type") == "result":
-            if event.get("is_error") is True:
-                raise RuntimeError("Claude Code reported an unsuccessful result")
-            result = event.get("result")
-            if isinstance(result, str) and result.strip():
-                return result.strip()
+        if isinstance(event, dict):
+            text = _result_event_text(event)
+            if text is not None:
+                return text
 
     # Older action/SDK combinations may omit the result text while retaining
     # the last assistant message. Accept text blocks only; tool payloads remain
     # untrusted execution data and are never interpreted as the final review.
     for event in reversed(events):
-        if isinstance(event, dict) and event.get("type") == "assistant":
-            message = event.get("message")
-            if isinstance(message, dict):
-                content = message.get("content")
-                if isinstance(content, str) and content.strip():
-                    return content.strip()
-                if isinstance(content, list):
-                    text = "".join(
-                        block.get("text", "") for block in content
-                        if isinstance(block, dict) and block.get("type") == "text"
-                        and isinstance(block.get("text"), str)
-                    ).strip()
-                    if text:
-                        return text
+        if isinstance(event, dict):
+            text = _assistant_event_text(event)
+            if text is not None:
+                return text
     raise RuntimeError("Claude execution output contains no final text response")
 
 
@@ -1038,21 +1080,8 @@ def _render_review_summary(
     return "\n".join(lines)
 
 
-def _command_publish() -> None:
-    repository = _required_env("GITHUB_REPOSITORY")
-    pr_number = _required_env("PR_NUMBER")
-    base_sha = _required_commit_sha("BASE_SHA")
-    head_sha = _required_commit_sha("HEAD_SHA")
-    token = _github_token()
-    model = _clean_result_text(_required_env("CLAUDE_REVIEW_MODEL"), 200)
-    execution = claude_execution_report({**os.environ, "CLAUDE_REVIEW_MODEL": model})
-    execution_footer = execution.footer("review")
-    run_id = _required_env("CLAUDE_REVIEW_RUN_ID")
-    if not run_id.isdigit():
-        raise RuntimeError("CLAUDE_REVIEW_RUN_ID must be numeric")
-    marker = f"<!-- claude-pr-review:{head_sha}:{run_id} -->"
-    comments_url = f"{GITHUB_API_URL}/repos/{repository}/issues/{pr_number}/comments"
-    marker_already_posted = False
+def _review_already_posted(comments_url: str, marker: str, token: str) -> bool:
+    """Return True when a prior review comment already carries the run marker."""
     # Page through every issue comment rather than trusting the marker to be
     # on the first 100: a busy PR can have far more comments than that, and
     # missing the marker on an older page would post a duplicate review.
@@ -1065,109 +1094,201 @@ def _command_publish() -> None:
             for comment in page_comments
             if isinstance(comment, dict)
         ):
-            marker_already_posted = True
-            break
+            return True
         if len(page_comments) < 100:
-            break
-    if marker_already_posted:
-        print("The Claude review already exists for this run; skipping duplicate.")
-        return
+            return False
+    return False
 
-    summary, findings, verdicts = _validated_claude_result(
-        _claude_review_result(),
-        base_sha,
-        head_sha,
-    )
-    threads = fetch_unresolved_review_threads(repository, pr_number, token)
-    settled_threads = fetch_resolved_machine_threads(repository, pr_number, token)
-    changed_paths = _changed_paths(base_sha, head_sha)
-    threads_by_id = {thread.node_id: thread for thread in threads}
-    confirmed_direct_findings = 0
-    fixed_direct_findings = 0
-    rejected_direct_findings = 0
-    direct_findings_needing_human = 0
-    closed_thread_ids: set[str] = set()
-    for verdict in verdicts:
-        thread = threads_by_id.get(verdict.thread_id)
-        print(
-            f"Thread verdict: id={verdict.thread_id} verdict={verdict.verdict} "
-            f"reason={verdict.reason!r}"
-        )
-        # Only a reviewer-authored thread that no human has joined may be closed
-        # automatically. Threads from earlier revisions qualify on purpose:
-        # closing them after the fix lands is the point of this pass.
-        if thread is None or not is_machine_thread(thread):
-            print(f"  -> skipped: thread {verdict.thread_id} not a machine thread")
-            continue
-        verdict_marker = f"<!-- claude-thread-verdict:{head_sha}:{thread.node_id} -->"
-        if verdict.verdict == "confirmed":
-            confirmed_direct_findings += 1
-            if (
-                thread.reply_to_comment_id is not None
-                and thread.viewer_can_reply
-                and not any(verdict_marker in comment.body for comment in thread.comments)
-            ):
-                reply_to_review_thread(
-                    repository,
-                    pr_number,
-                    token,
-                    thread.reply_to_comment_id,
-                    f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] Finding remains valid**\n\n"
-                    f"Evidence: {verdict.reason}" + execution_footer,
-                )
-            print("  -> left open: confirmed still valid")
-            continue
-        if verdict.verdict == "fixed" and not may_be_auto_fixed(
-            thread,
-            head_sha,
-            changed_paths,
-        ):
-            direct_findings_needing_human += 1
-            print("  -> downgraded to human review: fixed verdict not eligible for auto-resolve")
-            continue
-        if verdict.verdict == "needs_human":
-            direct_findings_needing_human += 1
-            if (
-                thread.reply_to_comment_id is not None
-                and thread.viewer_can_reply
-                and not any(verdict_marker in comment.body for comment in thread.comments)
-            ):
-                reply_to_review_thread(
-                    repository,
-                    pr_number,
-                    token,
-                    thread.reply_to_comment_id,
-                    f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] Human review requested**\n\n"
-                    f"Evidence: {verdict.reason}" + execution_footer,
-                )
-            print("  -> left for human review: needs_human")
-            continue
-        if any(verdict_marker in comment.body for comment in thread.comments):
-            print("  -> skipped: verdict already posted for this head SHA")
-            continue
-        comment_id = thread.reply_to_comment_id
-        if comment_id is None or not thread.viewer_can_reply:
-            print("  -> skipped: thread has no repliable comment")
-            continue
-        heading = (
-            "Resolved — the requested change is present in this revision"
-            if verdict.verdict == "fixed"
-            else "Rejected finding"
-        )
+
+def _reply_if_not_posted(
+    thread: ReviewThread,
+    verdict_marker: str,
+    body: str,
+    repository: str,
+    pr_number: str | int,
+    token: str,
+) -> None:
+    if (
+        thread.reply_to_comment_id is not None
+        and thread.viewer_can_reply
+        and not any(verdict_marker in comment.body for comment in thread.comments)
+    ):
         reply_to_review_thread(
             repository,
             pr_number,
             token,
-            comment_id,
-            f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] {heading}**\n\nReason: {verdict.reason}" + execution_footer,
+            thread.reply_to_comment_id,
+            body,
         )
-        resolve_review_thread(token, thread.node_id)
-        closed_thread_ids.add(thread.node_id)
-        if verdict.verdict == "fixed":
-            fixed_direct_findings += 1
-        else:
-            rejected_direct_findings += 1
-        print(f"  -> auto-resolved: {verdict.verdict}")
+
+
+def _handle_confirmed_verdict(
+    thread: ReviewThread,
+    verdict_marker: str,
+    verdict: ThreadVerdict,
+    repository: str,
+    pr_number: str | int,
+    token: str,
+    execution_footer: str,
+) -> None:
+    _reply_if_not_posted(
+        thread,
+        verdict_marker,
+        f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] Finding remains valid**\n\n"
+        f"Evidence: {verdict.reason}" + execution_footer,
+        repository,
+        pr_number,
+        token,
+    )
+    print("  -> left open: confirmed still valid")
+
+
+def _handle_needs_human_verdict(
+    thread: ReviewThread,
+    verdict_marker: str,
+    verdict: ThreadVerdict,
+    repository: str,
+    pr_number: str | int,
+    token: str,
+    execution_footer: str,
+) -> None:
+    _reply_if_not_posted(
+        thread,
+        verdict_marker,
+        f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] Human review requested**\n\n"
+        f"Evidence: {verdict.reason}" + execution_footer,
+        repository,
+        pr_number,
+        token,
+    )
+    print("  -> left for human review: needs_human")
+
+
+def _auto_resolve_verdict(
+    thread: ReviewThread,
+    verdict_marker: str,
+    verdict: ThreadVerdict,
+    repository: str,
+    pr_number: str | int,
+    token: str,
+    execution_footer: str,
+    closed_thread_ids: set[str],
+) -> str:
+    """Resolve a fixed/rejected machine thread; return the outcome kind."""
+    comment_id = thread.reply_to_comment_id
+    if comment_id is None or not thread.viewer_can_reply:
+        print("  -> skipped: thread has no repliable comment")
+        return "skipped"
+    heading = (
+        "Resolved — the requested change is present in this revision"
+        if verdict.verdict == "fixed"
+        else "Rejected finding"
+    )
+    reply_to_review_thread(
+        repository,
+        pr_number,
+        token,
+        comment_id,
+        f"{verdict_marker}\n**[{CLAUDE_REVIEWER_LABEL}] {heading}**\n\nReason: {verdict.reason}" + execution_footer,
+    )
+    resolve_review_thread(token, thread.node_id)
+    closed_thread_ids.add(thread.node_id)
+    print(f"  -> auto-resolved: {verdict.verdict}")
+    return verdict.verdict
+
+
+def _process_single_verdict(
+    verdict: ThreadVerdict,
+    threads_by_id: dict[str, ReviewThread],
+    head_sha: str,
+    changed_paths: set[str],
+    repository: str,
+    pr_number: str | int,
+    token: str,
+    execution_footer: str,
+    closed_thread_ids: set[str],
+) -> str:
+    """Handle one thread verdict; return its outcome category."""
+    thread = threads_by_id.get(verdict.thread_id)
+    print(
+        f"Thread verdict: id={verdict.thread_id} verdict={verdict.verdict} "
+        f"reason={verdict.reason!r}"
+    )
+    # Only a reviewer-authored thread that no human has joined may be closed
+    # automatically. Threads from earlier revisions qualify on purpose:
+    # closing them after the fix lands is the point of this pass.
+    if thread is None or not is_machine_thread(thread):
+        print(f"  -> skipped: thread {verdict.thread_id} not a machine thread")
+        return "skipped"
+    verdict_marker = f"<!-- claude-thread-verdict:{head_sha}:{thread.node_id} -->"
+    if verdict.verdict == "confirmed":
+        _handle_confirmed_verdict(
+            thread, verdict_marker, verdict, repository, pr_number, token, execution_footer
+        )
+        return "confirmed"
+    if verdict.verdict == "fixed" and not may_be_auto_fixed(
+        thread,
+        head_sha,
+        changed_paths,
+    ):
+        print("  -> downgraded to human review: fixed verdict not eligible for auto-resolve")
+        return "needs_human"
+    if verdict.verdict == "needs_human":
+        _handle_needs_human_verdict(
+            thread, verdict_marker, verdict, repository, pr_number, token, execution_footer
+        )
+        return "needs_human"
+    if any(verdict_marker in comment.body for comment in thread.comments):
+        print("  -> skipped: verdict already posted for this head SHA")
+        return "skipped"
+    return _auto_resolve_verdict(
+        thread, verdict_marker, verdict, repository, pr_number, token,
+        execution_footer, closed_thread_ids,
+    )
+
+
+def _process_thread_verdicts(
+    verdicts: list[ThreadVerdict],
+    threads_by_id: dict[str, ReviewThread],
+    head_sha: str,
+    changed_paths: set[str],
+    repository: str,
+    pr_number: str | int,
+    token: str,
+    execution_footer: str,
+) -> tuple[int, int, int, int, set[str]]:
+    confirmed = 0
+    fixed = 0
+    rejected = 0
+    needing_human = 0
+    closed_thread_ids: set[str] = set()
+    for verdict in verdicts:
+        outcome = _process_single_verdict(
+            verdict, threads_by_id, head_sha, changed_paths,
+            repository, pr_number, token, execution_footer, closed_thread_ids,
+        )
+        if outcome == "confirmed":
+            confirmed += 1
+        elif outcome == "fixed":
+            fixed += 1
+        elif outcome == "rejected":
+            rejected += 1
+        elif outcome == "needs_human":
+            needing_human += 1
+    return confirmed, fixed, rejected, needing_human, closed_thread_ids
+
+
+def _categorize_findings(
+    findings: list[ReviewFinding],
+    settled_threads: list[ReviewThread],
+    threads: list[ReviewThread],
+    closed_thread_ids: set[str],
+) -> tuple[
+    list[ReviewFinding],
+    list[tuple[ReviewFinding, ReviewThread]],
+    list[ReviewFinding],
+    list[ReviewFinding],
+]:
     new_findings: list[ReviewFinding] = []
     follow_ups: list[tuple[ReviewFinding, ReviewThread]] = []
     duplicates: list[ReviewFinding] = []
@@ -1198,7 +1319,18 @@ def _command_publish() -> None:
             follow_ups.append((finding, match.thread))
         else:
             new_findings.append(finding)
+    return new_findings, follow_ups, duplicates, previously_settled
 
+
+def _post_findings_and_follow_ups(
+    new_findings: list[ReviewFinding],
+    follow_ups: list[tuple[ReviewFinding, ReviewThread]],
+    repository: str,
+    pr_number: str | int,
+    token: str,
+    head_sha: str,
+    execution_footer: str,
+) -> tuple[list[ReviewFinding], list[ReviewFinding]]:
     unanchored_findings: list[ReviewFinding] = []
     for finding in new_findings:
         location_digest = hashlib.sha256(
@@ -1253,6 +1385,67 @@ def _command_publish() -> None:
             ),
         )
         posted_follow_ups.append(finding)
+    return unanchored_findings, posted_follow_ups
+
+
+def _command_publish() -> None:
+    repository = _required_env("GITHUB_REPOSITORY")
+    pr_number = _required_env("PR_NUMBER")
+    base_sha = _required_commit_sha("BASE_SHA")
+    head_sha = _required_commit_sha("HEAD_SHA")
+    token = _github_token()
+    model = _clean_result_text(_required_env("CLAUDE_REVIEW_MODEL"), 200)
+    execution = claude_execution_report({**os.environ, "CLAUDE_REVIEW_MODEL": model})
+    execution_footer = execution.footer("review")
+    run_id = _required_env("CLAUDE_REVIEW_RUN_ID")
+    if not run_id.isdigit():
+        raise RuntimeError("CLAUDE_REVIEW_RUN_ID must be numeric")
+    marker = f"<!-- claude-pr-review:{head_sha}:{run_id} -->"
+    comments_url = f"{GITHUB_API_URL}/repos/{repository}/issues/{pr_number}/comments"
+    if _review_already_posted(comments_url, marker, token):
+        print("The Claude review already exists for this run; skipping duplicate.")
+        return
+
+    summary, findings, verdicts = _validated_claude_result(
+        _claude_review_result(),
+        base_sha,
+        head_sha,
+    )
+    threads = fetch_unresolved_review_threads(repository, pr_number, token)
+    settled_threads = fetch_resolved_machine_threads(repository, pr_number, token)
+    changed_paths = _changed_paths(base_sha, head_sha)
+    threads_by_id = {thread.node_id: thread for thread in threads}
+    (
+        confirmed_direct_findings,
+        fixed_direct_findings,
+        rejected_direct_findings,
+        direct_findings_needing_human,
+        closed_thread_ids,
+    ) = _process_thread_verdicts(
+        verdicts,
+        threads_by_id,
+        head_sha,
+        changed_paths,
+        repository,
+        pr_number,
+        token,
+        execution_footer,
+    )
+    new_findings, follow_ups, duplicates, previously_settled = _categorize_findings(
+        findings,
+        settled_threads,
+        threads,
+        closed_thread_ids,
+    )
+    unanchored_findings, posted_follow_ups = _post_findings_and_follow_ups(
+        new_findings,
+        follow_ups,
+        repository,
+        pr_number,
+        token,
+        head_sha,
+        execution_footer,
+    )
 
     lines = _render_review_summary(
         head_sha=head_sha,

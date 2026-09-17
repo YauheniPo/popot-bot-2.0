@@ -23,6 +23,11 @@ from bot import (  # noqa: E402
     reverse_geocode_location,
     run_bot,
 )
+from bot import (  # noqa: E402
+    _fetch_updates,
+    _process_updates,
+    _render_text_tree,
+)
 
 
 SUCCESSFUL_LOCATION_DETAILS = {
@@ -588,6 +593,54 @@ class LocationLookupTest(unittest.TestCase):
                 reverse_geocode_location(100.0, 21.0122)
 
         mocked_urlopen.assert_not_called()
+
+
+class RenderTextTreeTest(unittest.TestCase):
+    def test_empty_dict_and_list_render_placeholders(self) -> None:
+        self.assertEqual(["no data"], _render_text_tree({}))
+        self.assertEqual(["empty list"], _render_text_tree([]))
+
+    def test_flat_list_renders_scalar_items(self) -> None:
+        self.assertEqual(["1", "two"], _render_text_tree([1, "two"]))
+
+    def test_close_keyboard_text_uses_close_keyboard_event_name(self) -> None:
+        api = FakeHandlerAPI()
+        handle_update(
+            api,  # type: ignore[arg-type]
+            {
+                "update_id": 10,
+                "message": {
+                    "text": bot.CLOSE_KEYBOARD_TEXT,
+                    "from": {"id": 42, "is_bot": False, "first_name": "Alice"},
+                    "chat": {"id": 42, "type": "private"},
+                },
+            },
+        )
+        self.assertEqual(1, len(api.messages))
+        self.assertIn("keyboard is hidden", api.messages[0][1])
+
+
+class FetchProcessUpdatesTest(unittest.TestCase):
+    def test_fetch_updates_rejects_non_list_result(self) -> None:
+        api = FakeAPI()
+        api.call = MagicMock(return_value={"not": "a list"})  # type: ignore[method-assign]
+        with self.assertRaisesRegex(BotAPIError, "unexpected result type"):
+            _fetch_updates(api, {"timeout": 1}, 1)  # type: ignore[arg-type]
+
+    def test_fetch_updates_returns_list(self) -> None:
+        api = FakeAPI()
+        api.call = MagicMock(return_value=[{"update_id": 1}])  # type: ignore[method-assign]
+        self.assertEqual(
+            [{"update_id": 1}],
+            _fetch_updates(api, {"timeout": 1}, 1),  # type: ignore[arg-type]
+        )
+
+    def test_process_updates_skips_non_dict_entries(self) -> None:
+        api = FakeAPI()
+        with patch("bot.process_update") as process:
+            result = _process_updates(api, ["not-a-dict", {"update_id": 5}], None)  # type: ignore[arg-type]
+        self.assertEqual(6, result)
+        process.assert_called_once_with(api, {"update_id": 5})
 
 
 if __name__ == "__main__":

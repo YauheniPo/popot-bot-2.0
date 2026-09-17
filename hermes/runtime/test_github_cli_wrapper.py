@@ -6,11 +6,13 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).with_name("github-cli-wrapper.py")
 SPEC = importlib.util.spec_from_file_location("github_cli_wrapper", MODULE_PATH)
-assert SPEC and SPEC.loader
+assert SPEC is not None
+assert SPEC.loader is not None
 wrapper = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(wrapper)
 
@@ -44,6 +46,22 @@ class GitHubCliWrapperTests(unittest.TestCase):
             dotenv.write_text('GITHUB_TOKEN="bad\\ntoken"\n', encoding="utf-8")
 
             self.assertEqual(wrapper.managed_token(dotenv), "")
+
+    def test_main_returns_127_when_execve_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fake_gh = Path(directory) / "gh"
+            fake_gh.write_text("", encoding="utf-8")
+            with (
+                mock.patch.object(wrapper, "REAL_GH", fake_gh),
+                mock.patch.object(wrapper.os, "access", return_value=True),
+                mock.patch.object(
+                    wrapper.os,
+                    "execve",
+                    side_effect=OSError("permission denied"),
+                ),
+                mock.patch.object(wrapper, "github_environment", return_value={}),
+            ):
+                self.assertEqual(wrapper.main(), 127)
 
 
 if __name__ == "__main__":

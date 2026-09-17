@@ -17,7 +17,8 @@ import yaml
 
 MODULE_PATH = Path(__file__).with_name("manage-workspace-agents.py")
 SPEC = importlib.util.spec_from_file_location("manage_workspace_agents", MODULE_PATH)
-assert SPEC and SPEC.loader
+assert SPEC is not None
+assert SPEC.loader is not None
 manage_workspace_agents = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(manage_workspace_agents)
 
