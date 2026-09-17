@@ -140,7 +140,7 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: Check out pull request with history for review context
@@ -272,6 +272,7 @@ jobs:
         id: claude_review_primary
         if: steps.claude_models.outputs.primary_ready == 'true'
         continue-on-error: true
+        timeout-minutes: 25
         uses: anthropics/claude-code-action@0a8d3c9443bbff909ab973b6a17a340b913f229f # v1
         with:
           # Route through ANTHROPIC_BASE_URL with the selected provider's key.
@@ -459,6 +460,7 @@ jobs:
           steps.claude_models.outputs.primary_ready == 'true' &&
           steps.extract_claude_review_primary.outcome != 'success'
         continue-on-error: true
+        timeout-minutes: 25
         uses: anthropics/claude-code-action@0a8d3c9443bbff909ab973b6a17a340b913f229f # v1
         with:
           anthropic_api_key: *claude_api_key
@@ -509,6 +511,7 @@ jobs:
           steps.extract_claude_review_primary.outcome != 'success' &&
           steps.extract_claude_review_primary_retry.outcome != 'success'
         continue-on-error: true
+        timeout-minutes: 25
         uses: anthropics/claude-code-action@0a8d3c9443bbff909ab973b6a17a340b913f229f # v1
         with:
           anthropic_api_key: &claude_fallback_api_key ${{ (steps.claude_models.outputs.fallback_provider == 'nous' && secrets.NOUS_API_KEY) || (steps.claude_models.outputs.fallback_provider == 'nvidia' && secrets.NVIDIA_API_KEY) || (steps.claude_models.outputs.fallback_provider == 'openrouter' && secrets.OPENROUTER_API_KEY) || (steps.claude_models.outputs.fallback_provider == 'ollama-cloud' && secrets.OLLAMA_API_KEY) || '' }}
@@ -574,6 +577,7 @@ jobs:
           steps.extract_claude_review_primary_retry.outcome != 'success' &&
           steps.extract_claude_review_fallback.outcome != 'success'
         continue-on-error: true
+        timeout-minutes: 25
         uses: anthropics/claude-code-action@0a8d3c9443bbff909ab973b6a17a340b913f229f # v1
         with:
           anthropic_api_key: *claude_fallback_api_key
