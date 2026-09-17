@@ -883,7 +883,12 @@ def _apply_one_patch(
     new: str,
     patch_state: dict[str, dict[str, str]],
 ) -> tuple[int, str | None, bool]:
-    """Apply one registered patch; return (applied_delta, failure, state_changed)."""
+    """Apply one registered patch; return (applied_delta, failure, state_changed).
+
+    ``state_changed`` is True only when ``patch_state`` is actually mutated
+    (``record``/``refresh``/``apply``/``upgrade``); ``skip`` intentionally
+    returns False because it neither applies nor records anything new.
+    """
     target = HERMES_AGENT_DIR / relative_path
     if not target.is_file():
         print(f"[hermes-patch] ERROR: {relative_path}: file missing", file=sys.stderr)
