@@ -18,6 +18,7 @@ env:
   CLAUDE_REVIEW_PROVIDER: ${{ vars.CLAUDE_REVIEW_PROVIDER || 'openrouter' }}
   CLAUDE_REVIEW_MODEL: ${{ vars.CLAUDE_REVIEW_MODEL || 'inclusionai/ling-3.0-flash-fin:free' }}
   CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.CLAUDE_REVIEW_FALLBACK_MODEL || 'nvidia/nemotron-3-ultra-550b-a55b:free' }}
+  CLAUDE_REVIEW_FALLBACK_PROVIDER: ${{ vars.CLAUDE_REVIEW_FALLBACK_PROVIDER || 'openrouter' }}
   CLAUDE_REVIEW_BASE_URL: ${{ vars.CLAUDE_REVIEW_BASE_URL || '' }}
   # Pace direct API requests; tune for the selected provider and account.
   OLLAMA_REVIEW_RPM: ${{ vars.OLLAMA_REVIEW_RPM || '60' }}
@@ -201,6 +202,7 @@ jobs:
           DIRECT_REVIEW_PROVIDER: ${{ env.CLAUDE_REVIEW_PROVIDER }}
           DIRECT_REVIEW_MODEL: ${{ env.CLAUDE_REVIEW_MODEL }}
           DIRECT_REVIEW_FALLBACK_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
+          DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ env.CLAUDE_REVIEW_FALLBACK_PROVIDER }}
           CLAUDE_REVIEW_BASE_URL: ${{ env.CLAUDE_REVIEW_BASE_URL }}
         # A short two-request smoke test checks both tool use and the exact JSON
         # contract before paying for a full diff review.
@@ -393,8 +395,10 @@ jobs:
           # Keep Claude read-only and remove unavailable tools from model context,
           # rather than merely denying them after they consume a turn. Keep the
           # turn budget bounded so a slow provider cannot hold the job for hours.
+          # Free OpenRouter routes can take 49-55 turns for a full diff review,
+          # so 48 was too tight and aborted otherwise-successful runs.
           claude_args: |
-            --max-turns 48
+            --max-turns 96
             --model "${{ env.CLAUDE_REVIEW_MODEL }}"
             --tools "Read,Glob,Grep"
             --allowedTools "Read,Glob,Grep"
@@ -461,7 +465,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: *claude_review_prompt
           claude_args: |
-            --max-turns 48
+            --max-turns 96
             --model "${{ env.CLAUDE_REVIEW_MODEL }}"
             --tools "Read,Glob,Grep"
             --allowedTools "Read,Glob,Grep"
@@ -511,7 +515,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: *claude_review_prompt
           claude_args: |
-            --max-turns 48
+            --max-turns 96
             --model "${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}"
             --tools "Read,Glob,Grep"
             --allowedTools "Read,Glob,Grep"
@@ -576,7 +580,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: *claude_review_prompt
           claude_args: |
-            --max-turns 48
+            --max-turns 96
             --model "${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}"
             --tools "Read,Glob,Grep"
             --allowedTools "Read,Glob,Grep"
