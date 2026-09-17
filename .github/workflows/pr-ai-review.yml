@@ -140,7 +140,10 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-    timeout-minutes: 90
+    # The Claude reviewer is a corroborating signal after the direct reviewer.
+    # Stop with GitHub's explicit timeout instead of consuming a runner for up
+    # to 90 minutes when a free provider stops returning valid agent turns.
+    timeout-minutes: 45
 
     steps:
       - name: Check out pull request with history for review context
@@ -395,10 +398,10 @@ jobs:
           # Keep Claude read-only and remove unavailable tools from model context,
           # rather than merely denying them after they consume a turn. Keep the
           # turn budget bounded so a slow provider cannot hold the job for hours.
-          # Free OpenRouter routes can take 49-55 turns for a full diff review,
-          # so 48 was too tight and aborted otherwise-successful runs.
+          # The direct reviewer already covers the full diff independently;
+          # Claude Code has 48 turns to corroborate it and return its JSON.
           claude_args: |
-            --max-turns 96
+            --max-turns 48
             --model "${{ env.CLAUDE_REVIEW_MODEL }}"
             --tools "Read,Glob,Grep"
             --allowedTools "Read,Glob,Grep"
@@ -465,7 +468,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: *claude_review_prompt
           claude_args: |
-            --max-turns 96
+            --max-turns 48
             --model "${{ env.CLAUDE_REVIEW_MODEL }}"
             --tools "Read,Glob,Grep"
             --allowedTools "Read,Glob,Grep"
@@ -515,7 +518,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: *claude_review_prompt
           claude_args: |
-            --max-turns 96
+            --max-turns 48
             --model "${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}"
             --tools "Read,Glob,Grep"
             --allowedTools "Read,Glob,Grep"
@@ -580,7 +583,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: *claude_review_prompt
           claude_args: |
-            --max-turns 96
+            --max-turns 48
             --model "${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}"
             --tools "Read,Glob,Grep"
             --allowedTools "Read,Glob,Grep"

@@ -534,6 +534,27 @@ class OllamaReviewTest(unittest.TestCase):
         ):
             self.assertIn(label, manual_summary["run"])
 
+    def test_claude_review_has_a_bounded_turn_and_wall_clock_budget(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = yaml.load(
+            (root / ".github/workflows/pr-ai-review.yml").read_text(),
+            Loader=yaml.BaseLoader,
+        )
+        job = workflow["jobs"]["claude-code-plugin-review"]
+        self.assertEqual(job["timeout-minutes"], "45")
+        action_steps = [
+            step for step in job["steps"]
+            if "anthropics/claude-code-action@" in step.get("uses", "")
+        ]
+        self.assertEqual(len(action_steps), 4)
+        for step in action_steps:
+            with self.subTest(step=step["id"]):
+                self.assertIn("--max-turns 48", step["with"]["claude_args"])
+                self.assertEqual(
+                    step["with"]["show_full_output"],
+                    "${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}",
+                )
+
     def test_job_timeouts_fit_two_model_probes_and_the_default_review_budget(self):
         root = Path(__file__).resolve().parents[2]
         probe_budget = 4 * ai_review_preflight.REQUEST_TIMEOUT_SECONDS + 15 + 30 + 45
