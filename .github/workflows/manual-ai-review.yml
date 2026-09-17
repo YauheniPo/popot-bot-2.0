@@ -387,6 +387,7 @@ jobs:
         env:
           BASE_SHA: ${{ steps.context.outputs.base_sha }}
           CHECK_RUN_URL: ${{ steps.review.outputs.check_run_url }}
+          FINDINGS_COUNT: ${{ steps.review.outputs.findings_count || '0' }}
           HEAD_SHA: ${{ steps.context.outputs.head_sha }}
           JOB_STATUS: ${{ job.status }}
           MODEL: ${{ steps.models.outputs.selected_model }}
@@ -421,7 +422,7 @@ jobs:
             --arg publish_target "${PUBLISH_TARGET}" \
             --arg pr_number "${PR_NUMBER}" \
             --arg check_run_url "${CHECK_RUN_URL}" \
-            --arg findings_count "${FINDINGS_COUNT}" \
+            --arg findings_count "${FINDINGS_COUNT:-0}" \
             '$ARGS.named' >"${REPORT_DIR}/report.json"
 
       - name: Upload the review report
