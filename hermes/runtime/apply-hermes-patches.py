@@ -876,6 +876,56 @@ def _classify_patch(
     return "upgrade"
 
 
+def _apply_one_patch(
+    relative_path: str,
+    marker: str,
+    old: str,
+    new: str,
+    patch_state: dict[str, dict[str, str]],
+) -> tuple[int, str | None, bool]:
+    """Apply one registered patch; return (applied_delta, failure, state_changed)."""
+    target = HERMES_AGENT_DIR / relative_path
+    if not target.is_file():
+        print(f"[hermes-patch] ERROR: {relative_path}: file missing", file=sys.stderr)
+        return 0, relative_path, False
+    source = target.read_text(encoding="utf-8")
+    digest = _patch_digest(new)
+    action = _classify_patch(source, marker, old, new, patch_state.get(marker))
+    if action == "record":
+        patch_state[marker] = {"digest": digest, "source": new}
+        print(f"[hermes-patch] {relative_path}: already applied")
+        return 0, None, True
+    if action == "skip":
+        print(f"[hermes-patch] {relative_path}: already applied")
+        return 0, None, False
+    if action == "refresh":
+        patch_state[marker] = {"digest": digest, "source": new}
+        print(f"[hermes-patch] {relative_path}: patch metadata refreshed")
+        return 0, None, True
+    if action == "locally-changed":
+        print(
+            f"[hermes-patch] ERROR: {relative_path}: existing patch "
+            f"{marker!r} changed locally and cannot be upgraded safely",
+            file=sys.stderr,
+        )
+        return 0, relative_path, False
+    if action == "old-missing":
+        print(
+            f"[hermes-patch] ERROR: {relative_path} does not match the expected "
+            "code. Hermes may have changed — re-verify the patch "
+            "before relying on /model_global, /gw-restart, or /status reasoning.",
+            file=sys.stderr,
+        )
+        return 0, relative_path, False
+    previous_source = patch_state.get(marker, {}).get("source", "")
+    replacement = previous_source if action == "upgrade" else old
+    target.write_text(source.replace(replacement, new, 1), encoding="utf-8")
+    patch_state[marker] = {"digest": digest, "source": new}
+    verb = "updated" if action == "upgrade" else "applied"
+    print(f"[hermes-patch] {verb} {relative_path}")
+    return 1, None, True
+
+
 def main() -> int:
     if not HERMES_AGENT_DIR.is_dir():
         print(
@@ -899,52 +949,11 @@ def main() -> int:
     patch_state = _load_patch_state()
     state_changed = False
     for relative_path, marker, old, new in _PATCHES:
-        target = HERMES_AGENT_DIR / relative_path
-        if not target.is_file():
-            print(f"[hermes-patch] ERROR: {relative_path}: file missing", file=sys.stderr)
-            failures.append(relative_path)
-            continue
-        source = target.read_text(encoding="utf-8")
-        digest = _patch_digest(new)
-        action = _classify_patch(source, marker, old, new, patch_state.get(marker))
-        if action == "record":
-            patch_state[marker] = {"digest": digest, "source": new}
-            state_changed = True
-            print(f"[hermes-patch] {relative_path}: already applied")
-            continue
-        if action == "skip":
-            print(f"[hermes-patch] {relative_path}: already applied")
-            continue
-        if action == "refresh":
-            patch_state[marker] = {"digest": digest, "source": new}
-            state_changed = True
-            print(f"[hermes-patch] {relative_path}: patch metadata refreshed")
-            continue
-        if action == "locally-changed":
-            print(
-                f"[hermes-patch] ERROR: {relative_path}: existing patch "
-                f"{marker!r} changed locally and cannot be upgraded safely",
-                file=sys.stderr,
-            )
-            failures.append(relative_path)
-            continue
-        if action == "old-missing":
-            print(
-                f"[hermes-patch] ERROR: {relative_path} does not match the expected "
-                "code. Hermes may have changed — re-verify the patch "
-                "before relying on /model_global, /gw-restart, or /status reasoning.",
-                file=sys.stderr,
-            )
-            failures.append(relative_path)
-            continue
-        previous_source = patch_state.get(marker, {}).get("source", "")
-        replacement = previous_source if action == "upgrade" else old
-        target.write_text(source.replace(replacement, new, 1), encoding="utf-8")
-        patch_state[marker] = {"digest": digest, "source": new}
-        state_changed = True
-        verb = "updated" if action == "upgrade" else "applied"
-        print(f"[hermes-patch] {verb} {relative_path}")
-        applied += 1
+        delta, failure, changed = _apply_one_patch(relative_path, marker, old, new, patch_state)
+        applied += delta
+        state_changed = state_changed or changed
+        if failure is not None:
+            failures.append(failure)
     if applied or migrated:
         print("[hermes-patch] changed")
     if state_changed:

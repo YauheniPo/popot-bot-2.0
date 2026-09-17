@@ -765,8 +765,37 @@ def _validate_claude_result_contract(result: object) -> dict:
     return document
 
 
-def _finding_line_ok(line: object) -> bool:
-    return not isinstance(line, bool) and isinstance(line, int) and line >= 1
+def _parse_one_finding(
+    raw: object,
+    valid_paths: set[str],
+    changed_lines: dict[str, dict[str, set[int]]],
+    base_sha: str,
+    head_sha: str,
+    seen_locations: set[tuple[str, str, int]],
+) -> ReviewFinding | None:
+    """Validate one raw finding; return it, or None when it must be dropped."""
+    if not isinstance(raw, dict):
+        return None
+    severity, path, side, line = (raw.get(key) for key in ("severity", "path", "side", "line"))
+    if severity not in {"P1", "P2"} or not isinstance(path, str) or side not in {"LEFT", "RIGHT"}:
+        return None
+    if not (isinstance(line, int) and not isinstance(line, bool) and line >= 1):
+        return None
+    path = path[2:] if path.startswith("./") else path
+    location = (path, side, line)
+    if path not in valid_paths or location in seen_locations:
+        return None
+    if path not in changed_lines:
+        changed_lines[path] = changed_diff_lines(base_sha, head_sha, path)
+    if line not in changed_lines[path][side]:
+        return None
+    title = _clean_result_text(raw.get("title"), 160)
+    impact = _clean_result_text(raw.get("impact"), 700)
+    fix = _clean_result_text(raw.get("fix"), 700)
+    if not all((title, impact, fix)):
+        return None
+    seen_locations.add(location)
+    return ReviewFinding(severity, path, side, line, title, impact, fix)
 
 
 def _parse_review_findings(raw_findings: list[object], base_sha: str, head_sha: str) -> list[ReviewFinding]:
@@ -775,27 +804,9 @@ def _parse_review_findings(raw_findings: list[object], base_sha: str, head_sha: 
     changed_lines: dict[str, dict[str, set[int]]] = {}
     valid_paths = _changed_paths(base_sha, head_sha)
     for raw in raw_findings[:5]:
-        if not isinstance(raw, dict):
-            continue
-        severity, path, side, line = (raw.get(key) for key in ("severity", "path", "side", "line"))
-        if severity not in {"P1", "P2"} or not isinstance(path, str) or side not in {"LEFT", "RIGHT"}:
-            continue
-        if not _finding_line_ok(line):
-            continue
-        path = path[2:] if path.startswith("./") else path
-        location = (path, side, line)
-        if path not in valid_paths or location in seen_locations:
-            continue
-        if path not in changed_lines:
-            changed_lines[path] = changed_diff_lines(base_sha, head_sha, path)
-        if line not in changed_lines[path][side]:
-            continue
-        title = _clean_result_text(raw.get("title"), 160)
-        impact = _clean_result_text(raw.get("impact"), 700)
-        fix = _clean_result_text(raw.get("fix"), 700)
-        if all((title, impact, fix)):
-            seen_locations.add(location)
-            findings.append(ReviewFinding(severity, path, side, line, title, impact, fix))
+        finding = _parse_one_finding(raw, valid_paths, changed_lines, base_sha, head_sha, seen_locations)
+        if finding is not None:
+            findings.append(finding)
     return sorted(findings, key=lambda item: (0 if item.severity == "P1" else 1, item.path, item.line))
 
 
