@@ -18,6 +18,7 @@ env:
   CLAUDE_REVIEW_PROVIDER: ${{ vars.CLAUDE_REVIEW_PROVIDER || 'openrouter' }}
   CLAUDE_REVIEW_MODEL: ${{ vars.CLAUDE_REVIEW_MODEL || 'inclusionai/ling-3.0-flash-fin:free' }}
   CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.CLAUDE_REVIEW_FALLBACK_MODEL || 'nvidia/nemotron-3-ultra-550b-a55b:free' }}
+  CLAUDE_REVIEW_FALLBACK_PROVIDER: ${{ vars.CLAUDE_REVIEW_FALLBACK_PROVIDER || 'openrouter' }}
   CLAUDE_REVIEW_BASE_URL: ${{ vars.CLAUDE_REVIEW_BASE_URL || '' }}
   # Pace direct API requests; tune for the selected provider and account.
   OLLAMA_REVIEW_RPM: ${{ vars.OLLAMA_REVIEW_RPM || '60' }}
@@ -139,7 +140,10 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-    timeout-minutes: 90
+    # The Claude reviewer is a corroborating signal after the direct reviewer.
+    # Stop with GitHub's explicit timeout instead of consuming a runner for up
+    # to 90 minutes when a free provider stops returning valid agent turns.
+    timeout-minutes: 45
 
     steps:
       - name: Check out pull request with history for review context
@@ -201,6 +205,7 @@ jobs:
           DIRECT_REVIEW_PROVIDER: ${{ env.CLAUDE_REVIEW_PROVIDER }}
           DIRECT_REVIEW_MODEL: ${{ env.CLAUDE_REVIEW_MODEL }}
           DIRECT_REVIEW_FALLBACK_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
+          DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ env.CLAUDE_REVIEW_FALLBACK_PROVIDER }}
           CLAUDE_REVIEW_BASE_URL: ${{ env.CLAUDE_REVIEW_BASE_URL }}
         # A short two-request smoke test checks both tool use and the exact JSON
         # contract before paying for a full diff review.
@@ -270,6 +275,7 @@ jobs:
         id: claude_review_primary
         if: steps.claude_models.outputs.primary_ready == 'true'
         continue-on-error: true
+        timeout-minutes: 25
         uses: anthropics/claude-code-action@0a8d3c9443bbff909ab973b6a17a340b913f229f # v1
         with:
           # Route through ANTHROPIC_BASE_URL with the selected provider's key.
@@ -393,6 +399,8 @@ jobs:
           # Keep Claude read-only and remove unavailable tools from model context,
           # rather than merely denying them after they consume a turn. Keep the
           # turn budget bounded so a slow provider cannot hold the job for hours.
+          # The direct reviewer already covers the full diff independently;
+          # Claude Code has 48 turns to corroborate it and return its JSON.
           claude_args: |
             --max-turns 48
             --model "${{ env.CLAUDE_REVIEW_MODEL }}"
@@ -455,6 +463,7 @@ jobs:
           steps.claude_models.outputs.primary_ready == 'true' &&
           steps.extract_claude_review_primary.outcome != 'success'
         continue-on-error: true
+        timeout-minutes: 25
         uses: anthropics/claude-code-action@0a8d3c9443bbff909ab973b6a17a340b913f229f # v1
         with:
           anthropic_api_key: *claude_api_key
@@ -505,9 +514,10 @@ jobs:
           steps.extract_claude_review_primary.outcome != 'success' &&
           steps.extract_claude_review_primary_retry.outcome != 'success'
         continue-on-error: true
+        timeout-minutes: 25
         uses: anthropics/claude-code-action@0a8d3c9443bbff909ab973b6a17a340b913f229f # v1
         with:
-          anthropic_api_key: *claude_api_key
+          anthropic_api_key: &claude_fallback_api_key ${{ (steps.claude_models.outputs.fallback_provider == 'nous' && secrets.NOUS_API_KEY) || (steps.claude_models.outputs.fallback_provider == 'nvidia' && secrets.NVIDIA_API_KEY) || (steps.claude_models.outputs.fallback_provider == 'openrouter' && secrets.OPENROUTER_API_KEY) || (steps.claude_models.outputs.fallback_provider == 'ollama-cloud' && secrets.OLLAMA_API_KEY) || '' }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: *claude_review_prompt
           claude_args: |
@@ -518,9 +528,9 @@ jobs:
             --disallowedTools "mcp__github_comment__*,mcp__github_ci__*,mcp__github_inline_comment__*,mcp__github_file_ops__*"
           show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
         env:
-          ANTHROPIC_BASE_URL: *claude_api_url
+          ANTHROPIC_BASE_URL: &claude_fallback_api_url ${{ steps.claude_models.outputs.secondary_anthropic_base_url }}
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
-          ANTHROPIC_AUTH_TOKEN: *claude_api_key
+          ANTHROPIC_AUTH_TOKEN: *claude_fallback_api_key
           ANTHROPIC_DEFAULT_FABLE_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
           ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
           ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
@@ -570,9 +580,10 @@ jobs:
           steps.extract_claude_review_primary_retry.outcome != 'success' &&
           steps.extract_claude_review_fallback.outcome != 'success'
         continue-on-error: true
+        timeout-minutes: 25
         uses: anthropics/claude-code-action@0a8d3c9443bbff909ab973b6a17a340b913f229f # v1
         with:
-          anthropic_api_key: *claude_api_key
+          anthropic_api_key: *claude_fallback_api_key
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: *claude_review_prompt
           claude_args: |
@@ -583,9 +594,9 @@ jobs:
             --disallowedTools "mcp__github_comment__*,mcp__github_ci__*,mcp__github_inline_comment__*,mcp__github_file_ops__*"
           show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
         env:
-          ANTHROPIC_BASE_URL: *claude_api_url
+          ANTHROPIC_BASE_URL: *claude_fallback_api_url
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
-          ANTHROPIC_AUTH_TOKEN: *claude_api_key
+          ANTHROPIC_AUTH_TOKEN: *claude_fallback_api_key
           ANTHROPIC_DEFAULT_FABLE_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
           ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
           ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
@@ -627,9 +638,9 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CLAUDE_REVIEW_MODEL: ${{ (steps.extract_claude_review_primary.outcome == 'success' || steps.extract_claude_review_primary_retry.outcome == 'success') && env.CLAUDE_REVIEW_MODEL || env.CLAUDE_REVIEW_FALLBACK_MODEL }}
-          CLAUDE_REVIEW_PROVIDER: ${{ steps.claude_models.outputs.provider }}
+          CLAUDE_REVIEW_PROVIDER: ${{ (steps.extract_claude_review_primary.outcome == 'success' || steps.extract_claude_review_primary_retry.outcome == 'success') && steps.claude_models.outputs.provider || steps.claude_models.outputs.fallback_provider }}
           CLAUDE_REVIEW_PRIMARY_MODEL: ${{ env.CLAUDE_REVIEW_MODEL }}
-          CLAUDE_REVIEW_ENDPOINT: *claude_api_url
+          CLAUDE_REVIEW_ENDPOINT: ${{ (steps.extract_claude_review_primary.outcome == 'success' || steps.extract_claude_review_primary_retry.outcome == 'success') && steps.claude_models.outputs.anthropic_base_url || steps.claude_models.outputs.secondary_anthropic_base_url }}
           CLAUDE_REVIEW_PRIMARY_OUTCOME: ${{ steps.claude_review_primary.outcome }}
           CLAUDE_REVIEW_PRIMARY_VALIDATION: ${{ steps.extract_claude_review_primary.outcome }}
           CLAUDE_REVIEW_RETRY_OUTCOME: ${{ steps.claude_review_primary_retry.outcome }}

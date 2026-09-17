@@ -382,6 +382,8 @@ class InlineCommentTest(unittest.TestCase):
                 {"severity": "P2", "path": "app.py", "side": "RIGHT", "line": True},
                 {"severity": "P2", "path": "other.py", "side": "RIGHT", "line": 1},
                 {"severity": "P2", "path": "app.py", "side": "RIGHT", "line": 99},
+                {"severity": "P2", "path": "app.py", "side": "RIGHT", "line": 1,
+                 "title": "", "impact": "x", "fix": "y"},
             ]
         raw_verdicts = [None, {"thread_id": "", "verdict": "confirmed", "reason": "x"},
                         {"thread_id": "t", "verdict": "unknown", "reason": "x"}]
@@ -391,6 +393,16 @@ class InlineCommentTest(unittest.TestCase):
             verdicts = context._parse_thread_verdicts(raw_verdicts)
         self.assertEqual(findings, [])
         self.assertEqual(verdicts, [])
+
+    def test_discards_finding_with_empty_text_field(self) -> None:
+        raw_findings = [
+            {"severity": "P2", "path": "app.py", "side": "RIGHT", "line": 1,
+             "title": "", "impact": "Impact.", "fix": "Fix."},
+        ]
+        with mock.patch.object(context, "_changed_paths", return_value={"app.py"}), \
+                mock.patch.object(context, "changed_diff_lines", return_value={"LEFT": set(), "RIGHT": {1}}):
+            findings = context._parse_review_findings(raw_findings, "a" * 40, "b" * 40)
+        self.assertEqual(findings, [])
 
     def test_extracts_and_validates_plain_json_from_claude_execution_file(self) -> None:
         review = {

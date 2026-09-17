@@ -36,7 +36,15 @@ class DeployOptimizationTests(unittest.TestCase):
         self.assertIn("restart managed observability services", PLAYBOOK)
 
     def test_deployment_avoids_duplicate_gateway_alerts(self) -> None:
-        self.assertNotIn("notify: restart Hermes gateway", RUNTIME)
+        for task_name in (
+            "Materialize encrypted API keys and tokens for Hermes",
+            "Apply the managed Hermes model and voice configuration",
+            "Apply shared Hermes VPS runtime configuration",
+        ):
+            with self.subTest(task_name=task_name):
+                task = RUNTIME.split(f"- name: {task_name}", 1)[1].split("\n- name:", 1)[0]
+                self.assertIn("notify: restart Hermes gateway", task)
+        self.assertNotIn("meta: flush_handlers", RUNTIME)
         self.assertIn("Mark planned Hermes gateway maintenance", SERVICES)
         self.assertIn("Clear planned Hermes gateway maintenance marker", SERVICES)
         self.assertIn("gateway-maintenance", STARTUP_NOTIFY)
