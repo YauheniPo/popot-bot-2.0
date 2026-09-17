@@ -511,7 +511,7 @@ jobs:
         continue-on-error: true
         uses: anthropics/claude-code-action@0a8d3c9443bbff909ab973b6a17a340b913f229f # v1
         with:
-          anthropic_api_key: *claude_api_key
+          anthropic_api_key: &claude_fallback_api_key ${{ (steps.claude_models.outputs.fallback_provider == 'nous' && secrets.NOUS_API_KEY) || (steps.claude_models.outputs.fallback_provider == 'nvidia' && secrets.NVIDIA_API_KEY) || (steps.claude_models.outputs.fallback_provider == 'openrouter' && secrets.OPENROUTER_API_KEY) || (steps.claude_models.outputs.fallback_provider == 'ollama-cloud' && secrets.OLLAMA_API_KEY) || '' }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: *claude_review_prompt
           claude_args: |
@@ -522,9 +522,9 @@ jobs:
             --disallowedTools "mcp__github_comment__*,mcp__github_ci__*,mcp__github_inline_comment__*,mcp__github_file_ops__*"
           show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
         env:
-          ANTHROPIC_BASE_URL: *claude_api_url
+          ANTHROPIC_BASE_URL: &claude_fallback_api_url ${{ steps.claude_models.outputs.secondary_anthropic_base_url }}
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
-          ANTHROPIC_AUTH_TOKEN: *claude_api_key
+          ANTHROPIC_AUTH_TOKEN: *claude_fallback_api_key
           ANTHROPIC_DEFAULT_FABLE_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
           ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
           ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
@@ -576,7 +576,7 @@ jobs:
         continue-on-error: true
         uses: anthropics/claude-code-action@0a8d3c9443bbff909ab973b6a17a340b913f229f # v1
         with:
-          anthropic_api_key: *claude_api_key
+          anthropic_api_key: *claude_fallback_api_key
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: *claude_review_prompt
           claude_args: |
@@ -587,9 +587,9 @@ jobs:
             --disallowedTools "mcp__github_comment__*,mcp__github_ci__*,mcp__github_inline_comment__*,mcp__github_file_ops__*"
           show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
         env:
-          ANTHROPIC_BASE_URL: *claude_api_url
+          ANTHROPIC_BASE_URL: *claude_fallback_api_url
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
-          ANTHROPIC_AUTH_TOKEN: *claude_api_key
+          ANTHROPIC_AUTH_TOKEN: *claude_fallback_api_key
           ANTHROPIC_DEFAULT_FABLE_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
           ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
           ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}

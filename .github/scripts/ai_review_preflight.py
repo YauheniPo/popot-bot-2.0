@@ -310,6 +310,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     selected_model = model if primary_ready else fallback
     selected_provider = provider if primary_ready else normalized_fallback_provider
+    secondary_base_url = ""
+    if args.probe in {"tools", "claude"} and fallback and fallback_ready:
+        secondary_base_url = anthropic_base_url(normalized_fallback_provider)
     output_path = os.environ.get("GITHUB_OUTPUT")
     if output_path:
         # A configured fallback is selectable only after the matching API probe.
@@ -322,6 +325,8 @@ def main(argv: list[str] | None = None) -> int:
             "selected_model": selected_model, "selected_mode": "ordinary",
             "secondary_model": fallback if primary_ready and fallback_ready else "",
             "secondary_provider": normalized_fallback_provider if primary_ready and fallback_ready else "",
+            "fallback_provider": normalized_fallback_provider if fallback else "",
+            "secondary_anthropic_base_url": secondary_base_url,
         }
         with open(output_path, "a", encoding="utf-8") as output:
             for key, value in values.items():
