@@ -443,7 +443,12 @@ class OllamaReviewTest(unittest.TestCase):
                     self.assertIn("OPENROUTER_API_KEY", step["with"]["anthropic_api_key"])
                     self.assertIn("OPENROUTER_API_KEY", step["env"]["ANTHROPIC_AUTH_TOKEN"])
                 if "CLAUDE_REVIEW_ENDPOINT" in step.get("env", {}):
-                    self.assertEqual(step["env"]["CLAUDE_REVIEW_ENDPOINT"], "${{ steps.claude_models.outputs.anthropic_base_url }}")
+                    endpoint = step["env"]["CLAUDE_REVIEW_ENDPOINT"]
+                    self.assertIn("steps.claude_models.outputs.anthropic_base_url", endpoint)
+                    self.assertIn("steps.claude_models.outputs.secondary_anthropic_base_url", endpoint)
+                    provider = step["env"]["CLAUDE_REVIEW_PROVIDER"]
+                    self.assertIn("steps.claude_models.outputs.provider", provider)
+                    self.assertIn("steps.claude_models.outputs.fallback_provider", provider)
         manual_text = (root / ".github/workflows/manual-ai-review.yml").read_text()
         manual = yaml.load(manual_text, Loader=yaml.BaseLoader)
         manual_inputs = manual["on"]["workflow_dispatch"]["inputs"]

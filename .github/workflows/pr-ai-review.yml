@@ -631,9 +631,9 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CLAUDE_REVIEW_MODEL: ${{ (steps.extract_claude_review_primary.outcome == 'success' || steps.extract_claude_review_primary_retry.outcome == 'success') && env.CLAUDE_REVIEW_MODEL || env.CLAUDE_REVIEW_FALLBACK_MODEL }}
-          CLAUDE_REVIEW_PROVIDER: ${{ steps.claude_models.outputs.provider }}
+          CLAUDE_REVIEW_PROVIDER: ${{ (steps.extract_claude_review_primary.outcome == 'success' || steps.extract_claude_review_primary_retry.outcome == 'success') && steps.claude_models.outputs.provider || steps.claude_models.outputs.fallback_provider }}
           CLAUDE_REVIEW_PRIMARY_MODEL: ${{ env.CLAUDE_REVIEW_MODEL }}
-          CLAUDE_REVIEW_ENDPOINT: *claude_api_url
+          CLAUDE_REVIEW_ENDPOINT: ${{ (steps.extract_claude_review_primary.outcome == 'success' || steps.extract_claude_review_primary_retry.outcome == 'success') && steps.claude_models.outputs.anthropic_base_url || steps.claude_models.outputs.secondary_anthropic_base_url }}
           CLAUDE_REVIEW_PRIMARY_OUTCOME: ${{ steps.claude_review_primary.outcome }}
           CLAUDE_REVIEW_PRIMARY_VALIDATION: ${{ steps.extract_claude_review_primary.outcome }}
           CLAUDE_REVIEW_RETRY_OUTCOME: ${{ steps.claude_review_primary_retry.outcome }}
