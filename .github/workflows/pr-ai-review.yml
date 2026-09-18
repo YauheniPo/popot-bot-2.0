@@ -768,6 +768,10 @@ jobs:
 
       - name: Observable Messages review with watchdog and failover
         id: observable_run
+        # A corroborating reviewer must not block CI when a free provider is
+        # unavailable or returns no valid result; the run still publishes its
+        # failure report below, and the direct + Claude reviews remain gating.
+        continue-on-error: true
         env:
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
