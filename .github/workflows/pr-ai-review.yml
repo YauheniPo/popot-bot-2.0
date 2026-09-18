@@ -12,9 +12,9 @@ env:
   PR_REVIEWER: ${{ vars.PR_REVIEWER || '0' }}
   # Both agent reviewers share CLAUDE_REVIEW_*; Direct API has its own route.
   DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'openrouter' }}
-  DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'inclusionai/ling-3.0-flash-fin:free' }}
-  DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'nvidia/nemotron-3-ultra-550b-a55b:free' }}
-  DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'nvidia' }}
+  DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'inclusionai/ling-3.0-flash-sante:free' }}
+  DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'deepseek/deepseek-v4-flash-0731:free' }}
+  DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'openrouter' }}
   CLAUDE_REVIEW_PROVIDER: ${{ vars.CLAUDE_REVIEW_PROVIDER || 'openrouter' }}
   CLAUDE_REVIEW_MODEL: ${{ vars.CLAUDE_REVIEW_MODEL || 'inclusionai/ling-3.0-flash-fin:free' }}
   CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.CLAUDE_REVIEW_FALLBACK_MODEL || 'nvidia/nemotron-3-ultra-550b-a55b:free' }}
