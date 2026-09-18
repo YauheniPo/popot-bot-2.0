@@ -90,7 +90,7 @@ def _split_diff_chunks(diff: str) -> list[str]:
     size = 0
     for line in lines:
         line_size = len(line) + 1
-        boundary = line.startswith("@@ ") or line.startswith("diff --git ")
+        boundary = line.startswith(("@@ ", "diff --git "))
         if current and size + line_size > MAX_CHUNK_CHARS and boundary:
             chunks.append("\n".join(current))
             current = []

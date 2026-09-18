@@ -425,14 +425,20 @@ class ObservableReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             report_path = root / "report.json"
+
+            def mark_success(workspace, chunks, files, report, report_path, base, head):
+                # Mirror review_chunks: on success it marks the shared report dict.
+                report.update(status="success", result={"summary": "done", "findings": [], "thread_verdicts": []})
+                return 0
+
             with mock.patch.dict(os.environ, {"BASE_SHA": "a"*40, "HEAD_SHA": "b"*40}, clear=True), \
                     mock.patch.object(observer, "_confine_report_path", return_value=report_path), \
                     mock.patch.object(observer, "prepare_prompt", return_value=([{"index": 1, "total": 1, "prompt": "p", "diff": "+new\n"}], {"app.py"})), \
-                    mock.patch.object(observer, "review_chunks", return_value=0), \
+                    mock.patch.object(observer, "review_chunks", side_effect=mark_success), \
                     redirect_stdout(io.StringIO()):
                 self.assertEqual(observer.run(report_path), 0)
             report = json.loads(report_path.read_text())
-            self.assertEqual(report["status"], "failed")  # run() never mutates to success; review_chunks owns it
+            self.assertEqual(report["status"], "success")
 
     def test_new_publication_findings_empty(self):
         new, notes = observer._new_publication_findings([], "owner/repo", "1", "tok")
