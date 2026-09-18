@@ -272,7 +272,7 @@ def _final_response_or_none(pipe, response, content, blocks, read_files, turn):
     return result
 
 
-def _worker(pipe, endpoint, api_key, model, prompt, workspace, allowed, max_turns, timeout):
+def _worker(pipe, endpoint, api_key, model, prompt, workspace, allowed, max_turns, timeout, max_tokens=8192):
     # Only this process owns network IO and tools. Parent can terminate it even
     # during DNS/TLS, a slow file read, a streaming response, or final teardown.
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
@@ -287,7 +287,7 @@ def _worker(pipe, endpoint, api_key, model, prompt, workspace, allowed, max_turn
         for turn in range(1, max_turns + 1):
             emit("request_dispatched")
             response = request_message(endpoint, api_key, {
-                "model": model, "max_tokens": 4096, "tools": TOOLS, "messages": messages,
+                "model": model, "max_tokens": max_tokens, "tools": TOOLS, "messages": messages,
             }, timeout, emit)
             emit(event_label(response))
             content = response.get("content")
@@ -312,8 +312,8 @@ def _worker(pipe, endpoint, api_key, model, prompt, workspace, allowed, max_turn
         pipe.close()
 
 
-def _validate_limits(max_turns, attempt_timeout_seconds, inactivity_timeout_seconds, heartbeat_seconds) -> None:
-    if min(max_turns, attempt_timeout_seconds, inactivity_timeout_seconds, heartbeat_seconds) <= 0:
+def _validate_limits(max_turns, attempt_timeout_seconds, inactivity_timeout_seconds, heartbeat_seconds, max_tokens) -> None:
+    if min(max_turns, attempt_timeout_seconds, inactivity_timeout_seconds, heartbeat_seconds, max_tokens) <= 0:
         raise ReviewFailure("invalid_limits")
 
 
@@ -374,14 +374,14 @@ def _recv_message(receive):
 def run_review(*, endpoint: str, api_key: str, model: str, prompt: str, workspace: Path,
                output: Path, max_turns: int, attempt_timeout_seconds: float,
                inactivity_timeout_seconds: float, heartbeat_seconds: float, log: TextIO,
-               allowed_files: set[str] | None = None) -> dict:
-    _validate_limits(max_turns, attempt_timeout_seconds, inactivity_timeout_seconds, heartbeat_seconds)
+               allowed_files: set[str] | None = None, max_tokens: int = 8192) -> dict:
+    _validate_limits(max_turns, attempt_timeout_seconds, inactivity_timeout_seconds, heartbeat_seconds, max_tokens)
     workspace = workspace.resolve()
     allowed = _resolve_allowed(workspace, allowed_files)
     ctx = multiprocessing.get_context("fork")
     receive, send = ctx.Pipe(duplex=False)
     worker = ctx.Process(target=_worker, args=(send, endpoint, api_key, model, prompt, workspace,
-        allowed, max_turns, inactivity_timeout_seconds))
+        allowed, max_turns, inactivity_timeout_seconds, max_tokens))
     started = last_activity = time.monotonic()
     heartbeat = started + heartbeat_seconds
     state, turns, events = "starting", 0, 0

@@ -421,7 +421,9 @@ class ClaudeReviewRunnerTests(unittest.TestCase):
 
     def test_validate_limits_rejects_non_positive(self):
         with self.assertRaisesRegex(runner.ReviewFailure, "invalid_limits"):
-            runner._validate_limits(0, 1, 1, 1)
+            runner._validate_limits(0, 1, 1, 1, 8192)
+        with self.assertRaisesRegex(runner.ReviewFailure, "invalid_limits"):
+            runner._validate_limits(1, 1, 1, 1, 0)
 
     def test_terminate_worker_handles_no_pid_and_stubborn_worker(self):
         runner._terminate_worker(mock.Mock(pid=None))

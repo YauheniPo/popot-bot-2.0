@@ -88,11 +88,14 @@ class ObservableReviewTests(unittest.TestCase):
             (root/".github/REVIEWER.md").write_text("Review proven regressions only.")
             (root/"sonar-review-context.json").write_text('{"issues":[]}')
             with mock.patch.object(observer, "_git", side_effect=["@@ -1 +1 @@\n-old\n+new\n", "app.py\n"]), mock.patch.object(observer.runner, "tracked_files", return_value={"app.py"}):
-                prompt, files = observer.prepare_prompt(root, "a"*40, "b"*40)
+                chunks, files = observer.prepare_prompt(root, "a"*40, "b"*40)
+            self.assertEqual(len(chunks), 1)
             self.assertEqual(files, {"app.py", ".ci-observable-review.diff"})
+            prompt = chunks[0]["prompt"]
             self.assertIn("thread_verdicts must be []", prompt)
             self.assertIn("unreviewed scope", prompt)
             self.assertIn("Advisory Sonar", prompt)
+            self.assertIn("chunk 1 of 1", prompt)
             self.assertIn("+new", (root/".ci-observable-review.diff").read_text())
             with mock.patch.object(observer, "_git", return_value="some diff"), self.assertRaisesRegex(observer.runner.ReviewFailure, "reserved_diff_path_exists"):
                 observer.prepare_prompt(root, "a"*40, "b"*40)
@@ -228,8 +231,8 @@ class ObservableReviewTests(unittest.TestCase):
             (root/"sonar-review-context.json").write_text("x" * 25000)
             with mock.patch.object(observer, "_git", side_effect=["+new\n", "app.py\n"]), \
                     mock.patch.object(observer.runner, "tracked_files", return_value={"app.py"}):
-                prompt, files = observer.prepare_prompt(root, "a"*40, "b"*40)
-            self.assertNotIn("Advisory Sonar", prompt)
+                chunks, files = observer.prepare_prompt(root, "a"*40, "b"*40)
+            self.assertNotIn("Advisory Sonar", chunks[0]["prompt"])
 
     def test_run_success_and_review_failure_paths(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -424,16 +427,70 @@ class ObservableReviewTests(unittest.TestCase):
             report_path = root / "report.json"
             with mock.patch.dict(os.environ, {"BASE_SHA": "a"*40, "HEAD_SHA": "b"*40}, clear=True), \
                     mock.patch.object(observer, "_confine_report_path", return_value=report_path), \
-                    mock.patch.object(observer, "prepare_prompt", return_value=("prompt", {"app.py"})), \
-                    mock.patch.object(observer, "review_attempts", return_value=0), \
+                    mock.patch.object(observer, "prepare_prompt", return_value=([{"index": 1, "total": 1, "prompt": "p", "diff": "+new\n"}], {"app.py"})), \
+                    mock.patch.object(observer, "review_chunks", return_value=0), \
                     redirect_stdout(io.StringIO()):
                 self.assertEqual(observer.run(report_path), 0)
             report = json.loads(report_path.read_text())
-            self.assertEqual(report["status"], "failed")  # run() never mutates to success; review_attempts owns it
+            self.assertEqual(report["status"], "failed")  # run() never mutates to success; review_chunks owns it
 
     def test_new_publication_findings_empty(self):
         new, notes = observer._new_publication_findings([], "owner/repo", "1", "tok")
         self.assertEqual((new, notes), ([], []))
+
+    def test_split_diff_chunks_bounds_each_chunk(self):
+        # A diff with several file headers splits on boundaries; each chunk
+        # stays under MAX_CHUNK_CHARS so a small model can finish it.
+        diff = "diff --git a/a.py b/a.py\n@@ -1 +1 @@\n-old\n+new\n" + ("x" * observer.MAX_CHUNK_CHARS) + "\ndiff --git a/b.py b/b.py\n@@ -1 +1 @@\n-old\n+new\n"
+        chunks = observer._split_diff_chunks(diff)
+        self.assertGreaterEqual(len(chunks), 2)
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk) + 1, observer.MAX_CHUNK_CHARS + 2000)
+
+    def test_split_diff_chunks_single_small_diff(self):
+        diff = "@@ -1 +1 @@\n-old\n+new\n"
+        self.assertEqual(observer._split_diff_chunks(diff), ["@@ -1 +1 @@\n-old\n+new"])
+
+    def test_review_chunks_aggregates_and_caps_findings(self):
+        findings = [{"severity": "P2", "path": f"f{i}.py", "side": "RIGHT", "line": 1,
+                     "title": "t", "impact": "i", "fix": "f"} for i in range(observer.MAX_FINDINGS + 3)]
+        report = {"status": "failed", "attempts": []}
+        chunks = [
+            {"index": 1, "total": 2, "prompt": "p1", "diff": "+a\n"},
+            {"index": 2, "total": 2, "prompt": "p2", "diff": "+b\n"},
+        ]
+        def fake_attempts(workspace, prompt, files, chunk_report, report_path, base, head):
+            chunk_report.update(status="success",
+                result={"summary": "ok", "findings": findings, "thread_verdicts": []})
+            return 0
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / observer.runner.REVIEW_DIFF_PATH).write_text("placeholder\n")
+            with mock.patch.object(observer, "review_attempts", side_effect=fake_attempts):
+                code = observer.review_chunks(root, chunks, {"a.py"}, report,
+                                              root / "report.json", "a"*40, "b"*40)
+        self.assertEqual(code, 0)
+        self.assertEqual(report["status"], "success")
+        self.assertEqual(len(report["result"]["findings"]), observer.MAX_FINDINGS)
+        self.assertEqual(report["result"]["thread_verdicts"], [])
+        self.assertEqual(len(report["attempts"]), 0)
+
+    def test_review_chunks_fails_when_a_chunk_fails(self):
+        report = {"status": "failed", "attempts": []}
+        chunks = [{"index": 1, "total": 1, "prompt": "p", "diff": "+a\n"}]
+        def fake_attempts(workspace, prompt, files, chunk_report, report_path, base, head):
+            chunk_report.update(status="failed", reason="all_attempts_failed")
+            return 1
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / observer.runner.REVIEW_DIFF_PATH).write_text("placeholder\n")
+            with mock.patch.object(observer, "review_attempts", side_effect=fake_attempts), \
+                    redirect_stdout(io.StringIO()):
+                code = observer.review_chunks(root, chunks, {"a.py"}, report,
+                                              root / "report.json", "a"*40, "b"*40)
+        self.assertEqual(code, 1)
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["reason"], "all_attempts_failed")
 
     def test_publish_one_finding_includes_attempt_metadata(self):
         finding = context.ReviewFinding("P2", "app.py", "RIGHT", 1, "t", "i", "f")

@@ -748,6 +748,7 @@ jobs:
       CLAUDE_REVIEW_ATTEMPT_TIMEOUT_SECONDS: ${{ vars.CLAUDE_REVIEW_ATTEMPT_TIMEOUT_SECONDS || '600' }}
       CLAUDE_REVIEW_INACTIVITY_TIMEOUT_SECONDS: ${{ vars.CLAUDE_REVIEW_INACTIVITY_TIMEOUT_SECONDS || '180' }}
       CLAUDE_REVIEW_HEARTBEAT_SECONDS: ${{ vars.CLAUDE_REVIEW_HEARTBEAT_SECONDS || '30' }}
+      CLAUDE_REVIEW_MAX_TOKENS: ${{ vars.CLAUDE_REVIEW_MAX_TOKENS || '8192' }}
     steps:
       - name: Check out pull request with history for independent review
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

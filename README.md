@@ -291,10 +291,16 @@ The third reviewer uses a separate streaming Messages API tool loop, not the
 Claude Code SDK. It can only Read, Glob and literal-Grep tracked regular files
 and a generated diff; it cannot execute shell commands or read symlink targets,
 untracked credentials or `.git`. Reads and searches are bounded; the prompt
-requires it to disclose any unreviewed scope. Final JSON is rejected with
-`diff_not_read` unless a Read call returned actual numbered diff lines; failed
-reads and empty pages do not count. This proves access to changes, not complete
-coverage. Oversized lines are omitted individually without blocking later pages.
+requires it to disclose any unreviewed scope. The full base-to-head diff is
+split into bounded chunks (≤32 000 chars) before review; each chunk is written
+to the generated diff in turn and reviewed separately, and their validated
+findings are merged into one report capped at five. Chunking keeps every slice
+small enough for a free/small model to finish with a valid `end_turn` instead
+of exhausting its output budget (`provider_incomplete_result`). Final JSON is
+rejected with `diff_not_read` unless a Read call returned actual numbered diff
+lines; failed reads and empty pages do not count. This proves access to
+changes, not complete coverage. Oversized lines are omitted individually
+without blocking later pages.
 It has no separate preflight step of its own:
 tool support and final JSON are validated during the actual review attempts,
 so an unusable route fails the attempt rather than a standalone check.
@@ -314,6 +320,7 @@ Optional repository variables for this runner (all retain `CLAUDE_REVIEW_` names
 | `CLAUDE_REVIEW_ATTEMPT_TIMEOUT_SECONDS` | 600 | 900 | Hard deadline per attempt |
 | `CLAUDE_REVIEW_INACTIVITY_TIMEOUT_SECONDS` | 180 | 600 | Deadline without substantive provider/tool events |
 | `CLAUDE_REVIEW_HEARTBEAT_SECONDS` | 30 | 60 | CI heartbeat interval |
+| `CLAUDE_REVIEW_MAX_TOKENS` | 8192 | 32768 | Output-token budget per model turn |
 
 An independent watchdog terminates a stalled worker. A transient failure,
 invalid JSON or invalid diff anchor allows one fresh retry, then up to two
