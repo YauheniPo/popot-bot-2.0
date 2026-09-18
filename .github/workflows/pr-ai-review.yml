@@ -197,8 +197,12 @@ jobs:
 
       - name: Verify the selected model for Claude tool calling
         id: claude_models
-        # Claude is required whenever this job is selected. A failed smoke
-        # probe must make the job red and retain the provider diagnostics.
+        # Claude corroborates the direct reviewer, so a provider outage or rate
+        # limit must not fail the job: all four agent steps below already run
+        # with continue-on-error, and a failed preflight simply skips them and
+        # publishes the "unavailable" report. The direct + observable reviews
+        # remain gating.
+        continue-on-error: true
         shell: bash
         env:
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
