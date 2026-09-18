@@ -413,7 +413,8 @@ GitHub permissions и messenger tokens подключаются отдельно
   package channels/retries и pinned auxiliary CLI versions;
 - `vps_hermes.config.managed_overlay` — authoritative non-secret config.yaml
   policy без `model.default`, если `/model_global` должен сохраняться;
-- `vps_vscode`/`vps_browser` — pinned image/package и безопасная локальная
+- `vps_vscode`/`vps_browser` — образ code-server `latest` (проверяется при каждом
+  deploy с code-server), закреплённая версия browser package и безопасная локальная
   browser/IDE topology;
 - `vps_agent_policy` — только repository-owned блоки поведения, без замены
   личного `SOUL.md`;

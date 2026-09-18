@@ -367,7 +367,7 @@ vps_tailscale:
 # Browser IDE is loopback-only and reached through an SSH tunnel.
 vps_vscode:
   project_name: hermes-vscode
-  image: codercom/code-server:4.133.0-noble@sha256:c8ae938c488efc7f346deb93c04c11320b803251aa181263a8482f3aeddf1b27
+  image: codercom/code-server:latest
   bind_address: 127.0.0.1
   host_port: 3001
   tunnel_port: 8080
