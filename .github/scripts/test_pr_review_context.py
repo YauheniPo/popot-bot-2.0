@@ -47,6 +47,14 @@ def thread(
 
 
 class ReviewThreadFetchTest(unittest.TestCase):
+    def test_all_publishers_can_deduplicate_settled_observable_threads_without_owning_them(self):
+        settled = context.ReviewThread("settled", "app.py", "RIGHT", 1, 1, False, True,
+            (context.ReviewComment("comment", 7, context.AUTOMATED_REVIEW_AUTHOR,
+                "<!-- observable-inline:" + "a"*40 + ":123:1:digest -->\nExisting finding"),), resolved=True)
+        with mock.patch.object(context, "_fetch_review_threads", return_value=[settled]):
+            self.assertEqual(context.fetch_resolved_machine_threads("owner/repo", "1", "token"), [settled])
+        self.assertFalse(context.is_machine_thread(settled))
+
     def test_review_thread_page_rejects_invalid_graphql_shapes(self) -> None:
         cases = [
             object(),
@@ -404,6 +412,29 @@ class InlineCommentTest(unittest.TestCase):
             findings = context._parse_review_findings(raw_findings, "a" * 40, "b" * 40)
         self.assertEqual(findings, [])
 
+    def test_extract_rejects_json_without_successful_diff_read(self):
+        final = {"type":"result", "is_error":False, "result":context.json.dumps({
+            "summary":"No findings", "findings":[], "thread_verdicts":[]})}
+        call = {"type":"assistant", "message":{"content":[{
+            "type":"tool_use", "id":"read-1", "name":"Read",
+            "input":{"file_path":str(Path.cwd()/".ci-pr-review.diff")}}]}}
+        result = {"type":"user", "message":{"content":[{
+            "type":"tool_result", "tool_use_id":"read-1", "content":"1→diff --git a/app.py b/app.py\n2→+new"}]}}
+        variants = [[], [call], [result], [call, final, result],
+            [call, {"type":"user", "message":{"content":[{"type":"tool_result", "tool_use_id":"read-1", "is_error":True, "content":"1→permission denied"}]}}],
+            [call, {"type":"user", "message":{"content":[{"type":"tool_result", "tool_use_id":"read-1", "content":"File is empty."}]}}],
+            [call, {"type":"assistant", "message":result["message"]}],
+            [call, {"type":"user", "message":{"content":[{"type":"tool_result", "tool_use_id":"wrong", "content":"1→+new"}]}}],
+        ]
+        for index, events in enumerate(variants):
+            with self.subTest(index=index), tempfile.TemporaryDirectory() as directory:
+                execution, output = Path(directory)/"execution.json", Path(directory)/"review.json"
+                execution.write_text(context.json.dumps([*events, final]))
+                with mock.patch.dict(context.os.environ, {"BASE_SHA":"a"*40, "HEAD_SHA":"b"*40}, clear=True), mock.patch.object(context, "_changed_paths", return_value=set()):
+                    with self.assertRaisesRegex(RuntimeError, "diff_not_read"):
+                        context._command_extract(execution, output)
+                self.assertFalse(output.exists())
+
     def test_extracts_and_validates_plain_json_from_claude_execution_file(self) -> None:
         review = {
             "summary": "No actionable findings.",
@@ -412,6 +443,11 @@ class InlineCommentTest(unittest.TestCase):
         }
         execution = [
             {"type": "system", "subtype": "init"},
+            {"type":"assistant", "message":{"content":[{
+                "type":"tool_use", "id":"read-1", "name":"Read",
+                "input":{"file_path":str(Path.cwd()/".ci-pr-review.diff")}}]}},
+            {"type":"user", "message":{"content":[{
+                "type":"tool_result", "tool_use_id":"read-1", "content":"1→diff --git a/app.py b/app.py\n2→+new"}]}},
             {
                 "type": "result",
                 "subtype": "success",
@@ -433,6 +469,27 @@ class InlineCommentTest(unittest.TestCase):
             extracted = context.json.loads(output_file.read_text(encoding="utf-8"))
 
         self.assertEqual(extracted, review)
+
+    def test_read_evidence_accepts_sdk_shapes_and_rejects_wrong_scope(self):
+        def events(path, output, *, tool="Read", parent=None):
+            return [
+                {"type":"assistant", "parent_tool_use_id":parent, "message":{"content":[{
+                    "type":"tool_use", "name":tool, "id":"r1", "input":{"file_path":path}}]}},
+                {"type":"user", "parent_tool_use_id":parent, "message":{"content":[{
+                    "type":"tool_result", "tool_use_id":"r1", "content":output}]}},
+            ]
+        for output in ("    1→diff --git a/app.py b/app.py", "1\t+new", [{"type":"text", "text":"2: +new"}]):
+            with self.subTest(output=output):
+                context._require_claude_diff_read(events("./.ci-pr-review.diff", output))
+        invalid = [events("app.py", "1→+new"), events("/another/repo/.ci-pr-review.diff", "1→+new"),
+                   events(".ci-pr-review.diff", "1→+new", tool="Grep"),
+                   events(".ci-pr-review.diff", "1→+new", parent="subagent"),
+                   events(None, "1→+new"), events(".ci-pr-review.diff", "1→   \n"),
+                   [*events(".ci-pr-review.diff", "1→+new"), {"type":"system", "subtype":"init"}],
+                   [events(".ci-pr-review.diff", "1→+new")[0], *events("app.py", "1→other file")]]
+        for index, stream in enumerate(invalid):
+            with self.subTest(index=index), self.assertRaisesRegex(RuntimeError, "diff_not_read"):
+                context._require_claude_diff_read(stream)
 
     def test_decodes_json_lines_execution_output(self) -> None:
         self.assertEqual(
