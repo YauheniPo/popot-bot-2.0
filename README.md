@@ -295,8 +295,9 @@ requires it to disclose any unreviewed scope. Final JSON is rejected with
 `diff_not_read` unless a Read call returned actual numbered diff lines; failed
 reads and empty pages do not count. This proves access to changes, not complete
 coverage. Oversized lines are omitted individually without blocking later pages.
-It has no separate preflight:
-tool support and final JSON are validated during the actual review attempts.
+It has no separate preflight step of its own:
+tool support and final JSON are validated during the actual review attempts,
+so an unusable route fails the attempt rather than a standalone check.
 
 CI logs show provider/model, attempt, tool start/completion and periodic
 heartbeat lines. Streaming content/reasoning events update the activity counter

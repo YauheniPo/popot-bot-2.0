@@ -279,6 +279,18 @@ class ObservableReviewTests(unittest.TestCase):
                 inside = root / "inside.json"
                 self.assertEqual(observer._confine_report_path(inside), inside)
 
+    def test_confine_report_path_resolves_symlink(self):
+        # realpath must resolve a symlink to its target before the base check,
+        # so a symlink cannot smuggle a path past confinement.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "real.json").write_text("{}")
+            link = root / "link.json"
+            link.symlink_to(root / "real.json")
+            with mock.patch.object(observer.os, "environ", {"RUNNER_TEMP": str(root)}, create=True):
+                resolved = observer._confine_report_path(link)
+            self.assertEqual(resolved, (root / "real.json").resolve())
+
     def test_load_report_rejects_missing_and_oversized(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

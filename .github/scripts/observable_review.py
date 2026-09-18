@@ -29,14 +29,16 @@ def _confine_report_path(raw: Path) -> Path:
 
     The report path arrives as a CLI argument (S8707); confine it to the review
     workspace or a scratch directory before any read/write so a faulty value
-    cannot traverse into an arbitrary filesystem location.
+    cannot traverse into an arbitrary filesystem location. ``os.path.realpath``
+    resolves symlinks in every component, including a non-existent trailing
+    target, so a symlink cannot smuggle the report outside an allowed base.
     """
-    resolved = raw.resolve()
-    allowed = [Path.cwd().resolve(), Path(tempfile.gettempdir()).resolve()]
+    resolved = Path(os.path.realpath(str(raw)))
+    bases = [Path.cwd().resolve(), Path(tempfile.gettempdir()).resolve()]
     runner_temp = os.environ.get("RUNNER_TEMP")
     if runner_temp:
-        allowed.append(Path(runner_temp).resolve())
-    if not any(resolved.is_relative_to(base) for base in allowed):
+        bases.append(Path(runner_temp).resolve())
+    if not any(resolved == base or resolved.is_relative_to(base) for base in bases):
         raise RuntimeError("report path must stay within the workspace or a scratch directory")
     return resolved
 
