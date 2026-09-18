@@ -435,6 +435,19 @@ class InlineCommentTest(unittest.TestCase):
                         context._command_extract(execution, output)
                 self.assertFalse(output.exists())
 
+    def test_is_diff_read_call_swallows_resolve_errors(self) -> None:
+        block = {"type": "tool_use", "id": "read-1", "name": "Read", "input": {"file_path": "/x"}}
+
+        class BadPath:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def resolve(self):
+                raise OSError("boom")
+
+        with mock.patch.object(context, "Path", BadPath):
+            self.assertFalse(context._is_diff_read_call(block, Path("/diff")))
+
     def test_extracts_and_validates_plain_json_from_claude_execution_file(self) -> None:
         review = {
             "summary": "No actionable findings.",

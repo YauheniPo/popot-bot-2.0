@@ -1035,7 +1035,7 @@ def _read_returned_lines(block: dict) -> bool:
     # Read's cat -n style output uses an arrow or tab; accept colon-numbered
     # variants too. Empty pages and plain error/warning messages are not reads.
     return isinstance(content, str) and re.search(
-        r"^[ \t]*[1-9][0-9]*[ \t]*(?:→|\t|:)[ \t]*\S", content, re.MULTILINE,
+        r"^[ \t]*[1-9]\d* *[→\t:] *\S", content, re.MULTILINE,
     ) is not None
 
 

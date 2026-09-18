@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from urllib.parse import urlsplit
 
@@ -21,6 +22,23 @@ from review_execution import safe_label
 LABEL = "ObservableMessagesReview"
 PREFIX = "observable"
 MAX_REPORT_BYTES = 1024 * 1024
+
+
+def _confine_report_path(raw: Path) -> Path:
+    """Resolve the report path and reject anything outside scratch locations.
+
+    The report path arrives as a CLI argument (S8707); confine it to the review
+    workspace or a scratch directory before any read/write so a faulty value
+    cannot traverse into an arbitrary filesystem location.
+    """
+    resolved = raw.resolve()
+    allowed = [Path.cwd().resolve(), Path(tempfile.gettempdir()).resolve()]
+    runner_temp = os.environ.get("RUNNER_TEMP")
+    if runner_temp:
+        allowed.append(Path(runner_temp).resolve())
+    if not any(resolved.is_relative_to(base) for base in allowed):
+        raise RuntimeError("report path must stay within the workspace or a scratch directory")
+    return resolved
 
 
 def routes() -> list[dict]:
@@ -98,9 +116,40 @@ Changed paths:
 
 def _limit(name: str, default: int, maximum: int) -> int:
     raw = os.environ.get(name, str(default))
-    if not re.fullmatch(r"[0-9]{1,5}", raw) or not 1 <= int(raw) <= maximum:
+    if not re.fullmatch(r"\d{1,5}", raw) or not 1 <= int(raw) <= maximum:
         raise runner.ReviewFailure("invalid_review_limit")
     return int(raw)
+
+
+def _single_attempt(route: dict, number: int, prompt: str, workspace: Path, files: set[str],
+                    execution: Path, report: dict, base: str, head: str, limits: dict) -> bool:
+    """Run one route attempt; return True on a validated success."""
+    attempt = {key: safe_label(route[key]) for key in ("provider", "model", "role")}
+    attempt.update(number=number, outcome="pending")
+    report["attempts"].append(attempt)
+    print(f"[review] attempt={len(report['attempts'])} route={attempt['role']} "
+          f"provider={attempt['provider']} model={attempt['model']}", flush=True)
+    started = time.monotonic()
+    try:
+        if route.get("error"):
+            raise runner.ReviewFailure(route["error"])
+        stats = runner.run_review(endpoint=route["endpoint"], api_key=route["key"], model=route["model"],
+            prompt=prompt, workspace=workspace, output=execution, allowed_files=files, log=sys.stdout, **limits)
+        text = publisher._claude_final_response(execution)
+        normalized = publisher._normalized_claude_result(text, base, head)
+        # Never silently turn invalid anchors into an empty successful review.
+        if len(json.loads(normalized)["findings"]) != len(json.loads(text)["findings"]):
+            raise runner.ReviewFailure("invalid_diff_anchor")
+        report.update(status="success", result=json.loads(normalized))
+        attempt.update(stats, outcome="valid_json")
+        return True
+    except (runner.ReviewFailure, runner.ReviewTimeout) as error:
+        attempt["outcome"] = str(error).split(":", 1)[0]
+    except Exception:
+        attempt["outcome"] = "validation_or_transport_error"
+    finally:
+        attempt["seconds"] = round(time.monotonic() - started, 2)
+    return False
 
 
 def review_attempts(workspace: Path, prompt: str, files: set[str], report: dict, report_path: Path,
@@ -114,31 +163,9 @@ def review_attempts(workspace: Path, prompt: str, files: set[str], report: dict,
     execution = report_path.with_suffix(".execution.json")
     for route in routes():
         for number in (1, 2):
-            attempt = {key: safe_label(route[key]) for key in ("provider", "model", "role")}
-            attempt.update(number=number, outcome="pending")
-            report["attempts"].append(attempt)
-            print(f"[review] attempt={len(report['attempts'])} route={attempt['role']} "
-                  f"provider={attempt['provider']} model={attempt['model']}", flush=True)
-            started = time.monotonic()
-            try:
-                if route.get("error"):
-                    raise runner.ReviewFailure(route["error"])
-                stats = runner.run_review(endpoint=route["endpoint"], api_key=route["key"], model=route["model"],
-                    prompt=prompt, workspace=workspace, output=execution, allowed_files=files, log=sys.stdout, **limits)
-                text = publisher._claude_final_response(execution)
-                normalized = publisher._normalized_claude_result(text, base, head)
-                # Never silently turn invalid anchors into an empty successful review.
-                if len(json.loads(normalized)["findings"]) != len(json.loads(text)["findings"]):
-                    raise runner.ReviewFailure("invalid_diff_anchor")
-                report.update(status="success", result=json.loads(normalized))
-                attempt.update(stats, outcome="valid_json")
+            if _single_attempt(route, number, prompt, workspace, files, execution, report, base, head, limits):
                 return 0
-            except (runner.ReviewFailure, runner.ReviewTimeout) as error:
-                attempt["outcome"] = str(error).split(":", 1)[0]
-            except Exception:
-                attempt["outcome"] = "validation_or_transport_error"
-            finally:
-                attempt["seconds"] = round(time.monotonic() - started, 2)
+            attempt = report["attempts"][-1]
             print(f"[review] attempt_failed reason={attempt['outcome']} elapsed={attempt['seconds']}s", flush=True)
             if attempt["outcome"] in {"http_400", "http_401", "http_403", "http_404",
                                       "missing_provider_key", "unsupported_provider_route"}:
@@ -152,6 +179,7 @@ def review_attempts(workspace: Path, prompt: str, files: set[str], report: dict,
 
 
 def run(report_path: Path) -> int:
+    report_path = _confine_report_path(report_path)
     report = {"status": "failed", "attempts": [], "reason": "review_not_completed"}
     try:
         workspace = Path.cwd().resolve()
@@ -214,11 +242,14 @@ def _new_publication_findings(findings: list, repo: str, pr: str, token: str) ->
     return new, notes
 
 
-def publish(report_path: Path) -> None:
-    """Fixed identity, separate markers, no mutation of other reviewers' threads."""
+def _load_report(report_path: Path) -> dict:
     if not report_path.is_file() or report_path.stat().st_size > MAX_REPORT_BYTES:
         raise RuntimeError("Observable review report is unavailable or oversized")
-    report = json.loads(report_path.read_text(encoding="utf-8"))
+    return json.loads(report_path.read_text(encoding="utf-8"))
+
+
+def _publish_context() -> tuple[str, str, str, str, str, str, str, str]:
+    """Return (repo, pr, base, head, run_id, run_attempt, token, url)."""
     repo, pr = publisher._required_env("GITHUB_REPOSITORY"), publisher._required_env("PR_NUMBER")
     base, head = (publisher._required_commit_sha(k) for k in ("BASE_SHA", "HEAD_SHA"))
     run_id, run_attempt = publisher._required_env("GITHUB_RUN_ID"), os.environ.get("GITHUB_RUN_ATTEMPT", "1")
@@ -226,6 +257,49 @@ def publish(report_path: Path) -> None:
         raise RuntimeError("Invalid GitHub run identity")
     token = publisher._github_token()
     url = f"{publisher.GITHUB_API_URL}/repos/{repo}/issues/{pr}/comments"
+    return repo, pr, base, head, run_id, run_attempt, token, url
+
+
+def _publish_one_finding(finding, repo: str, pr: str, token: str, head: str,
+                         run_id: str, run_attempt: str, run_url: str, report: dict) -> str:
+    """Publish one inline comment for a finding; return its summary detail text."""
+    digest = hashlib.sha256(f"{finding.path}:{finding.side}:{finding.line}".encode()).hexdigest()[:16]
+    inline_marker = f"<!-- {PREFIX}-inline:{head}:{run_id}:{run_attempt}:{digest} -->"
+    detail = f"**[{LABEL}] {finding.severity} — {finding.title}**\n\nImpact: {finding.impact}\n\nProposed fix: {finding.fix}"
+    if report["attempts"]:
+        last = report["attempts"][-1]
+        detail += f"\n\nProvider: `{safe_label(last['provider'])}` · Model: `{safe_label(last['model'])}` · [CI run]({run_url})"
+    try:
+        comments_url = f"{publisher.GITHUB_API_URL}/repos/{repo}/pulls/{pr}/comments"
+        if not publisher._review_already_posted(comments_url, inline_marker, token):
+            publisher.create_inline_comment(repo, pr, token, head, finding.path, finding.side, finding.line,
+                                            inline_marker + "\n" + detail)
+    except publisher.GitHubRequestError as error:
+        if not publisher._is_unresolvable_inline_anchor(error):
+            raise
+        detail += "\n\nGitHub rejected the inline anchor; finding retained here."
+    return detail
+
+
+def _success_lines(report: dict, repo: str, pr: str, token: str, base: str, head: str,
+                   run_id: str, run_attempt: str, run_url: str) -> list[str]:
+    summary, findings, verdicts = publisher._validated_claude_result(json.dumps(report["result"]), base, head)
+    if verdicts:
+        raise RuntimeError("Observable reviewer cannot publish thread verdicts")
+    lines = [summary, "", f"Validated findings: {len(findings)}"]
+    findings, existing_notes = _new_publication_findings(findings, repo, pr, token)
+    lines.extend([f"New findings: {len(findings)}", *existing_notes])
+    for finding in findings:
+        detail = _publish_one_finding(finding, repo, pr, token, head, run_id, run_attempt, run_url, report)
+        lines.extend(["", f"`{finding.path}:{finding.line}`", detail])
+    return lines
+
+
+def publish(report_path: Path) -> None:
+    """Fixed identity, separate markers, no mutation of other reviewers' threads."""
+    report_path = _confine_report_path(report_path)
+    report = _load_report(report_path)
+    repo, pr, base, head, run_id, run_attempt, token, url = _publish_context()
     marker = f"<!-- {PREFIX}-pr-review:{head}:{run_id}:{run_attempt} -->"
     if publisher._review_already_posted(url, marker, token):
         print("Observable review already published for this run attempt.")
@@ -233,29 +307,7 @@ def publish(report_path: Path) -> None:
     run_url = f"https://github.com/{repo}/actions/runs/{run_id}"
     lines = [diagnostics(report), "", f"[CI run]({run_url}) · [Reviewed revision](https://github.com/{repo}/commit/{head})", ""]
     if report["status"] == "success":
-        summary, findings, verdicts = publisher._validated_claude_result(json.dumps(report["result"]), base, head)
-        if verdicts:
-            raise RuntimeError("Observable reviewer cannot publish thread verdicts")
-        lines.extend([summary, "", f"Validated findings: {len(findings)}"])
-        findings, existing_notes = _new_publication_findings(findings, repo, pr, token)
-        lines.extend([f"New findings: {len(findings)}", *existing_notes])
-        for finding in findings:
-            digest = hashlib.sha256(f"{finding.path}:{finding.side}:{finding.line}".encode()).hexdigest()[:16]
-            inline_marker = f"<!-- {PREFIX}-inline:{head}:{run_id}:{run_attempt}:{digest} -->"
-            detail = f"**[{LABEL}] {finding.severity} — {finding.title}**\n\nImpact: {finding.impact}\n\nProposed fix: {finding.fix}"
-            if report["attempts"]:
-                last = report["attempts"][-1]
-                detail += f"\n\nProvider: `{safe_label(last['provider'])}` · Model: `{safe_label(last['model'])}` · [CI run]({run_url})"
-            try:
-                comments_url = f"{publisher.GITHUB_API_URL}/repos/{repo}/pulls/{pr}/comments"
-                if not publisher._review_already_posted(comments_url, inline_marker, token):
-                    publisher.create_inline_comment(repo, pr, token, head, finding.path, finding.side, finding.line,
-                                                    inline_marker + "\n" + detail)
-            except publisher.GitHubRequestError as error:
-                if not publisher._is_unresolvable_inline_anchor(error):
-                    raise
-                detail += "\n\nGitHub rejected the inline anchor; finding retained here."
-            lines.extend(["", f"`{finding.path}:{finding.line}`", detail])
+        lines.extend(_success_lines(report, repo, pr, token, base, head, run_id, run_attempt, run_url))
     lines.extend(["", marker])
     publisher._request_json(url, "POST", token, {"body": "\n".join(lines)})
     print("Published ObservableMessagesReview summary.")
@@ -272,9 +324,13 @@ def main() -> int:
     return 0
 
 
-if __name__ == "__main__":
+def _main_guard() -> None:
     try:
         sys.exit(main())
     except Exception:
         print("::error::Observable review publication failed; check GitHub permissions and report validity.", file=sys.stderr)
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    _main_guard()  # pragma: no cover - entrypoint covered by test_module_main_guards_publish_failure via subprocess

@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import time
 import multiprocessing
@@ -135,12 +136,16 @@ class ClaudeReviewRunnerTests(unittest.TestCase):
         self.assertEqual(emit.call_count, 5)
 
     def test_stream_requires_completion_and_limits_response_size(self):
+        emit = mock.Mock()
+        stream = io.BytesIO(b'data: {"type":"ping"}\n\n')
         with self.assertRaisesRegex(runner.ReviewFailure, "stream_incomplete"):
-            runner._stream_response(io.BytesIO(b'data: {"type":"ping"}\n\n'), mock.Mock())
+            runner._stream_response(stream, emit)
+        stream = io.BytesIO(b"x" * (runner.MAX_RESPONSE_BYTES + 1))
         with self.assertRaisesRegex(runner.ReviewFailure, "response_limit"):
-            runner._stream_response(io.BytesIO(b"x" * (runner.MAX_RESPONSE_BYTES + 1)), mock.Mock())
+            runner._stream_response(stream, emit)
+        stream = io.BytesIO(b'data: {"type":"error","message":"secret"}\n')
         with self.assertRaisesRegex(runner.ReviewFailure, "stream_error"):
-            runner._stream_response(io.BytesIO(b'data: {"type":"error","message":"secret"}\n'), mock.Mock())
+            runner._stream_response(stream, emit)
 
     def test_read_does_not_misnumber_an_oversized_line(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -253,17 +258,189 @@ class ClaudeReviewRunnerTests(unittest.TestCase):
     def test_invalid_final_json_is_not_success(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)/"out"
+            log = io.StringIO()
+            workspace = Path(directory)
             with mock.patch.object(runner, "request_message", return_value={
                 "content": [{"type": "text", "text": "no review JSON"}], "stop_reason": "end_turn",
             }):
                 with self.assertRaisesRegex(RuntimeError, "invalid_result"):
                     runner.run_review(
                         endpoint="https://example.test/v1/messages", api_key="key", model="test",
-                        prompt="review", workspace=Path(directory), output=output, max_turns=2,
+                        prompt="review", workspace=workspace, output=output, max_turns=2,
                         attempt_timeout_seconds=3, inactivity_timeout_seconds=2, heartbeat_seconds=1,
-                        log=io.StringIO(), allowed_files=set(),
+                        log=log, allowed_files=set(),
                     )
             self.assertFalse(output.exists())
+
+    def test_tracked_files_lists_git_files_and_enforces_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            (root / "app.py").write_text("x = 1\n")
+            subprocess.run(["git", "add", "app.py"], cwd=root, check=True)
+            self.assertEqual(runner.tracked_files(root), {"app.py"})
+        huge = "\0".join(f"f{i}" for i in range(runner.MAX_FILES + 1))
+        with mock.patch.object(runner.subprocess, "run", return_value=mock.Mock(stdout=huge.encode())):
+            with self.assertRaisesRegex(runner.ReviewFailure, "repository_file_limit"):
+                runner.tracked_files(Path.cwd())
+
+    def test_workspace_path_rejects_non_string_missing_and_non_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "sub").mkdir()
+            allowed = {"sub"}
+            with self.assertRaises(ValueError):
+                runner._workspace_path(root, None, allowed)
+            with self.assertRaises(ValueError):
+                runner._workspace_path(root, "", allowed)
+            with self.assertRaises(ValueError):
+                runner._workspace_path(root, "sub", allowed)
+
+    def test_read_lines_truncates_at_output_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "big"
+            path.write_text("".join(f"line {i}\n" for i in range(20000)))
+            result = runner._read_lines(path, 1, 20000)
+            self.assertIn("output limit; continue at line", result)
+
+    def test_matching_files_skips_unresolvable_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "link").symlink_to(root / "missing-target")
+            allowed = {"link"}
+            self.assertEqual(list(runner._matching_files(root, allowed, "*")), [])
+
+    def test_search_breaks_at_match_limit(self):
+        paths = [(f"f{i}.py", Path(f"/x/f{i}.py")) for i in range(150)]
+        with mock.patch.object(runner, "_matching_files", return_value=iter(paths)), \
+                mock.patch.object(runner, "_grep_file", return_value=["m:1:needle"]):
+            result = runner._search("Grep", {"pattern": "needle", "glob": "*"}, Path("/x"), set())
+        self.assertIn("needle", result)
+        self.assertIn("at most 100 results", result)
+
+    def test_execute_tool_rejects_non_dict_arguments(self):
+        self.assertIn("Tool error", runner.execute_tool("Read", "not-a-dict", Path.cwd(), set()))
+
+    def test_no_redirect_rejects_redirects(self):
+        with self.assertRaisesRegex(runner.ReviewFailure, "provider_redirect_rejected"):
+            runner.NoRedirect().redirect_request(None, None, 302, "Found", {}, "https://evil.test")
+
+    def test_apply_delta_accumulates_text_and_thinking(self):
+        blocks, tool_json = {0: {}}, {}
+        label = runner._apply_delta({"index": 0, "delta": {"type": "text_delta", "text": "hi"}}, blocks, tool_json)
+        self.assertEqual(label, "provider_content_delta")
+        self.assertEqual(blocks[0]["text"], "hi")
+        label = runner._apply_delta({"index": 0, "delta": {"type": "thinking_delta", "thinking": "hmm"}}, blocks, tool_json)
+        self.assertEqual(label, "provider_reasoning_delta")
+        self.assertEqual(blocks[0]["thinking"], "hmm")
+
+    def test_request_message_stream_and_error_branches(self):
+        stream_response = mock.MagicMock()
+        stream_response.headers = {"Content-Type": "text/event-stream"}
+        stream_response.readline.side_effect = [b'data: {"type":"message_stop"}\n', b""]
+        opener = mock.Mock()
+        opener.open.return_value.__enter__ = mock.Mock(return_value=stream_response)
+        opener.open.return_value.__exit__ = mock.Mock(return_value=False)
+        with mock.patch.object(runner.urllib.request, "build_opener", return_value=opener):
+            result = runner.request_message("https://example.test", "key", {}, 5)
+        self.assertEqual(result["content"], [])
+
+        oversize = mock.MagicMock()
+        oversize.headers = {"Content-Type": "application/json"}
+        oversize.read.return_value = b"x" * (runner.MAX_RESPONSE_BYTES + 1)
+        opener = mock.Mock()
+        opener.open.return_value.__enter__ = mock.Mock(return_value=oversize)
+        opener.open.return_value.__exit__ = mock.Mock(return_value=False)
+        with mock.patch.object(runner.urllib.request, "build_opener", return_value=opener):
+            with self.assertRaisesRegex(runner.ReviewFailure, "provider_response_limit"):
+                runner.request_message("https://example.test", "key", {}, 5)
+
+        bad_json = mock.MagicMock()
+        bad_json.headers = {"Content-Type": "application/json"}
+        bad_json.read.return_value = b"not json"
+        opener = mock.Mock()
+        opener.open.return_value.__enter__ = mock.Mock(return_value=bad_json)
+        opener.open.return_value.__exit__ = mock.Mock(return_value=False)
+        with mock.patch.object(runner.urllib.request, "build_opener", return_value=opener):
+            with self.assertRaisesRegex(runner.ReviewFailure, "provider_invalid_response"):
+                runner.request_message("https://example.test", "key", {}, 5)
+
+        not_dict = mock.MagicMock()
+        not_dict.headers = {"Content-Type": "application/json"}
+        not_dict.read.return_value = b"[]"
+        opener = mock.Mock()
+        opener.open.return_value.__enter__ = mock.Mock(return_value=not_dict)
+        opener.open.return_value.__exit__ = mock.Mock(return_value=False)
+        with mock.patch.object(runner.urllib.request, "build_opener", return_value=opener):
+            with self.assertRaisesRegex(runner.ReviewFailure, "provider_invalid_response"):
+                runner.request_message("https://example.test", "key", {}, 5)
+
+        with mock.patch.object(runner.urllib.request, "build_opener", side_effect=OSError("down")):
+            with self.assertRaisesRegex(runner.ReviewFailure, "provider_connection_error"):
+                runner.request_message("https://example.test", "key", {}, 5)
+
+    def test_final_result_rejects_thread_verdicts(self):
+        with self.assertRaisesRegex(runner.ReviewFailure, "invalid_result"):
+            runner._final_result({"stop_reason": "end_turn"},
+                [{"type": "text", "text": '{"summary":"s","findings":[],"thread_verdicts":[{"thread_id":"t","verdict":"confirmed","reason":"still valid"}]}'}])
+
+    def test_final_result_requires_end_turn(self):
+        with self.assertRaisesRegex(runner.ReviewFailure, "provider_incomplete_result"):
+            runner._final_result({"stop_reason": "max_tokens"},
+                [{"type": "text", "text": '{"summary":"s","findings":[],"thread_verdicts":[]}'}])
+
+    def test_worker_handles_invalid_content_and_turn_limit(self):
+        with mock.patch.object(runner, "request_message", return_value={"content": "not-a-list"}), \
+                mock.patch.object(runner.signal, "signal"):
+            pipe = mock.Mock()
+            runner._worker(pipe, "https://example.test", "key", "model", "prompt", Path.cwd(), set(), 2, 5)
+        self.assertEqual(pipe.send.call_args.args[0][:2], ("failure", "provider_invalid_response"))
+
+        with mock.patch.object(runner, "request_message", return_value={
+                "content": [{"type": "tool_use", "id": "t", "name": "Read", "input": {}}],
+                "stop_reason": "tool_use"}), mock.patch.object(runner.signal, "signal"):
+            pipe = mock.Mock()
+            runner._worker(pipe, "https://example.test", "key", "model", "prompt", Path.cwd(), set(), 2, 5)
+        self.assertEqual(pipe.send.call_args.args[0][:2], ("failure", "turn_limit"))
+
+    def test_worker_rejects_tool_use_with_wrong_stop_reason(self):
+        # Tool blocks present but stop_reason is not tool_use -> invalid_tool_response.
+        with mock.patch.object(runner, "request_message", return_value={
+                "content": [{"type": "tool_use", "id": "t", "name": "Read", "input": {}}],
+                "stop_reason": "end_turn"}), mock.patch.object(runner.signal, "signal"):
+            pipe = mock.Mock()
+            runner._worker(pipe, "https://example.test", "key", "model", "prompt", Path.cwd(), set(), 2, 5)
+        self.assertEqual(pipe.send.call_args.args[0][:2], ("failure", "invalid_tool_response"))
+
+    def test_worker_reports_worker_error_on_unexpected_exception(self):
+        with mock.patch.object(runner, "request_message", side_effect=RuntimeError("boom")), \
+                mock.patch.object(runner.signal, "signal"):
+            pipe = mock.Mock()
+            runner._worker(pipe, "https://example.test", "key", "model", "prompt", Path.cwd(), set(), 2, 5)
+        self.assertEqual(pipe.send.call_args.args[0][:2], ("failure", "worker_error"))
+
+    def test_validate_limits_rejects_non_positive(self):
+        with self.assertRaisesRegex(runner.ReviewFailure, "invalid_limits"):
+            runner._validate_limits(0, 1, 1, 1)
+
+    def test_terminate_worker_handles_no_pid_and_stubborn_worker(self):
+        runner._terminate_worker(mock.Mock(pid=None))
+        stub = mock.Mock()
+        stub.pid = 123
+        stub.is_alive.return_value = True
+        stub.join.return_value = None
+        runner._terminate_worker(stub)
+        self.assertTrue(stub.kill.called)
+
+    def test_cancel_signal_raises_keyboard_interrupt(self):
+        with self.assertRaises(KeyboardInterrupt):
+            runner._cancel_signal()
+
+    def test_recv_message_raises_on_eof(self):
+        receive = mock.Mock()
+        receive.recv.side_effect = EOFError
+        with self.assertRaisesRegex(runner.ReviewFailure, "worker_exited_without_result"):
+            runner._recv_message(receive)
 
 
 if __name__ == "__main__":

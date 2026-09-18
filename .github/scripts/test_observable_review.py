@@ -1,9 +1,10 @@
 """Third reviewer wiring, failover and independent publication."""
 import json
 import io
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -188,6 +189,257 @@ class ObservableReviewTests(unittest.TestCase):
             routes = observer.routes()
         self.assertEqual([r["provider"] for r in routes], ["openrouter", "openrouter"])
         self.assertEqual([r["model"] for r in routes], ["primary:free", "backup:free"])
+
+    def test_routes_rejects_missing_model_and_bad_endpoint(self):
+        with mock.patch.dict(os.environ, {"CLAUDE_REVIEW_PROVIDER": "openrouter"}, clear=True):
+            with self.assertRaisesRegex(observer.runner.ReviewFailure, "missing_primary_model"):
+                observer.routes()
+        with mock.patch.dict(os.environ, {
+            "CLAUDE_REVIEW_PROVIDER": "openrouter", "CLAUDE_REVIEW_MODEL": "m",
+            "OPENROUTER_API_KEY": "k",
+        }, clear=True), mock.patch.object(observer.transport, "messages_url", return_value="http://insecure/v1/messages"):
+            routes = observer.routes()
+        self.assertEqual(routes[0]["error"], "unsupported_provider_route")
+
+    def test_routes_marks_missing_key(self):
+        with mock.patch.dict(os.environ, {
+            "CLAUDE_REVIEW_PROVIDER": "openrouter", "CLAUDE_REVIEW_MODEL": "m",
+        }, clear=True), mock.patch.object(observer.transport, "provider_config", return_value=("openrouter", "", "x")):
+            routes = observer.routes()
+        self.assertEqual(routes[0]["error"], "missing_provider_key")
+
+    def test_prepare_prompt_rejects_empty_and_oversized_diff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/".github").mkdir()
+            (root/".github/REVIEWER.md").write_text("policy")
+            with mock.patch.object(observer, "_git", side_effect=["   \n", ""]), \
+                    self.assertRaisesRegex(observer.runner.ReviewFailure, "empty_or_oversized_diff"):
+                observer.prepare_prompt(root, "a"*40, "b"*40)
+            with mock.patch.object(observer, "_git", side_effect=["x" * (2 * 1024 * 1024 + 1), ""]), \
+                    self.assertRaisesRegex(observer.runner.ReviewFailure, "empty_or_oversized_diff"):
+                observer.prepare_prompt(root, "a"*40, "b"*40)
+
+    def test_prepare_prompt_skips_oversized_sonar_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/".github").mkdir()
+            (root/".github/REVIEWER.md").write_text("policy")
+            (root/"sonar-review-context.json").write_text("x" * 25000)
+            with mock.patch.object(observer, "_git", side_effect=["+new\n", "app.py\n"]), \
+                    mock.patch.object(observer.runner, "tracked_files", return_value={"app.py"}):
+                prompt, files = observer.prepare_prompt(root, "a"*40, "b"*40)
+            self.assertNotIn("Advisory Sonar", prompt)
+
+    def test_run_success_and_review_failure_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report_path = root / "report.json"
+            with mock.patch.dict(os.environ, {"BASE_SHA": "a"*40, "HEAD_SHA": "b"*40}, clear=True), \
+                    mock.patch.object(observer, "_confine_report_path", return_value=report_path), \
+                    mock.patch.object(observer, "prepare_prompt", side_effect=observer.runner.ReviewFailure("empty_or_oversized_diff")), \
+                    redirect_stdout(io.StringIO()):
+                self.assertEqual(observer.run(report_path), 1)
+            report = json.loads(report_path.read_text())
+            self.assertEqual(report["reason"], "empty_or_oversized_diff")
+
+    def test_run_setup_failure_writes_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report_path = root / "report.json"
+            with mock.patch.dict(os.environ, {"BASE_SHA": "a"*40, "HEAD_SHA": "b"*40}, clear=True), \
+                    mock.patch.object(observer, "_confine_report_path", return_value=report_path), \
+                    mock.patch.object(observer, "prepare_prompt", side_effect=RuntimeError("boom")), \
+                    redirect_stdout(io.StringIO()):
+                self.assertEqual(observer.run(report_path), 1)
+            report = json.loads(report_path.read_text())
+            self.assertEqual(report["reason"], "review_setup_failed")
+
+    def test_run_writes_step_summary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report_path = root / "report.json"
+            summary_path = root / "summary.md"
+            with mock.patch.dict(os.environ, {"BASE_SHA": "a"*40, "HEAD_SHA": "b"*40, "GITHUB_STEP_SUMMARY": str(summary_path)}, clear=True), \
+                    mock.patch.object(observer, "_confine_report_path", return_value=report_path), \
+                    mock.patch.object(observer, "prepare_prompt", side_effect=observer.runner.ReviewFailure("empty_or_oversized_diff")), \
+                    redirect_stdout(io.StringIO()):
+                observer.run(report_path)
+            self.assertIn("ObservableMessagesReview", summary_path.read_text())
+
+    def test_confine_report_path_rejects_escape(self):
+        with mock.patch.object(observer.os, "environ", {}, create=True):
+            outside = Path("/definitely-outside-workspace/report.json")
+            with self.assertRaisesRegex(RuntimeError, "scratch"):
+                observer._confine_report_path(outside)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(observer.os, "environ", {"RUNNER_TEMP": str(root)}, create=True), \
+                    mock.patch.object(observer, "Path", wraps=Path):
+                inside = root / "inside.json"
+                self.assertEqual(observer._confine_report_path(inside), inside)
+
+    def test_load_report_rejects_missing_and_oversized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(RuntimeError, "unavailable"):
+                observer._load_report(root / "missing.json")
+            big = root / "big.json"
+            big.write_text("x" * (observer.MAX_REPORT_BYTES + 1))
+            with self.assertRaisesRegex(RuntimeError, "oversized"):
+                observer._load_report(big)
+
+    def test_publish_context_rejects_bad_run_identity(self):
+        with mock.patch.dict(os.environ, {
+            "GITHUB_REPOSITORY": "owner/repo", "PR_NUMBER": "1",
+            "BASE_SHA": "a"*40, "HEAD_SHA": "b"*40, "GITHUB_RUN_ID": "not-a-number",
+        }, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "run identity"):
+                observer._publish_context()
+
+    def test_publish_one_finding_unresolvable_anchor(self):
+        finding = context.ReviewFinding("P2", "app.py", "RIGHT", 1, "t", "i", "f")
+        with mock.patch.object(context, "_review_already_posted", return_value=False), \
+                mock.patch.object(context, "create_inline_comment", side_effect=context.GitHubRequestError("unresolvable")), \
+                mock.patch.object(context, "_is_unresolvable_inline_anchor", return_value=True):
+            detail = observer._publish_one_finding(finding, "owner/repo", "1", "tok", "h"*40, "1", "1", "https://github.com/owner/repo/actions/runs/1", {"attempts": []})
+        self.assertIn("rejected the inline anchor", detail)
+
+    def test_success_lines_rejects_verdicts(self):
+        report = {"status": "success", "result": {"summary": "s", "findings": [], "thread_verdicts": [{"x": 1}]}}
+        with mock.patch.object(context, "_validated_claude_result", return_value=("summary", [], [{"thread_id": "t"}])):
+            with self.assertRaisesRegex(RuntimeError, "cannot publish thread verdicts"):
+                observer._success_lines(report, "owner/repo", "1", "tok", "a"*40, "b"*40, "1", "1", "url")
+
+    def test_main_dispatch(self):
+        with mock.patch.object(sys, "argv", ["observable_review.py", "run", "--report", "/tmp/x.json"]), \
+                mock.patch.object(observer, "run", return_value=0) as run:
+            self.assertEqual(observer.main(), 0)
+            run.assert_called_once()
+        with mock.patch.object(sys, "argv", ["observable_review.py", "publish", "--report", "/tmp/x.json"]), \
+                mock.patch.object(observer, "publish") as pub:
+            self.assertEqual(observer.main(), 0)
+            pub.assert_called_once()
+
+    def test_main_propagates_publish_failure(self):
+        with mock.patch.object(sys, "argv", ["observable_review.py", "publish", "--report", "/tmp/x.json"]), \
+                mock.patch.object(observer, "publish", side_effect=RuntimeError("boom")):
+            with self.assertRaisesRegex(RuntimeError, "boom"):
+                observer.main()
+
+    def test_module_main_guards_publish_failure(self):
+        # The __main__ guard catches any publish failure and exits non-zero.
+        script = observer.__file__
+        proc = subprocess.run(
+            [sys.executable, script, "publish", "--report", "/nonexistent/report.json"],
+            capture_output=True, text=True, cwd=Path(script).parent,
+        )
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("Observable review publication failed", proc.stderr)
+
+    def test_main_guard_exits_zero_and_one(self):
+        with mock.patch.object(observer, "main", return_value=0):
+            with self.assertRaises(SystemExit) as ctx:
+                observer._main_guard()
+            self.assertEqual(ctx.exception.code, 0)
+        with mock.patch.object(observer, "main", side_effect=RuntimeError("boom")), \
+                redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit) as ctx:
+                observer._main_guard()
+            self.assertEqual(ctx.exception.code, 1)
+            self.assertIn("publication failed", err.getvalue())
+
+    def test_diagnostics_includes_attempt_rows(self):
+        report = {"status": "failed", "attempts": [
+            {"role": "primary", "number": 1, "provider": "p", "model": "m", "outcome": "http_401", "seconds": 1.5}],
+            "reason": "all_attempts_failed"}
+        text = observer.diagnostics(report)
+        self.assertIn("primary 1", text)
+        self.assertIn("http_401", text)
+        self.assertIn("not a clean review", text)
+
+    def test_git_runs_subprocess(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            self.assertEqual(observer._git(root, "rev-parse", "--is-inside-work-tree").strip(), "true")
+
+    def test_single_attempt_handles_route_error_and_invalid_anchor(self):
+        report = {"attempts": []}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            execution = root / "exec.json"
+            limits = {"max_turns": 2, "attempt_timeout_seconds": 60,
+                      "inactivity_timeout_seconds": 30, "heartbeat_seconds": 30}
+            route = {"provider": "p", "model": "m", "role": "primary", "error": "missing_provider_key",
+                     "key": "", "endpoint": ""}
+            with mock.patch.object(observer.time, "monotonic", side_effect=[0.0, 0.1]):
+                ok = observer._single_attempt(route, 1, "prompt", root, set(), execution, report, "a"*40, "b"*40, limits)
+            self.assertFalse(ok)
+            self.assertEqual(report["attempts"][0]["outcome"], "missing_provider_key")
+
+        # invalid_diff_anchor branch
+        report = {"attempts": []}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            execution = root / "exec.json"
+            route = {"provider": "p", "model": "m", "role": "primary", "key": "k", "endpoint": "https://e.test"}
+            with mock.patch.object(observer.runner, "run_review", return_value={"turns": 1, "events": 1, "seconds": 1}), \
+                    mock.patch.object(observer.publisher, "_claude_final_response", return_value='{"summary":"s","findings":[{"severity":"P2","path":"a.py","side":"RIGHT","line":1,"title":"t","impact":"i","fix":"f"}],"thread_verdicts":[]}'), \
+                    mock.patch.object(observer.publisher, "_normalized_claude_result", return_value='{"summary":"s","findings":[],"thread_verdicts":[]}'), \
+                    mock.patch.object(observer.time, "monotonic", side_effect=[0.0, 0.1]):
+                ok = observer._single_attempt(route, 1, "prompt", root, set(), execution, report, "a"*40, "b"*40, limits)
+            self.assertFalse(ok)
+            self.assertEqual(report["attempts"][0]["outcome"], "invalid_diff_anchor")
+
+    def test_single_attempt_generic_exception(self):
+        report = {"attempts": []}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            execution = root / "exec.json"
+            route = {"provider": "p", "model": "m", "role": "primary", "key": "k", "endpoint": "https://e.test"}
+            limits = {"max_turns": 2, "attempt_timeout_seconds": 60,
+                      "inactivity_timeout_seconds": 30, "heartbeat_seconds": 30}
+            with mock.patch.object(observer.runner, "run_review", side_effect=ValueError("boom")), \
+                    mock.patch.object(observer.time, "monotonic", side_effect=[0.0, 0.1]):
+                ok = observer._single_attempt(route, 1, "prompt", root, set(), execution, report, "a"*40, "b"*40, limits)
+            self.assertFalse(ok)
+            self.assertEqual(report["attempts"][0]["outcome"], "validation_or_transport_error")
+
+    def test_run_success_path_returns_zero(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report_path = root / "report.json"
+            with mock.patch.dict(os.environ, {"BASE_SHA": "a"*40, "HEAD_SHA": "b"*40}, clear=True), \
+                    mock.patch.object(observer, "_confine_report_path", return_value=report_path), \
+                    mock.patch.object(observer, "prepare_prompt", return_value=("prompt", {"app.py"})), \
+                    mock.patch.object(observer, "review_attempts", return_value=0), \
+                    redirect_stdout(io.StringIO()):
+                self.assertEqual(observer.run(report_path), 0)
+            report = json.loads(report_path.read_text())
+            self.assertEqual(report["status"], "failed")  # run() never mutates to success; review_attempts owns it
+
+    def test_new_publication_findings_empty(self):
+        new, notes = observer._new_publication_findings([], "owner/repo", "1", "tok")
+        self.assertEqual((new, notes), ([], []))
+
+    def test_publish_one_finding_includes_attempt_metadata(self):
+        finding = context.ReviewFinding("P2", "app.py", "RIGHT", 1, "t", "i", "f")
+        with mock.patch.object(context, "_review_already_posted", return_value=True):
+            detail = observer._publish_one_finding(finding, "owner/repo", "1", "tok", "h"*40, "1", "1",
+                "https://github.com/owner/repo/actions/runs/1",
+                {"attempts": [{"provider": "p", "model": "m", "role": "primary", "number": 1}]})
+        self.assertIn("Provider: `p`", detail)
+        self.assertIn("Model: `m`", detail)
+
+    def test_publish_one_finding_reraises_unresolvable(self):
+        finding = context.ReviewFinding("P2", "app.py", "RIGHT", 1, "t", "i", "f")
+        with mock.patch.object(context, "_review_already_posted", return_value=False), \
+                mock.patch.object(context, "create_inline_comment", side_effect=context.GitHubRequestError("boom")), \
+                mock.patch.object(context, "_is_unresolvable_inline_anchor", return_value=False):
+            with self.assertRaises(context.GitHubRequestError):
+                observer._publish_one_finding(finding, "owner/repo", "1", "tok", "h"*40, "1", "1",
+                    "https://github.com/owner/repo/actions/runs/1", {"attempts": []})
 
     def test_observable_publication_cannot_close_claude_threads(self):
         report = {"status": "success", "attempts": [], "result": {

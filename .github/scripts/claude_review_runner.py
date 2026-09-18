@@ -223,7 +223,7 @@ def request_message(endpoint: str, api_key: str, payload: dict, timeout: float, 
                 emit("provider_response")
     except urllib.error.HTTPError as error:
         raise ReviewFailure(f"http_{error.code}") from None
-    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
+    except OSError:
         raise ReviewFailure("provider_connection_error") from None
     except (ValueError, KeyError, TypeError):
         raise ReviewFailure("provider_invalid_response") from None
@@ -253,12 +253,23 @@ def _tool_results(blocks, workspace, allowed, emit, read_files):
         emit("tool_started")
         content = execute_tool(block.get("name"), block.get("input"), workspace, allowed)
         # Errors, empty pages and omitted oversized lines are not evidence of reading.
-        if block.get("name") == "Read" and re.search(r"^[1-9][0-9]*: ", content, re.MULTILINE):
+        if block.get("name") == "Read" and re.search(r"^[1-9]\d*: ", content, re.MULTILINE):
             path = _workspace_path(workspace, block["input"]["path"], allowed)
             read_files.add(path.relative_to(workspace).as_posix())
         results.append({"type": "tool_result", "tool_use_id": block["id"], "content": content})
         emit("tool_completed")
     return results
+
+
+def _final_response_or_none(pipe, response, content, blocks, read_files, turn):
+    """Return the validated final result when the model finished, else None."""
+    if blocks:
+        return None
+    result = _final_result(response, content)
+    if REVIEW_DIFF_PATH not in read_files:
+        raise ReviewFailure("diff_not_read")
+    pipe.send(("result", result, turn))
+    return result
 
 
 def _worker(pipe, endpoint, api_key, model, prompt, workspace, allowed, max_turns, timeout):
@@ -283,11 +294,7 @@ def _worker(pipe, endpoint, api_key, model, prompt, workspace, allowed, max_turn
             if not isinstance(content, list):
                 raise ReviewFailure("provider_invalid_response")
             blocks = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_use"]
-            if not blocks:
-                result = _final_result(response, content)
-                if REVIEW_DIFF_PATH not in read_files:
-                    raise ReviewFailure("diff_not_read")
-                pipe.send(("result", result, turn))
+            if _final_response_or_none(pipe, response, content, blocks, read_files, turn) is not None:
                 return
             if len(blocks) > 16 or response.get("stop_reason") != "tool_use":
                 raise ReviewFailure("invalid_tool_response")
@@ -305,14 +312,72 @@ def _worker(pipe, endpoint, api_key, model, prompt, workspace, allowed, max_turn
         pipe.close()
 
 
+def _validate_limits(max_turns, attempt_timeout_seconds, inactivity_timeout_seconds, heartbeat_seconds) -> None:
+    if min(max_turns, attempt_timeout_seconds, inactivity_timeout_seconds, heartbeat_seconds) <= 0:
+        raise ReviewFailure("invalid_limits")
+
+
+def _resolve_allowed(workspace: Path, allowed_files: set[str] | None) -> set[str]:
+    return tracked_files(workspace) if allowed_files is None else allowed_files
+
+
+def _terminate_worker(worker) -> None:
+    if worker.pid is None:
+        return
+    if worker.is_alive():
+        worker.terminate()
+    worker.join(0.5)
+    if worker.is_alive():
+        worker.kill()
+        worker.join(0.5)
+
+
+def _check_deadlines(now, started, last_activity, attempt_timeout_seconds, inactivity_timeout_seconds) -> None:
+    if now - started >= attempt_timeout_seconds:
+        raise ReviewTimeout("attempt_timeout: no validated result before attempt deadline")
+    if now - last_activity >= inactivity_timeout_seconds:
+        raise ReviewTimeout("inactivity_timeout: no substantive provider/tool event before idle deadline")
+
+
+def _maybe_heartbeat(now, heartbeat, heartbeat_seconds, started, last_activity, turns, events, state, worker, log) -> float:
+    if now < heartbeat:
+        return heartbeat
+    print(f"[review] heartbeat elapsed={now-started:.1f}s last_activity={now-last_activity:.1f}s "
+          f"turn={turns} events={events} state={state} process_alive={worker.is_alive()} "
+          "provider_processing=unknown", file=log, flush=True)
+    return now + heartbeat_seconds
+
+
+def _handle_message(kind, value, turns, output, started, events, log):
+    if kind == "failure":
+        raise ReviewFailure(value)
+    if kind == "result":
+        output.write_text(json.dumps([{"type": "result", "subtype": "success",
+            "is_error": False, "result": value}]), encoding="utf-8")
+        output.chmod(0o600)
+        print(f"[review] valid_json_received turns={turns} elapsed={time.monotonic()-started:.1f}s", file=log, flush=True)
+        return {"turns": turns, "events": events, "seconds": round(time.monotonic()-started, 2)}
+    return None
+
+
+def _cancel_signal(*_):
+    raise KeyboardInterrupt
+
+
+def _recv_message(receive):
+    try:
+        return receive.recv()
+    except EOFError:
+        raise ReviewFailure("worker_exited_without_result") from None
+
+
 def run_review(*, endpoint: str, api_key: str, model: str, prompt: str, workspace: Path,
                output: Path, max_turns: int, attempt_timeout_seconds: float,
                inactivity_timeout_seconds: float, heartbeat_seconds: float, log: TextIO,
                allowed_files: set[str] | None = None) -> dict:
-    if min(max_turns, attempt_timeout_seconds, inactivity_timeout_seconds, heartbeat_seconds) <= 0:
-        raise ReviewFailure("invalid_limits")
+    _validate_limits(max_turns, attempt_timeout_seconds, inactivity_timeout_seconds, heartbeat_seconds)
     workspace = workspace.resolve()
-    allowed = tracked_files(workspace) if allowed_files is None else allowed_files
+    allowed = _resolve_allowed(workspace, allowed_files)
     ctx = multiprocessing.get_context("fork")
     receive, send = ctx.Pipe(duplex=False)
     worker = ctx.Process(target=_worker, args=(send, endpoint, api_key, model, prompt, workspace,
@@ -322,41 +387,24 @@ def run_review(*, endpoint: str, api_key: str, model: str, prompt: str, workspac
     state, turns, events = "starting", 0, 0
     old_handler = signal.getsignal(signal.SIGTERM)
 
-    def cancelled(*_):
-        raise KeyboardInterrupt
-
-    signal.signal(signal.SIGTERM, cancelled)
+    signal.signal(signal.SIGTERM, _cancel_signal)
     try:
         worker.start()
         send.close()
         print(f"[review] started model={safe_label(model)} attempt_limit={attempt_timeout_seconds}s idle_limit={inactivity_timeout_seconds}s", file=log, flush=True)
         while True:
             now = time.monotonic()
-            if now - started >= attempt_timeout_seconds:
-                raise ReviewTimeout("attempt_timeout: no validated result before attempt deadline")
-            if now - last_activity >= inactivity_timeout_seconds:
-                raise ReviewTimeout("inactivity_timeout: no substantive provider/tool event before idle deadline")
-            if now >= heartbeat:
-                print(f"[review] heartbeat elapsed={now-started:.1f}s last_activity={now-last_activity:.1f}s "
-                      f"turn={turns} events={events} state={state} process_alive={worker.is_alive()} "
-                      "provider_processing=unknown", file=log, flush=True)
-                heartbeat = now + heartbeat_seconds
+            _check_deadlines(now, started, last_activity, attempt_timeout_seconds, inactivity_timeout_seconds)
+            heartbeat = _maybe_heartbeat(now, heartbeat, heartbeat_seconds, started, last_activity,
+                                        turns, events, state, worker, log)
             wait = max(0, min(0.2, heartbeat-now, attempt_timeout_seconds-(now-started),
                               inactivity_timeout_seconds-(now-last_activity)))
             if not receive.poll(wait):
                 continue
-            try:
-                kind, value, turns = receive.recv()
-            except EOFError:
-                raise ReviewFailure("worker_exited_without_result") from None
-            if kind == "failure":
-                raise ReviewFailure(value)
-            if kind == "result":
-                output.write_text(json.dumps([{"type": "result", "subtype": "success",
-                    "is_error": False, "result": value}]), encoding="utf-8")
-                output.chmod(0o600)
-                print(f"[review] valid_json_received turns={turns} elapsed={time.monotonic()-started:.1f}s", file=log, flush=True)
-                return {"turns": turns, "events": events, "seconds": round(time.monotonic()-started, 2)}
+            kind, value, turns = _recv_message(receive)
+            result = _handle_message(kind, value, turns, output, started, events, log)
+            if result is not None:
+                return result
             events += 1
             state, last_activity = value, time.monotonic()
             if not value.endswith("_delta"):
@@ -364,12 +412,6 @@ def run_review(*, endpoint: str, api_key: str, model: str, prompt: str, workspac
     finally:
         send.close()
         receive.close()
-        if worker.pid is not None:
-            if worker.is_alive():
-                worker.terminate()
-            worker.join(0.5)
-            if worker.is_alive():
-                worker.kill()
-                worker.join(0.5)
+        _terminate_worker(worker)
         worker.close()
         signal.signal(signal.SIGTERM, old_handler)
