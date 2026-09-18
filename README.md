@@ -299,7 +299,9 @@ findings are merged into one report capped at five. Chunking keeps every slice
 small enough for a free/small model to finish with a valid `end_turn` instead
 of exhausting its output budget (`provider_incomplete_result`). Final JSON is
 rejected with `diff_not_read` unless a Read call returned actual numbered diff
-lines; failed reads and empty pages do not count. This proves access to
+lines; failed reads and empty pages do not count. A `diff_not_read` rejection
+is treated like any other failed attempt and follows the same per-route retry
+and fallback path. This proves access to
 changes, not complete coverage. Oversized lines are omitted individually
 without blocking later pages.
 It has no separate preflight step of its own:
