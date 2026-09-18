@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import stat
 import unittest
 from pathlib import Path
@@ -28,7 +29,6 @@ class VscodeServerConfigTests(unittest.TestCase):
         )
         self.assertEqual(settings["vps_vscode"]["bind_address"], "127.0.0.1")
         self.assertEqual(settings["vps_vscode"]["host_port"], 3001)
-        self.assertIn("@sha256:", settings["vps_vscode"]["image"])
         self.assertEqual(
             service["build"]["args"],
             {
@@ -55,6 +55,43 @@ class VscodeServerConfigTests(unittest.TestCase):
             environment["GIT_CONFIG_VALUE_1"],
             "!/home/coder/.local/bin/gh auth git-credential",
         )
+
+    def test_deploy_refreshes_latest_base_image_before_starting(self) -> None:
+        settings = yaml.safe_load(
+            (HERMES_DIR / "config" / "vps-defaults.yml").read_text(encoding="utf-8")
+        )
+        image = settings["vps_vscode"]["image"]
+        self.assertTrue(image.endswith(":latest"))
+        self.assertNotIn("@", image)
+        compose = yaml.safe_load(
+            (VSCODE_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+        )
+        self.assertIs(compose["services"]["code-server"]["build"].get("pull"), True)
+        tasks = yaml.safe_load(
+            (HERMES_DIR / "ansible" / "tasks" / "vscode.yml").read_text(encoding="utf-8")
+        )
+        start = next(task for task in tasks if task["name"] == "Start the managed code-server container")
+        self.assertIn("--build", start["ansible.builtin.command"]["argv"])
+        readme = (VSCODE_DIR / "README.md").read_text(encoding="utf-8")
+        self.assertIn(f"CODE_SERVER_IMAGE={image}", readme)
+
+    def test_image_validation_accepts_latest_and_digest_pins(self) -> None:
+        playbook = yaml.safe_load(
+            (HERMES_DIR / "ansible" / "playbook.yml").read_text(encoding="utf-8")
+        )
+        assertion = next(
+            assertion
+            for task in playbook[0]["pre_tasks"]
+            for assertion in task.get("ansible.builtin.assert", {}).get("that", [])
+            if assertion.startswith("vps_vscode.image is match(")
+        )
+        pattern = assertion.split("'", 2)[1]
+        for image in ("codercom/code-server:latest", "codercom/code-server:test@sha256:" + "a" * 64):
+            with self.subTest(image=image):
+                self.assertIsNotNone(re.fullmatch(pattern, image))
+        for image in ("", "code-server", "code-server:latest extra", "code-server:test@sha256:bad"):
+            with self.subTest(image=image):
+                self.assertIsNone(re.fullmatch(pattern, image))
 
     def test_nonempty_password_is_json_escaped_before_dotenv_rendering(self) -> None:
         tasks = (HERMES_DIR / "ansible" / "tasks" / "vscode.yml").read_text(

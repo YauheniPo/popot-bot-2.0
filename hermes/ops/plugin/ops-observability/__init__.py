@@ -10,7 +10,6 @@ from typing import Any
 
 from . import storage
 from .billing import _price, _usage_values
-from .commands import _ops_command
 from .hooks import (
     _api_request_error,
     _on_session_end,
@@ -23,13 +22,12 @@ from .hooks import (
     _pre_command,
     _pre_tool_call,
 )
-from .metrics import OPS_METRICS_SCHEMA, _metrics_snapshot, _ops_metrics_tool, _period, _query
 from .privacy import _command_program, _id, _mapping, _nested_number, _number, _safe_args, _short
 from .storage import _audit, _db, _enqueue, _execute, _home, _now, _paths, _start_worker
 
 
 def register(ctx: Any) -> None:
-    """Register metadata-only observers and a no-LLM reporting command."""
+    """Register metadata-only observers for the Prometheus/Grafana pipeline."""
     _db().close()
     _start_worker()
     hooks = {
@@ -46,17 +44,3 @@ def register(ctx: Any) -> None:
     }
     for name, callback in hooks.items():
         ctx.register_hook(name, callback)
-    ctx.register_command(
-        "ops",
-        handler=_ops_command,
-        description="Local VPS/model/tool activity report (no LLM tokens)",
-        args_hint="[summary|system|models|tools|costs|commands|health] [1h|24h|7d|30d]",
-    )
-    ctx.register_tool(
-        name="ops_metrics",
-        toolset="observability",
-        schema=OPS_METRICS_SCHEMA,
-        handler=_ops_metrics_tool,
-        description=OPS_METRICS_SCHEMA["description"],
-        emoji="📊",
-    )

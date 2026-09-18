@@ -43,7 +43,6 @@ fi
 
 install -d -o hermes -g hermes -m 0700 \
   "${state_dir}/plugins/ops-observability" \
-  "${state_dir}/plugins/ops-observability/dashboard/dist" \
   "${state_dir}/ops" \
   "${state_dir}/workspace" \
   "${state_dir}/home"
@@ -52,14 +51,7 @@ install -o hermes -g hermes -m 0600 \
   /opt/hermes-local/ops-observability/plugin.yaml \
   /opt/hermes-local/ops-observability/__init__.py \
   "${state_dir}/plugins/ops-observability/"
-install -o hermes -g hermes -m 0600 \
-  /opt/hermes-local/ops-observability/dashboard/manifest.json \
-  /opt/hermes-local/ops-observability/dashboard/plugin_api.py \
-  "${state_dir}/plugins/ops-observability/dashboard/"
-install -o hermes -g hermes -m 0600 \
-  /opt/hermes-local/ops-observability/dashboard/dist/index.js \
-  /opt/hermes-local/ops-observability/dashboard/dist/style.css \
-  "${state_dir}/plugins/ops-observability/dashboard/dist/"
+rm -rf -- "${state_dir}/plugins/ops-observability/dashboard"
 
 if [ ! -e "${state_dir}/ops/model-prices.json" ]; then
   install -o hermes -g hermes -m 0600 \

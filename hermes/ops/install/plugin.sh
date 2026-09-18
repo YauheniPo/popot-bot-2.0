@@ -41,7 +41,6 @@ install_observability_plugin() {
     log "installing the privacy-aware observability plugin"
     install -d -o "${HERMES_USER}" -g "${HERMES_GROUP}" -m 0700 \
         "${HERMES_HOME}/plugins/ops-observability" \
-        "${HERMES_HOME}/plugins/ops-observability/dashboard/dist" \
         "${HERMES_HOME}/ops/metrics" \
         "${HERMES_HOME}/logs" \
         "${HERMES_HOME}/state-snapshots" \
@@ -80,11 +79,7 @@ install_observability_plugin() {
         hooks.py \
         metrics.py \
         privacy.py \
-        storage.py \
-        dashboard/manifest.json \
-        dashboard/plugin_api.py \
-        dashboard/dist/index.js \
-        dashboard/dist/style.css; do
+        storage.py; do
         if [[ ! -f "${HERMES_HOME}/plugins/ops-observability/${plugin_file}" ]] || \
             ! cmp -s "${SCRIPT_DIR}/plugin/ops-observability/${plugin_file}" "${HERMES_HOME}/plugins/ops-observability/${plugin_file}"; then
             PLUGIN_CONTENT_CHANGED=true
@@ -95,20 +90,11 @@ install_observability_plugin() {
         "${SCRIPT_DIR}/plugin/ops-observability/plugin.yaml" \
         "${SCRIPT_DIR}/plugin/ops-observability/__init__.py" \
         "${SCRIPT_DIR}/plugin/ops-observability/billing.py" \
-        "${SCRIPT_DIR}/plugin/ops-observability/commands.py" \
         "${SCRIPT_DIR}/plugin/ops-observability/hooks.py" \
-        "${SCRIPT_DIR}/plugin/ops-observability/metrics.py" \
         "${SCRIPT_DIR}/plugin/ops-observability/privacy.py" \
         "${SCRIPT_DIR}/plugin/ops-observability/storage.py" \
         "${HERMES_HOME}/plugins/ops-observability/"
-    install -o "${HERMES_USER}" -g "${HERMES_GROUP}" -m 0600 \
-        "${SCRIPT_DIR}/plugin/ops-observability/dashboard/manifest.json" \
-        "${SCRIPT_DIR}/plugin/ops-observability/dashboard/plugin_api.py" \
-        "${HERMES_HOME}/plugins/ops-observability/dashboard/"
-    install -o "${HERMES_USER}" -g "${HERMES_GROUP}" -m 0600 \
-        "${SCRIPT_DIR}/plugin/ops-observability/dashboard/dist/index.js" \
-        "${SCRIPT_DIR}/plugin/ops-observability/dashboard/dist/style.css" \
-        "${HERMES_HOME}/plugins/ops-observability/dashboard/dist/"
+    rm -rf -- "${HERMES_HOME}/plugins/ops-observability/dashboard"
 
     if [[ ! -e "${HERMES_HOME}/ops/model-prices.json" ]]; then
         install -o "${HERMES_USER}" -g "${HERMES_GROUP}" -m 0600 \

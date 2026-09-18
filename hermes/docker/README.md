@@ -123,9 +123,7 @@ scripts) и `hermes/observability` (Prometheus/Grafana provisioning) — опи�
 
    После запуска откройте GUI на `http://127.0.0.1:9119` и войдите с
    `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` и
-   `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`. Вкладка **Metrics** показывает
-   локально собранные calls моделей, tokens, стоимость, tools и health после
-   появления первых сообщений в Hermes.
+   `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`.
 
    Исторические графики доступны в Grafana на `http://127.0.0.1:3000`.
    Войдите с `GF_SECURITY_ADMIN_USER` и `GF_SECURITY_ADMIN_PASSWORD`, затем откройте
@@ -133,10 +131,7 @@ scripts) и `hermes/observability` (Prometheus/Grafana provisioning) — опи�
    Prometheus и metrics provider не публикуют порты на host: их видит только
    Grafana во внутренней monitoring-сети. Metrics provider использует образ
    node-exporter только для выдачи Hermes textfile metrics и не читает macOS.
-   Сам Hermes получает read-only доступ к private Prometheus через tool
-   `ops_metrics`: можно спросить агента обычным сообщением о CPU/load, памяти,
-   диске, gateway, токенах, tool errors или стоимости. Порт Prometheus наружу
-   не публикуется.
+   Порт Prometheus наружу не публикуется.
 
 ## Проверка
 

@@ -204,7 +204,7 @@ sudo systemctl restart hermes-gateway.service
   токены, latency, ошибки, команды и стоимость, если она известна. Hooks
   Hermes складывают события в ограниченную очередь и не ждут SQLite, disk или
   journald; при переполнении отбрасывается только telemetry, а не работа агента.
-- **Отчёты без модели.** `/status`, `/ops` и `hermes-ops-report` анализируют
+- **Отчёты без модели.** `/status` и `hermes-ops-report` анализируют
   локальные данные обычным кодом и не вызывают LLM. `/status` показывает
   gateway, токены последней активной сессии и общий учтённый расход, а также
   учитывает активных subagents текущего чата: их результат автоматически
@@ -256,7 +256,7 @@ sudo systemctl restart hermes-gateway.service
 | Tailscale | Установлено | Подтвердить login и проверить tailnet SSH policy |
 | Закрытие публичного SSH | Включено по умолчанию после проверки Tailscale IP | Перед deploy убедиться, что VPS уже подключён к tailnet и Tailscale SSH проверен |
 | Local backups | Включено | Следить за диском и тестировать restore |
-| Audit, SQLite и `/ops` | Включено | При compliance отправлять journald во внешнее immutable/SIEM-хранилище |
+| Audit, SQLite и CLI `hermes-ops-report` | Включено | При compliance отправлять journald во внешнее immutable/SIEM-хранилище |
 | Стоимость моделей | Частично автоматически | Если provider не сообщает cost, заполнить `model-prices.json` |
 | Grafana + Prometheus | Включено | Открывать через SSH/Tailscale tunnel на `127.0.0.1:3000`; password хранится root-only в `/etc/hermes-grafana.env` |
 | LLM-анализ расходов | По запросу | Выбрать модель через `/model` и попросить проанализировать JSON report |
@@ -342,7 +342,8 @@ GitHub permissions и messenger tokens подключаются отдельно
   startup notifications.
   - `install/` — packages, plugin, assets и service lifecycle; верхний
     `install-ops.sh` только валидирует arguments и оркестрирует эти домены.
-  - `plugin/` — код plugin Hermes, который считает usage и добавляет `/ops`.
+  - `plugin/` — hooks Hermes для сбора usage и audit в SQLite и локальный log;
+    метрики экспортируются в Prometheus и отображаются в Grafana.
   - `systemd/` — unit-файлы служб и timers для Linux VPS.
   - `templates/` — шаблоны настроек мониторинга и fallback цен моделей.
 - `observability/` — Grafana dashboards и Prometheus configuration.
@@ -364,7 +365,7 @@ GitHub permissions и messenger tokens подключаются отдельно
 | [`runtime/verify-update-state.py`](runtime/verify-update-state.py) | Fail-closed проверяет полноту full backup, сохранность личных файлов, SQLite integrity и Kanban counts до/после managed update |
 | [`SECRETS-CHECKLIST.md`](SECRETS-CHECKLIST.md) | Единый checklist обязательных и optional tokens, OAuth, SSH и backup-данных без настоящих значений |
 | [`ops/install-ops.sh`](ops/install-ops.sh) | Тонкий оркестратор ops installation; packages, plugin, assets и services разделены в [`ops/install/`](ops/install) |
-| [`ops/plugin/ops-observability`](ops/plugin/ops-observability) | Hermes plugin hooks, audit, SQLite accounting и `/ops` |
+| [`ops/plugin/ops-observability`](ops/plugin/ops-observability) | Hermes plugin hooks, audit и SQLite accounting для Prometheus/Grafana |
 | [`ops/health-check.sh`](ops/health-check.sh) | Host/gateway/backup/metrics checks, deduplication и recovery alerts |
 | [`ops/backup.sh`](ops/backup.sh) | Daily quick, weekly full и local retention |
 | [`ops/export-metrics.py`](ops/export-metrics.py) | Prometheus textfile exporter |
@@ -413,7 +414,8 @@ GitHub permissions и messenger tokens подключаются отдельно
   package channels/retries и pinned auxiliary CLI versions;
 - `vps_hermes.config.managed_overlay` — authoritative non-secret config.yaml
   policy без `model.default`, если `/model_global` должен сохраняться;
-- `vps_vscode`/`vps_browser` — pinned image/package и безопасная локальная
+- `vps_vscode`/`vps_browser` — образ code-server `latest` (проверяется при каждом
+  deploy с code-server), закреплённая версия browser package и безопасная локальная
   browser/IDE topology;
 - `vps_agent_policy` — только repository-owned блоки поведения, без замены
   личного `SOUL.md`;
@@ -562,39 +564,17 @@ sudo journalctl -u hermes-health.service -n 50 --no-pager
 перегенерирует `/etc/hermes-ops.conf` и systemd timers; ручные изменения этого
 root-owned файла намеренно не сохраняются.
 
-В Telegram доступны отчёты, которые читают SQLite напрямую и тоже не вызывают
-модель:
+Метрики доступны только в Grafana: откройте dashboard **Hermes Overview**.
+Он показывает gateway, host resources, backup freshness, API/tool error rate,
+latency, usage и стоимость по provider/model.
 
-```text
-/ops summary 24h
-/ops system 24h
-/ops models 7d
-/ops tools 24h
-/ops costs 30d
-/ops commands 7d
-/ops health
-```
-
-Когда в обычном диалоге вы спрашиваете о состоянии Hermes, VPS, расходе
-токенов, tool errors или стоимости, агенту доступен read-only tool
-`ops_metrics`. Он получает только заранее заданные агрегаты из локальной
-SQLite-базы и private Prometheus: gateway, memory, disk, load, calls, tokens,
-costs, модели и tools. Произвольный PromQL, URL, записи в Grafana/Prometheus и
-изменения VPS этим tool недоступны. На VPS он обращается только к
-`http://127.0.0.1:9090`; в Docker — к внутреннему имени `prometheus`, без
-новых открытых портов.
-
-В Dashboard есть такая же read-only вкладка **Metrics**: выберите период 24h,
-7d или 30d, чтобы посмотреть calls, tokens, cost, модели, tools и состояние
-health. Вкладка появляется автоматически после полного deploy; при первом
-запуске она заполнится после первых событий Hermes.
-
-Из SSH тот же отчёт:
-
-```bash
-sudo -u hermes HERMES_HOME=/home/hermes/.hermes \
-  hermes-ops-report --period 7d --format markdown
-```
+Команда `/ops` (включая `summary`, `models`, `health`, `costs`) и инструмент
+`ops_metrics` удалены намеренно; панель метрик внутри Hermes также удалена.
+Для просмотра метрик используйте Grafana, а для локальной диагностики и
+выгрузки данных — CLI `hermes-ops-report --period 7d --format json` на VPS
+от имени пользователя `hermes`. Это не slash-команда Telegram. Плагин
+`ops-observability` остаётся включённым: его hooks и фоновый worker записывают
+события в SQLite, откуда их читает экспортёр Prometheus.
 
 Prometheus textfile создаётся в
 `/home/hermes/.hermes/ops/metrics/hermes.prom`. Полная установка автоматически
@@ -1491,7 +1471,7 @@ sudo -u hermes -H /home/hermes/.local/bin/hermes status
 Provider-specific cache также включается только явно.
 
 Задайте API keys отдельные spending limits и следите за расходом через
-`/ops costs 7d` либо `hermes-ops-report`. Если provider не сообщает стоимость,
+Grafana либо `hermes-ops-report --period 7d`. Если provider не сообщает стоимость,
 заполните `model-prices.json` актуальными ценами.
 
 Официальные справочники: [providers в Hermes](https://hermes-agent.nousresearch.com/docs/integrations/providers),
@@ -1534,7 +1514,7 @@ Prompt caching в Hermes работает автоматически. Skills з�
 только повторяющиеся ошибки после трёх неудач; один turn ограничен 20 web
 searches и 10 subagents. Для Telegram включён подробный tool-progress, о
 background process приходит только итог, а сессия автоматически сбрасывается
-после 48 часов простоя. Метрики, health checks, backups и `/ops` работают без
+после 48 часов простоя. Метрики, health checks, backups и `hermes-ops-report` работают без
 LLM; автоматический анализ запускается только по вашему запросу.
 
 [Fallback Providers](https://hermes-agent.nousresearch.com/docs/user-guide/features/fallback-providers)
