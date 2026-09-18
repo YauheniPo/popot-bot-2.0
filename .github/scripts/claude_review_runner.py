@@ -287,7 +287,19 @@ def _worker(pipe, endpoint, api_key, model, prompt, workspace, allowed, max_turn
         for turn in range(1, max_turns + 1):
             emit("request_dispatched")
             response = request_message(endpoint, api_key, {
-                "model": model, "max_tokens": max_tokens, "tools": TOOLS, "messages": messages,
+                "model": model, "max_tokens": max_tokens, "temperature": 0,
+                # This is the Anthropic Messages API (/v1/messages). A reasoning
+                # model such as nex-agi/nex-n2.5-pro:free burns its output budget
+                # and wall-clock on extended-thinking tokens every turn, so the
+                # loop never reaches a stop_reason=end_turn final JSON and the
+                # attempt dies with provider_incomplete_result or attempt_timeout.
+                # Disable extended thinking for a deterministic, non-reasoning
+                # completion the runner can validate. If a model mandates
+                # thinking it will reject this with HTTP 400 (visible in the
+                # attempt table), which is the signal to swap in a non-reasoning
+                # model instead.
+                "thinking": {"type": "disabled"},
+                "tools": TOOLS, "messages": messages,
             }, timeout, emit)
             emit(event_label(response))
             content = response.get("content")

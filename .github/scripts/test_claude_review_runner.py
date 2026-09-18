@@ -74,6 +74,9 @@ class ClaudeReviewRunnerTests(unittest.TestCase):
             self.assertEqual(pipe.send.call_args.args[0][0], "result")
             self.assertEqual(json.loads(pipe.send.call_args.args[0][1])["findings"], [])
             self.assertEqual(request.call_count, 2)
+            payload = request.call_args.args[2]
+            self.assertEqual(payload["temperature"], 0)
+            self.assertEqual(payload["thinking"], {"type": "disabled"})
             pipe.close.assert_called_once()
 
     def test_worker_rejects_truncated_results_and_thread_verdicts(self):
