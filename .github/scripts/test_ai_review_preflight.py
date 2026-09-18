@@ -507,7 +507,10 @@ class OllamaReviewTest(unittest.TestCase):
             )
 
         claude_steps = {step.get("id"): step for job in automatic["jobs"].values() for step in job["steps"]}
-        self.assertNotIn("continue-on-error", claude_steps["claude_models"])
+        # The model preflight is deliberately non-blocking: a provider outage or
+        # rate limit must not fail the corroborating Claude job, which publishes
+        # an "unavailable" report instead. The direct + observable reviews gate.
+        self.assertIn("continue-on-error", claude_steps["claude_models"])
         for step_id in ("claude_review_primary", "claude_review_primary_retry"):
             self.assertIn("steps.claude_models.outputs.primary_ready == 'true'", claude_steps[step_id]["if"])
         self.assertIn("steps.claude_models.outputs.fallback_ready == 'true'", claude_steps["claude_review_fallback"]["if"])

@@ -404,7 +404,13 @@ def fetch_resolved_machine_threads(
         resolved=True,
         limit=MAX_RESOLVED_THREADS,
     )
-    return [thread for thread in threads if is_machine_thread(thread)]
+    return [thread for thread in threads if is_machine_thread(thread) or _is_observable_review_thread(thread)]
+
+
+def _is_observable_review_thread(thread: ReviewThread) -> bool:
+    """Read-only deduplication identity; deliberately NOT an auto-resolution marker."""
+    return bool(thread.comments and thread.comments[0].author == AUTOMATED_REVIEW_AUTHOR
+                and re.search(r"<!-- observable-inline:[0-9a-f]{40}:", thread.comments[0].body))
 
 
 def _rendered_comments(thread: ReviewThread) -> list[dict[str, object]]:
@@ -998,8 +1004,81 @@ def _normalized_claude_result(raw_result: str, base_sha: str, head_sha: str) -> 
     return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
 
 
+def _sdk_content(event: object, event_type: str) -> list[dict]:
+    if not isinstance(event, dict) or event.get("type") != event_type or event.get("parent_tool_use_id"):
+        return []
+    message = event.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    return [block for block in content if isinstance(block, dict)] if isinstance(content, list) else []
+
+
+def _is_diff_read_call(block: dict, diff_path: Path) -> bool:
+    if block.get("type") != "tool_use" or block.get("name") != "Read" or not isinstance(block.get("id"), str):
+        return False
+    arguments = block.get("input")
+    path = arguments.get("file_path") if isinstance(arguments, dict) else None
+    if not isinstance(path, str) or not path or "\x00" in path:
+        return False
+    try:
+        return Path(path).resolve() == diff_path
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
+def _read_returned_lines(block: dict) -> bool:
+    if block.get("is_error") not in (None, False):
+        return False
+    content = block.get("content")
+    if isinstance(content, list):
+        content = "\n".join(item["text"] for item in content if isinstance(item, dict)
+                            and item.get("type") == "text" and isinstance(item.get("text"), str))
+    # Read's cat -n style output uses an arrow or tab; accept colon-numbered
+    # variants too. Empty pages and plain error/warning messages are not reads.
+    return isinstance(content, str) and re.search(
+        r"^[ \t]*[1-9]\d* *[→\t:] *\S", content, re.MULTILINE,
+    ) is not None
+
+
+def _track_diff_calls(event: dict, pending: set[str], diff_path: Path) -> None:
+    for block in _sdk_content(event, "assistant"):
+        call_id = block.get("id")
+        if block.get("type") == "tool_use" and isinstance(call_id, str):
+            pending.discard(call_id)  # Reused IDs must not retain earlier evidence.
+            if _is_diff_read_call(block, diff_path):
+                pending.add(call_id)
+
+
+def _completed_diff_read(event: dict, pending: set[str]) -> bool:
+    read = False
+    for block in _sdk_content(event, "user"):
+        call_id = block.get("tool_use_id")
+        if block.get("type") == "tool_result" and isinstance(call_id, str) and call_id in pending:
+            pending.remove(call_id)
+            read = _read_returned_lines(block) or read
+    return read
+
+
+def _require_claude_diff_read(events: list[object]) -> None:
+    diff_path = (Path.cwd() / ".ci-pr-review.diff").resolve()
+    pending: set[str] = set()
+    read = False
+    for event in events:
+        if not isinstance(event, dict) or event.get("parent_tool_use_id"):
+            continue
+        if event.get("type") == "result":
+            break  # Tool events after the final result cannot justify that review.
+        if event.get("type") == "system" and event.get("subtype") == "init":
+            pending.clear()
+            read = False
+        _track_diff_calls(event, pending, diff_path)
+        read = _completed_diff_read(event, pending) or read
+    if not read:
+        raise RuntimeError("diff_not_read: no successful Read of .ci-pr-review.diff before the final response")
+
+
 def _command_extract(execution_file: Path, output_file: Path) -> None:
     output_file = _validate_cli_path(output_file, "output file")
+    _require_claude_diff_read(_claude_execution_events(execution_file))
     normalized = _normalized_claude_result(
         _claude_final_response(execution_file),
         _required_commit_sha("BASE_SHA"),

@@ -185,8 +185,37 @@ The smoke test uses one attempt with a 45-second timeout per check, so an
 unavailable or incompatible model is reported before the full Claude run.
 Model IDs are passed verbatim, and model access is checked using the CI key.
 
-`PR_REVIEWER` selects both reviewers sequentially (`0`/unset), direct API (`1`),
-or Claude Code (`2`). Manual GitHub review and the Azure launcher use the same
+`PR_REVIEWER=0` (also the unset default) runs all three reviewers:
+
+```text
+Direct API
+  ├── Claude Code Plugin
+  └── Observable Messages Review
+```
+
+The two agent jobs start **in parallel after Direct API finishes**, including
+when Direct API fails. `1` runs only Direct API; `2` runs both agent reviewers
+without Direct API. Owner-only, same-repository and non-draft safeguards apply
+to all three. A newer revision cancels the previous run.
+
+Both agent reviewers use the existing `CLAUDE_REVIEW_*` provider, model, fallback
+and endpoint settings, not `DIRECT_REVIEW_*`. Their publication identities are
+fixed in code: `ClaudeCodePlugin` and `ObservableMessagesReview`. No additional
+identity variables or credentials are required. Each publishes its own PR
+summary and inline findings. The observable reviewer never resolves or replies
+to other reviewers' threads, avoiding races between the parallel jobs.
+
+All three publishers suppress repeats of settled reviewer findings, including
+Observable threads. That read-only recognition does not let Claude or Direct API
+automatically resolve Observable threads. Direct API includes its diff chunks in
+the model request. Both agent reviewers require successful diff-read evidence:
+Claude Code checks a matching Read call and non-error, numbered tool result in
+its SDK execution file before accepting any primary/retry/fallback result.
+Calls without results, empty pages and reads of unrelated files do not count;
+failure triggers the existing retry/fallback path with `diff_not_read`.
+This is an input-access check, not a guarantee of exhaustive or accurate review.
+
+Manual GitHub review and the Azure launcher use the same
 direct reviewer. Their `provider` and `model` come from run inputs, including
 the defaults displayed in the launch form. Set both there; changing the PR's
 `DIRECT_REVIEW_MODEL` repository variable does not change that form's default.
@@ -218,7 +247,7 @@ preflight stops before making a model request. Ollama Cloud, OpenRouter, and Nou
 have explicit Messages routes in the adapter; the tool probe checks the selected
 model against that route or your override.
 
-Preflight checks run before review. The direct reviewer requires valid review
+Preflight checks run before Direct API and Claude Code review. The direct reviewer requires valid review
 JSON; Claude Code also requires tool calling through an Anthropic-compatible
 endpoint. Provider selection alone does not establish model or API compatibility;
 the supported probes are implemented in
@@ -250,11 +279,73 @@ preflight and publication; their model-traffic budgets remain separate.
 
 Tune traffic and execution budgets for your provider's quota and the size of the
 review. `OLLAMA_REVIEW_RPM` controls direct API request pacing,
-`OLLAMA_REVIEW_COOLDOWN_SECONDS` controls the pause between the two PR reviewers,
+`OLLAMA_REVIEW_COOLDOWN_SECONDS` controls the pause between the Direct API
+reviewer and Claude Code (useful when the two reviewers share a quota),
 and `OLLAMA_REVIEW_BUDGET_SECONDS` bounds direct review model traffic. These
 historical variable names also apply when a different provider is selected.
 Manual/Azure review uses `MANUAL_REVIEW_MAX_CHUNKS` and
 `MANUAL_REVIEW_BUDGET_SECONDS` for its chunk and time budgets.
+
+### Observable reviewer: progress and failure handling
+
+The third reviewer uses a separate streaming Messages API tool loop, not the
+Claude Code SDK. It can only Read, Glob and literal-Grep tracked regular files
+and a generated diff; it cannot execute shell commands or read symlink targets,
+untracked credentials or `.git`. Reads and searches are bounded; the prompt
+requires it to disclose any unreviewed scope. The full base-to-head diff is
+split into bounded chunks (≤32 000 chars) before review; each chunk is written
+to the generated diff in turn and reviewed separately, and their validated
+findings are merged into one report capped at five. Chunking keeps every slice
+small enough for a free/small model to finish with a valid `end_turn` instead
+of exhausting its output budget (`provider_incomplete_result`). Final JSON is
+rejected with `diff_not_read` unless a Read call returned actual numbered diff
+lines; failed reads and empty pages do not count. A `diff_not_read` rejection
+is treated like any other failed attempt and follows the same per-route retry
+and fallback path. This proves access to
+changes, not complete coverage. Oversized lines are omitted individually
+without blocking later pages.
+It has no separate preflight step of its own:
+tool support and final JSON are validated during the actual review attempts,
+so an unusable route fails the attempt rather than a standalone check.
+
+CI logs show provider/model, attempt, tool start/completion and periodic
+heartbeat lines. Streaming content/reasoning events update the activity counter
+without logging source code, reasoning text, credentials or response bodies.
+`provider_processing=unknown` deliberately makes no claim about hidden provider
+work: check `state`, `events` and `last_activity` for received activity. SSE
+keepalive pings alone do not count as model progress.
+
+Optional repository variables for this runner (all retain `CLAUDE_REVIEW_` names):
+
+| Variable | Default | Maximum | Meaning |
+| --- | --- | --- | --- |
+| `CLAUDE_REVIEW_MAX_TURNS` | 24 | 96 | Model turns per attempt |
+| `CLAUDE_REVIEW_ATTEMPT_TIMEOUT_SECONDS` | 600 | 900 | Hard deadline per attempt |
+| `CLAUDE_REVIEW_INACTIVITY_TIMEOUT_SECONDS` | 180 | 600 | Deadline without substantive provider/tool events |
+| `CLAUDE_REVIEW_HEARTBEAT_SECONDS` | 30 | 60 | CI heartbeat interval |
+| `CLAUDE_REVIEW_MAX_TOKENS` | 8192 | 32768 | Output-token budget per model turn |
+
+An independent watchdog terminates a stalled worker. A transient failure,
+invalid JSON or invalid diff anchor allows one fresh retry, then up to two
+attempts on the distinct configured fallback route. Non-retryable HTTP
+400/401/403/404 or unavailable credentials skip directly to the fallback;
+an identical fallback does not add attempts. Every attempt starts a new review
+conversation. The job's 70-minute cap leaves publication time even with four
+maximum-length attempts. Parallel agent jobs share provider quotas; configure
+budgets accordingly.
+
+The PR summary and CI step summary contain a provider/model/outcome/time table
+and the PR summary links to the run and reviewed revision. Exhausted attempts
+fail the job and publish **no validated review result**, never a clean-review
+claim. Inline-anchor rejection retains the finding in the summary. Re-running
+the same SHA creates a fresh report; retrying publication within one run attempt
+does not duplicate already published comments. Before creating inline threads,
+the publisher also matches findings against open threads and settled machine
+findings across runs and revisions. Repeats and additional evidence for existing
+threads are listed in the fresh summary without opening duplicate threads or
+modifying existing ones. Cancelled jobs skip publication;
+an already in-flight GitHub write may still complete. This runner does not change
+Claude Code's existing retry settings.
 
 Current defaults, retry limits, and job timeouts live in the
 [PR workflow](.github/workflows/pr-ai-review.yml),
