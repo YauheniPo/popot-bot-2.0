@@ -46,6 +46,13 @@ manual `up -d --build` command below; no background updater is installed.
 Registry access is required during the build. Updates follow the code-server
 image publisher, not the separate desktop VS Code release schedule.
 
+Following `latest` is intentional: a later deploy can install a different image
+without a configuration change. This trades reproducibility and digest pinning
+for automatic updates at deploy time and trusts the publisher and registry.
+For a deliberate rollback or reproducible deployment, set `vps_vscode.image`
+to a verified `codercom/code-server:<tag>@sha256:<digest>`; Ansible still accepts
+digest-pinned images. Do not remove `build.pull: true` to simulate pinning.
+
 During the first managed deployment it stops and renames the legacy container
 `vscode-server-code-server-1` with a `-legacy-<container-id>` suffix. Its
 writable layer, including IDE settings and extensions, remains available for
