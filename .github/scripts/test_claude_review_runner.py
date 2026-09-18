@@ -283,9 +283,10 @@ class ClaudeReviewRunnerTests(unittest.TestCase):
             subprocess.run(["git", "add", "app.py"], cwd=root, check=True)
             self.assertEqual(runner.tracked_files(root), {"app.py"})
         huge = "\0".join(f"f{i}" for i in range(runner.MAX_FILES + 1))
+        cwd = Path.cwd()
         with mock.patch.object(runner.subprocess, "run", return_value=mock.Mock(stdout=huge.encode())):
             with self.assertRaisesRegex(runner.ReviewFailure, "repository_file_limit"):
-                runner.tracked_files(Path.cwd())
+                runner.tracked_files(cwd)
 
     def test_workspace_path_rejects_non_string_missing_and_non_file(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -325,8 +326,9 @@ class ClaudeReviewRunnerTests(unittest.TestCase):
         self.assertIn("Tool error", runner.execute_tool("Read", "not-a-dict", Path.cwd(), set()))
 
     def test_no_redirect_rejects_redirects(self):
+        redirector = runner.NoRedirect()
         with self.assertRaisesRegex(runner.ReviewFailure, "provider_redirect_rejected"):
-            runner.NoRedirect().redirect_request(None, None, 302, "Found", {}, "https://evil.test")
+            redirector.redirect_request(None, None, 302, "Found", {}, "https://evil.test")
 
     def test_apply_delta_accumulates_text_and_thinking(self):
         blocks, tool_json = {0: {}}, {}

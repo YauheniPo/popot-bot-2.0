@@ -366,10 +366,12 @@ class ObservableReviewTests(unittest.TestCase):
 
     def test_diagnostics_includes_attempt_rows(self):
         report = {"status": "failed", "attempts": [
-            {"role": "primary", "number": 1, "provider": "p", "model": "m", "outcome": "http_401", "seconds": 1.5}],
+            {"role": "primary", "number": 1, "chunk": 2, "provider": "p", "model": "m",
+             "outcome": "http_401", "seconds": 1.5}],
             "reason": "all_attempts_failed"}
         text = observer.diagnostics(report)
-        self.assertIn("primary 1", text)
+        self.assertIn("| Chunk |", text)
+        self.assertIn("| primary 1 | 2 |", text)
         self.assertIn("http_401", text)
         self.assertIn("not a clean review", text)
 
@@ -465,7 +467,7 @@ class ObservableReviewTests(unittest.TestCase):
             {"index": 1, "total": 2, "prompt": "p1", "diff": "+a\n"},
             {"index": 2, "total": 2, "prompt": "p2", "diff": "+b\n"},
         ]
-        def fake_attempts(workspace, prompt, files, chunk_report, report_path, base, head):
+        def fake_attempts(workspace, prompt, files, chunk_report, report_path, base, head, chunk_index):
             chunk_report.update(status="success",
                 result={"summary": "ok", "findings": findings, "thread_verdicts": []})
             return 0
@@ -484,7 +486,7 @@ class ObservableReviewTests(unittest.TestCase):
     def test_review_chunks_fails_when_a_chunk_fails(self):
         report = {"status": "failed", "attempts": []}
         chunks = [{"index": 1, "total": 1, "prompt": "p", "diff": "+a\n"}]
-        def fake_attempts(workspace, prompt, files, chunk_report, report_path, base, head):
+        def fake_attempts(workspace, prompt, files, chunk_report, report_path, base, head, chunk_index):
             chunk_report.update(status="failed", reason="all_attempts_failed")
             return 1
         with tempfile.TemporaryDirectory() as directory:

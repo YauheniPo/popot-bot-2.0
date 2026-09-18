@@ -170,10 +170,11 @@ def _limit(name: str, default: int, maximum: int) -> int:
 
 
 def _single_attempt(route: dict, number: int, prompt: str, workspace: Path, files: set[str],
-                    execution: Path, report: dict, base: str, head: str, limits: dict) -> bool:
+                    execution: Path, report: dict, base: str, head: str, limits: dict,
+                    chunk_index: int = 1) -> bool:
     """Run one route attempt; return True on a validated success."""
-    attempt = {key: safe_label(route[key]) for key in ("provider", "model", "role")}
-    attempt.update(number=number, outcome="pending")
+    attempt: dict[str, object] = {key: safe_label(route[key]) for key in ("provider", "model", "role")}
+    attempt.update(number=number, chunk=chunk_index, outcome="pending")
     report["attempts"].append(attempt)
     print(f"[review] attempt={len(report['attempts'])} route={attempt['role']} "
           f"provider={attempt['provider']} model={attempt['model']}", flush=True)
@@ -211,12 +212,12 @@ def _review_limits() -> dict:
 
 
 def review_attempts(workspace: Path, prompt: str, files: set[str], report: dict, report_path: Path,
-                    base: str, head: str) -> int:
+                    base: str, head: str, chunk_index: int = 1) -> int:
     limits = _review_limits()
     execution = report_path.with_suffix(".execution.json")
     for route in routes():
         for number in (1, 2):
-            if _single_attempt(route, number, prompt, workspace, files, execution, report, base, head, limits):
+            if _single_attempt(route, number, prompt, workspace, files, execution, report, base, head, limits, chunk_index):
                 return 0
             attempt = report["attempts"][-1]
             print(f"[review] attempt_failed reason={attempt['outcome']} elapsed={attempt['seconds']}s", flush=True)
@@ -249,7 +250,7 @@ def review_chunks(workspace: Path, chunks: list[dict], files: set[str], report: 
         diff_path.write_text(chunk["diff"], encoding="utf-8")
         chunk_report: dict = {"status": "failed", "attempts": []}
         code = review_attempts(workspace, chunk["prompt"], files, chunk_report,
-                               report_path, base, head)
+                               report_path, base, head, chunk["index"])
         report["attempts"].extend(chunk_report.get("attempts", []))
         if code != 0 or not chunk_report.get("result"):
             completed = False
@@ -297,11 +298,12 @@ def run(report_path: Path) -> int:
 def diagnostics(report: dict) -> str:
     lines = [f"## {LABEL}", "", f"Result: **{safe_label(report['status'])}**",
              "Execution: independent Messages API tool loop.", "",
-             "| Attempt | Provider | Model | Outcome | Seconds |",
-             "| --- | --- | --- | --- | --- |"]
+             "| Attempt | Chunk | Provider | Model | Outcome | Seconds |",
+             "| --- | --- | --- | --- | --- | --- |"]
     for attempt in report["attempts"]:
-        values = [f"{attempt['role']} {attempt['number']}", attempt["provider"], attempt["model"],
-                  attempt["outcome"], str(attempt.get("seconds", 0))]
+        values = [f"{attempt['role']} {attempt['number']}", str(attempt.get("chunk", "")),
+                  attempt["provider"], attempt["model"], attempt["outcome"],
+                  str(attempt.get("seconds", 0))]
         lines.append("| " + " | ".join(safe_label(v) for v in values) + " |")
     if report["status"] != "success":
         lines.extend(["", "No validated review result was produced. This is not a clean review.",
