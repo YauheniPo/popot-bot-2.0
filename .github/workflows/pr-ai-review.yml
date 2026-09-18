@@ -751,6 +751,11 @@ jobs:
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      # Observable uses its own models so it does not compete with the Claude
+      # Code SDK reviewer (which reads CLAUDE_REVIEW_MODEL directly) for the
+      # same free-model rate limit on the shared provider key.
+      CLAUDE_REVIEW_MODEL: ${{ vars.OBSERVABLE_REVIEW_MODEL || 'nex-agi/nex-n2.5-mini:free' }}
+      CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.OBSERVABLE_REVIEW_FALLBACK_MODEL || 'nex-agi/nex-n2.5-pro:free' }}
       CLAUDE_REVIEW_MAX_TURNS: ${{ vars.CLAUDE_REVIEW_MAX_TURNS || '24' }}
       CLAUDE_REVIEW_ATTEMPT_TIMEOUT_SECONDS: ${{ vars.CLAUDE_REVIEW_ATTEMPT_TIMEOUT_SECONDS || '600' }}
       CLAUDE_REVIEW_INACTIVITY_TIMEOUT_SECONDS: ${{ vars.CLAUDE_REVIEW_INACTIVITY_TIMEOUT_SECONDS || '180' }}
