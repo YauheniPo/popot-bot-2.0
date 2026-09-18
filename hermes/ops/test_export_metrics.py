@@ -74,6 +74,56 @@ class ExportMetricsTests(unittest.TestCase):
         with mock.patch.object(Path, "read_text", side_effect=OSError):
             self.assertEqual(metrics.memory_ratio(), 0)
 
+    def test_gateway_process_metrics_convert_ticks_and_kib_to_seconds_and_bytes(self) -> None:
+        fields = ["321", "(python3)", "S"] + ["0"] * 21
+        fields[13:15] = ["125", "75"]  # utime and stime, in clock ticks
+        sources = {
+            "/proc/321/stat": " ".join(fields),
+            "/proc/321/status": "Name:\tpython3\nVmSize:\t8192 kB\nVmRSS:\t4096 kB\n",
+        }
+        for ticks_per_second, expected_cpu in ((100, 2.0), (250, 0.8)):
+            with (
+                self.subTest(ticks_per_second=ticks_per_second),
+                mock.patch.dict(os.environ, {"HERMES_GATEWAY_SERVICE": "test.service"}),
+                mock.patch.object(metrics.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="321\n")) as run,
+                mock.patch.object(Path, "read_text", autospec=True, side_effect=lambda path, **_: sources[str(path)]) as read,
+                mock.patch.object(metrics.os, "sysconf", return_value=ticks_per_second) as sysconf,
+            ):
+                self.assertEqual(metrics.gateway_process_metrics(), (expected_cpu, 4194304))
+                run.assert_called_once()
+                self.assertEqual(run.call_args.args[0],
+                                 ["systemctl", "show", "--property=MainPID", "--value", "test.service"])
+                self.assertGreater(run.call_args.kwargs["timeout"], 0)
+                self.assertEqual(read.call_args_list, [
+                    mock.call(Path("/proc/321/stat"), encoding="utf-8"),
+                    mock.call(Path("/proc/321/status"), encoding="utf-8"),
+                ])
+                sysconf.assert_called_once_with("SC_CLK_TCK")
+
+    def test_gateway_process_metrics_are_nan_when_unavailable(self) -> None:
+        valid_stat = " ".join(["321", "(python3)", "S"] + ["0"] * 21)
+        cases = [
+            (0, "0", None), (0, "-1", None), (0, "invalid", None), (1, "321", None),
+            (0, "321", OSError("process exited")),
+            (0, "321", ["truncated"]),
+            (0, "321", [valid_stat, "Name: python3\n"]),
+            (0, "321", [valid_stat, "VmRSS: invalid kB\n"]),
+            (0, "321", [valid_stat, "VmRSS:\n"]),
+        ]
+        for index, (returncode, pid, proc_data) in enumerate(cases):
+            with (
+                self.subTest(index=index),
+                mock.patch.object(metrics.subprocess, "run", return_value=SimpleNamespace(returncode=returncode, stdout=pid)),
+                mock.patch.object(Path, "read_text", side_effect=proc_data) as read,
+                mock.patch.object(metrics.os, "sysconf", return_value=100),
+            ):
+                self.assertTrue(all(math.isnan(value) for value in metrics.gateway_process_metrics()))
+                if proc_data is None:
+                    read.assert_not_called()
+        for error in (FileNotFoundError(), subprocess.TimeoutExpired("systemctl", 5)):
+            with self.subTest(error=type(error).__name__), mock.patch.object(metrics.subprocess, "run", side_effect=error):
+                self.assertTrue(all(math.isnan(value) for value in metrics.gateway_process_metrics()))
+
     def test_database_rows_are_read_only_and_handle_missing_tables(self) -> None:
         database = self.root / "metrics.db"
         self.assertEqual(metrics.rows(database, "SELECT 1"), [])
@@ -123,12 +173,15 @@ class ExportMetricsTests(unittest.TestCase):
                 mock.patch.object(metrics.os, "statvfs", return_value=filesystem), \
                 mock.patch.object(metrics.os, "getloadavg", return_value=(1, 2, 3)), \
                 mock.patch.object(metrics, "memory_ratio", return_value=0.5), \
+                mock.patch.object(metrics, "gateway_process_metrics", return_value=(2.0, 4194304)), \
                 mock.patch.dict(os.environ, {"HERMES_METRICS_MODE": "0600"}):
             self.assertEqual(metrics.main(), 0)
 
         target = self.root / "output" / "hermes.prom"
         rendered = target.read_text(encoding="utf-8")
         for line in ('hermes_gateway_up 1.0', 'hermes_host_disk_used_ratio 0.75',
+                     'hermes_gateway_process_cpu_seconds_total 2.0',
+                     'hermes_gateway_process_resident_memory_bytes 4194304',
                      'hermes_host_inode_used_ratio 0.25', 'hermes_host_memory_available_ratio 0.5',
                      'hermes_commands_total{command="status"} 2',
                      'hermes_cost_usd_total{model="model-a",provider="provider-a",status="ok"} 0.25',

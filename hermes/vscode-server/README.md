@@ -38,6 +38,21 @@ when that account is not UID/GID 1000.
 
 The Ansible playbook installs and starts code-server automatically
 (`vps_deploy.features.vscode_server: true` in `hermes/config/vps-defaults.yml`).
+The managed image follows `codercom/code-server:latest`. Every deployment that
+includes code-server builds with `build.pull: true`, so Docker checks the registry
+for the current base image instead of reusing a stale cached tag. Compose replaces
+the running container when the built image changes. This also applies to the
+manual `up -d --build` command below; no background updater is installed.
+Registry access is required during the build. Updates follow the code-server
+image publisher, not the separate desktop VS Code release schedule.
+
+Following `latest` is intentional: a later deploy can install a different image
+without a configuration change. This trades reproducibility and digest pinning
+for automatic updates at deploy time and trusts the publisher and registry.
+For a deliberate rollback or reproducible deployment, set `vps_vscode.image`
+to a verified `codercom/code-server:<tag>@sha256:<digest>`; Ansible still accepts
+digest-pinned images. Do not remove `build.pull: true` to simulate pinning.
+
 During the first managed deployment it stops and renames the legacy container
 `vscode-server-code-server-1` with a `-legacy-<container-id>` suffix. Its
 writable layer, including IDE settings and extensions, remains available for
@@ -76,7 +91,7 @@ printf '%s\n' \
   "HERMES_GID=$HERMES_GID" \
   "CODE_SERVER_REPOSITORIES_DIR=$HOME/workspace/repositories" \
   "CODE_SERVER_PROJECT_NAME=hermes-vscode" \
-  "CODE_SERVER_IMAGE=codercom/code-server:4.133.0-noble@sha256:c8ae938c488efc7f346deb93c04c11320b803251aa181263a8482f3aeddf1b27" \
+  "CODE_SERVER_IMAGE=codercom/code-server:latest" \
   "CODE_SERVER_BIND_ADDRESS=127.0.0.1" \
   "CODE_SERVER_HOST_PORT=3001" \
   "CODE_SERVER_TIMEZONE=UTC" | \
@@ -87,7 +102,7 @@ sudo docker compose --project-name hermes-vscode \
 ```
 
 The codercom image reads the password from the `PASSWORD` variable
-(`CODE_SERVER_PASSWORD` is ignored by code-server). Ansible takes the pinned
+(`CODE_SERVER_PASSWORD` is ignored by code-server). Ansible takes the configured
 image, bind address, port and project name from `hermes/config/vps-defaults.yml`.
 
 code-server binds to port **3001** on the VPS (loopback only; host 3000
