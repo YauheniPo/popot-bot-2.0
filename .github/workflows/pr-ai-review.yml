@@ -694,13 +694,13 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           REVIEW_RUN_ID: ${{ github.run_id }}
-          PRIMARY_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+          PRIMARY_MODEL: ${{ steps.claude_models.outputs.primary_model || env.CLAUDE_REVIEW_MODEL }}
           PRIMARY_READY: ${{ steps.claude_models.outputs.primary_ready }}
           PRIMARY_OUTCOME: ${{ steps.claude_review_primary.outcome }}
           PRIMARY_RESULT_OUTCOME: ${{ steps.extract_claude_review_primary.outcome }}
           PRIMARY_RETRY_OUTCOME: ${{ steps.claude_review_primary_retry.outcome }}
           PRIMARY_RETRY_RESULT_OUTCOME: ${{ steps.extract_claude_review_primary_retry.outcome }}
-          FALLBACK_MODEL: ${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}
+          FALLBACK_MODEL: ${{ steps.claude_models.outputs.fallback_model || env.CLAUDE_REVIEW_FALLBACK_MODEL }}
           FALLBACK_READY: ${{ steps.claude_models.outputs.fallback_ready }}
           FALLBACK_OUTCOME: ${{ steps.claude_review_fallback.outcome }}
           FALLBACK_RESULT_OUTCOME: ${{ steps.extract_claude_review_fallback.outcome }}

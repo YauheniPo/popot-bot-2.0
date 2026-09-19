@@ -538,6 +538,11 @@ class OllamaReviewTest(unittest.TestCase):
         for name in ("PR_NUMBER", "HEAD_SHA", "REVIEW_RUN_ID", "GH_TOKEN"):
             self.assertIn(name, unavailable["env"])
             self.assertNotIn("${{ github.event.pull_request.number }}", unavailable["run"])
+        # The preflight step is continue-on-error, so when it fails its outputs
+        # are empty and the report would name no model at all. Both model labels
+        # must fall back to the configured env values.
+        self.assertIn("env.CLAUDE_REVIEW_MODEL", unavailable["env"]["PRIMARY_MODEL"])
+        self.assertIn("env.CLAUDE_REVIEW_FALLBACK_MODEL", unavailable["env"]["FALLBACK_MODEL"])
 
         manual_summary = next(
             step for job in manual["jobs"].values() for step in job["steps"]
