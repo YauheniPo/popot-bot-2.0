@@ -630,7 +630,7 @@ class ApplyConfigTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "cannot read skill file"):
                     apply_config.discover_skill_names(root)
 
-    def test_main_apply_fails_on_a_disabled_name_missing_from_the_catalog(self) -> None:
+    def test_main_apply_warns_but_does_not_abort_on_an_absent_name(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             settings_path = root / "vps-defaults.yml"
@@ -662,14 +662,17 @@ class ApplyConfigTests(unittest.TestCase):
             ) as run_operation, mock.patch("sys.stderr", errors):
                 exit_code = apply_config.main()
 
-        self.assertEqual(exit_code, 1)
-        # The audit must run before anything is written to config.yaml.
-        run_operation.assert_not_called()
+        # The audit is advisory: a legitimately absent name (unseeded catalog,
+        # agent-created skill) must never strand a deployment that already
+        # stopped its gateway. It warns and the apply proceeds.
+        self.assertEqual(exit_code, 0)
+        run_operation.assert_called_once()
+        self.assertIn("warning:", errors.getvalue())
         self.assertIn("typoed", errors.getvalue())
-        # The exempt churn name must not appear in the failure.
+        # The exempt churn name must not be reported.
         self.assertNotIn("retired", errors.getvalue())
 
-    def test_main_apply_accepts_a_name_exempted_as_catalog_churn(self) -> None:
+    def test_main_apply_is_quiet_when_every_disabled_name_resolves(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             settings_path = root / "vps-defaults.yml"
@@ -695,13 +698,15 @@ class ApplyConfigTests(unittest.TestCase):
                 "--hermes-bin", "/opt/hermes-bootstrap/bin/hermes",
                 "--workspace", "/home/hermes/workspace",
             ]
+            errors = io.StringIO()
             with mock.patch("sys.argv", argv), mock.patch.object(
                 apply_config, "run_operation"
-            ) as run_operation:
+            ) as run_operation, mock.patch("sys.stderr", errors):
                 exit_code = apply_config.main()
 
         self.assertEqual(exit_code, 0)
         run_operation.assert_called_once()
+        self.assertNotIn("warning:", errors.getvalue())
 
     def test_main_apply_skips_the_audit_without_a_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -725,14 +730,16 @@ class ApplyConfigTests(unittest.TestCase):
                 "--hermes-bin", "/opt/hermes-bootstrap/bin/hermes",
                 "--workspace", "/home/hermes/workspace",
             ]
+            errors = io.StringIO()
             with mock.patch("sys.argv", argv), mock.patch.object(
                 apply_config, "run_operation"
-            ) as run_operation:
+            ) as run_operation, mock.patch("sys.stderr", errors):
                 exit_code = apply_config.main()
 
-        # No skills tree yet (fresh install): the unknown name must not abort.
+        # No skills tree yet (fresh install): no warning at all, deploy proceeds.
         self.assertEqual(exit_code, 0)
         run_operation.assert_called_once()
+        self.assertNotIn("warning:", errors.getvalue())
 
 
 if __name__ == "__main__":

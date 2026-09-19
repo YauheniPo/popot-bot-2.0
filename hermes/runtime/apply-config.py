@@ -160,6 +160,12 @@ def verify_disabled_skills(settings: dict[str, Any], hermes_home: Path) -> list[
     A disabled name that matches no SKILL.md is a silent no-op: the typo reads
     as "skill turned off" while the skill stays enabled. Only names deliberately
     recorded under `catalog_churn` are exempt.
+
+    This is reported, never fatal. A name can legitimately be absent: the
+    catalog may not be seeded yet on a fresh or replacement install, and
+    agent-created skills (e.g. the local hermes-vps-* set) are never bundled,
+    so a hard failure would strand a working deployment on a heuristic. The
+    caller surfaces the list as a warning instead.
     """
     disabled = disabled_skill_names(settings)
     churn = catalog_churn_names(settings)
@@ -700,9 +706,15 @@ def main() -> int:
             raise ValueError(f"unsafe or unsupported --hermes-bin path: {args.hermes_bin}")
         unknown = verify_disabled_skills(settings, args.hermes_home)
         if unknown:
-            raise ValueError(
-                "managed skills.disabled lists names with no SKILL.md on disk and "
-                "not recorded in skills.catalog_churn: " + ", ".join(unknown)
+            # Reported, not fatal: a disabled name can legitimately be absent
+            # (catalog not seeded yet, or an agent-created skill that is never
+            # bundled). Aborting here would strand a working deployment on a
+            # heuristic; a visible warning still catches the typo it is for.
+            print(
+                "warning: managed skills.disabled lists names with no SKILL.md "
+                "on disk and not recorded in skills.catalog_churn: "
+                + ", ".join(unknown),
+                file=sys.stderr,
             )
         current = load_config(args.hermes_home / "config.yaml")
         operations = build_operations(
