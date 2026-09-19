@@ -165,7 +165,9 @@ def verify_disabled_skills(settings: dict[str, Any], hermes_home: Path) -> list[
     catalog may not be seeded yet on a fresh or replacement install, and
     agent-created skills (e.g. the local hermes-vps-* set) are never bundled,
     so a hard failure would strand a working deployment on a heuristic. The
-    caller surfaces the list as a warning instead.
+    caller surfaces the list as a warning instead. With no catalog at all the
+    check is a deliberate no-op: it cannot tell a typo from an unseeded tree,
+    and reporting every name would bury the signal it exists to give.
     """
     disabled = disabled_skill_names(settings)
     churn = catalog_churn_names(settings)
