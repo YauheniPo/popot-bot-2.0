@@ -137,6 +137,25 @@ vps_hermes:
           - github-issues
           - github-pr-workflow
           - github-repo-management
+          # Unusable on this VPS (verified 2026-09-19: CLI absent, credentials
+          # absent, or the surface is policy-forbidden). google-workspace,
+          # himalaya and email-inbox-triage stay ENABLED until Google/email
+          # credentials are provisioned — disable them then, not now.
+          - claude-code
+          - codex
+          - opencode
+          - computer-use
+          - obsidian
+          - teams-meeting-pipeline
+          - research-paper-writing
+          - llm-wiki
+          - nano-pdf
+          # Merged into hermes-agent + hermes-vps-ops (2026-09-19): the VPS
+          # self-diagnostic, gateway customisation and kanban/memory content
+          # now lives in those two skills' references/.
+          - hermes-vps-operations
+          - hermes-gateway-ops
+          - hermes-vps-kanban-memory
 
 # Third-party skills are fetched by Ansible, never by a running Hermes session.
 # Pinning a commit makes a deploy repeatable and keeps a later upstream change
