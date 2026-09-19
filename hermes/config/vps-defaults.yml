@@ -100,14 +100,10 @@ vps_hermes:
           - xurl
           - songsee
           - gif-search
-          - grilling
-          - product-price-monitor
           # Office suites and SaaS this deployment does not use
           - airtable
           - box
           - notion
-          - maps
-          - powerpoint
           # Heavy creative tooling (architecture-diagram, excalidraw,
           # claude-design and design-md stay: useful for QA docs).
           - comfyui
@@ -121,7 +117,6 @@ vps_hermes:
           - pretext
           - baoyu-infographic
           - popular-web-designs
-          - humanizer
           - svg-graphics
           # ML infrastructure — not this stack
           - huggingface-hub
@@ -151,7 +146,6 @@ vps_hermes:
           - teams-meeting-pipeline         # MSGRAPH_TENANT_ID / _CLIENT_ID / _CLIENT_SECRET
           # Wrong stack / superseded for this deployment:
           - research-paper-writing         # NeurIPS/ICML ML-paper pipeline
-          - llm-wiki                       # niche markdown KB
           - nano-pdf                       # superseded by pdf + ocr-and-documents
           # google-workspace, himalaya and email-inbox-triage stay ENABLED until
           # Google/email credentials exist — disable them then, not now.
