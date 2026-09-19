@@ -90,8 +90,8 @@ def _string_list(section: dict[str, Any], key: str) -> list[str]:
     return value
 
 
-def disabled_skill_names(settings: dict[str, Any]) -> list[str]:
-    """Return the managed `skills.disabled` list, failing closed on bad shape."""
+def _managed_skills(settings: dict[str, Any]) -> dict[str, Any]:
+    """Return the validated `managed_overlay.skills` mapping, failing closed."""
     overlay = settings.get("vps_hermes", {})
     if not isinstance(overlay, dict):
         raise ValueError("vps_hermes must be a mapping")
@@ -104,7 +104,12 @@ def disabled_skill_names(settings: dict[str, Any]) -> list[str]:
     skills = managed.get("skills", {})
     if not isinstance(skills, dict):
         raise ValueError("vps_hermes.config.managed_overlay.skills must be a mapping")
-    disabled = skills.get("disabled", [])
+    return skills
+
+
+def disabled_skill_names(settings: dict[str, Any]) -> list[str]:
+    """Return the managed `skills.disabled` list, failing closed on bad shape."""
+    disabled = _managed_skills(settings).get("disabled", [])
     if not isinstance(disabled, list) or not all(
         isinstance(name, str) and name.strip() for name in disabled
     ):
@@ -113,9 +118,13 @@ def disabled_skill_names(settings: dict[str, Any]) -> list[str]:
 
 
 def catalog_churn_names(settings: dict[str, Any]) -> set[str]:
-    """Disabled names upstream removed from the catalog; these need not exist."""
-    skills = settings["vps_hermes"]["config"]["managed_overlay"]["skills"]
-    churn = skills.get("catalog_churn", [])
+    """Disabled names upstream removed from the catalog; these need not exist.
+
+    Goes through the same validated accessor as `disabled_skill_names` so a
+    malformed overlay raises a ValueError (caught by main) rather than a
+    KeyError/TypeError traceback.
+    """
+    churn = _managed_skills(settings).get("catalog_churn", [])
     if not isinstance(churn, list) or not all(
         isinstance(name, str) and name.strip() for name in churn
     ):

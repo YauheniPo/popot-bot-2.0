@@ -229,6 +229,28 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertLessEqual(churn, set(disabled))
         self.assertEqual(len(disabled), len(set(disabled)))
 
+    def test_catalog_churn_names_defaults_to_empty_and_fails_closed(self) -> None:
+        # A missing catalog_churn is optional and yields an empty set, and an
+        # entirely absent overlay is valid too (every level defaults to {}).
+        # A malformed overlay must raise ValueError (caught by main), never a
+        # KeyError/TypeError traceback from a direct dict access.
+        for absent in (
+            {},
+            {"vps_hermes": {}},
+            {"vps_hermes": {"config": {"managed_overlay": {"skills": {"disabled": ["a"]}}}}},
+        ):
+            with self.subTest(value=absent):
+                self.assertEqual(apply_config.catalog_churn_names(absent), set())
+        for broken in (
+            {"vps_hermes": []},
+            {"vps_hermes": {"config": []}},
+            {"vps_hermes": {"config": {"managed_overlay": []}}},
+            {"vps_hermes": {"config": {"managed_overlay": {"skills": []}}}},
+        ):
+            with self.subTest(value=broken):
+                with self.assertRaisesRegex(ValueError, "must be a mapping"):
+                    apply_config.catalog_churn_names(broken)
+
     def test_verify_disabled_skills_flags_a_name_that_exists_nowhere(self) -> None:
         settings = apply_config.load_settings(MODULE_PATH.parent.parent / "config" / "vps-defaults.yml")
         with tempfile.TemporaryDirectory() as directory:
