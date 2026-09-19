@@ -631,26 +631,35 @@ class ApplyConfigTests(unittest.TestCase):
 
             self.assertEqual(apply_config.discover_skill_names(root), {"alpha"})
 
-    def test_discover_skill_names_fails_loudly_on_unreadable_frontmatter(self) -> None:
+    def test_discover_skill_names_skips_unreadable_or_unparsable_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            skill = root / "skills" / "bad" / "SKILL.md"
-            skill.parent.mkdir(parents=True)
-            skill.write_text("---\nname: [unclosed\n---\n", encoding="utf-8")
+            good = root / "skills" / "ok" / "SKILL.md"
+            good.parent.mkdir(parents=True)
+            good.write_text("---\nname: alpha\n---\n", encoding="utf-8")
+            bad_yaml = root / "skills" / "bad" / "SKILL.md"
+            bad_yaml.parent.mkdir(parents=True)
+            bad_yaml.write_text("---\nname: [unclosed\n---\n", encoding="utf-8")
 
-            with self.assertRaisesRegex(ValueError, "invalid frontmatter"):
-                apply_config.discover_skill_names(root)
+            errors = io.StringIO()
+            with mock.patch("sys.stderr", errors):
+                # Unparsable frontmatter is skipped, reported, not fatal.
+                self.assertEqual(apply_config.discover_skill_names(root), {"alpha"})
+            self.assertIn("invalid frontmatter", errors.getvalue())
 
-    def test_discover_skill_names_reports_an_unreadable_file(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            skill = root / "skills" / "locked" / "SKILL.md"
-            skill.parent.mkdir(parents=True)
-            skill.write_text("---\nname: locked\n---\n", encoding="utf-8")
+            original = Path.read_text
+            def selective(path_self, *args, **kwargs):
+                if path_self.name == "SKILL.md" and path_self.parent.name == "ok":
+                    raise OSError("denied")
+                return original(path_self, *args, **kwargs)
 
-            with mock.patch.object(Path, "read_text", side_effect=OSError("denied")):
-                with self.assertRaisesRegex(ValueError, "cannot read skill file"):
-                    apply_config.discover_skill_names(root)
+            errors = io.StringIO()
+            with mock.patch.object(Path, "read_text", selective), mock.patch("sys.stderr", errors):
+                # An unreadable file is skipped and reported; the call still
+                # returns the names it could read, so the advisory audit
+                # continues instead of aborting the deployment.
+                self.assertEqual(apply_config.discover_skill_names(root), set())
+            self.assertIn("cannot read skill file", errors.getvalue())
 
     def test_main_apply_warns_but_does_not_abort_on_an_absent_name(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

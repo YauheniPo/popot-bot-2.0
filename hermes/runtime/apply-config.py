@@ -139,6 +139,11 @@ def discover_skill_names(hermes_home: Path) -> set[str]:
     `skills/.archive/` is excluded from discovery. Returns an empty set when
     no catalog exists yet (a fresh install before the first sync), so a
     deployment does not fail merely because the skills tree is not there.
+
+    An individual file that cannot be read or parsed is skipped, not raised:
+    this feeds an advisory audit, and a single unreadable file (bad permission,
+    broken symlink, truncated YAML) must not turn that audit into a fatal
+    deployment failure. The skip is reported on stderr so it stays visible.
     """
     root = hermes_home / "skills"
     if not root.is_dir():
@@ -150,14 +155,16 @@ def discover_skill_names(hermes_home: Path) -> set[str]:
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError as error:
-            raise ValueError(f"cannot read skill file {path}: {error}") from error
+            print(f"warning: cannot read skill file {path}: {error}", file=sys.stderr)
+            continue
         match = re.match(r"^---\n(.*?)\n---", text, re.S)
         if match is None:
             continue
         try:
             frontmatter = yaml.safe_load(match.group(1)) or {}
         except yaml.YAMLError as error:
-            raise ValueError(f"invalid frontmatter in {path}: {error}") from error
+            print(f"warning: invalid frontmatter in {path}: {error}", file=sys.stderr)
+            continue
         if isinstance(frontmatter, dict) and isinstance(frontmatter.get("name"), str):
             names.add(frontmatter["name"].strip())
     return names
