@@ -526,6 +526,18 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertIn("::warning::", unavailable["run"])
         self.assertIn("GITHUB_STEP_SUMMARY", unavailable["run"])
         self.assertNotIn("exit 1", unavailable["run"])
+        # A GITHUB_STEP_SUMMARY-only report left the pull request with no signal
+        # that one of three reviewers never ran. The step must also publish the
+        # unavailability on the PR, deduplicated per run and best-effort.
+        self.assertIn("claude-pr-review-unavailable", unavailable["run"])
+        self.assertIn("issues/${PR_NUMBER}/comments", unavailable["run"])
+        self.assertIn("gh api -X POST", unavailable["run"])
+        self.assertIn("already published for run", unavailable["run"])
+        # An event-derived value must reach the shell as an env var, never as an
+        # interpolation inside the script body.
+        for name in ("PR_NUMBER", "HEAD_SHA", "REVIEW_RUN_ID", "GH_TOKEN"):
+            self.assertIn(name, unavailable["env"])
+            self.assertNotIn("${{ github.event.pull_request.number }}", unavailable["run"])
 
         manual_summary = next(
             step for job in manual["jobs"].values() for step in job["steps"]
