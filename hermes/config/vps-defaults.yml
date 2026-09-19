@@ -158,7 +158,7 @@ vps_hermes:
           # CLI absent:
           - obsidian                       # no vault on this host
           # Credentials missing (re-enable when provisioned):
-          - teams-meeting-pipeline         # MSGRAPH_TENANT_ID / _CLIENT_ID / _CLIENT_SECRET
+          - teams-meeting-pipeline         # MSGRAPH_TENANT_ID, MSGRAPH_CLIENT_ID, MSGRAPH_CLIENT_SECRET
           # Wrong stack / superseded for this deployment:
           - research-paper-writing         # NeurIPS/ICML ML-paper pipeline
           - nano-pdf                       # superseded by pdf + ocr-and-documents
