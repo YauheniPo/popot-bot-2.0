@@ -89,6 +89,21 @@ vps_hermes:
       # update. This list is authoritative (list_merge=replace), so a
       # deployment always re-asserts it.
       skills:
+        # Names kept in `disabled` after upstream removed the skill from the
+        # catalog: v0.21.0 consolidated the six per-task github-* copies into
+        # one `github` skill, and svg-graphics was dropped. They stay listed so
+        # a future catalog change cannot silently re-enable them, and the
+        # host-side audit in `runtime/apply-config.py` requires every OTHER
+        # disabled name to exist on disk — which is what turns a typo in this
+        # list into a visible deployment failure instead of a silent no-op.
+        catalog_churn:
+          - svg-graphics
+          - github-auth
+          - github-code-review
+          - github-issue-to-pr
+          - github-issues
+          - github-pr-workflow
+          - github-repo-management
         disabled:
           # macOS-only integrations
           - apple-notes
