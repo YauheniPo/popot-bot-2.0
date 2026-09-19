@@ -137,22 +137,27 @@ vps_hermes:
           - github-issues
           - github-pr-workflow
           - github-repo-management
-          # Unusable on this VPS (verified 2026-09-19: CLI absent, credentials
-          # absent, or the surface is policy-forbidden). google-workspace,
-          # himalaya and email-inbox-triage stay ENABLED until Google/email
-          # credentials are provisioned — disable them then, not now.
+          # Unusable on this VPS — verified 2026-09-19 by `command -v` and the
+          # env-var sweep in hermes-vps-ops/references/skill-toolset-mcp-inventory.md.
+          # CLI absent (nothing to delegate to; use delegate_task instead):
           - claude-code
           - codex
           - opencode
+          # Policy-forbidden surface (AGENTS.md: no computer-use / X11 here):
           - computer-use
-          - obsidian
-          - teams-meeting-pipeline
-          - research-paper-writing
-          - llm-wiki
-          - nano-pdf
-          # Merged into hermes-agent + hermes-vps-ops (2026-09-19): the VPS
-          # self-diagnostic, gateway customisation and kanban/memory content
-          # now lives in those two skills' references/.
+          # CLI absent:
+          - obsidian                       # no vault on this host
+          # Credentials missing (re-enable when provisioned):
+          - teams-meeting-pipeline         # MSGRAPH_TENANT_ID / _CLIENT_ID / _CLIENT_SECRET
+          # Wrong stack / superseded for this deployment:
+          - research-paper-writing         # NeurIPS/ICML ML-paper pipeline
+          - llm-wiki                       # niche markdown KB
+          - nano-pdf                       # superseded by pdf + ocr-and-documents
+          # google-workspace, himalaya and email-inbox-triage stay ENABLED until
+          # Google/email credentials exist — disable them then, not now.
+          # Merged into hermes-agent + hermes-vps-ops (2026-09-19): their VPS
+          # self-diagnostic, gateway-customization and kanban/memory content now
+          # lives in hermes-vps-ops (references/ + scripts/deep-self-diagnostic.sh).
           - hermes-vps-operations
           - hermes-gateway-ops
           - hermes-vps-kanban-memory
