@@ -290,8 +290,8 @@ jobs:
           NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
           DIRECT_REVIEW_PROVIDER: ${{ inputs.provider || vars.DIRECT_REVIEW_PROVIDER || 'openrouter' }}
           DIRECT_REVIEW_MODEL: ${{ inputs.model }}
-          DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'nvidia/nemotron-3-ultra-550b-a55b:free' }}
-          DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'nvidia' }}
+          DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'deepseek-v4.1-flash' }}
+          DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'ollama-cloud' }}
         run: python3 reviewer/.github/scripts/ai_review_preflight.py --probe json
 
       - name: Review selected revision and publish findings

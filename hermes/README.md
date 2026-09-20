@@ -835,27 +835,46 @@ ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventory.ini \
 остаётся отдельным launcher для AI code review и VPS не изменяет.
 
 Перед первым запуском создайте новый Azure pipeline из существующего YAML-файла
-`azure-deploy-hermes.yml` в ветке `main`. Затем в **Pipelines → Library →
+`azure-ci/azure-deploy-hermes.yml` в ветке `main`. Затем в **Pipelines → Library →
 Secure files** загрузите:
 
 | Secure file | Содержимое |
 |---|---|
 | `vault.yml` | Текущий зашифрованный `ansible/group_vars/all/vault.yml`, загруженный напрямую |
-| `hermes-vault-password` | Только пароль Ansible Vault, одной строкой |
-| `hermes-vps-ssh-key` | Отдельный private key для deployment без интерактивной passphrase |
 | `hermes-vps-known-hosts` | Проверенная запись SSH host key VPS |
+
+В **Library → Variable groups** создайте `hermes-deploy-secrets` и добавьте
+две переменные, включив для каждой **Keep this value secret**:
+
+| Secret variable | Содержимое |
+|---|---|
+| `HERMES_VAULT_PASSWORD` | Пароль текущего Ansible Vault |
+| `HERMES_TAILSCALE_AUTH_KEY` | Отдельный reusable + ephemeral CI auth key с тегом `tag:hermes-deploy` |
+
+Значения вводите одной строкой, без дополнительных кавычек и без Base64.
+Группа подключается только к stage `DeployProduction`; этап фиксации SHA
+не получает эти секреты. Старые Secure Files с паролем и CI-ключом больше
+не используются pipeline; удалять их следует только после проверки, что
+другие pipeline от них не зависят.
 
 Готовые безопасные шаблоны и команды подготовки находятся в
 [`ansible/azure-secure-files`](ansible/azure-secure-files/README.md). Рабочие
-файлы в этом каталоге игнорируются Git; в Azure загружаются версии без суффикса
-`.example`.
+файлы в этом каталоге игнорируются Git; в Secure Files загружаются только два
+файла из таблицы без суффикса `.example`. Локальный файл пароля нужен лишь
+для подготовки Vault, загружать его в Secure Files не нужно.
 
-Private key не отправляется на VPS: там должен находиться только его public
-key. `known_hosts` создавайте на доверенном компьютере и сверяйте fingerprint
+Этот pipeline использует **Tailscale SSH**: он должен быть включён на VPS,
+а SSH policy должна разрешать CI-тегу вход без browser check. Auth key лишь
+подключает CI node к tailnet, сам по себе он не даёт право SSH-входа.
+Private SSH key и `.pub` не нужны ни в ADO, ни на VPS; обычный OpenSSH через
+tailnet этим pipeline не поддерживается. После обновления YAML в `main` старый
+Secure File `hermes-vps-ssh-key` можно удалить, если другие pipelines его не
+используют. Локальные ключи автоматически не удаляются.
+`known_hosts` создавайте на доверенном компьютере и сверяйте fingerprint
 через консоль VPS-провайдера до загрузки. Не получайте и не принимайте новый
 host key прямо внутри pipeline.
 
-Для каждого Secure File:
+Для каждого Secure File и группы `hermes-deploy-secrets`:
 
 1. В **Pipeline permissions** разрешите только production deployment pipeline;
    не включайте **Open access**.
@@ -865,19 +884,58 @@ host key прямо внутри pipeline.
 Создайте Azure Environment `hermes-vps`. В его **Approvals and checks**
 добавьте approval владельца, **Branch control** для `refs/heads/main` и
 **Exclusive lock**. У самого pipeline оставьте право **Queue builds** только
-владельцу. Эти проверки задаются в Azure UI, а не в YAML, поэтому код из другой
-ветки не может снять их и получить deployment credentials.
+владельцу. Эти проверки задаются в Azure UI, а не в YAML. Branch control
+проверяет ветку определения pipeline (`main`), а не выбранную ниже ветку
+исходников: её код Ansible получит production credentials после approval.
+Поэтому согласовывайте только проверенный commit, показанный в отчёте запуска.
 
-При **Run pipeline** выберите ветку `main`, включите **Confirm production
-deployment** и подтвердите environment approval. Pipeline:
+После попадания этой версии YAML в `main`, в **Run pipeline** задайте:
+
+| Поле | Значение |
+|---|---|
+| Branch/tag (ветка самого pipeline) | `main` — не меняйте на feature-ветку |
+| Source branch to deploy (`deployBranch`) | Ветка кода, например `feat/hermes-workspace-and-deploy-improvements`; допустим и `refs/heads/...` |
+| Ansible deployment mode (`deployMode`) | `full`, `config-only` или `runtime-only` |
+| Confirm production deployment | `true` |
+
+`full` сохраняет консервативный путь установки/обновления; `config-only`
+применяет конфигурацию без обновления upstream Hermes; `runtime-only` ограничивает
+изменения runtime/services. Подробности и ограничения — в
+[режимах deploy](#режимы-deploy). Это тот же `hermes_deploy_mode`, что при
+локальном запуске; политика backup не меняется.
+
+Pipeline:
 
 1. проверит, что definition запущен из `main`;
-2. проверит наличие и формат защищённых файлов, не выводя их содержимое;
-3. выполнит `ansible-playbook --syntax-check`;
-4. запустит основной `ansible/playbook.yml` с проверкой SSH host key.
+2. через существующее GitHub connection скачает историю/ветки без сохранения
+   credentials, найдёт выбранную ветку и сохранит архив её конкретного SHA;
+3. до approvals опубликует в Summary ветку, SHA и режим. Проверьте их перед
+   согласованием environment, Secure Files и группы переменных;
+4. после approvals возьмёт архив **из этого же запуска**, проверит защищённые
+   файлы, выполнит syntax-check и Ansible deploy выбранного режима с проверкой
+   SSH host key. Push в выбранную ветку во время ожидания не меняет этот deploy.
+
+Несуществующая/некорректная ветка останавливает запуск до получения Secure Files.
+Ветка должна находиться в том же репозитории и содержать Hermes playbook;
+теги, произвольные SHA и fork URL не являются параметром `deployBranch`.
+Для нового SHA запускайте новый pipeline; повтор deploy job использует прежний
+артефакт. GitHub credentials, `.git` и незакоммиченные локальные файлы в него не
+попадают. Доступ к артефакту исходников ограничьте доверенными пользователями.
+
+Pipeline теперь подключает одноразовый hosted agent к tailnet и до deploy
+проверяет SSH/sudo с общим таймаутом 75 секунд, без ожидания browser login.
+После job (включая сбой/отмену) выполняется logout. Однократно настройте теги,
+ограниченные сетевые/SSH правила и secret variable `HERMES_TAILSCALE_AUTH_KEY` по
+[инструкции Tailscale для ADO](../azure-ci/tailscale-deploy.md).
+Не назначайте тег VPS до сохранения личного доступа: `autogroup:self` не
+покрывает tagged node. Личные browser checks не отключаются.
 
 Зашифрованный Vault передаётся как защищённый extra-vars файл и не копируется в
-checkout. Azure удаляет скачанные Secure Files после job. Доступ к логам
+checkout. Пароль Vault и CI-ключ временно записываются на agent в файлы `0600`
+в каталоге `0700`, без вывода значений в лог или аргументы команд. Отдельный
+шаг `always()` удаляет их при успехе, ошибке и отмене. При аварийной потере
+agent этот шаг не гарантирован; используется одноразовая hosted VM.
+Azure удаляет скачанные Secure Files после job. Доступ к логам
 pipeline тоже должен оставаться только у доверенных пользователей: SSH-ошибка
 может содержать адрес конечного host, даже если адрес отсутствует в Git.
 

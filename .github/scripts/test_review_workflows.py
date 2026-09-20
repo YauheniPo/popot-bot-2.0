@@ -279,7 +279,7 @@ class ReviewWorkflowTest(unittest.TestCase):
             with self.subTest(name=name), mock.patch.object(sys, "argv", [name, *argv]), self.assertRaises(SystemExit) as caught:
                 runpy.run_path(script_path, run_name="__main__")
             self.assertEqual(caught.exception.code, 1)
-        self.assertIn("API key for nvidia is missing", self.errors.getvalue())
+        self.assertIn("missing_api_key", self.errors.getvalue())
         self.assertIn("NVIDIA_API_KEY", self.errors.getvalue())
 
 

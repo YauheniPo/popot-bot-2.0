@@ -25,6 +25,165 @@ SPEC.loader.exec_module(runner)
 
 
 class ClaudeReviewRunnerTests(unittest.TestCase):
+    def bounded_worker(self, *, max_turns=4, repeat=False, ignore_final=False, read_diff=True):
+        payloads = []
+        final = '{"summary":"Checked available evidence","findings":[],"thread_verdicts":[]}'
+
+        def respond(_endpoint, _key, payload, *_):
+            payloads.append(json.loads(json.dumps(payload)))
+            if not payload.get("tools") and not ignore_final:
+                return {"content": [{"type": "text", "text": final}], "stop_reason": "end_turn"}
+            turn = len(payloads)
+            name = "Read" if repeat or turn == 1 else "Grep"
+            args = {"path": runner.REVIEW_DIFF_PATH if read_diff else "app.py"} if name == "Read" else {"pattern": f"query{turn}"}
+            return {"content": [{"type": "tool_use", "id": f"t{turn}", "name": name, "input": args}], "stop_reason": "tool_use"}
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / runner.REVIEW_DIFF_PATH).write_text("-old\n+new\n")
+            (root / "app.py").write_text("context evidence\n")
+            pipe = mock.Mock()
+            with mock.patch.object(runner, "request_message", side_effect=respond), \
+                    mock.patch.object(runner, "execute_tool", wraps=runner.execute_tool) as execute, \
+                    mock.patch.object(runner.signal, "signal"):
+                runner._worker(pipe, "https://example.test", "secret-key", "model", "review prompt", root,
+                               {runner.REVIEW_DIFF_PATH, "app.py"}, max_turns, 5)
+        return payloads, pipe, execute
+
+    def test_last_turn_is_reserved_for_json_without_tools(self):
+        payloads, pipe, execute = self.bounded_worker()
+        self.assertEqual(pipe.send.call_args.args[0][0], "result")
+        self.assertEqual(len(payloads), 4)
+        self.assertEqual(execute.call_count, 3)
+        self.assertNotIn("tools", payloads[-1])
+        self.assertIn("1: -old", json.dumps(payloads[-1]))
+        for message in payloads[-1]["messages"]:
+            if isinstance(message["content"], list):
+                self.assertTrue(all(block["type"] == "text" for block in message["content"]))
+        # Transforming the final transcript must not mutate earlier requests.
+        self.assertEqual(payloads[1]["messages"][1]["content"][0]["type"], "tool_use")
+        self.assertIn("finalization_started reason=turn_budget", str(pipe.send.call_args_list))
+
+    def test_repeated_reads_are_not_executed_and_finalize_early(self):
+        payloads, pipe, execute = self.bounded_worker(max_turns=12, repeat=True)
+        self.assertEqual(pipe.send.call_args.args[0][0], "result")
+        self.assertLess(len(payloads), 12)
+        execute.assert_called_once()
+        self.assertIn("tool_cache_hit", str(pipe.send.call_args_list))
+        self.assertIn("finalization_started reason=repeated_tools", str(pipe.send.call_args_list))
+
+    def test_tool_calls_in_final_round_are_not_executed_or_accepted(self):
+        payloads, pipe, execute = self.bounded_worker(ignore_final=True)
+        self.assertEqual(pipe.send.call_args.args[0][:2], ("failure", "turn_limit"))
+        self.assertNotIn("tools", payloads[-1])
+        self.assertEqual(execute.call_count, 3)
+
+    def test_forced_finalization_cannot_bypass_diff_read_requirement(self):
+        _, pipe, _ = self.bounded_worker(read_diff=False)
+        self.assertEqual(pipe.send.call_args.args[0][:2], ("failure", "diff_not_read"))
+
+    def test_tool_cache_keeps_pagination_and_argument_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / runner.REVIEW_DIFF_PATH).write_text("-old\n+new\n")
+            args = {"path": runner.REVIEW_DIFF_PATH, "offset": 1, "limit": 1}
+            blocks = [{"id": "a", "name": "Read", "input": args},
+                      {"id": "b", "name": "Read", "input": dict(reversed(list(args.items())))},
+                      {"id": "c", "name": "Read", "input": {**args, "offset": 2}}]
+            read_files, cache = set(), {}
+            with mock.patch.object(runner, "execute_tool", wraps=runner.execute_tool) as execute:
+                results = runner._tool_results(blocks, root, {runner.REVIEW_DIFF_PATH}, mock.Mock(), read_files, cache)
+            self.assertEqual(execute.call_count, 3)
+            self.assertIn("1: -old", results[1]["content"])
+            self.assertIn("2: +new", results[2]["content"])
+            self.assertEqual(read_files, {runner.REVIEW_DIFF_PATH})
+
+    def test_distinct_same_input_tool_calls_are_not_collapsed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / runner.REVIEW_DIFF_PATH).write_text("-old\n+new\n")
+            args = {"path": runner.REVIEW_DIFF_PATH, "offset": 1, "limit": 1}
+            blocks = [{"id": "a", "name": "Read", "input": args},
+                      {"id": "b", "name": "Read", "input": args}]
+            with mock.patch.object(runner, "execute_tool", wraps=runner.execute_tool) as execute:
+                runner._tool_results(blocks, root, {runner.REVIEW_DIFF_PATH}, mock.Mock(), set(), {})
+            self.assertEqual(execute.call_count, 2)
+
+    def rate_limit(self, headers=None, body=None):
+        error = runner.urllib.error.HTTPError("https://example.test", 429, "secret-key", headers or {},
+            io.BytesIO(json.dumps({} if body is None else body).encode()))
+        with mock.patch.object(runner.urllib.request, "build_opener") as opener:
+            opener.return_value.open.side_effect = error
+            with self.assertRaises(runner.RateLimitFailure) as caught:
+                runner.request_message("https://example.test", "secret-key", {}, 5)
+        self.assertTrue(error.closed)
+        self.assertEqual(str(caught.exception), "http_429")
+        self.assertNotIn("secret-key", json.dumps(caught.exception.details))
+        return caught.exception.details
+
+    def test_rate_limit_preserves_only_safe_diagnostics(self):
+        details = self.rate_limit({"Retry-After": "45", "X-RateLimit-Remaining": "0"},
+            {"error": {"message": "Rate limit exceeded: free-models-per-day. secret-key"}})
+        self.assertEqual(details["retry_after_seconds"], 45)
+        self.assertEqual(details["scope"], "platform")
+        self.assertEqual(details["quota"], "free_daily")
+        self.assertEqual(details["remaining"], 0)
+
+    def test_rate_limit_provider_and_unknown_are_not_daily_quota(self):
+        details = self.rate_limit(body={"error": {"metadata": {"provider_code": 429,
+            "provider_name": "secret-key"}}})
+        self.assertEqual(details["scope"], "provider")
+        self.assertEqual(details["quota"], "unknown")
+        for body in ({}, {"error": "secret-key"}, {"error": {"metadata": []}}, []):
+            with self.subTest(body=body):
+                details = self.rate_limit({"Retry-After": "NaN"}, body)
+                self.assertEqual(details["scope"], "unknown")
+                self.assertNotIn("retry_after_seconds", details)
+
+    def test_rate_limit_dates_and_reset_headers(self):
+        with mock.patch.object(runner.time, "time", return_value=1_700_000_000):
+            for headers, expected in (({"Retry-After": "Tue, 14 Nov 2023 22:14:20 GMT"}, 60),
+                                      ({"X-RateLimit-Reset": "1700000060000"}, 60),
+                                      ({"X-RateLimit-Reset": "1700000060", "Retry-After": "90"}, 90)):
+                with self.subTest(headers=headers):
+                    self.assertEqual(self.rate_limit(headers)["retry_after_seconds"], expected)
+
+    def test_rate_limit_survives_worker_pipe(self):
+        failure = runner.RateLimitFailure({"scope": "provider", "quota": "unknown", "retry_after_seconds": 45})
+        pipe = mock.Mock()
+        with mock.patch.object(runner, "request_message", side_effect=failure), mock.patch.object(runner.signal, "signal"):
+            runner._worker(pipe, "https://example.test", "key", "model", "p", Path.cwd(), set(), 1, 5)
+        kind, value, turns = pipe.send.call_args.args[0]
+        output = Path("unused.json")
+        log = io.StringIO()
+        with self.assertRaises(runner.RateLimitFailure) as caught:
+            runner._handle_message(kind, value, turns, output, 0, 0, log)
+        self.assertEqual(caught.exception.details, failure.details)
+
+    def test_rate_limit_diagnostics_survive_real_worker_and_cleanup(self):
+        failure = runner.RateLimitFailure({"scope": "provider", "quota": "unknown", "retry_after_seconds": 45})
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(runner, "request_message", side_effect=failure):
+            root = Path(directory)
+            before = {p.pid for p in multiprocessing.active_children()}
+            output = root / "result.json"
+            allowed_files = set()
+            log = io.StringIO()
+            with self.assertRaises(runner.RateLimitFailure) as caught:
+                runner.run_review(endpoint="https://example.test", api_key="secret-key", model="m", prompt="p",
+                    workspace=root, output=output, allowed_files=allowed_files, max_turns=1,
+                    attempt_timeout_seconds=5, inactivity_timeout_seconds=2, heartbeat_seconds=1, log=log)
+            self.assertEqual(caught.exception.details, failure.details)
+            self.assertFalse((root/"result.json").exists())
+            self.assertEqual({p.pid for p in multiprocessing.active_children()}, before)
+
+    def test_rate_limit_body_is_bounded_and_unparseable_body_keeps_headers(self):
+        for raw in (b"secret-key not json", b"x" * 20_000):
+            error = mock.Mock(headers={"Retry-After": "12"})
+            error.read.return_value = raw
+            details = runner._rate_limit_details(error)
+            error.read.assert_called_once_with(16_385)
+            self.assertEqual(details, {"scope":"unknown", "quota":"unknown", "retry_after_seconds":12})
+
     def test_final_json_requires_successful_diff_read(self):
         for read_args in (None, {"path":"app.py"}, {"path":".ci-observable-review.diff", "offset":999},
                           {"path":"missing.diff"}):
@@ -384,10 +543,10 @@ class ClaudeReviewRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(runner.ReviewFailure, "provider_connection_error"):
                 runner.request_message("https://example.test", "key", {}, 5)
 
-    def test_final_result_rejects_thread_verdicts(self):
-        with self.assertRaisesRegex(runner.ReviewFailure, "invalid_result"):
-            runner._final_result({"stop_reason": "end_turn"},
-                [{"type": "text", "text": '{"summary":"s","findings":[],"thread_verdicts":[{"thread_id":"t","verdict":"confirmed","reason":"still valid"}]}'}])
+    def test_final_result_accepts_ignored_thread_verdicts(self):
+        result = runner._final_result({"stop_reason": "end_turn"},
+            [{"type": "text", "text": '{"summary":"s","findings":[],"thread_verdicts":[{"thread_id":"t","verdict":"confirmed","reason":"still valid"}]}'}])
+        self.assertIn('"thread_verdicts"', result)
 
     def test_final_result_requires_end_turn(self):
         with self.assertRaisesRegex(runner.ReviewFailure, "provider_incomplete_result"):

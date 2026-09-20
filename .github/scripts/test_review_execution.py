@@ -6,6 +6,11 @@ from review_execution import ExecutionReport, claude_execution_report
 
 
 class ExecutionReportTest(unittest.TestCase):
+    def test_reports_ollama_reasoning_effort_from_actual_payload(self):
+        report = ExecutionReport("ollama-cloud", "https://ollama.com/v1/chat/completions", "model")
+        attempt = report.begin({"model": "model", "reasoning_effort": "none"})
+        self.assertEqual(attempt.reasoning, "none")
+
     def test_five_chunks_count_only_additional_requests_to_the_same_chunk_as_retries(self):
         report = ExecutionReport("nvidia", "https://integrate.api.nvidia.com/v1/chat/completions", "model")
         for index in range(5):
@@ -14,11 +19,11 @@ class ExecutionReportTest(unittest.TestCase):
             report.finish(attempt, "received", 1)
             report.validate_last("valid_json")
         self.assertEqual([a.number for a in report.attempts], [1, 2, 3, 4, 5])
-        self.assertIn("Requests: 5 · Validated: 5 · Retries: 0", report.summary())
+        self.assertIn("Attempts: 5 · Validated: 5 · Retries: 0", report.summary())
         for chunk in ("chunk 2/5", "chunk 5/5"):
             report.unit = chunk
             report.begin({"model": "model"})
-        self.assertIn("Requests: 7 · Validated: 5 · Retries: 2", report.summary())
+        self.assertIn("Attempts: 7 · Validated: 5 · Retries: 2", report.summary())
 
     def test_nous_reports_canonical_endpoints_for_both_reviewers(self):
         for endpoint in ("https://inference-api.nousresearch.com", "https://inference-api.nousresearch.com/v1/chat/completions"):
@@ -34,7 +39,7 @@ class ExecutionReportTest(unittest.TestCase):
         report.finish(first, "http_429", 1.5)
         second = report.begin({"model": "backup"})
         report.finish(second, "received", 2.5, {"id": "chatcmpl-123", "model": "backup-served"})
-        self.assertNotIn("Successful models:", report.summary())
+        self.assertIn("Successful models: none", report.summary())
         report.validate_last("valid_json")
         report.unit = "chunk 2/2"
         third = report.begin({"model": "primary", "response_format": {"type": "json_schema"}})
@@ -44,7 +49,7 @@ class ExecutionReportTest(unittest.TestCase):
         self.assertIn("nvidia", rendered)
         self.assertIn("backup", rendered)
         self.assertIn("http_429", rendered)
-        self.assertIn("Requests: 3", rendered)
+        self.assertIn("Attempts: 3", rendered)
         self.assertIn("Retries: 1", rendered)
         self.assertIn("Fallback successes: 1", rendered)
         self.assertIn("chatcmpl-123", rendered)
@@ -52,6 +57,15 @@ class ExecutionReportTest(unittest.TestCase):
         self.assertIn("request #2", report.footer("chunk 1/2"))
         self.assertIn("fallback", report.footer("chunk 1/2"))
         self.assertIn("request #3", report.footer("chunk 2/2"))
+
+    def test_filtered_json_counts_as_validated_success(self):
+        report = ExecutionReport("ollama-cloud", "https://ollama.com", "model")
+        report.unit = "chunk 1/1"
+        attempt = report.begin({"model": "model"}, route="fallback")
+        report.finish(attempt, "valid_json_filtered", 1.0)
+        self.assertIn("Successful models: `model`", report.summary())
+        self.assertIn("Attempts: 1 · Validated: 1", report.summary())
+        self.assertIn("request #1", report.footer("chunk 1/1"))
 
     def test_redacts_custom_endpoint_and_bounds_untrusted_metadata(self):
         report = ExecutionReport("openrouter", "https://user:password@private.example/v1?api_key=secret", "model")
@@ -80,12 +94,12 @@ class ExecutionReportTest(unittest.TestCase):
             "CLAUDE_REVIEW_FALLBACK_VALIDATION": "success",
         })
         rendered = report.summary() + report.details() + report.footer("review")
-        self.assertIn("CI attempts: 3", rendered)
+        self.assertIn("Attempts: 3", rendered)
         self.assertIn("backup", rendered)
         self.assertIn("execution_failed", rendered)
         self.assertIn("validation_failed", rendered)
         self.assertIn("CI attempt #3", rendered)
-        self.assertIn("SDK HTTP retries are not recorded", rendered)
+        self.assertIn("Provider time:", rendered)
 
     def test_skipped_claude_steps_are_not_counted(self):
         report = claude_execution_report({
@@ -105,7 +119,7 @@ class ExecutionReportTest(unittest.TestCase):
             attempt = report.begin({"model": "primary"})
             report.finish(attempt, "received", 1)
             report.validate_last("valid_json")
-        self.assertIn("Requests: 100", report.summary())
+        self.assertIn("Attempts: 100", report.summary())
         self.assertIn("all 100", report.details())
         self.assertLess(len(report.details()), 10000)
 

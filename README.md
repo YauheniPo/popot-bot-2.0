@@ -178,10 +178,12 @@ CLAUDE_REVIEW_MODEL=<portal-tool-capable-model-id>
 The existing `DIRECT_REVIEW_FALLBACK_MODEL` and `CLAUDE_REVIEW_FALLBACK_MODEL`
 also accept Portal model IDs. Manual GitHub and Azure runs select `provider=nous`
 and supply `model` in their run parameters. For the standard Portal connection,
-leave `CLAUDE_REVIEW_BASE_URL` unset. Direct review uses Chat Completions; Claude
-uses the Portal Messages endpoint and runs a short smoke test before starting:
+direct review uses Chat Completions. Do not assume a Portal catalog entry also
+supports Anthropic Messages: live checks returned HTTP 404 on the standard
+Portal Messages route. Use a verified Anthropic-compatible route for Claude and
+Observable. Claude runs a short smoke test before starting:
 it checks tool calling and the exact review JSON contract in separate requests.
-The smoke test uses one attempt with a 45-second timeout per check, so an
+The Claude smoke test uses up to two attempts with a 90-second timeout per check, so an
 unavailable or incompatible model is reported before the full Claude run.
 Model IDs are passed verbatim, and model access is checked using the CI key.
 
@@ -198,12 +200,29 @@ when Direct API fails. `1` runs only Direct API; `2` runs both agent reviewers
 without Direct API. Owner-only, same-repository and non-draft safeguards apply
 to all three. A newer revision cancels the previous run.
 
-Both agent reviewers use the existing `CLAUDE_REVIEW_*` provider, model, fallback
-and endpoint settings, not `DIRECT_REVIEW_*`. Their publication identities are
+Both agent reviewers use `CLAUDE_REVIEW_*` provider and endpoint settings, not
+`DIRECT_REVIEW_*`. Observable overrides the model names using
+`OBSERVABLE_REVIEW_MODEL` and `OBSERVABLE_REVIEW_FALLBACK_MODEL`; the fallback
+provider remains `CLAUDE_REVIEW_FALLBACK_PROVIDER`. Their publication identities are
 fixed in code: `ClaudeCodePlugin` and `ObservableMessagesReview`. No additional
 identity variables or credentials are required. Each publishes its own PR
 summary and inline findings. The observable reviewer never resolves or replies
 to other reviewers' threads, avoiding races between the parallel jobs.
+
+Observable review retries HTTP 429 with exponential backoff (30s, then 60s)
+and honors a longer `Retry-After` or rate-limit reset hint. Waiting is capped at
+120 seconds per diff chunk across both routes; a longer hint skips that route
+instead of retrying before the reset. During backoff, CI logs a heartbeat every
+15 seconds explicitly saying that no provider request is in flight. A confirmed
+OpenRouter free-model daily limit skips another free model on the same provider;
+an upstream/model limit still permits the configured fallback. No unconfigured
+model or paid OpenRouter route is selected. When no route remains usable due to limits,
+remaining chunks are skipped and the job fails rather than reporting a clean
+review. The expandable execution history separates request duration from retry
+waiting and shows sanitized limit diagnostics, while the summary shows validated,
+failed and skipped chunk counts. Partial results remain in the JSON report but
+are not published as a complete review. A bare 429 does not prove daily quota
+exhaustion; see [OpenRouter rate-limit guidance](https://openrouter.ai/docs/api_reference/limits).
 
 All three publishers suppress repeats of settled reviewer findings, including
 Observable threads. That read-only recognition does not let Claude or Direct API
@@ -231,10 +250,10 @@ the contributor's scripts are never executed with review credentials. A new
 commit cancels an in-progress review of the old revision. The label is created
 in the repository and can be applied from the pull request's Labels menu.
 
-Set a fallback model to select a backup on the same provider. An unset
-`DIRECT_REVIEW_FALLBACK_MODEL` disables switching to a backup model. For Claude,
-an unset `CLAUDE_REVIEW_FALLBACK_MODEL` makes the fallback stage use the primary
-model. `CLAUDE_REVIEW_BASE_URL` overrides the Claude endpoint while keeping the
+Configure each fallback model together with its matching `*_FALLBACK_PROVIDER`;
+the provider may differ from the primary. Workflows supply the documented defaults
+when repository variables are unset. `CLAUDE_REVIEW_BASE_URL` overrides only the
+primary provider's Claude endpoint while keeping the
 selected provider's credentials; it must accept Claude Code's API and tool calls.
 For NVIDIA, the hosted Chat Completions endpoint is used by the direct reviewer.
 Claude with NVIDIA requires an Anthropic-compatible gateway set explicitly in
@@ -244,8 +263,34 @@ Claude stages. For example, `https://openrouter.ai/api/v1` becomes the SDK base
 `https://openrouter.ai/api`, with requests sent to `/api/v1/messages`.
 Without a gateway URL for NVIDIA, Claude
 preflight stops before making a model request. Ollama Cloud, OpenRouter, and Nous
-have explicit Messages routes in the adapter; the tool probe checks the selected
-model against that route or your override.
+have candidate Messages routes in the adapter; availability must be established
+by live tool and JSON probes, not inferred from the model catalog. A fallback on
+a different provider uses that provider's route, never the primary URL override.
+
+### Review availability and rate limits
+
+All three methods share the account-wide free quota when using OpenRouter
+`:free` models. Switching free models does not bypass an exhausted daily quota.
+Preflight honors `Retry-After` within a bounded wait budget and skips same-provider
+free fallback after confirmed daily exhaustion. A separately configured provider
+can still be tried. OpenRouter routes must use existing free model IDs; adding
+`:free` to a paid model ID does not create a free route.
+
+Default fallback routes use `ollama-cloud`: Direct API → `deepseek-v4.1-flash`,
+Claude Code → `glm-5.3-flash`, Observable → `kimi-k2.7-code`. Each passed a live
+synthetic diff review on 2026-09-20 (JSON plus file/tool reads for the agents).
+This validates compatibility, not future uptime or review accuracy on all code.
+Set `OLLAMA_API_KEY` in GitHub Actions secrets. Repository variables override
+these defaults; update stale fallback model/provider pairs together. Leave
+`CLAUDE_REVIEW_BASE_URL` unset when using the providers' standard endpoints.
+
+The `review-results` job checks that **every selected method** actually returned
+and published a validated result. A green diagnostic/publication step is not
+proof of a completed review. Missing results fail this aggregate check even when
+the individual corroborating jobs use `continue-on-error` to publish diagnostics.
+Direct preflight **and review/publication failures** and Claude preflight reasons are reported on the PR;
+Observable reports completed, failed and skipped chunks. Retry only after the
+reported cooldown/reset or after fixing the model/provider configuration.
 
 Preflight checks run before Direct API and Claude Code review. The direct reviewer requires valid review
 JSON; Claude Code also requires tool calling through an Anthropic-compatible
@@ -273,6 +318,26 @@ Direct review allows at most four API requests per model for each chunk or
 thread-triage operation. Transport retries, invalid-JSON regeneration, and API
 compatibility adjustments share that limit. A different fallback has its own
 four-request limit; the total time budget can stop either model earlier.
+Repeated idle/total timeouts stop a model route after two attempts, then use a
+configured independent fallback if available. They do not spend four identical
+requests on a silent route. No extra provider or model is selected implicitly.
+
+Direct requests use Chat Completions streaming, with a **90-second inactivity
+limit**, **300-second absolute limit per request** (also capped by the remaining
+review budget), and a **heartbeat every 30 seconds**, including while connecting.
+Logs show elapsed/idle time, state, received events, and content/reasoning character
+counts, never the reasoning or response text. SSE keepalives do not reset the
+inactivity deadline. `provider_processing=unknown` is intentional: runner
+liveness does not prove the provider is thinking. A stream must terminate cleanly
+before JSON/schema/anchor validation; partial responses are not successful reviews.
+Ollama receives the requested reasoning effort via its supported
+[`reasoning_effort`](https://docs.ollama.com/api/openai-compatibility) field,
+instead of silently reverting to the model's default thinking mode. Wire data
+is capped at 16 MiB, including SSE framing, independently of the token budget.
+Non-streaming responses remain supported under the same watchdog. Failures have
+explicit reasons such as `inactivity_timeout`, `attempt_timeout`, `connection_error`,
+`stream_incomplete`, or `output_limit`. CI's step summary records request history;
+the PR failure comment identifies the selected route and links to the failed run.
 Claude Code's full-run retry stages are configured separately in the PR workflow.
 The direct PR job allows 60 minutes and manual/Azure review 105 minutes, including
 preflight and publication; their model-traffic budgets remain separate.
@@ -304,6 +369,19 @@ is treated like any other failed attempt and follows the same per-route retry
 and fallback path. This proves access to
 changes, not complete coverage. Oversized lines are omitted individually
 without blocking later pages.
+
+The last model turn is reserved for a JSON-only response, within the existing
+turn/deadline budget. Tools are removed for that request and their earlier
+calls/results are preserved as text evidence. This avoids relying on
+`tool_choice` controls, which [Ollama Cloud does not fully support](https://docs.ollama.com/api/anthropic-compatibility).
+Identical tool calls reuse earlier results without reading/searching again;
+different offsets and queries still work. Three consecutive rounds containing
+only repeated calls trigger finalization early. CI logs `tool_cache_hit` and
+`finalization_started reason=turn_budget` or `reason=repeated_tools`.
+Finalization does not waive JSON, diff-read or changed-line validation. A model
+that still requests tools fails with `turn_limit`; unread scope must still be
+disclosed rather than described as a complete review.
+
 It has no separate preflight step of its own:
 tool support and final JSON are validated during the actual review attempts,
 so an unusable route fails the attempt rather than a standalone check.
@@ -319,7 +397,7 @@ Optional repository variables for this runner (all retain `CLAUDE_REVIEW_` names
 
 | Variable | Default | Maximum | Meaning |
 | --- | --- | --- | --- |
-| `CLAUDE_REVIEW_MAX_TURNS` | 24 | 96 | Model turns per attempt |
+| `CLAUDE_REVIEW_MAX_TURNS` | 24 | 96 | Total model turns per attempt, including the final JSON-only turn |
 | `CLAUDE_REVIEW_ATTEMPT_TIMEOUT_SECONDS` | 600 | 900 | Hard deadline per attempt |
 | `CLAUDE_REVIEW_INACTIVITY_TIMEOUT_SECONDS` | 180 | 600 | Deadline without substantive provider/tool events |
 | `CLAUDE_REVIEW_HEARTBEAT_SECONDS` | 30 | 60 | CI heartbeat interval |
