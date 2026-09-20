@@ -129,6 +129,7 @@ jobs:
         if: always() && !cancelled() && (steps.direct_models.outcome == 'failure' || steps.direct_review.outcome == 'failure')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PRIMARY_MODEL: ${{ env.DIRECT_REVIEW_MODEL }}
           PRIMARY_PROVIDER: ${{ env.DIRECT_REVIEW_PROVIDER }}
@@ -143,7 +144,9 @@ jobs:
         run: |
           set -euo pipefail
           report="${RUNNER_TEMP}/direct-unavailable.md"
+          marker="<!-- direct-api-review-unavailable:${GITHUB_RUN_ID} -->"
           {
+            printf '%s\n' "$marker"
             printf '## Direct API review unavailable\n\nNo completed, published review is confirmed. This is not a clean review.\n\n'
             if [[ "$REVIEW_OUTCOME" == 'failure' ]]; then
               printf -- '- Stage: review / validation / publication after successful preflight.\n'
@@ -156,7 +159,18 @@ jobs:
             printf '[CI attempt %s](https://github.com/%s/actions/runs/%s/attempts/%s)\n' "$GITHUB_RUN_ATTEMPT" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
           } > "$report"
           cat "$report" >> "$GITHUB_STEP_SUMMARY"
-          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -F "body=@${report}" >/dev/null
+          bodies_file="${RUNNER_TEMP}/direct-unavailable-comments.txt"
+          if gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+               --jq '.[] | select(.user.login == "github-actions[bot]") | (.body // "")' \
+               >"${bodies_file}"; then
+            if grep -Fqx -- "$marker" "$bodies_file"; then
+              echo "Direct API unavailability comment already published for run ${GITHUB_RUN_ID}."
+            else
+              gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -F "body=@${report}" >/dev/null
+            fi
+          else
+            echo "::warning::Could not read existing pull-request comments; skipping duplicate-prone Direct API unavailability comment."
+          fi
 
   # Preserve the existing job id so configured required checks remain stable.
   claude-code-plugin-review:

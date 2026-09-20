@@ -471,7 +471,7 @@ def _publish_context() -> tuple[str, str, str, str, str, str, str, str]:
 
 
 def _publish_one_finding(finding, repo: str, pr: str, token: str, head: str,
-                         run_id: str, run_attempt: str, run_url: str, report: dict) -> str:
+                         run_id: str, run_attempt: str) -> str:
     """Publish one inline comment for a finding; return its summary detail text."""
     digest = hashlib.sha256(f"{finding.path}:{finding.side}:{finding.line}".encode()).hexdigest()[:16]
     inline_marker = f"<!-- {PREFIX}-inline:{head}:{run_id}:{run_attempt}:{digest} -->"
@@ -497,7 +497,7 @@ def _success_lines(report: dict, repo: str, pr: str, token: str, base: str, head
     findings, existing_notes = _new_publication_findings(findings, repo, pr, token)
     lines.extend([f"New findings: {len(findings)}", *existing_notes])
     for finding in findings:
-        detail = _publish_one_finding(finding, repo, pr, token, head, run_id, run_attempt, run_url, report)
+        detail = _publish_one_finding(finding, repo, pr, token, head, run_id, run_attempt)
         lines.extend(["", f"`{finding.path}:{finding.line}`", detail])
     return lines
 

@@ -454,7 +454,7 @@ class ObservableReviewTests(unittest.TestCase):
         with mock.patch.object(context, "_review_already_posted", return_value=False), \
                 mock.patch.object(context, "create_inline_comment", side_effect=context.GitHubRequestError("unresolvable")), \
                 mock.patch.object(context, "_is_unresolvable_inline_anchor", return_value=True):
-            detail = observer._publish_one_finding(finding, "owner/repo", "1", "tok", "h"*40, "1", "1", "https://github.com/owner/repo/actions/runs/1", {"attempts": []})
+            detail = observer._publish_one_finding(finding, "owner/repo", "1", "tok", "h"*40, "1", "1")
         self.assertIn("rejected the inline anchor", detail)
 
     def test_success_lines_rejects_verdicts(self):
@@ -666,9 +666,7 @@ class ObservableReviewTests(unittest.TestCase):
     def test_publish_one_finding_keeps_metadata_in_summary_only(self):
         finding = context.ReviewFinding("P2", "app.py", "RIGHT", 1, "t", "i", "f")
         with mock.patch.object(context, "_review_already_posted", return_value=True):
-            detail = observer._publish_one_finding(finding, "owner/repo", "1", "tok", "h"*40, "1", "1",
-                "https://github.com/owner/repo/actions/runs/1",
-                {"attempts": [{"provider": "p", "model": "m", "role": "primary", "number": 1}]})
+            detail = observer._publish_one_finding(finding, "owner/repo", "1", "tok", "h"*40, "1", "1")
         self.assertNotIn("Provider:", detail)
         self.assertNotIn("Model:", detail)
 
@@ -678,8 +676,7 @@ class ObservableReviewTests(unittest.TestCase):
                 mock.patch.object(context, "create_inline_comment", side_effect=context.GitHubRequestError("boom")), \
                 mock.patch.object(context, "_is_unresolvable_inline_anchor", return_value=False):
             with self.assertRaises(context.GitHubRequestError):
-                observer._publish_one_finding(finding, "owner/repo", "1", "tok", "h"*40, "1", "1",
-                    "https://github.com/owner/repo/actions/runs/1", {"attempts": []})
+                observer._publish_one_finding(finding, "owner/repo", "1", "tok", "h"*40, "1", "1")
 
     def test_observable_publication_cannot_close_claude_threads(self):
         report = {"status": "success", "attempts": [], "result": {
