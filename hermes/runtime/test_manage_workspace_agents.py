@@ -32,7 +32,7 @@ class ManageWorkspaceAgentsTests(unittest.TestCase):
     def test_container_bootstrap_instruction_step_migrates_and_refreshes_without_clobbering_notes(self):
         repo = MODULE_PATH.parents[1]
         bootstrap = (repo / "docker/20-local-bootstrap").read_text()
-        step = bootstrap[bootstrap.index("python3 /opt/hermes-local/manage-workspace-agents.py"):bootstrap.index("\nas_hermes()")]
+        step = bootstrap[bootstrap.index("if ! python3 /opt/hermes-local/manage-workspace-agents.py"):bootstrap.index("\nas_hermes()")]
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
             assets, state = root / "assets", root / "state"

@@ -389,16 +389,28 @@ def review_chunks(workspace: Path, chunks: list[dict], files: set[str], report: 
     report["skipped_chunks"] = max(
         0, len(chunks) - report["completed_chunks"] - report["failed_chunks"]
     )
-    if completed and chunks:
-        report.update(status="success", result={
+    if all_summaries:
+        report["result"] = {
             "summary": " ".join(all_summaries),
             "findings": all_findings[:MAX_FINDINGS],
             "thread_verdicts": [],
-        })
+        }
+    if completed and chunks:
+        report.update(status="success")
+        return 0
+    if report.get("result"):
+        report.update(
+            status="partial",
+            reason="rate_limited" if report.get("reason") == "rate_limited" else "all_attempts_failed",
+        )
+        print(
+            f"::warning::Observable review completed partially: "
+            f"{report['completed_chunks']}/{report['total_chunks']} chunks validated; "
+            "publishing the validated results.",
+            flush=True,
+        )
         return 0
     report.update(status="failed", reason="rate_limited" if report.get("reason") == "rate_limited" else "all_attempts_failed")
-    if all_summaries:
-        report["partial_result"] = {"summary": " ".join(all_summaries), "findings": all_findings[:MAX_FINDINGS]}
     print("::error::Observable review exhausted its attempts without a validated result; see the attempt table.", flush=True)
     return 1
 
@@ -422,6 +434,10 @@ def run(report_path: Path) -> int:
     finally:
         report_path.write_text(json.dumps(report), encoding="utf-8")
         report_path.chmod(0o600)
+        output_path = os.environ.get("GITHUB_OUTPUT")
+        if output_path:
+            with open(output_path, "a", encoding="utf-8") as target:
+                target.write(f"review_status={report.get('status', 'failed')}\n")
         summary = os.environ.get("GITHUB_STEP_SUMMARY")
         if summary:
             with open(summary, "a", encoding="utf-8") as target:
@@ -563,7 +579,7 @@ def publish(report_path: Path) -> None:
         return
     run_url = f"https://github.com/{repo}/actions/runs/{run_id}"
     lines = [diagnostics(report), "", f"[CI run]({run_url}) · [Reviewed revision](https://github.com/{repo}/commit/{head})", ""]
-    if report["status"] == "success":
+    if report["status"] in {"success", "partial"} and report.get("result"):
         lines.extend(_success_lines(report, repo, pr, token, base, head, run_id, run_attempt))
     lines.extend(["", marker])
     publisher._request_json(url, "POST", token, {"body": "\n".join(lines)})

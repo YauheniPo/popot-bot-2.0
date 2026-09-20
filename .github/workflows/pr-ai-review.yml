@@ -862,7 +862,8 @@ jobs:
     # At most four attempts of <=15min, with time left for setup/publication.
     timeout-minutes: 70
     outputs:
-      complete: ${{ steps.observable_run.outcome == 'success' && steps.observable_publish.outcome == 'success' }}
+      complete: ${{ steps.observable_run.outputs.review_status == 'success' && steps.observable_publish.outcome == 'success' }}
+      published: ${{ (steps.observable_run.outputs.review_status == 'success' || steps.observable_run.outputs.review_status == 'partial') && steps.observable_publish.outcome == 'success' }}
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -929,6 +930,7 @@ jobs:
       DIRECT_COMPLETE: ${{ needs.direct-api-review.outputs.complete }}
       CLAUDE_COMPLETE: ${{ needs.claude-code-plugin-review.outputs.complete }}
       OBSERVABLE_COMPLETE: ${{ needs.observable-claude-review.outputs.complete }}
+      OBSERVABLE_PUBLISHED: ${{ needs.observable-claude-review.outputs.published }}
     steps:
       - name: Require a validated result from every selected reviewer
         shell: bash
@@ -951,8 +953,8 @@ jobs:
             printf '| %s | %s |\n' "${methods[$index]}" "$status" >> "$GITHUB_STEP_SUMMARY"
           done
           if [[ "$PR_REVIEWER" == "0" || "$PR_REVIEWER" == "2" ]]; then
-            printf '| ObservableMessagesReview | Corroborating (non-gating): %s |\n' \
-              "$OBSERVABLE_COMPLETE" >> "$GITHUB_STEP_SUMMARY"
+            printf '| ObservableMessagesReview | Corroborating (non-gating; partial results are published): %s |\n' \
+              "${OBSERVABLE_PUBLISHED:-false}" >> "$GITHUB_STEP_SUMMARY"
           fi
           if (( failed )); then
             echo '::error::Not every selected reviewer produced and published a validated result. Inspect the reviewer reports before rerunning.'

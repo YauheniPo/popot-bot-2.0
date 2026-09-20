@@ -330,12 +330,16 @@ class ObservableReviewTests(unittest.TestCase):
                     return 1
                 with mock.patch.object(observer, "review_attempts", side_effect=attempt) as run, redirect_stdout(io.StringIO()):
                     code = observer.review_chunks(root, chunks, set(), report, root/"report.json", "a"*40, "b"*40)
-                self.assertEqual(code, 1)
+                self.assertEqual(code, 0 if first_success else 1)
                 self.assertEqual(run.call_count, 1 + first_success)
                 self.assertEqual(report["completed_chunks"], int(first_success))
                 self.assertEqual(report["skipped_chunks"], 3 - first_success)
                 self.assertEqual(report["reason"], "rate_limited")
-                self.assertNotIn("result", report)
+                if first_success:
+                    self.assertEqual(report["status"], "partial")
+                    self.assertIn("result", report)
+                else:
+                    self.assertNotIn("result", report)
                 details = observer.diagnostics(report)
                 self.assertIn("not a clean review", details)
                 self.assertIn(f"Validated chunks: {int(first_success)}/4", details)
@@ -727,6 +731,34 @@ class ObservableReviewTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(report["status"], "failed")
         self.assertEqual(report["reason"], "all_attempts_failed")
+
+    def test_review_chunks_publishes_successful_chunks_as_partial(self):
+        report = {"status": "failed", "attempts": []}
+        chunks = [
+            {"index": 1, "total": 2, "prompt": "p1", "diff": "+a\n"},
+            {"index": 2, "total": 2, "prompt": "p2", "diff": "+b\n"},
+        ]
+
+        def fake_attempts(workspace, prompt, files, chunk_report, report_path, base, head, chunk_index, state):
+            if chunk_index == 1:
+                chunk_report.update(status="success", result={"summary": "ok", "findings": [], "thread_verdicts": []})
+                return 0
+            chunk_report.update(status="failed", reason="all_attempts_failed")
+            return 1
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / observer.runner.REVIEW_DIFF_PATH).write_text("placeholder\n")
+            with mock.patch.object(observer, "review_attempts", side_effect=fake_attempts), \
+                    redirect_stdout(io.StringIO()):
+                code = observer.review_chunks(root, chunks, {"a.py"}, report,
+                                              root / "report.json", "a"*40, "b"*40)
+        self.assertEqual(code, 0)
+        self.assertEqual(report["status"], "partial")
+        self.assertEqual(report["completed_chunks"], 1)
+        self.assertEqual(report["failed_chunks"], 1)
+        self.assertEqual(report["skipped_chunks"], 0)
+        self.assertIn("result", report)
 
     def test_publish_one_finding_keeps_metadata_in_summary_only(self):
         finding = context.ReviewFinding("P2", "app.py", "RIGHT", 1, "t", "i", "f")
