@@ -78,3 +78,17 @@ test('installation checks, task reports and runtime snapshots are separate views
   assert.match(code, /not live worker readiness/);
   assert.match(code, /const counts = filteredRows.reduce/);
 });
+
+test('a dispatch route without the checkpoint anchors is refused', () => {
+  // Line 194: swarm-dispatch must carry the checkpoint anchors, otherwise the
+  // dispatcher would ship without the in-progress guard.
+  // Every earlier anchor is satisfied so execution reaches the checkpoint loop.
+  const source = [
+    "return ['chat', '-q', prompt, '-Q', '--yolo', '--ignore-rules', '--source', 'swarm-dispatch']",
+    "  const normalizedPrompt = prompt.replace(/\\r\\n/g, '\\n')",
+    "    'paste-buffer',",
+    "    '-d',",
+  ].join('\n');
+  assert.throws(() => workspaceSwarmRuntime().transform(source, '/src/routes/api/swarm-dispatch.ts'),
+    /Unsupported Swarm checkpoint contract/);
+});

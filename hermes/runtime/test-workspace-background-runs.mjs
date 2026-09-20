@@ -5,6 +5,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
+import { workspaceBackgroundRuns } from './workspace-background-runs.mjs';
 
 const upstream = process.env.WORKSPACE_UPSTREAM_DIR;
 const enabled = { skip: !upstream };
@@ -184,4 +185,21 @@ test('polling shows failures and schedules only after completion, aborts on unmo
   assert.match(JSON.stringify(c.render()), /503/);
   cleanup();
   assert.equal(signal.aborted, true);
+});
+
+test('the background adapter fails closed on both unsupported contracts', () => {
+  const plugin = workspaceBackgroundRuns();
+  const section = '/src/components/agent-view/background-runs-section.tsx';
+  // Line 78: everything before the refresh/handleOpen slice is present, but the
+  // refresh anchor is absent, so the rewrite must stop.
+  const noRefresh = [
+    '  stalenessMs: number',
+    "  if (run.stalenessMs >= STALE_THRESHOLD_MS) return 'bg-amber-400'",
+    'bg-emerald-400 animate-pulse',
+    '  const handleOpen = useCallback(',
+  ].join('\n');
+  assert.throws(() => plugin.transform(noRefresh, section),
+    /Unsupported Workspace background polling/);
+  // An unrecognised path is not claimed at all (line 146 else-branch).
+  assert.equal(plugin.transform('unrelated', '/src/other.tsx'), null);
 });

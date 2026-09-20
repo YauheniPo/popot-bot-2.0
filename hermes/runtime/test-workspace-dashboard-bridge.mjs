@@ -279,3 +279,191 @@ test('cancelled queued request releases its slot without bypassing an earlier re
   await Promise.all([first, third]);
   assert.equal(calls, 2);
 });
+
+test('capability refresh tolerates a request without a cookie header', async () => {
+  let probes = 0;
+  const bridge = createDashboardBridge({ dashboardUrl, fetchImpl: async () =>
+    Response.json({ ok: true }) });
+  const reprobe = async () => { probes += 1; return Response.json({ capabilities: { mcp: true } }); };
+  const deny = async () => new Response(null, { status: 401 });
+  // No cookie header: sessionKey is empty, so refreshCapabilities returns early
+  // without hashing (the `|| ''` fallback on line 58 is still executed).
+  const response = await bridge.handle(
+    new Request('https://example.ts.net:3002/api/gateway-status'), deny, reprobe);
+  assert.equal(response.status, 401);
+  assert.equal(probes, 0);
+});
+
+test('an expired capability probe is dropped before reuse', async () => {
+  const bridge = createDashboardBridge({ dashboardUrl, fetchImpl: async () =>
+    Response.json({ ok: true }) });
+  const cookie = `${session}; claude-auth=workspace`;
+  let probes = 0;
+  const reprobe = async () => { probes += 1; return Response.json({ capabilities: { mcp: true } }); };
+  const handler = async () => Response.json({ ok: true });
+  const run = () => bridge.handle(new Request('https://example.ts.net:3002/api/gateway-status', {
+    headers: { cookie } }), handler, reprobe);
+  await run();
+  assert.equal(probes, 1);
+  // Past the 120s probe TTL, the cached entry is expired and evicted (line 60).
+  const realNow = Date.now;
+  Date.now = () => realNow() + 200_000;
+  try { await run(); } finally { Date.now = realNow; }
+  assert.equal(probes, 2);
+});
+
+test('the capability cache stops growing at 256 entries', async () => {
+  const bridge = createDashboardBridge({ dashboardUrl, fetchImpl: async () =>
+    Response.json({ ok: true }) });
+  const handler = async () => Response.json({ ok: true });
+  let probes = 0;
+  const reprobe = async () => { probes += 1; return Response.json({ capabilities: { mcp: true } }); };
+  for (let i = 0; i < 257; i += 1) {
+    await bridge.handle(new Request('https://example.ts.net:3002/api/gateway-status', {
+      headers: { cookie: `${session}; filler=${i}` } }), handler, reprobe);
+  }
+  // The 257th distinct key hits the capacity guard and is not probed again.
+  const before = probes;
+  await bridge.handle(new Request('https://example.ts.net:3002/api/gateway-status', {
+    headers: { cookie: `${session}; filler=extra` } }), handler, reprobe);
+  assert.equal(probes, before);
+});
+
+test('the session bridge stops caching at 256 sessions', async () => {
+  let upstreamCalls = 0;
+  const bridge = createDashboardBridge({ dashboardUrl, fetchImpl: async () => {
+    upstreamCalls += 1;
+    return Response.json({ ok: true });
+  }});
+  const handler = async () => Response.json({ ok: true });
+  for (let i = 0; i < 256; i += 1) {
+    const response = await bridge.handle(new Request('https://example.ts.net:3002/api/sessions', {
+      headers: { cookie: `__Host-hermes_session_rt=refresh-${i}` } }), handler);
+    assert.ok(response);
+  }
+  const saturated = upstreamCalls;
+  // The 257th distinct session is neither cached nor bridged upstream.
+  await bridge.handle(new Request('https://example.ts.net:3002/api/sessions', {
+    headers: { cookie: '__Host-hermes_session_rt=overflow' } }), handler);
+  assert.equal(upstreamCalls, saturated);
+});
+
+test('an expired session alias is evicted on the next acquire', async () => {
+  const bridge = createDashboardBridge({ dashboardUrl, fetchImpl: async () =>
+    Response.json({ ok: true }) });
+  const cookie = `${session}; claude-auth=workspace`;
+  const handler = async () => Response.json({ ok: true });
+  await bridge.handle(new Request('https://example.ts.net:3002/api/sessions', {
+    headers: { cookie } }), handler);
+  const realNow = Date.now;
+  Date.now = () => realNow() + 10 * 60 * 1000;
+  try {
+    const response = await bridge.handle(new Request('https://example.ts.net:3002/api/sessions', {
+      headers: { cookie } }), handler);
+    assert.ok(response);
+  } finally { Date.now = realNow; }
+});
+
+test('the login hint is offered only for a tailnet hostname', async () => {
+  // authRequired is set inside bridgedFetch, so the request must go through
+  // bridge.fetch (the MCP adapter) for the 401 to mark the scope.
+  const makeBridge = () => createDashboardBridge({ dashboardUrl,
+    fetchImpl: async () => Response.json({ error: 'no_cookie' }, { status: 401 }) });
+
+  const tailnet = makeBridge();
+  const tailnetHandler = async () => {
+    // Re-enter the bridge upstream so bridgedFetch sees a 401 and flags it.
+    await tailnet.fetch(`${dashboardUrl}/api/mcp`);
+    return Response.json({ ok: true }, { status: 401 });
+  };
+  const tailnetResponse = await tailnet.handle(
+    new Request('https://vps.example.ts.net:3002/api/gateway-status', { headers: { cookie: session } }),
+    tailnetHandler);
+  const tailnetBody = await tailnetResponse.json();
+  assert.equal(tailnetBody.login_url, 'https://vps.example.ts.net/login');
+
+  const plain = makeBridge();
+  const plainHandler = async () => {
+    await plain.fetch(`${dashboardUrl}/api/mcp`);
+    return Response.json({ ok: true }, { status: 401 });
+  };
+  const plainResponse = await plain.handle(
+    new Request('http://127.0.0.1:3002/api/gateway-status', { headers: { cookie: session } }),
+    plainHandler);
+  const plainBody = await plainResponse.json();
+  assert.equal(plainBody.login_url, null);
+});
+
+test('bridgedFetch accepts a string url, a Request and explicit init parts', async () => {
+  const seen = [];
+  const bridge = createDashboardBridge({ dashboardUrl, fetchImpl: async (input, init) => {
+    seen.push({
+      url: typeof input === 'string' ? input : input.url,
+      headers: new Headers(init.headers),
+      signal: init.signal,
+    });
+    return Response.json({ ok: true });
+  }});
+  const controller = new AbortController();
+  // String input + explicit init.headers and init.signal (lines 104, 109, 125).
+  await bridge.fetch(`${dashboardUrl}/api/gateway-status`, {
+    method: 'GET', headers: { 'x-init': 'yes' }, signal: controller.signal,
+  });
+  assert.equal(seen[0].headers.get('x-init'), 'yes');
+  assert.equal(seen[0].signal, controller.signal);
+
+  // Request input with no init at all: the Request halves supply everything.
+  const requestWithParts = new Request(`${dashboardUrl}/api/gateway-status`, {
+    method: 'GET', headers: { 'x-request': 'yes' },
+  });
+  await bridge.fetch(requestWithParts);
+  assert.equal(seen[1].headers.get('x-request'), 'yes');
+
+  // String input with no init.headers: the undefined fallback is used.
+  await bridge.fetch(`${dashboardUrl}/api/gateway-status`, { method: 'GET' });
+  assert.equal(seen[2].headers.get('x-request'), null);
+});
+
+test('a cleared session cookie is removed from the alias map', async () => {
+  const rotated = '__Host-hermes_session_rt=fresh; Path=/; Secure; HttpOnly; SameSite=Lax';
+  const cleared = '__Host-hermes_session_rt=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0';
+  let body = 'first';
+  const bridge = createDashboardBridge({ dashboardUrl, fetchImpl: async () =>
+    new Response(body, { status: 200, headers: { 'set-cookie': body === 'first' ? rotated : cleared } }) });
+  const cookie = `${session}; claude-auth=workspace`;
+  const handler = async () => new Response('ok', { headers: { 'set-cookie': body === 'first' ? rotated : cleared } });
+  await bridge.handle(new Request('https://example.ts.net:3002/api/sessions', { headers: { cookie } }), handler);
+  // The second response clears the cookie with Max-Age=0 and an empty value,
+  // exercising both sides of the removal test on line 144.
+  body = 'second';
+  const response = await bridge.handle(
+    new Request('https://example.ts.net:3002/api/sessions', { headers: { cookie } }), handler);
+  assert.ok(response);
+  // An empty-value Set-Cookie without Max-Age is the other removal side.
+  body = 'third';
+  await bridge.handle(new Request('https://example.ts.net:3002/api/sessions', { headers: { cookie } }),
+    async () => new Response('ok', { headers: {
+      'set-cookie': '__Host-hermes_session_rt=; Path=/; Secure; HttpOnly; SameSite=Lax' } }));
+});
+
+test('an expired session alias is evicted and re-acquired', async () => {
+  let upstream = 0;
+  const bridge = createDashboardBridge({ dashboardUrl, fetchImpl: async () => {
+    upstream += 1;
+    return Response.json({ ok: true });
+  }});
+  const cookie = '__Host-hermes_session_rt=expiry-probe';
+  // Route through bridge.fetch so bridgedFetch acquires the session for real.
+  const handler = async () => bridge.fetch(`${dashboardUrl}/api/gateway-status`);
+  await bridge.handle(new Request('https://example.ts.net:3002/api/gateway-status', { headers: { cookie } }), handler);
+  const afterFirst = upstream;
+  assert.ok(afterFirst >= 1);
+  // Past the cache TTL the alias expires; the next acquire evicts it (line 90)
+  // and creates a fresh entry, so upstream is consulted again.
+  const realNow = Date.now;
+  Date.now = () => realNow() + 10 * 60 * 1000;
+  try {
+    await bridge.handle(new Request('https://example.ts.net:3002/api/gateway-status', { headers: { cookie } }), handler);
+  } finally { Date.now = realNow; }
+  assert.ok(upstream > afterFirst);
+});

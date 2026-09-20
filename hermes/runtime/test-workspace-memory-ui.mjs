@@ -62,3 +62,26 @@ test('memory read keeps auth and exposes metadata without configuration secrets'
     assert.match(ui, /configured budget/);
     assert.match(ui, /managedBlocks/);
   });
+
+test('the memory write adapter rejects a broken anchor order', () => {
+  const plugin = workspaceMemoryUi();
+  const file = '/src/routes/api/memory/write.ts';
+  // Satisfy the two earlier replace() anchors so execution reaches line 30,
+  // where `end` appears BEFORE `start` and the slice would corrupt the module.
+  const reversed = [
+    "import fs from 'node:fs'",
+    "import path from 'node:path'",
+    'import { getMemoryWorkspaceRoot } from ' + "'../../../server/memory-browser'",
+    'export const Route = null',
+    'function validateMemoryWritePath(input) { return { relativePath: input } }',
+  ].join('\n');
+  assert.throws(() => plugin.transform(reversed, file), /Unsupported Workspace memory write contract/);
+  // A missing start anchor hits the same guard.
+  const noStart = [
+    "import fs from 'node:fs'",
+    "import path from 'node:path'",
+    'import { getMemoryWorkspaceRoot } from ' + "'../../../server/memory-browser'",
+    'export const Route = null',
+  ].join('\n');
+  assert.throws(() => plugin.transform(noStart, file), /Unsupported Workspace memory write contract/);
+});

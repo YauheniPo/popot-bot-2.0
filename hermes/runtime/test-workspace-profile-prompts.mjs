@@ -27,3 +27,14 @@ test('stale tabs, auth failures, invalid paths and server write errors never fal
   await assert.rejects(saveProfileSoul('../SOUL.md', 'edit', '', fetchImpl), /path/i);
   await assert.rejects(saveProfileSoul('SOUL.md', 'edit', '', async () => new Response('private error body', {status:401})), /401/);
 });
+
+test('an unchanged draft is a no-op and never issues a write', async () => {
+  // Line 14: content === original returns before any POST.
+  let writes = 0;
+  const fetchImpl = async (_url, options) => {
+    if (options?.method === 'POST') { writes++; return Response.json({}); }
+    return Response.json({ content: 'same', version: 'v1' });
+  };
+  await saveProfileSoul('SOUL.md', 'same', 'same', fetchImpl);
+  assert.equal(writes, 0);
+});

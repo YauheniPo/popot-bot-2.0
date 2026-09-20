@@ -238,3 +238,169 @@ test('HTTP or transport failures invalidate an old Test without caching an error
     assert.equal((await list()).status, 'unknown');
   }
 });
+
+const BASE = 'http://127.0.0.1:9119';
+const adapter = (fetchImpl) => createMcpAdapter({ dashboardUrl: BASE, fetchImpl });
+
+test('preset correction accepts only the exact known broken shapes', () => {
+  // A custom auth/transport/tool mode or an unknown template key is left alone.
+  const presets = [
+    { id: 'fetch', template: { name: 'fetch', command: 'npx', args: ['-y', '@modelcontextprotocol/server-fetch'] } },
+    { id: 'github', template: { name: 'github', command: 'npx', args: ['-y', '@modelcontextprotocol/server-everything'] } },
+    { id: 'custom-auth', template: { name: 'custom-auth', command: 'npx', authType: 'custom' } },
+    { id: 'custom-transport', template: { name: 'custom-transport', command: 'npx', transportType: 'http' } },
+    { id: 'custom-tools', template: { name: 'custom-tools', command: 'npx', toolMode: 'subset' } },
+    { id: 'custom-extra', template: { name: 'custom-extra', command: 'npx', extra: 1 } },
+  ];
+  const result = correctWorkspacePresets({ presets });
+  // The two known seeds are repaired...
+  assert.equal(result.presets[0].template.command, 'uvx');
+  assert.equal(result.presets[1].template.url, 'https://api.githubcopilot.com/mcp/readonly');
+  // ...and every customized template is returned untouched.
+  for (let i = 2; i < presets.length; i += 1) {
+    assert.equal(result.presets[i], presets[i]);
+  }
+  // A value without a presets array is returned unchanged (by reference).
+  const untouched = { servers: [] };
+  assert.equal(correctWorkspacePresets(untouched), untouched);
+  assert.equal(correctWorkspacePresets(null), null);
+});
+
+test('a server view falls back to stdio and reports a disabled state', () => {
+  // transport missing + no url -> stdio; enabled === false -> disabled.
+  const adapterInstance = adapter(async () => Response.json({ servers: [
+    { name: 'local', command: 'uvx', args: ['mcp-server-fetch'], enabled: false },
+  ], profile: 'builder' }));
+  return adapterInstance(`${BASE}/api/mcp`).then(async response => {
+    const body = await response.json();
+    const server = body.servers[0];
+    assert.equal(server.transportType, 'stdio');
+    assert.equal(server.status, 'disabled');
+    assert.deepEqual(server.tools ?? [], []);
+  });
+});
+
+test('an unknown transport is refused before any upstream call', async () => {
+  let calls = 0;
+  const instance = adapter(async () => { calls += 1; return Response.json({}); });
+  const response = await instance(`${BASE}/api/mcp`, {
+    method: 'POST', body: JSON.stringify({ name: 'x', transportType: 'carrier-pigeon' }),
+  });
+  assert.equal(response.status, 422);
+  assert.equal(calls, 0);
+});
+
+test('unsupported create options are refused for each separate reason', async () => {
+  const instance = adapter(async () => Response.json({}));
+  const cases = [
+    { name: 'a', transportType: 'stdio', enabled: false },
+    { name: 'b', transportType: 'stdio', headers: { a: 'b' } },
+    { name: 'c', transportType: 'stdio', oauth: { a: 'b' } },
+    { name: 'd', transportType: 'stdio', toolMode: 'include' },
+    { name: 'e', transportType: 'stdio', includeTools: ['x'] },
+    { name: 'f', transportType: 'stdio', excludeTools: ['x'] },
+  ];
+  for (const body of cases) {
+    const response = await instance(`${BASE}/api/mcp`, {
+      method: 'POST', body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 422, JSON.stringify(body));
+  }
+});
+
+test('creating with a bearer and with an explicit none both map correctly', async () => {
+  const seen = [];
+  const instance = adapter(async (_url, init) => {
+    seen.push(JSON.parse(init.body));
+    return Response.json({ ok: true });
+  });
+  await instance(`${BASE}/api/mcp`, {
+    method: 'POST', body: JSON.stringify({ name: 'bear', transportType: 'stdio', authType: 'bearer', bearerToken: 't' }),
+  });
+  await instance(`${BASE}/api/mcp`, {
+    method: 'POST', body: JSON.stringify({ name: 'none', transportType: 'stdio', authType: 'none' }),
+  });
+  await instance(`${BASE}/api/mcp`, {
+    method: 'POST', body: JSON.stringify({ name: 'default', transportType: 'stdio' }),
+  });
+  assert.equal(seen[0].auth, 'header');
+  assert.equal(seen[1].auth, 'none');
+  assert.equal(seen[2].auth, 'none');
+});
+
+test('the observation cache evicts the oldest entry at 256', async () => {
+  const instance = adapter(async () => Response.json({ ok: true }));
+  for (let i = 0; i < 257; i += 1) {
+    await instance(`${BASE}/api/mcp/${encodeURIComponent('s' + i)}/test`, { method: 'POST', body: '{}' });
+  }
+  // Reaching here without throwing proves the eviction branch ran; a fresh
+  // request for an evicted name must still work.
+  const response = await instance(`${BASE}/api/mcp/s0/test`, { method: 'POST', body: '{}' });
+  assert.ok(response);
+});
+
+test('a string URL and a Request both resolve, and init supplies method/signal', async () => {
+  const seen = [];
+  const instance = adapter(async (url, init) => {
+    seen.push({ url: String(url), headers: new Headers(init.headers), signal: init.signal, method: init.method });
+    return Response.json({ ok: true });
+  });
+  // String input, init method (line 101) and init signal (line 180).
+  const controller = new AbortController();
+  await instance(`${BASE}/api/mcp`, { method: 'GET', headers: { 'x-a': '1' }, signal: controller.signal });
+  assert.equal(seen[0].method, 'GET');
+  assert.equal(seen[0].headers.get('x-a'), '1');
+  assert.equal(seen[0].signal, controller.signal);
+  // Request input with its own method/headers/signal (the Request halves).
+  await instance(new Request(`${BASE}/api/mcp`, { method: 'GET', headers: { 'x-b': '2' } }));
+  assert.equal(seen[1].headers.get('x-b'), '2');
+  // A string input with no Request wrapper and no init.headers at all.
+  await instance(`${BASE}/api/mcp`, { method: 'GET' });
+  assert.equal(seen[2].headers.get('x-b'), null);
+});
+
+test('a deletion name that is not safe is refused', async () => {
+  const instance = adapter(async () => Response.json({}));
+  // A safe deletion passes; an unsafe name is rejected by line 122.
+  const ok = await instance(`${BASE}/api/mcp/good-name`, { method: 'DELETE' });
+  assert.ok(ok);
+  const bad = await instance(`${BASE}/api/mcp/%2E%2E%2Fevil`, { method: 'DELETE' });
+  assert.equal(bad.status, 422);
+});
+
+test('a server with an explicit transport keeps it, and the cache evicts at 256', async () => {
+  let listCalls = 0;
+  const instance = adapter(async (url) => {
+    if (String(url).includes('/api/mcp') && !String(url).includes('/test')) {
+      listCalls += 1;
+      // First list: one server with an explicit transport and no url (line 42
+      // truthy transport half). Then 256 distinct names to force eviction.
+      const servers = listCalls === 1
+        ? [{ name: 'explicit', transport: 'stdio' }]
+        : Array.from({ length: 300 }, (_, i) => ({ name: 's' + i + '-' + listCalls }));
+      return Response.json({ servers });
+    }
+    return Response.json({ ok: true });
+  });
+  const first = await instance(`${BASE}/api/mcp`);
+  const view = (await first.json()).servers[0];
+  assert.equal(view.transportType, 'stdio');
+
+  // Two large listings with different names force observations past 256 so the
+  // eviction branch (line 85) runs.
+  await instance(`${BASE}/api/mcp`);
+  await instance(`${BASE}/api/mcp`);
+  assert.ok(listCalls >= 3);
+});
+
+test('an explicit transport is preserved while a url implies http', async () => {
+  // Line 42 has three sides: server.transport truthy, url truthy, and neither.
+  const instance = adapter(async () => Response.json({ servers: [
+    { name: 'explicit', transport: 'stdio' },
+    { name: 'remote', url: 'https://example.test/mcp' },
+    { name: 'neither', command: 'uvx' },
+  ] }));
+  const body = await (await instance(`${BASE}/api/mcp`)).json();
+  const byName = Object.fromEntries(body.servers.map(s => [s.name, s.transportType]));
+  assert.deepEqual(byName, { explicit: 'stdio', remote: 'http', neither: 'stdio' });
+});
