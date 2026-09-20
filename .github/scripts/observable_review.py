@@ -275,10 +275,22 @@ def _route_skip_reason(route: dict, state: dict) -> str | None:
 
 
 def review_attempts(workspace: Path, prompt: str, files: set[str], report: dict, report_path: Path,
-                    base: str, head: str, chunk_index: int = 1) -> int:
+                    base: str, head: str, chunk_index: int = 1,
+                    state: dict | None = None) -> int:
     limits = _review_limits()
     execution = report_path.with_suffix(".execution.json")
-    state = {"remaining": RATE_LIMIT_WAIT_BUDGET, "retries": 0, "free_daily": False, "blocked_providers": set()}
+    circuit_state = state if state is not None else {
+        "free_daily": False,
+        "blocked_providers": set(),
+    }
+    # Retry waits remain bounded per chunk; only circuit-breaker decisions are
+    # shared across the full review.
+    state = {
+        "remaining": RATE_LIMIT_WAIT_BUDGET,
+        "retries": 0,
+        "free_daily": circuit_state.get("free_daily", False),
+        "blocked_providers": set(circuit_state.get("blocked_providers", set())),
+    }
     route_outcomes = {}
     for route in routes():
         skip_reason = _route_skip_reason(route, state)
@@ -288,12 +300,16 @@ def review_attempts(workspace: Path, prompt: str, files: set[str], report: dict,
             continue
         for number in (1, 2):
             if _single_attempt(route, number, prompt, workspace, files, execution, report, base, head, limits, chunk_index):
+                circuit_state["free_daily"] = state["free_daily"]
+                circuit_state["blocked_providers"] = state["blocked_providers"]
                 return 0
             attempt = report["attempts"][-1]
             route_outcomes[route["role"]] = attempt["outcome"]
             if not _retry_after_attempt(attempt, route, state):
                 break
     outcomes = set(route_outcomes.values())
+    circuit_state["free_daily"] = state["free_daily"]
+    circuit_state["blocked_providers"] = state["blocked_providers"]
     rate_limited = "http_429" in outcomes and outcomes <= {"http_429"} | NON_RETRYABLE
     report.update(status="failed", reason="rate_limited" if rate_limited else "all_attempts_failed")
     print("::error::Observable review exhausted its attempts without a validated result; see the attempt table.", flush=True)
@@ -315,11 +331,18 @@ def review_chunks(workspace: Path, chunks: list[dict], files: set[str], report: 
     all_findings: list[dict] = []
     completed = True
     report.update(total_chunks=len(chunks), completed_chunks=0, failed_chunks=0, skipped_chunks=0)
+    # Keep provider circuit-breaker state across chunks. Without this, every
+    # chunk probes an already exhausted OpenRouter free route again before
+    # falling back, multiplying latency and 429 noise for the whole review.
+    route_state = {
+        "free_daily": False,
+        "blocked_providers": set(),
+    }
     for chunk in chunks:
         diff_path.write_text(chunk["diff"], encoding="utf-8")
         chunk_report: dict = {"status": "failed", "attempts": []}
         code = review_attempts(workspace, chunk["prompt"], files, chunk_report,
-                               report_path, base, head, chunk["index"])
+                               report_path, base, head, chunk["index"], route_state)
         report["attempts"].extend(chunk_report.get("attempts", []))
         report.setdefault("skipped_routes", []).extend(chunk_report.get("skipped_routes", []))
         if code != 0 or not chunk_report.get("result"):

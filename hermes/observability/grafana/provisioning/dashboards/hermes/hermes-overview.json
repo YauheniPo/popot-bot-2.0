@@ -46,7 +46,7 @@
       "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
       "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2}, "unit": "short"}, "overrides": []},
       "gridPos": {"h": 9, "w": 12, "x": 0, "y": 7},
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "targets": [{"expr": "sum by (provider, model) (rate(hermes_tokens_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}}", "refId": "A"}],
       "title": "Token rate by model",
       "type": "timeseries"
@@ -55,7 +55,7 @@
       "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
       "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2}, "unit": "currencyUSD"}, "overrides": []},
       "gridPos": {"h": 9, "w": 12, "x": 12, "y": 7},
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "targets": [{"expr": "sum by (provider, model) (rate(hermes_cost_usd_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}}", "refId": "A"}],
       "title": "LLM cost rate by model",
       "type": "timeseries"
@@ -64,7 +64,7 @@
       "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
       "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2}, "unit": "short"}, "overrides": []},
       "gridPos": {"h": 9, "w": 12, "x": 0, "y": 16},
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "targets": [{"expr": "sum by (tool, status) (rate(hermes_tool_calls_total[$__rate_interval]))", "legendFormat": "{{tool}} / {{status}}", "refId": "A"}],
       "title": "Tool calls by status",
       "type": "timeseries"
@@ -73,7 +73,7 @@
       "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
       "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2}, "unit": "percentunit"}, "overrides": []},
       "gridPos": {"h": 9, "w": 12, "x": 12, "y": 16},
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "targets": [{"expr": "hermes_host_memory_available_ratio", "legendFormat": "memory available", "refId": "A"}, {"expr": "1 - hermes_host_disk_used_ratio", "legendFormat": "disk available", "refId": "B"}],
       "title": "Available resources",
       "type": "timeseries"
@@ -109,7 +109,7 @@
       "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
       "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2}, "unit": "short"}, "overrides": []},
       "gridPos": {"h": 7, "w": 6, "x": 18, "y": 25},
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "targets": [{"expr": "hermes_host_load", "legendFormat": "load {{window}}", "refId": "A"}, {"expr": "hermes_host_inode_used_ratio", "legendFormat": "inode used", "refId": "B"}],
       "title": "Host load and inode pressure",
       "type": "timeseries"
@@ -118,7 +118,7 @@
       "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
       "fieldConfig": {"defaults": {"unit": "percentunit"}, "overrides": []},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi"}},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi"}},
       "targets": [{"expr": "rate(hermes_gateway_process_cpu_seconds_total[$__rate_interval])", "legendFormat": "Hermes gateway CPU cores", "refId": "A"}, {"expr": "1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[$__rate_interval]))", "legendFormat": "Host CPU used", "refId": "B"}],
       "title": "Gateway and host CPU",
       "type": "timeseries"
@@ -127,7 +127,7 @@
       "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
       "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi"}},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi"}},
       "targets": [{"expr": "hermes_gateway_process_resident_memory_bytes", "legendFormat": "Hermes gateway RSS", "refId": "A"}, {"expr": "node_memory_MemAvailable_bytes", "legendFormat": "Host available memory", "refId": "B"}],
       "title": "Gateway and host memory",
       "type": "timeseries"
@@ -137,8 +137,8 @@
       "description": "Recorded user input messages in the preceding hour, per profile. Sliding window gauge, not LLM calls or a lifetime counter. Prometheus history begins at the first scrape.",
       "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 40},
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi"}},
-      "targets": [{"expr": "hermes_profile_user_requests{window=\"1h\"}", "legendFormat": "{{profile}}", "refId": "A"}],
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "hermes_profile_user_requests{window=\"1h\"}", "legendFormat": "{{profile}} · requests", "refId": "A"}],
       "title": "Profile requests — preceding hour",
       "type": "timeseries"
     },
@@ -147,10 +147,10 @@
       "description": "Counts from retained Hermes input history. Includes recorded smoke-test prompts. Deleting, importing or restoring history changes these gauges; do not apply rate/increase.",
       "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 40},
-      "options": {"colorMode": "value", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
-      "targets": [{"expr": "hermes_profile_user_requests{window=~\"24h|7d|retained\"}", "legendFormat": "{{profile}} · {{window}}", "instant": true, "refId": "A"}],
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "hermes_profile_user_requests{window=~\"24h|7d|retained\"}", "legendFormat": "{{profile}} · {{window}}", "refId": "A"}],
       "title": "Profile requests — day / week / retained history",
-      "type": "stat"
+      "type": "timeseries"
     },
     {
       "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
@@ -160,6 +160,36 @@
       "options": {"colorMode": "value", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
       "targets": [{"expr": "hermes_profile_last_request_timestamp_seconds * 1000", "legendFormat": "{{profile}}", "instant": true, "refId": "A"}],
       "title": "Profile last request",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Approximate time from each retained user message to the following assistant response, aggregated by profile and lookback window.",
+      "fieldConfig": {"defaults": {"unit": "s", "min": 0}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 54},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "hermes_profile_response_duration_seconds{window=~\"1h|24h|7d\"}", "legendFormat": "{{profile}} · {{window}} · response time", "refId": "A"}],
+      "title": "Profile activity duration — selected time range",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Each profile's latest completed call duration from its user-message start to assistant-response end. The table shows the last, maximum and mean values in the selected Grafana range.",
+      "fieldConfig": {"defaults": {"unit": "s", "min": 0}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 62},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "hermes_profile_last_request_duration_seconds", "legendFormat": "{{profile}} · latest call duration", "refId": "A"}],
+      "title": "Agent call duration — start to end",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Latest observed activity for each profile, including the assistant response timestamp when available.",
+      "fieldConfig": {"defaults": {"unit": "dateTimeAsLocal", "mappings": [{"type": "value", "options": {"0": {"text": "No activity"}}}]}, "overrides": []},
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 54},
+      "options": {"colorMode": "value", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "hermes_profile_last_activity_timestamp_seconds * 1000", "legendFormat": "{{profile}} · last activity", "instant": true, "refId": "A"}],
+      "title": "Profile last activity",
       "type": "stat"
     },
     {

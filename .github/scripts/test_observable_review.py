@@ -187,6 +187,38 @@ class ObservableReviewTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertFalse(pauses)
 
+    def test_free_daily_quota_state_is_shared_between_chunks(self):
+        report = {"status": "failed", "attempts": []}
+        chunks = [
+            {"index": 1, "prompt": "p", "diff": "+a\n"},
+            {"index": 2, "prompt": "p", "diff": "+b\n"},
+        ]
+        observed_states = []
+
+        def fake_attempt(workspace, prompt, files, chunk_report, report_path, base, head, index, state):
+            observed_states.append(state)
+            if index == 1:
+                state["free_daily"] = True
+            chunk_report.update(status="success", result={"summary": "checked", "findings": []})
+            return 0
+
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(observer, "review_attempts", side_effect=fake_attempt):
+            root = Path(directory)
+            self.assertEqual(
+                observer.review_chunks(root, chunks, set(), report, root / "report.json", "a" * 40, "b" * 40),
+                0,
+            )
+
+        self.assertEqual(len(observed_states), 2)
+        self.assertTrue(observed_states[1]["free_daily"])
+        self.assertEqual(
+            observer._route_skip_reason(
+                {"provider": "openrouter", "model": "primary:free"}, observed_states[1]
+            ),
+            "free_daily_quota",
+        )
+
     def test_rate_limit_wait_can_be_cancelled(self):
         with mock.patch.object(observer.time, "sleep", side_effect=KeyboardInterrupt), redirect_stdout(io.StringIO()):
             with self.assertRaises(KeyboardInterrupt):
@@ -257,7 +289,7 @@ class ObservableReviewTests(unittest.TestCase):
                 root = Path(directory)
                 report = {"status":"failed", "attempts":[]}
                 chunks = [{"index": i, "prompt":"p", "diff":"+a\n"} for i in range(1, 5)]
-                def attempt(workspace, prompt, files, chunk_report, report_path, base, head, index):
+                def attempt(workspace, prompt, files, chunk_report, report_path, base, head, index, state):
                     if first_success and index == 1:
                         chunk_report.update(status="success", result={"summary":"Checked first chunk", "findings":[]})
                         return 0
@@ -630,7 +662,7 @@ class ObservableReviewTests(unittest.TestCase):
             {"index": 1, "total": 2, "prompt": "p1", "diff": "+a\n"},
             {"index": 2, "total": 2, "prompt": "p2", "diff": "+b\n"},
         ]
-        def fake_attempts(workspace, prompt, files, chunk_report, report_path, base, head, chunk_index):
+        def fake_attempts(workspace, prompt, files, chunk_report, report_path, base, head, chunk_index, state):
             chunk_report.update(status="success",
                 result={"summary": "ok", "findings": findings, "thread_verdicts": []})
             return 0
@@ -649,7 +681,7 @@ class ObservableReviewTests(unittest.TestCase):
     def test_review_chunks_fails_when_a_chunk_fails(self):
         report = {"status": "failed", "attempts": []}
         chunks = [{"index": 1, "total": 1, "prompt": "p", "diff": "+a\n"}]
-        def fake_attempts(workspace, prompt, files, chunk_report, report_path, base, head, chunk_index):
+        def fake_attempts(workspace, prompt, files, chunk_report, report_path, base, head, chunk_index, state):
             chunk_report.update(status="failed", reason="all_attempts_failed")
             return 1
         with tempfile.TemporaryDirectory() as directory:

@@ -67,7 +67,7 @@ def memory_ratio() -> float:
 
 
 def _profile_request_counts(database: Path, now: float) -> tuple:
-    """Read aggregate metadata only; never load prompts or mutate Hermes history."""
+    """Read aggregate profile activity metadata without loading message text."""
     if database.is_symlink() or not database.is_file():
         raise OSError('Profile history unavailable')
     connection = sqlite3.connect(database.resolve().as_uri() + '?mode=ro', uri=True, timeout=1)
@@ -75,15 +75,41 @@ def _profile_request_counts(database: Path, now: float) -> tuple:
         deadline = time.monotonic() + 1
         connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 10000)
         columns = {row[1] for row in connection.execute('PRAGMA table_info(messages)')}
-        summary_filter = ' AND COALESCE(_compressed_summary,0)=0' if '_compressed_summary' in columns else ''
-        return connection.execute(
-            'SELECT COUNT(*), COALESCE(MAX(timestamp),0), '
-            'COALESCE(SUM(timestamp>=?),0), COALESCE(SUM(timestamp>=?),0), '
-            'COALESCE(SUM(timestamp>=?),0) FROM messages '
-            "WHERE role='user' AND typeof(timestamp) IN ('real','integer') "
-            'AND timestamp>0 AND timestamp<=?' + summary_filter,
-            (now - 3600, now - 86400, now - 604800, now),
-        ).fetchone()
+        records = connection.execute(
+            'SELECT role, timestamp FROM messages '
+            "WHERE typeof(timestamp) IN ('real','integer') AND timestamp>0 AND timestamp<=? "
+            + ("AND COALESCE(_compressed_summary,0)=0 " if '_compressed_summary' in columns else '')
+            + 'ORDER BY timestamp, rowid', (now,)
+        ).fetchall()
+        user_timestamps = [timestamp for role, timestamp in records if role == 'user']
+        retained = len(user_timestamps)
+        latest = max(user_timestamps, default=0)
+        windows = (3600, 86400, 604800)
+        counts = tuple(sum(timestamp >= now - window for timestamp in user_timestamps) for window in windows)
+        durations = [0.0, 0.0, 0.0, 0.0]
+        latest_duration = 0.0
+        latest_start = 0.0
+        latest_end = 0.0
+        pending_user = None
+        last_activity = latest
+        for role, timestamp in records:
+            if role in {'user', 'assistant'}:
+                last_activity = max(last_activity, timestamp)
+            if role == 'user':
+                pending_user = timestamp
+            elif role == 'assistant' and pending_user is not None:
+                duration = max(0.0, min(float(timestamp - pending_user), 86400.0))
+                if pending_user >= latest_start:
+                    latest_duration = duration
+                    latest_start = pending_user
+                    latest_end = timestamp
+                durations[3] += duration
+                for index, window in enumerate(windows):
+                    if pending_user >= now - window:
+                        durations[index] += duration
+                pending_user = None
+        return (retained, latest, *counts, last_activity, *durations,
+                latest_duration, latest_start, latest_end)
     finally:
         connection.close()
 
@@ -102,20 +128,40 @@ def profile_request_metrics(root: Path, now: float | None = None) -> list[str]:
         '# TYPE hermes_profile_user_requests gauge',
         '# HELP hermes_profile_last_request_timestamp_seconds Latest retained user input time; zero means empty history.',
         '# TYPE hermes_profile_last_request_timestamp_seconds gauge',
+        '# HELP hermes_profile_last_activity_timestamp_seconds Latest retained profile activity time; zero means empty history.',
+        '# TYPE hermes_profile_last_activity_timestamp_seconds gauge',
+        '# HELP hermes_profile_response_duration_seconds Sum of user-to-assistant response durations by lookback window.',
+        '# TYPE hermes_profile_response_duration_seconds gauge',
+        '# HELP hermes_profile_last_request_duration_seconds Duration of the latest completed profile call.',
+        '# TYPE hermes_profile_last_request_duration_seconds gauge',
+        '# HELP hermes_profile_last_request_start_timestamp_seconds Start timestamp of the latest completed profile call.',
+        '# TYPE hermes_profile_last_request_start_timestamp_seconds gauge',
+        '# HELP hermes_profile_last_request_end_timestamp_seconds End timestamp of the latest completed profile call.',
+        '# TYPE hermes_profile_last_request_end_timestamp_seconds gauge',
         '# HELP hermes_profile_history_readable Whether this profile history could be collected; missing or unreadable is not zero usage.',
         '# TYPE hermes_profile_history_readable gauge',
     ]
     for profile, path in profiles:
         tags = {'profile': profile}
         try:
-            retained, latest, hour, day, week = _profile_request_counts(path / 'state.db', now)
+            (retained, latest, hour, day, week, last_activity, hour_duration,
+             day_duration, week_duration, retained_duration, latest_duration,
+             latest_start, latest_end) = _profile_request_counts(path / 'state.db', now)
         except (OSError, sqlite3.Error):
             lines.append(metric('hermes_profile_history_readable', 0, tags))
             continue
         lines.append(metric('hermes_profile_history_readable', 1, tags))
         lines.append(metric('hermes_profile_last_request_timestamp_seconds', latest, tags))
+        lines.append(metric('hermes_profile_last_activity_timestamp_seconds', last_activity, tags))
+        lines.append(metric('hermes_profile_last_request_duration_seconds', latest_duration, tags))
+        lines.append(metric('hermes_profile_last_request_start_timestamp_seconds', latest_start, tags))
+        lines.append(metric('hermes_profile_last_request_end_timestamp_seconds', latest_end, tags))
         for window, count in [('1h', hour), ('24h', day), ('7d', week), ('retained', retained)]:
             lines.append(metric('hermes_profile_user_requests', count, {**tags, 'window': window}))
+        for window, duration in [('1h', hour_duration), ('24h', day_duration),
+                                 ('7d', week_duration), ('retained', retained_duration)]:
+            lines.append(metric('hermes_profile_response_duration_seconds', duration,
+                                {**tags, 'window': window}))
     return lines
 
 

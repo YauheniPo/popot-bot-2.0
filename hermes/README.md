@@ -594,13 +594,28 @@ prompts считаются обращениями. Не дошедшие до з
   к нему неприменимы, это не пожизненный счётчик.
 - `hermes_profile_last_request_timestamp_seconds{profile}` — последнее
   сохранённое обращение, Unix seconds; `0` означает пустую историю.
+- `hermes_profile_last_activity_timestamp_seconds{profile}` — последнее
+  наблюдаемое событие профиля, включая ответ assistant, Unix seconds.
+- `hermes_profile_response_duration_seconds{profile,window}` — суммарное
+  приблизительное время от user-сообщения до следующего assistant-ответа за
+  `1h`, `24h`, `7d` и `retained`. Это время работы диалога, а не CPU-время
+  процесса; если ответ не был записан, интервал не учитывается.
+- `hermes_profile_last_request_duration_seconds{profile}` — длительность
+  последнего завершённого вызова профиля от timestamp user до timestamp
+  assistant.
+- `hermes_profile_last_request_start_timestamp_seconds{profile}` и
+  `hermes_profile_last_request_end_timestamp_seconds{profile}` — границы
+  последнего завершённого вызова в Unix seconds.
 - `hermes_profile_history_readable{profile}` — успешность чтения. При отсутствии,
   повреждении БД или timeout возвращается `0`, а usage-серии не публикуются:
   неизвестная активность не подменяется нулём.
 
 Все обычные каталоги `profiles/*` с `config.yaml` обнаруживаются автоматически;
 symlink-профили не обходятся. График показывает скользящее часовое окно,
-снимки — день/неделю/retained и время последнего запроса. История графика
+снимки — день/неделю/retained, время последнего запроса, последнюю активность и
+длительность ответов по профилям. Для time-series Grafana показывает значения
+`Last`, `Max` и `Mean` в таблице легенды и пересчитывает видимый диапазон при
+изменении time picker. История графика
 появляется с момента начала сбора Prometheus; ранние поминутные события не
 восстанавливаются. Новых публичных endpoint и labels с prompt/session ID нет.
 

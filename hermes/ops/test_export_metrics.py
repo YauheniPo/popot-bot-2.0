@@ -223,6 +223,12 @@ class ExportMetricsTests(unittest.TestCase):
         for window, count in [('1h', 1), ('24h', 2), ('7d', 3), ('retained', 4)]:
             self.assertIn(f'hermes_profile_user_requests{{profile="builder",window="{window}"}} {count}', lines)
         self.assertIn(f'hermes_profile_last_request_timestamp_seconds{{profile="builder"}} {now - 10}.0', lines)
+        self.assertIn('hermes_profile_response_duration_seconds{profile="builder",window="1h"} 9.0', lines)
+        self.assertIn('hermes_profile_response_duration_seconds{profile="builder",window="24h"} 9.0', lines)
+        self.assertIn('hermes_profile_last_activity_timestamp_seconds{profile="builder"} 1799999999.0', lines)
+        self.assertIn('hermes_profile_last_request_duration_seconds{profile="builder"} 9.0', lines)
+        self.assertIn('hermes_profile_last_request_start_timestamp_seconds{profile="builder"} 1799999990.0', lines)
+        self.assertIn('hermes_profile_last_request_end_timestamp_seconds{profile="builder"} 1799999999.0', lines)
         self.assertIn('hermes_profile_user_requests{profile="reviewer",window="retained"} 0', lines)
         self.assertIn('hermes_profile_user_requests{profile="default",window="retained"} 1', lines)
         self.assertEqual(lines, metrics.profile_request_metrics(self.root, now))
@@ -247,6 +253,8 @@ class ExportMetricsTests(unittest.TestCase):
         expressions = [target['expr'] for panel in panels for target in panel.get('targets', [])]
         self.assertTrue(any('hermes_profile_user_requests' in expr for expr in expressions))
         self.assertTrue(any('hermes_profile_last_request_timestamp_seconds' in expr for expr in expressions))
+        self.assertTrue(any('hermes_profile_response_duration_seconds' in expr for expr in expressions))
+        self.assertTrue(any('hermes_profile_last_request_duration_seconds' in expr for expr in expressions))
         self.assertFalse(any('rate(hermes_profile_user_requests' in expr for expr in expressions))
 
     def test_profile_requests_read_legacy_schema_and_committed_wal_without_mutation(self):

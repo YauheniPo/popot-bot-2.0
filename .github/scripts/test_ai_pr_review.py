@@ -25,6 +25,20 @@ SPEC.loader.exec_module(reviewer)
 
 
 class AnnotatedDiffTest(unittest.TestCase):
+    def test_free_daily_quota_disables_the_same_openrouter_route(self):
+        reviewer.FREE_DAILY_QUOTA_ROUTES.clear()
+        error = urllib.error.HTTPError(
+            "https://example.test", 429, "quota", {},
+            io.BytesIO(b'{"error":{"message":"free-models-per-day"}}'),
+        )
+        caught = reviewer._http_failure(error, model_request=True)
+        self.assertEqual(caught.quota, "free_daily")
+        reviewer._mark_free_daily_quota(caught, "openrouter", "reviewer:free")
+        self.assertTrue(reviewer._free_daily_route_disabled("openrouter", "reviewer:free"))
+        self.assertFalse(reviewer._free_daily_route_disabled("openrouter", "paid-model"))
+        self.assertFalse(reviewer._free_daily_route_disabled("ollama-cloud", "reviewer:free"))
+        reviewer.FREE_DAILY_QUOTA_ROUTES.clear()
+
     def test_live_transport_enables_stream_and_preserves_strict_completion(self):
         events = [{"choices": [{"delta": {"content": '{"summary":"ok","findings":[]}'}}]},
                   {"choices": [{"delta": {}, "finish_reason": "stop"}]}]
