@@ -526,6 +526,30 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertIn("::warning::", unavailable["run"])
         self.assertIn("GITHUB_STEP_SUMMARY", unavailable["run"])
         self.assertNotIn("exit 1", unavailable["run"])
+        # A GITHUB_STEP_SUMMARY-only report left the pull request with no signal
+        # that one of three reviewers never ran. The step must also publish the
+        # unavailability on the PR, deduplicated per run and best-effort.
+        self.assertIn("claude-pr-review-unavailable", unavailable["run"])
+        self.assertIn("issues/${PR_NUMBER}/comments", unavailable["run"])
+        self.assertIn("gh api -X POST", unavailable["run"])
+        self.assertIn("already published for run", unavailable["run"])
+        # An event-derived value must reach the shell as an env var, never as an
+        # interpolation inside the script body, and it must carry the real event
+        # value — a hardcoded or stale export would pass a presence-only check.
+        expected_env = {
+            "PR_NUMBER": "${{ github.event.pull_request.number }}",
+            "HEAD_SHA": "${{ github.event.pull_request.head.sha }}",
+            "REVIEW_RUN_ID": "${{ github.run_id }}",
+        }
+        for name, expression in expected_env.items():
+            self.assertEqual(unavailable["env"][name], expression)
+            self.assertNotIn(expression, unavailable["run"])
+        self.assertEqual(unavailable["env"]["GH_TOKEN"], "${{ secrets.GITHUB_TOKEN }}")
+        # The preflight step is continue-on-error, so when it fails its outputs
+        # are empty and the report would name no model at all. Both model labels
+        # must fall back to the configured env values.
+        self.assertIn("env.CLAUDE_REVIEW_MODEL", unavailable["env"]["PRIMARY_MODEL"])
+        self.assertIn("env.CLAUDE_REVIEW_FALLBACK_MODEL", unavailable["env"]["FALLBACK_MODEL"])
 
         manual_summary = next(
             step for job in manual["jobs"].values() for step in job["steps"]
