@@ -126,7 +126,7 @@ jobs:
 
       - name: Report unavailable Direct API review
         id: report_direct_unavailable
-        if: always() && !cancelled() && steps.direct_models.outcome == 'failure'
+        if: always() && !cancelled() && (steps.direct_models.outcome == 'failure' || steps.direct_review.outcome == 'failure')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -136,13 +136,23 @@ jobs:
           FALLBACK_PROVIDER: ${{ env.DIRECT_REVIEW_FALLBACK_PROVIDER }}
           PRIMARY_REASON: ${{ steps.direct_models.outputs.primary_reason || 'Preflight failed before readiness could be established; see logs.' }}
           FALLBACK_REASON: ${{ steps.direct_models.outputs.fallback_reason || 'Readiness not established; see logs.' }}
+          REVIEW_FAILURE: ${{ steps.direct_review.outputs.failure_reason || '' }}
+          REVIEW_OUTCOME: ${{ steps.direct_review.outcome }}
+          SELECTED_PROVIDER: ${{ steps.direct_models.outputs.selected_provider }}
+          SELECTED_MODEL: ${{ steps.direct_models.outputs.selected_model }}
         run: |
           set -euo pipefail
           report="${RUNNER_TEMP}/direct-unavailable.md"
           {
-            printf '## Direct API review unavailable\n\nNo validated review was produced. This is not a clean review.\n\n'
-            printf -- '- Primary `%s` / `%s`: %s\n' "$PRIMARY_PROVIDER" "$PRIMARY_MODEL" "$PRIMARY_REASON"
-            printf -- '- Fallback `%s` / `%s`: %s\n\n' "$FALLBACK_PROVIDER" "$FALLBACK_MODEL" "$FALLBACK_REASON"
+            printf '## Direct API review unavailable\n\nNo completed, published review is confirmed. This is not a clean review.\n\n'
+            if [[ "$REVIEW_OUTCOME" == 'failure' ]]; then
+              printf -- '- Stage: review / validation / publication after successful preflight.\n'
+              printf -- '- Selected route: `%s` / `%s`.\n' "$SELECTED_PROVIDER" "$SELECTED_MODEL"
+              printf -- '- Failure: `%s`. See CI logs and the execution summary for attempt details.\n\n' "${REVIEW_FAILURE:-process_failed_without_diagnostic}"
+            else
+              printf -- '- Primary `%s` / `%s`: %s\n' "$PRIMARY_PROVIDER" "$PRIMARY_MODEL" "$PRIMARY_REASON"
+              printf -- '- Fallback `%s` / `%s`: %s\n\n' "$FALLBACK_PROVIDER" "$FALLBACK_MODEL" "$FALLBACK_REASON"
+            fi
             printf '[CI attempt %s](https://github.com/%s/actions/runs/%s/attempts/%s)\n' "$GITHUB_RUN_ATTEMPT" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
           } > "$report"
           cat "$report" >> "$GITHUB_STEP_SUMMARY"

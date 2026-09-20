@@ -18,6 +18,43 @@ import ai_review_preflight
 
 
 class OllamaReviewTest(unittest.TestCase):
+    def test_direct_failure_report_distinguishes_preflight_from_review_failure(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = yaml.safe_load((root / ".github/workflows/pr-ai-review.yml").read_text())
+        report = next(step for step in workflow["jobs"]["direct-api-review"]["steps"] if step.get("id") == "report_direct_unavailable")
+        for outcome in ("failure", "skipped"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
+                summary = Path(directory) / "summary"
+                env = {**os.environ, "RUNNER_TEMP": directory, "GITHUB_STEP_SUMMARY": str(summary),
+                       "REVIEW_OUTCOME": outcome, "REVIEW_FAILURE": "inactivity_timeout",
+                       "SELECTED_PROVIDER": "ollama-cloud", "SELECTED_MODEL": "selected-model",
+                       "PRIMARY_PROVIDER": "openrouter", "PRIMARY_MODEL": "primary-model", "PRIMARY_REASON": "http_429",
+                       "FALLBACK_PROVIDER": "ollama-cloud", "FALLBACK_MODEL": "fallback-model", "FALLBACK_REASON": "http_401",
+                       "GITHUB_RUN_ATTEMPT": "2", "GITHUB_REPOSITORY": "owner/repo", "GITHUB_RUN_ID": "123", "PR_NUMBER": "47"}
+                # Stub only the external write; execute the actual report shell.
+                script = 'gh() { test "$1" = api; }; ' + report["run"]
+                result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script], env=env,
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                text = summary.read_text()
+                self.assertIn("actions/runs/123/attempts/2", text)
+                self.assertIn("not a clean review", text)
+                if outcome == "failure":
+                    self.assertIn("inactivity_timeout", text)
+                    self.assertIn("selected-model", text)
+                    self.assertNotIn("http_401", text)
+                else:
+                    self.assertIn("http_401", text)
+                    self.assertIn("http_429", text)
+                    self.assertNotIn("inactivity_timeout", text)
+
+    def test_ollama_preserves_requested_reasoning_effort_in_supported_field(self):
+        for effort in ("none", "low"):
+            body = {"model": "test", "reasoning": {"effort": effort, "exclude": True}}
+            self.assertEqual(ai_review_preflight.completion_payload(body, "ollama-cloud")["reasoning_effort"], effort)
+            self.assertNotIn("reasoning_effort", ai_review_preflight.completion_payload(body, "nvidia"))
+        self.assertNotIn("reasoning_effort", ai_review_preflight.completion_payload({"reasoning": "bad"}))
+
     def test_workflow_reports_missing_reviews_and_aggregates_real_results(self):
         root = Path(__file__).resolve().parents[2]
         jobs = yaml.safe_load((root / ".github/workflows/pr-ai-review.yml").read_text())["jobs"]
@@ -25,6 +62,8 @@ class OllamaReviewTest(unittest.TestCase):
         report = next(step for step in steps if step.get("id") == "report_direct_unavailable")
         self.assertIn("always()", report["if"])
         self.assertIn("steps.direct_models.outcome == 'failure'", report["if"])
+        self.assertIn("steps.direct_review.outcome == 'failure'", report["if"])
+        self.assertIn("failure_reason", report["env"]["REVIEW_FAILURE"])
         self.assertIn("gh api", report["run"])
         self.assertIn("primary_reason", report["env"]["PRIMARY_REASON"])
         aggregate = jobs["review-results"]
@@ -123,7 +162,8 @@ class OllamaReviewTest(unittest.TestCase):
             "plugins": [{"id": "response-healing"}], "reasoning": {"effort": "none"},
         }
         payload = ai_review_preflight.completion_payload(source)
-        self.assertEqual(set(payload), {"model", "messages", "max_tokens", "temperature"})
+        self.assertEqual(set(payload), {"model", "messages", "max_tokens", "temperature", "reasoning_effort"})
+        self.assertEqual(payload["reasoning_effort"], source["reasoning"]["effort"])
         self.assertEqual(payload["messages"], source["messages"])
         self.assertIn("response_format", source)
 

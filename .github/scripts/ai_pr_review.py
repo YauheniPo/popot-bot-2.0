@@ -21,7 +21,8 @@ import urllib.error
 import urllib.request
 
 from ai_review_preflight import CHAT_COMPLETIONS_URL, MODEL, PLAIN_JSON_PROVIDERS, completion_payload, provider_config, configured_model
-from review_execution import ExecutionReport
+from review_execution import ExecutionReport, safe_label
+from direct_review_stream import StreamFailure, read_response, watchdog
 
 from pr_review_context import (
     GitHubRequestError,
@@ -61,6 +62,9 @@ MAX_OUTPUT_TOKENS = 32_768
 # model spends the whole budget thinking and returns an empty message.
 REASONING_OUTPUT_TOKENS = 32_768
 REQUEST_TIMEOUT_SECONDS = 90.0
+MODEL_REQUEST_TOTAL_SECONDS = 300.0
+MODEL_HEARTBEAT_SECONDS = 30.0
+MAX_TIMEOUT_ATTEMPTS = 2
 # Wall-clock budget for all model traffic in one run. The workflow job allows
 # 60 minutes including preflight; staying under it lets the script fail with a
 # diagnostic instead of being killed mid-request by the runner.
@@ -261,10 +265,12 @@ class RequestError(RuntimeError):
         message: str,
         status: int | None = None,
         retry_after_seconds: float | None = None,
+        reason: str = "transport_error",
     ) -> None:
         super().__init__(message)
         self.status = status
         self.retry_after_seconds = retry_after_seconds
+        self.reason = reason
 
 
 class ReviewResponseError(RuntimeError):
@@ -436,6 +442,37 @@ def _safe_log_message(value: object) -> str:
     return " ".join(str(value).replace("\r", " ").replace("\n", " ").split())[:500]
 
 
+def _http_failure(error: urllib.error.HTTPError, model_request: bool) -> RequestError:
+    with error:
+        try:
+            details = error.read(16_384).decode("utf-8", errors="replace")
+        except TRANSIENT_NETWORK_ERRORS:
+            details = "response body could not be read"
+        retry_after = _retry_after_seconds(error.headers, details)
+    # Model error bodies can echo the request. Retain only compatibility hints
+    # needed by existing schema/reasoning negotiation, never arbitrary prose.
+    if model_request:
+        lowered = details.lower()
+        hints = [phrase for phrase in (PARAMETER_ROUTING_ERROR, MANDATORY_REASONING_ERROR)
+                 if phrase in lowered]
+        if any(field in lowered for field in ("response_format", "json_schema")) and any(
+            phrase in lowered for phrase in ("not supported", "does not support", "unsupported parameter", "unsupported value")
+        ):
+            hints.append("response_format not supported")
+        details = "; ".join(hints) or "provider rejected request"
+    return RequestError(f"HTTP {error.code}: {details[:500]}", status=error.code,
+                        retry_after_seconds=retry_after)
+
+
+def _open_response(request, timeout, progress=None):
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return read_response(response, progress) if progress is not None else json.load(response)
+    except urllib.error.HTTPError as error:
+        # This read stays inside the model watchdog, including stalled error bodies.
+        raise _http_failure(error, progress is not None) from None
+
+
 def request_json(
     url: str,
     method: str,
@@ -443,25 +480,25 @@ def request_json(
     body: object | None = None,
     timeout: float = REQUEST_TIMEOUT_SECONDS,
 ) -> object:
+    model_request = url == OLLAMA_URL and method == "POST" and isinstance(body, dict)
     if ACTIVE_PROVIDER in PLAIN_JSON_PROVIDERS and url == OLLAMA_URL and isinstance(body, dict):
         body = completion_payload(body, provider=ACTIVE_PROVIDER)
+    if model_request:
+        body = {**body, "stream": True}
     encoded_body = None if body is None else json.dumps(body).encode("utf-8")
     request = urllib.request.Request(url, data=encoded_body, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as error:
-        try:
-            details = error.read().decode("utf-8", errors="replace")
-        except TRANSIENT_NETWORK_ERRORS:
-            details = "response body could not be read"
-        raise RequestError(
-            f"{method} {url} failed with HTTP {error.code}: {details[:500]}",
-            status=error.code,
-            retry_after_seconds=_retry_after_seconds(error.headers, details),
-        ) from error
+        if model_request:
+            with watchdog(total=timeout, idle=REQUEST_TIMEOUT_SECONDS,
+                          heartbeat=MODEL_HEARTBEAT_SECONDS, log=sys.stderr) as progress:
+                return _open_response(request, min(timeout, REQUEST_TIMEOUT_SECONDS), progress)
+        return _open_response(request, timeout)
+    except StreamFailure as error:
+        raise RequestError(f"model response failed: {error}", reason=str(error)) from None
     except TRANSIENT_NETWORK_ERRORS as error:
-        raise RequestError(f"{method} {url} failed while opening or reading the response") from error
+        cause = error.reason if isinstance(error, urllib.error.URLError) else error
+        reason = "inactivity_timeout" if isinstance(cause, TimeoutError) else "connection_error"
+        raise RequestError(f"{method} {url} failed: {reason}", reason=reason) from None
 
 
 def run_git(*arguments: str, text: bool = True) -> str | bytes:
@@ -817,7 +854,7 @@ def _request_review_json(
         response = request_json(OLLAMA_URL, "POST", headers, body, timeout=timeout)
     except RequestError as error:
         if report and attempt:
-            outcome = f"http_{error.status}" if error.status is not None else "transport_error"
+            outcome = f"http_{error.status}" if error.status is not None else error.reason
             report.finish(attempt, outcome, time.monotonic() - started)
         raise
     except ValueError:
@@ -840,16 +877,26 @@ def request_with_transient_retries(
         attempt = attempts.start()
         print(
             f"  {ACTIVE_ROUTE} request {attempt}/{MAX_REQUEST_ATTEMPTS} "
-            f"({ACTIVE_PROVIDER}, timeout {min(REQUEST_TIMEOUT_SECONDS, available):.0f}s)",
+            f"({ACTIVE_PROVIDER}, model={safe_label(body.get('model'))}, "
+            f"unit={safe_label(EXECUTION_REPORT.unit) if EXECUTION_REPORT else 'review'}, "
+            f"total {min(MODEL_REQUEST_TOTAL_SECONDS, available):.0f}s, "
+            f"idle {REQUEST_TIMEOUT_SECONDS:.0f}s)",
             file=sys.stderr,
+            flush=True,
         )
         try:
             return _request_review_json(
                 headers,
                 body,
-                timeout=min(REQUEST_TIMEOUT_SECONDS, available),
+                timeout=min(MODEL_REQUEST_TOTAL_SECONDS, available),
             )
         except RequestError as error:
+            print(f"  request failed: {error.reason if error.status is None else f'http_{error.status}'}",
+                  file=sys.stderr, flush=True)
+            if error.reason in {"inactivity_timeout", "attempt_timeout"} and attempt >= MAX_TIMEOUT_ATTEMPTS:
+                print("  repeated timeout: stop this model route; use configured fallback if available",
+                      file=sys.stderr, flush=True)
+                raise
             if _should_switch_primary_transport_to_fallback(error, attempt, body):
                 print(
                     f"  primary transport failed {attempt} times; switching to fallback route",
@@ -887,6 +934,8 @@ def _should_switch_primary_transport_to_fallback(
 
 
 def _retryable_request_error(error: RequestError) -> bool:
+    if error.reason in {"response_limit", "output_limit", "watchdog_already_active"}:
+        return False
     return error.status is None or error.status in RETRYABLE_HTTP_STATUSES
 
 
@@ -2094,9 +2143,37 @@ def main() -> None:
         )
 
 
-if __name__ == "__main__":
+def _failure_reason(error: Exception) -> str:
+    if re.fullmatch(r"API key for (nvidia|nous|openrouter|ollama-cloud) is missing", str(error)):
+        return "missing_api_key"
+    if isinstance(error, RequestError):
+        return f"http_{error.status}" if error.status is not None else error.reason
+    if isinstance(error, ReviewBudgetExhausted):
+        return "review_budget_exhausted"
+    if isinstance(error, (ReviewResponseError, ValueError)):
+        return "invalid_review_response"
+    return "review_or_publication_failed"
+
+
+def run_cli() -> int:
     try:
         main()
     except Exception as error:
-        print(f"Direct API PR review failed: {error}", file=sys.stderr)
-        sys.exit(1)
+        reason = _failure_reason(error)
+        print(f"Direct API PR review failed: {reason}", file=sys.stderr, flush=True)
+        output = os.environ.get("GITHUB_OUTPUT")
+        summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if output:
+            with open(output, "a", encoding="utf-8") as handle:
+                handle.write(f"failure_reason={reason}\n")
+        if summary:
+            with open(summary, "a", encoding="utf-8") as handle:
+                handle.write(f"\n## Direct API review failed\n\nReason: `{reason}`. No completed review is claimed.\n")
+                if EXECUTION_REPORT:
+                    handle.write(EXECUTION_REPORT.summary() + EXECUTION_REPORT.details() + "\n")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(run_cli())

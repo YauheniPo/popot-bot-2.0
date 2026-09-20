@@ -6,6 +6,11 @@ from review_execution import ExecutionReport, claude_execution_report
 
 
 class ExecutionReportTest(unittest.TestCase):
+    def test_reports_ollama_reasoning_effort_from_actual_payload(self):
+        report = ExecutionReport("ollama-cloud", "https://ollama.com/v1/chat/completions", "model")
+        attempt = report.begin({"model": "model", "reasoning_effort": "none"})
+        self.assertEqual(attempt.reasoning, "none")
+
     def test_five_chunks_count_only_additional_requests_to_the_same_chunk_as_retries(self):
         report = ExecutionReport("nvidia", "https://integrate.api.nvidia.com/v1/chat/completions", "model")
         for index in range(5):

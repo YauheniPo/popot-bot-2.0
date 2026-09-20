@@ -25,6 +25,79 @@ SPEC.loader.exec_module(runner)
 
 
 class ClaudeReviewRunnerTests(unittest.TestCase):
+    def bounded_worker(self, *, max_turns=4, repeat=False, ignore_final=False, read_diff=True):
+        payloads = []
+        final = '{"summary":"Checked available evidence","findings":[],"thread_verdicts":[]}'
+
+        def respond(_endpoint, _key, payload, *_):
+            payloads.append(json.loads(json.dumps(payload)))
+            if not payload.get("tools") and not ignore_final:
+                return {"content": [{"type": "text", "text": final}], "stop_reason": "end_turn"}
+            turn = len(payloads)
+            name = "Read" if repeat or turn == 1 else "Grep"
+            args = {"path": runner.REVIEW_DIFF_PATH if read_diff else "app.py"} if name == "Read" else {"pattern": f"query{turn}"}
+            return {"content": [{"type": "tool_use", "id": f"t{turn}", "name": name, "input": args}], "stop_reason": "tool_use"}
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / runner.REVIEW_DIFF_PATH).write_text("-old\n+new\n")
+            (root / "app.py").write_text("context evidence\n")
+            pipe = mock.Mock()
+            with mock.patch.object(runner, "request_message", side_effect=respond), \
+                    mock.patch.object(runner, "execute_tool", wraps=runner.execute_tool) as execute, \
+                    mock.patch.object(runner.signal, "signal"):
+                runner._worker(pipe, "https://example.test", "secret-key", "model", "review prompt", root,
+                               {runner.REVIEW_DIFF_PATH, "app.py"}, max_turns, 5)
+        return payloads, pipe, execute
+
+    def test_last_turn_is_reserved_for_json_without_tools(self):
+        payloads, pipe, execute = self.bounded_worker()
+        self.assertEqual(pipe.send.call_args.args[0][0], "result")
+        self.assertEqual(len(payloads), 4)
+        self.assertEqual(execute.call_count, 3)
+        self.assertNotIn("tools", payloads[-1])
+        self.assertIn("1: -old", json.dumps(payloads[-1]))
+        for message in payloads[-1]["messages"]:
+            if isinstance(message["content"], list):
+                self.assertTrue(all(block["type"] == "text" for block in message["content"]))
+        # Transforming the final transcript must not mutate earlier requests.
+        self.assertEqual(payloads[1]["messages"][1]["content"][0]["type"], "tool_use")
+        self.assertIn("finalization_started reason=turn_budget", str(pipe.send.call_args_list))
+
+    def test_repeated_reads_are_not_executed_and_finalize_early(self):
+        payloads, pipe, execute = self.bounded_worker(max_turns=12, repeat=True)
+        self.assertEqual(pipe.send.call_args.args[0][0], "result")
+        self.assertLess(len(payloads), 12)
+        execute.assert_called_once()
+        self.assertIn("tool_cache_hit", str(pipe.send.call_args_list))
+        self.assertIn("finalization_started reason=repeated_tools", str(pipe.send.call_args_list))
+
+    def test_tool_calls_in_final_round_are_not_executed_or_accepted(self):
+        payloads, pipe, execute = self.bounded_worker(ignore_final=True)
+        self.assertEqual(pipe.send.call_args.args[0][:2], ("failure", "turn_limit"))
+        self.assertNotIn("tools", payloads[-1])
+        self.assertEqual(execute.call_count, 3)
+
+    def test_forced_finalization_cannot_bypass_diff_read_requirement(self):
+        _, pipe, _ = self.bounded_worker(read_diff=False)
+        self.assertEqual(pipe.send.call_args.args[0][:2], ("failure", "diff_not_read"))
+
+    def test_tool_cache_keeps_pagination_and_argument_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / runner.REVIEW_DIFF_PATH).write_text("-old\n+new\n")
+            args = {"path": runner.REVIEW_DIFF_PATH, "offset": 1, "limit": 1}
+            blocks = [{"id": "a", "name": "Read", "input": args},
+                      {"id": "b", "name": "Read", "input": dict(reversed(list(args.items())))},
+                      {"id": "c", "name": "Read", "input": {**args, "offset": 2}}]
+            read_files, cache = set(), {}
+            with mock.patch.object(runner, "execute_tool", wraps=runner.execute_tool) as execute:
+                results = runner._tool_results(blocks, root, {runner.REVIEW_DIFF_PATH}, mock.Mock(), read_files, cache)
+            self.assertEqual(execute.call_count, 2)
+            self.assertIn("tool_use_id a", results[1]["content"])
+            self.assertIn("2: +new", results[2]["content"])
+            self.assertEqual(read_files, {runner.REVIEW_DIFF_PATH})
+
     def rate_limit(self, headers=None, body=None):
         error = runner.urllib.error.HTTPError("https://example.test", 429, "secret-key", headers or {},
             io.BytesIO(json.dumps({} if body is None else body).encode()))

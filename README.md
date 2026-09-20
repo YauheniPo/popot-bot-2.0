@@ -288,7 +288,7 @@ The `review-results` job checks that **every selected method** actually returned
 and published a validated result. A green diagnostic/publication step is not
 proof of a completed review. Missing results fail this aggregate check even when
 the individual corroborating jobs use `continue-on-error` to publish diagnostics.
-Direct preflight failures and Claude preflight reasons are reported on the PR;
+Direct preflight **and review/publication failures** and Claude preflight reasons are reported on the PR;
 Observable reports completed, failed and skipped chunks. Retry only after the
 reported cooldown/reset or after fixing the model/provider configuration.
 
@@ -318,6 +318,26 @@ Direct review allows at most four API requests per model for each chunk or
 thread-triage operation. Transport retries, invalid-JSON regeneration, and API
 compatibility adjustments share that limit. A different fallback has its own
 four-request limit; the total time budget can stop either model earlier.
+Repeated idle/total timeouts stop a model route after two attempts, then use a
+configured independent fallback if available. They do not spend four identical
+requests on a silent route. No extra provider or model is selected implicitly.
+
+Direct requests use Chat Completions streaming, with a **90-second inactivity
+limit**, **300-second absolute limit per request** (also capped by the remaining
+review budget), and a **heartbeat every 30 seconds**, including while connecting.
+Logs show elapsed/idle time, state, received events, and content/reasoning character
+counts, never the reasoning or response text. SSE keepalives do not reset the
+inactivity deadline. `provider_processing=unknown` is intentional: runner
+liveness does not prove the provider is thinking. A stream must terminate cleanly
+before JSON/schema/anchor validation; partial responses are not successful reviews.
+Ollama receives the requested reasoning effort via its supported
+[`reasoning_effort`](https://docs.ollama.com/api/openai-compatibility) field,
+instead of silently reverting to the model's default thinking mode. Wire data
+is capped at 16 MiB, including SSE framing, independently of the token budget.
+Non-streaming responses remain supported under the same watchdog. Failures have
+explicit reasons such as `inactivity_timeout`, `attempt_timeout`, `connection_error`,
+`stream_incomplete`, or `output_limit`. CI's step summary records request history;
+the PR failure comment identifies the selected route and links to the failed run.
 Claude Code's full-run retry stages are configured separately in the PR workflow.
 The direct PR job allows 60 minutes and manual/Azure review 105 minutes, including
 preflight and publication; their model-traffic budgets remain separate.
@@ -349,6 +369,19 @@ is treated like any other failed attempt and follows the same per-route retry
 and fallback path. This proves access to
 changes, not complete coverage. Oversized lines are omitted individually
 without blocking later pages.
+
+The last model turn is reserved for a JSON-only response, within the existing
+turn/deadline budget. Tools are removed for that request and their earlier
+calls/results are preserved as text evidence. This avoids relying on
+`tool_choice` controls, which [Ollama Cloud does not fully support](https://docs.ollama.com/api/anthropic-compatibility).
+Identical tool calls reuse earlier results without reading/searching again;
+different offsets and queries still work. Three consecutive rounds containing
+only repeated calls trigger finalization early. CI logs `tool_cache_hit` and
+`finalization_started reason=turn_budget` or `reason=repeated_tools`.
+Finalization does not waive JSON, diff-read or changed-line validation. A model
+that still requests tools fails with `turn_limit`; unread scope must still be
+disclosed rather than described as a complete review.
+
 It has no separate preflight step of its own:
 tool support and final JSON are validated during the actual review attempts,
 so an unusable route fails the attempt rather than a standalone check.
@@ -364,7 +397,7 @@ Optional repository variables for this runner (all retain `CLAUDE_REVIEW_` names
 
 | Variable | Default | Maximum | Meaning |
 | --- | --- | --- | --- |
-| `CLAUDE_REVIEW_MAX_TURNS` | 24 | 96 | Model turns per attempt |
+| `CLAUDE_REVIEW_MAX_TURNS` | 24 | 96 | Total model turns per attempt, including the final JSON-only turn |
 | `CLAUDE_REVIEW_ATTEMPT_TIMEOUT_SECONDS` | 600 | 900 | Hard deadline per attempt |
 | `CLAUDE_REVIEW_INACTIVITY_TIMEOUT_SECONDS` | 180 | 600 | Deadline without substantive provider/tool events |
 | `CLAUDE_REVIEW_HEARTBEAT_SECONDS` | 30 | 60 | CI heartbeat interval |

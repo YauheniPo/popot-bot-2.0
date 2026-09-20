@@ -61,6 +61,14 @@ def completion_payload(body: dict[str, object], provider: str = "ollama-cloud") 
         key: value for key, value in body.items()
         if key not in {"provider", "plugins", "reasoning", "response_format"}
     }
+    # Ollama supports reasoning_effort, not OpenRouter's exclude extension.
+    # Dropping effort entirely silently enables long default reasoning on a
+    # real diff even when the tiny preflight responds immediately.
+    reasoning = body.get("reasoning")
+    if provider == "ollama-cloud" and isinstance(reasoning, dict):
+        effort = reasoning.get("effort")
+        if effort in ("none", "low", "medium", "high", "max"):
+            payload["reasoning_effort"] = effort
     max_tokens = payload.get("max_tokens")
     if provider == "nous" and isinstance(max_tokens, int):
         payload["max_tokens"] = min(max_tokens, NOUS_MAX_OUTPUT_TOKENS)

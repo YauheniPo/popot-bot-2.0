@@ -6,6 +6,7 @@ from http.client import IncompleteRead
 import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 import urllib.error
 from unittest import mock
@@ -24,6 +25,78 @@ SPEC.loader.exec_module(reviewer)
 
 
 class AnnotatedDiffTest(unittest.TestCase):
+    def test_live_transport_enables_stream_and_preserves_strict_completion(self):
+        events = [{"choices": [{"delta": {"content": '{"summary":"ok","findings":[]}'}}]},
+                  {"choices": [{"delta": {}, "finish_reason": "stop"}]}]
+        response = io.BytesIO(b"".join(b"data: " + json.dumps(event).encode() + b"\n\n" for event in events) + b"data: [DONE]\n\n")
+        response.headers = {"Content-Type": "text/event-stream"}
+        with mock.patch.object(reviewer.urllib.request, "urlopen", return_value=response) as request:
+            result = reviewer.request_json(reviewer.OLLAMA_URL, "POST", {}, {"model": "test"}, timeout=300)
+        self.assertEqual(reviewer.parse_review_response(result)["findings"], [])
+        self.assertTrue(json.loads(request.call_args.args[0].data)["stream"])
+        self.assertTrue(response.closed)
+
+    def test_incomplete_stream_has_safe_reason_and_closes_connection(self):
+        response = io.BytesIO(b'data: {"choices": []}\n\n')
+        response.headers = {"Content-Type": "text/event-stream"}
+        with mock.patch.object(reviewer.urllib.request, "urlopen", return_value=response):
+            with self.assertRaises(reviewer.RequestError) as caught:
+                reviewer.request_json(reviewer.OLLAMA_URL, "POST", {}, {"model": "test"})
+        self.assertEqual(caught.exception.reason, "stream_incomplete")
+        self.assertTrue(response.closed)
+
+    def test_http_compatibility_hints_remain_safe(self):
+        error = urllib.error.HTTPError("https://example.test", 400, "private", {},
+            io.BytesIO(b'{"error":"PRIVATE response_format is not supported"}'))
+        with mock.patch.object(reviewer.urllib.request, "urlopen", side_effect=error):
+            with self.assertRaises(reviewer.RequestError) as caught:
+                reviewer.request_json(reviewer.OLLAMA_URL, "POST", {}, {"model": "test"})
+        self.assertTrue(reviewer._structured_output_unavailable(caught.exception))
+        self.assertNotIn("PRIVATE", str(caught.exception))
+
+    def test_cli_success_and_failure_categories(self):
+        with mock.patch.object(reviewer, "main"):
+            self.assertEqual(reviewer.run_cli(), 0)
+        for error, reason in ((reviewer.RequestError("private", status=401), "http_401"),
+                              (reviewer.ReviewBudgetExhausted("private"), "review_budget_exhausted"),
+                              (reviewer.ReviewResponseError("private"), "invalid_review_response"),
+                              (RuntimeError("private"), "review_or_publication_failed")):
+            self.assertEqual(reviewer._failure_reason(error), reason)
+
+    def test_cli_exports_safe_failure_and_attempt_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output, summary = Path(directory) / "outputs", Path(directory) / "summary"
+            report = reviewer.ExecutionReport("ollama-cloud", reviewer.OLLAMA_URL, "test")
+            attempt = report.begin({"model": "test"})
+            report.finish(attempt, "inactivity_timeout", 90)
+            with (
+                mock.patch.dict(reviewer.os.environ, {"GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}),
+                mock.patch.object(reviewer, "main", side_effect=reviewer.RequestError(
+                    "PRIVATE key echoed by provider", reason="inactivity_timeout")),
+                mock.patch.object(reviewer, "EXECUTION_REPORT", report),
+                mock.patch("sys.stderr", new_callable=io.StringIO) as log,
+            ):
+                self.assertEqual(reviewer.run_cli(), 1)
+            self.assertIn("failure_reason=inactivity_timeout", output.read_text())
+            self.assertIn("inactivity_timeout", summary.read_text())
+            self.assertNotIn("PRIVATE", output.read_text() + summary.read_text() + log.getvalue())
+
+    def test_no_four_identical_timeout_retries_without_another_route(self):
+        with (
+            mock.patch.dict(reviewer.os.environ, {}, clear=True),
+            mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(600)),
+            mock.patch.object(reviewer, "request_json", side_effect=reviewer.RequestError(
+                "inactivity_timeout", reason="inactivity_timeout")) as request,
+            mock.patch.object(reviewer.time, "sleep"),
+        ):
+            with self.assertRaisesRegex(reviewer.RequestError, "inactivity_timeout"):
+                reviewer.request_with_transient_retries({}, {"model": "test"}, reviewer.ReviewAttempts())
+        self.assertEqual(request.call_count, 2)
+
+    def test_response_limits_are_not_retried_with_the_same_budget(self):
+        for reason in ("response_limit", "output_limit", "watchdog_already_active"):
+            self.assertFalse(reviewer._retryable_request_error(reviewer.RequestError(reason, reason=reason)))
+
     def test_ollama_review_budget_is_sized_for_large_reviews(self) -> None:
         self.assertGreaterEqual(reviewer.MAX_OUTPUT_TOKENS, 32_000)
         self.assertGreaterEqual(reviewer.REASONING_OUTPUT_TOKENS, 32_000)
@@ -586,6 +659,13 @@ class OllamaCloudRequestTest(unittest.TestCase):
                             mock.patch.object(reviewer.time, "sleep"),
                             mock.patch("builtins.print"),
                         ):
+                            if error_type is TimeoutError and failures == reviewer.MAX_REQUEST_ATTEMPTS:
+                                with self.assertRaisesRegex(reviewer.RequestError, "inactivity_timeout"):
+                                    reviewer.review_chunk("test-key", "primary-model", (), chunk, 1, 1)
+                                # Two timeouts per route, not four more attempts on fallback.
+                                models = [json.loads(call.args[0].data)["model"] for call in request.call_args_list]
+                                self.assertEqual(models, ["primary-model"] * 2 + ["fallback-model"] * 2)
+                                continue
                             actual = reviewer.review_chunk("test-key", "primary-model", (), chunk, 1, 1)
                         self.assertEqual(actual, result)
                         models = [json.loads(call.args[0].data)["model"] for call in request.call_args_list]
@@ -607,6 +687,7 @@ class OllamaCloudRequestTest(unittest.TestCase):
 
     def test_http_error_body_timeout_preserves_status(self) -> None:
         body = mock.Mock()
+        body.closed = False
         body.read.side_effect = TimeoutError("read timeout")
         error = urllib.error.HTTPError(reviewer.OLLAMA_URL, 429, "rate limited", {}, body)
         self.addCleanup(error.close)

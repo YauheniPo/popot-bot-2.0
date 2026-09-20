@@ -59,7 +59,7 @@ class ExecutionReport:
             len(self.attempts) + 1, self.unit, model,
             route or ("primary" if model == safe_label(self.primary_model) else "fallback"),
             safe_label(response_format.get("type")) if isinstance(response_format, dict) else "ordinary",
-            safe_label(reasoning.get("effort")) if isinstance(reasoning, dict) else "default",
+            safe_label(reasoning.get("effort")) if isinstance(reasoning, dict) else safe_label(body.get("reasoning_effort", "default")),
         )
         self.attempts.append(attempt)
         return attempt
