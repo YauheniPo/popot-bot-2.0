@@ -63,6 +63,18 @@ function createInput(body) {
   return result;
 }
 
+// Classify one MCP request. Returns the handled operation, or null when the
+// request is not ours and must be passed through to the original fetch.
+function classifyMcpRequest(path, method) {
+  if (path === '/api/mcp/discover' && method === 'POST') return 'discover';
+  if (/^\/api\/mcp\/[^/]+\/logs$/.test(path) && method === 'GET') return 'logs';
+  if (path === '/api/mcp' && ['GET', 'POST'].includes(method)) return 'collection';
+  if (path === '/api/mcp/configure' && method === 'PUT') return 'configure';
+  if (path === '/api/mcp/test' && method === 'POST') return 'test';
+  if (/^\/api\/mcp\/[^/]+$/.test(path) && method === 'DELETE') return 'deletion';
+  return null;
+}
+
 export function createMcpAdapter({ dashboardUrl, fetchImpl, now = Date.now, probeTtlMs = 300_000 }) {
   const base = new URL(dashboardUrl);
   // Last explicit Test only, never an implicit process launch or an auth cache.
@@ -93,6 +105,53 @@ export function createMcpAdapter({ dashboardUrl, fetchImpl, now = Date.now, prob
       return view;
     });
   }
+  // Classify one MCP request. Returns the handled operation, or null when the
+  // request is not ours and must be passed through to the original fetch.
+  // (Defined at module scope; kept out of this closure.)
+
+  // Rewrite the upstream path and pick the response renderer for one operation.
+  // Each branch returns either an early refusal Response or the request plan.
+  function planMcpRequest(kind, url, body, profile, method) {
+    if (kind === 'collection') {
+      url.pathname = '/api/mcp/servers';
+      if (method === 'POST') {
+        let payload;
+        try { payload = createInput(body); } catch {
+          return { refusal: unsupported('Native create supports URL/command, stdio env and bearer/automatic OAuth. Custom headers, OAuth client settings, disabled creation and tool filters must be configured in the official Dashboard.') };
+        }
+        return { payload, render: serverView };
+      }
+      return { render: value => {
+        if (!Array.isArray(value.servers)) throw new Error('Invalid MCP list');
+        return { servers: listView(value.servers, profile) };
+      } };
+    }
+    if (kind === 'configure') {
+      if (typeof body.enabled !== 'boolean' || Object.keys(body).some(key => !['name', 'enabled'].includes(key))) {
+        return { refusal: unsupported('Native Workspace configuration supports the enabled toggle only. Change tool selection in the official Dashboard.') };
+      }
+      url.pathname = `/api/mcp/servers/${encodeURIComponent(body.name)}/enabled`;
+      return { payload: { enabled: body.enabled } };
+    }
+    if (kind === 'test') {
+      if (Object.keys(body).some(key => key !== 'name')) {
+        return { refusal: unsupported('Save the server first, then test it by name. Unsaved inputs are not tested against an existing server.') };
+      }
+      url.pathname = `/api/mcp/servers/${encodeURIComponent(body.name)}/test`;
+      return { render: value => {
+        if (typeof value.ok !== 'boolean' || (value.ok && (!Array.isArray(value.tools) ||
+            value.tools.some(tool => !object(tool) || typeof tool.name !== 'string')))) {
+          throw new Error('Invalid native discovery result');
+        }
+        return { ok: value.ok, status: value.ok ? 'connected' : 'failed',
+          discoveredTools: value.ok ? value.tools : [],
+          ...(value.ok ? {} : { error: 'Native MCP test failed. Check server connectivity and OAuth in the official Dashboard.' }) };
+      } };
+    }
+    url.pathname = `/api/mcp/servers/${url.pathname.slice('/api/mcp/'.length)}`;
+    return {};
+  }
+
   return async function mcpFetch(input, init = {}) {
     const url = new URL(input instanceof Request ? input.url : input);
     if (url.origin !== base.origin || !/^\/api\/mcp(?:\/|$)/.test(url.pathname)) {
@@ -101,17 +160,14 @@ export function createMcpAdapter({ dashboardUrl, fetchImpl, now = Date.now, prob
     const method = (init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
     const path = url.pathname;
     const profile = url.searchParams.get('profile') || '';
-    const collection = path === '/api/mcp' && ['GET', 'POST'].includes(method);
-    const configure = path === '/api/mcp/configure' && method === 'PUT';
-    const test = path === '/api/mcp/test' && method === 'POST';
-    const deletion = /^\/api\/mcp\/[^/]+$/.test(path) && method === 'DELETE';
-    if (path === '/api/mcp/discover' && method === 'POST') {
+    const kind = classifyMcpRequest(path, method);
+    if (kind === 'discover') {
       return unsupported('Native Hermes tests saved servers only. Save the server, then use Test; unsaved discovery is unavailable.');
     }
-    if (/^\/api\/mcp\/[^/]+\/logs$/.test(path) && method === 'GET') {
+    if (kind === 'logs') {
       return Response.json({ ok: false, error: 'This Hermes version has no per-server MCP log stream. Use the official Dashboard.' }, { status: 501 });
     }
-    if (!collection && !configure && !test && !deletion) return fetchImpl(input, init);
+    if (!kind) return fetchImpl(input, init);
 
     let body = {};
     try {
@@ -119,49 +175,17 @@ export function createMcpAdapter({ dashboardUrl, fetchImpl, now = Date.now, prob
         body = JSON.parse(init.body ?? (input instanceof Request ? await input.clone().text() : '{}'));
         if (!object(body) || !safeName(body.name)) throw new Error('Invalid payload');
       }
-      if (deletion && !safeName(decodeURIComponent(path.slice('/api/mcp/'.length)))) throw new Error('Invalid name');
+      if (kind === 'deletion' && !safeName(decodeURIComponent(path.slice('/api/mcp/'.length)))) throw new Error('Invalid name');
     } catch {
       return unsupported('Invalid MCP payload or server name.');
     }
 
-    let payload;
-    let render = value => value;
-    if (collection) {
-      url.pathname = '/api/mcp/servers';
-      if (method === 'POST') {
-        try { payload = createInput(body); } catch {
-          return unsupported('Native create supports URL/command, stdio env and bearer/automatic OAuth. Custom headers, OAuth client settings, disabled creation and tool filters must be configured in the official Dashboard.');
-        }
-        render = serverView;
-      } else {
-        render = value => {
-          if (!Array.isArray(value.servers)) throw new Error('Invalid MCP list');
-          return { servers: listView(value.servers, profile) };
-        };
-      }
-    } else if (configure) {
-      if (typeof body.enabled !== 'boolean' || Object.keys(body).some(key => !['name', 'enabled'].includes(key))) {
-        return unsupported('Native Workspace configuration supports the enabled toggle only. Change tool selection in the official Dashboard.');
-      }
-      url.pathname = `/api/mcp/servers/${encodeURIComponent(body.name)}/enabled`;
-      payload = { enabled: body.enabled };
-    } else if (test) {
-      if (Object.keys(body).some(key => key !== 'name')) {
-        return unsupported('Save the server first, then test it by name. Unsaved inputs are not tested against an existing server.');
-      }
-      url.pathname = `/api/mcp/servers/${encodeURIComponent(body.name)}/test`;
-      render = value => {
-        if (typeof value.ok !== 'boolean' || (value.ok && (!Array.isArray(value.tools) ||
-            value.tools.some(tool => !object(tool) || typeof tool.name !== 'string')))) {
-          throw new Error('Invalid native discovery result');
-        }
-        return { ok: value.ok, status: value.ok ? 'connected' : 'failed',
-          discoveredTools: value.ok ? value.tools : [],
-          ...(value.ok ? {} : { error: 'Native MCP test failed. Check server connectivity and OAuth in the official Dashboard.' }) };
-      };
-    } else {
-      url.pathname = `/api/mcp/servers/${path.slice('/api/mcp/'.length)}`;
-    }
+    const plan = planMcpRequest(kind, url, body, profile, method);
+    if (plan.refusal) return plan.refusal;
+    const payload = plan.payload;
+    const render = plan.render || (value => value);
+    const deletion = kind === 'deletion';
+    const test = kind === 'test';
 
     const key = keyFor(profile, deletion ? decodeURIComponent(path.slice('/api/mcp/'.length)) : body.name);
     let testedEntry;

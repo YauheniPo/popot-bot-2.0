@@ -70,10 +70,8 @@ def memory_ratio() -> float:
         return 0.0
 
 
-def _profile_request_counts(database: Path, now: float) -> tuple:
-    """Read aggregate profile activity metadata without loading message text."""
-    if database.is_symlink() or not database.is_file():
-        raise OSError('Profile history unavailable')
+def _request_timestamps(database: Path, now: float) -> list:
+    """Read retention-window user timestamps in timestamp order."""
     connection = sqlite3.connect(database.resolve().as_uri() + '?mode=ro', uri=True, timeout=1)
     try:
         deadline = time.monotonic() + 1
@@ -85,37 +83,62 @@ def _profile_request_counts(database: Path, now: float) -> tuple:
             + ("AND COALESCE(_compressed_summary,0)=0 " if '_compressed_summary' in columns else '')
             + 'ORDER BY timestamp, rowid', (now,)
         ).fetchall()
-        user_timestamps = [timestamp for role, timestamp in records if role == 'user']
-        retained = len(user_timestamps)
-        latest = max(user_timestamps, default=0)
-        windows = (3600, 86400, 604800)
-        counts = tuple(sum(timestamp >= now - window for timestamp in user_timestamps) for window in windows)
-        durations = [0.0, 0.0, 0.0, 0.0]
-        latest_duration = 0.0
-        latest_start = 0.0
-        latest_end = 0.0
-        pending_user = None
-        last_activity = latest
-        for role, timestamp in records:
-            if role in {'user', 'assistant'}:
-                last_activity = max(last_activity, timestamp)
-            if role == 'user':
-                pending_user = timestamp
-            elif role == 'assistant' and pending_user is not None:
-                duration = max(0.0, min(float(timestamp - pending_user), 86400.0))
-                if pending_user >= latest_start:
-                    latest_duration = duration
-                    latest_start = pending_user
-                    latest_end = timestamp
-                durations[3] += duration
-                for index, window in enumerate(windows):
-                    if pending_user >= now - window:
-                        durations[index] += duration
-                pending_user = None
-        return (retained, latest, *counts, last_activity, *durations,
-                latest_duration, latest_start, latest_end)
     finally:
         connection.close()
+    return records
+
+
+def _profile_last_activity(records: list, latest_user: float) -> float:
+    """Latest user or assistant timestamp; the latest user record seeds it."""
+    activity = latest_user
+    for role, timestamp in records:
+        if role in {'user', 'assistant'}:
+            activity = max(activity, timestamp)
+    return activity
+
+
+def _timed_durations(records: list, now: float) -> tuple:
+    """Pair user records with the next assistant record, bounded by 24 hours.
+
+    Returns the retained, 1h, 24h and 7d duration sums and the latest completed
+    response window (duration, start, end). The latest window starts unmatched
+    so the first completed pair always defines it.
+    """
+    windows = (3600, 86400, 604800)
+    durations = [0.0, 0.0, 0.0, 0.0]
+    latest_duration = 0.0
+    latest_start = 0.0
+    latest_end = 0.0
+    pending_user = None
+    for role, timestamp in records:
+        if role == 'user':
+            pending_user = timestamp
+        elif role == 'assistant' and pending_user is not None:
+            duration = max(0.0, min(float(timestamp - pending_user), 86400.0))
+            if pending_user >= latest_start:
+                latest_duration = duration
+                latest_start = pending_user
+                latest_end = timestamp
+            durations[3] += duration
+            for index, window in enumerate(windows):
+                if pending_user >= now - window:
+                    durations[index] += duration
+            pending_user = None
+    return (*durations, latest_duration, latest_start, latest_end)
+
+
+def _profile_request_counts(database: Path, now: float) -> tuple:
+    """Read aggregate profile activity metadata without loading message text."""
+    if database.is_symlink() or not database.is_file():
+        raise OSError('Profile history unavailable')
+    records = _request_timestamps(database, now)
+    user_timestamps = [timestamp for role, timestamp in records if role == 'user']
+    retained = len(user_timestamps)
+    latest = max(user_timestamps, default=0)
+    counts = tuple(sum(timestamp >= now - window for timestamp in user_timestamps)
+                   for window in (3600, 86400, 604800))
+    durations = _timed_durations(records, now)
+    return (retained, latest, *counts, _profile_last_activity(records, latest), *durations)
 
 
 def profile_request_metrics(root: Path, now: float | None = None) -> list[str]:

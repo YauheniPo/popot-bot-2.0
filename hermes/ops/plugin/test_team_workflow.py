@@ -379,7 +379,7 @@ class TeamWorkflowTests(unittest.TestCase):
         job = self.start_code(engine)
         self.assertEqual(job['status'], 'blocked')
         self.assertEqual(job['reason'], 'Dispatch/setup failed; inspect task and native delegation state')
-        self.assertEqual(job['worktree'], None)
+        self.assertIsNone(job['worktree'])
         self.assertEqual(backend.calls, [])
         self.assertIn('do not imply external delivery is confirmed', job['next_action'].lower())
         self.assertEqual(backend.worktrees, [(job['id'], '/managed/repository')])

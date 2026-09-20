@@ -7,7 +7,58 @@ import { createHash, randomUUID } from 'node:crypto';
 const agentName = /^agents(?:\.[a-z0-9_-]+)?\.md$/i;
 const excluded = new Set(['node_modules', 'hermes-agent', 'backups', 'operator-state']);
 const maxBytes = 512 * 1024;
+// Config key holding the character limit for each describable memory kind.
+const limitKeys = { memory: 'memory_char_limit', user: 'user_char_limit' };
+const limitKeyFor = (kind) => limitKeys[kind] || null;
+// Read-side guard for the descriptor's own stat: the file could have changed
+// between the path check and the open, so a regular, single-link, bounded file
+// is re-confirmed here. Kept as a throwing guard so the call site carries no
+// branch of its own; every refusal reason is covered by direct tests.
+export function assertAllowedReadStat(stat) {
+  if (!stat.isFile() || stat.nlink !== 1 || stat.size > maxBytes) throw new Error('File not allowed');
+}
 export const memoryFileVersion = (content) => createHash('sha256').update(content).digest('hex');
+
+// Read one integer limit from a profile's config.yaml. Kept at module scope so
+// there is a single instrumented instance of the guarded read, and so the
+// refusal/error paths stay testable directly.
+export function readConfiguredLimit(configPath, key, parseConfig) {
+  let fd;
+  let limit = null;
+  try {
+    fd = fs.openSync(configPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    const stat = fs.fstatSync(fd);
+    const usable = stat.isFile() && stat.nlink === 1 && stat.size <= maxBytes;
+    if (usable) {
+      const value = parseConfig(fs.readFileSync(fd, 'utf8'))?.[key];
+      // Only a positive, exactly-representable integer is a usable limit.
+      if (Number.isSafeInteger(value) && value > 0) limit = value;
+    }
+  } catch {
+    // No guess at upstream defaults; never expose config/errors.
+    limit = null;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+  return limit;
+}
+
+// Allowed home-relative editor targets. Each predicate is independent, so the
+// rule set stays readable and every branch is unit-testable on its own.
+const HOME_PATH_RULES = [
+  (parts, leaf, instruction) => parts.length === 1 && (['MEMORY.md', 'USER.md', 'SOUL.md'].includes(leaf) || instruction),
+  (parts, leaf) => ['memory', 'memories'].includes(parts[0]) && /\.md$/i.test(leaf),
+  (parts, leaf, instruction) => parts[0] === 'profiles' && parts.length === 3 && (leaf === 'SOUL.md' || instruction),
+  (parts, leaf) => parts[0] === 'profiles' && parts.length === 4 && parts[2] === 'memories' && ['MEMORY.md', 'USER.md'].includes(leaf),
+  (parts, leaf, instruction, input) => input.startsWith('swarm/worktrees/') && parts.length >= 4 && instruction,
+];
+
+// Decide whether one relative path may be edited. `workspace/...` targets are
+// instruction files; every other path must satisfy one of the home rules.
+function isAllowedMemoryPath(input, parts, leaf, instruction) {
+  if (parts[0] === 'workspace') return instruction;
+  return HOME_PATH_RULES.some(rule => rule(parts, leaf, instruction, input));
+}
 
 export function createMemoryFiles({ home, workspace, parseConfig }) {
   const roots = { home: path.resolve(home), workspace: path.resolve(workspace) };
@@ -21,14 +72,7 @@ export function createMemoryFiles({ home, workspace, parseConfig }) {
     const external = parts[0] === 'workspace';
     const leaf = parts.at(-1);
     const instruction = agentName.test(leaf);
-    const allowed = external ? instruction : (
-      (parts.length === 1 && (['MEMORY.md', 'USER.md', 'SOUL.md'].includes(leaf) || instruction)) ||
-      (['memory', 'memories'].includes(parts[0]) && /\.md$/i.test(leaf)) ||
-      (parts[0] === 'profiles' && parts.length === 3 && (leaf === 'SOUL.md' || instruction)) ||
-      (parts[0] === 'profiles' && parts.length === 4 && parts[2] === 'memories' && ['MEMORY.md', 'USER.md'].includes(leaf)) ||
-      (input.startsWith('swarm/worktrees/') && parts.length >= 4 && instruction)
-    );
-    if (!allowed) throw new Error('Path not allowed');
+    if (!isAllowedMemoryPath(input, parts, leaf, instruction)) throw new Error('Path not allowed');
     const root = external ? roots.workspace : roots.home;
     let fullPath = root;
     if (fs.lstatSync(root).isSymbolicLink()) throw new Error('Symlink root not allowed');
@@ -47,7 +91,7 @@ export function createMemoryFiles({ home, workspace, parseConfig }) {
     const fd = fs.openSync(fullPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
     try {
       const stat = fs.fstatSync(fd);
-      if (!stat.isFile() || stat.nlink !== 1 || stat.size > maxBytes) throw new Error('File not allowed');
+      assertAllowedReadStat(stat);
       return fs.readFileSync(fd, 'utf8');
     } finally { fs.closeSync(fd); }
   }
@@ -55,6 +99,15 @@ export function createMemoryFiles({ home, workspace, parseConfig }) {
   function listMemoryFiles() {
     const results = [];
     let visited = 0;
+    // Only these top-level trees are ever walked, and profile directories are
+    // limited to their instruction and native-memory subtrees.
+    const walkedRoots = new Set(['memory', 'memories', 'profiles', 'swarm']);
+    const descends = (prefix, name) => {
+      if (prefix.startsWith('profiles/') && prefix !== 'profiles/' &&
+          !(prefix.split('/').length === 3 && name === 'memories')) return false;
+      if (prefix === 'swarm/' && name !== 'worktrees') return false;
+      return Boolean(prefix) || walkedRoots.has(name);
+    };
     function walk(directory, prefix, depth = 0) {
       if (!fs.existsSync(directory) || fs.lstatSync(directory).isSymbolicLink()) return;
       if (depth > 20) throw new Error('Instruction tree exceeds editor depth limit');
@@ -63,11 +116,7 @@ export function createMemoryFiles({ home, workspace, parseConfig }) {
         if (entry.name.startsWith('.') || excluded.has(entry.name) || entry.isSymbolicLink()) continue;
         const relative = prefix + entry.name;
         if (entry.isDirectory()) {
-          // Profiles expose instructions and native memory, never sessions/logs/caches.
-          if (prefix.startsWith('profiles/') && prefix !== 'profiles/' &&
-              !(prefix.split('/').length === 3 && entry.name === 'memories')) continue;
-          if (prefix === 'swarm/' && entry.name !== 'worktrees') continue;
-          if (prefix || ['memory', 'memories', 'profiles', 'swarm'].includes(entry.name)) {
+          if (descends(prefix, entry.name)) {
             walk(path.join(directory, entry.name), relative + '/', depth + 1);
           }
         } else {
@@ -123,15 +172,7 @@ export function createMemoryFiles({ home, workspace, parseConfig }) {
     if (!parseConfig || !key) return null;
     // The profile directory was already validated by resolveMemoryFilePath.
     const configPath = path.join(roots.home, ...(profile === null ? [] : ['profiles', profile]), 'config.yaml');
-    let fd;
-    try {
-      fd = fs.openSync(configPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
-      const stat = fs.fstatSync(fd);
-      if (!stat.isFile() || stat.nlink !== 1 || stat.size > maxBytes) return null;
-      const value = parseConfig(fs.readFileSync(fd, 'utf8'))?.[key];
-      return Number.isSafeInteger(value) && value > 0 ? value : null;
-    } catch { return null; } // No guess at upstream defaults; never expose config/errors.
-    finally { if (fd !== undefined) fs.closeSync(fd); }
+    return readConfiguredLimit(configPath, key, parseConfig);
   }
 
   function describeMemoryFile(input, content = readMemoryFile(input)) {
@@ -158,8 +199,7 @@ export function createMemoryFiles({ home, workspace, parseConfig }) {
           'Candidate project instructions: inclusion depends on cwd and the git-root directory chain, not editor visibility.';
       }
     }
-    const limit = configuredLimit(parts[0] === 'profiles' ? parts[1] : null,
-      kind === 'memory' ? 'memory_char_limit' : kind === 'user' ? 'user_char_limit' : null);
+    const limit = configuredLimit(parts[0] === 'profiles' ? parts[1] : null, limitKeyFor(kind));
     const characters = [...content].length;
     const managedBlocks = [...new Set([...content.matchAll(/<!-- BEGIN ((?:ANSIBLE|HERMES) MANAGED [A-Z0-9 _-]+) -->/g)].map(match => match[1]))];
     return { profile, kind, characters, limit, overLimit: limit !== null && characters > limit,
@@ -169,7 +209,13 @@ export function createMemoryFiles({ home, workspace, parseConfig }) {
     describeMemoryFile, resolveMemoryFilePath, getMemoryWorkspaceRoot: () => roots.home };
 }
 
-const home = process.env.HERMES_HOME || process.env.CLAUDE_HOME || path.join(os.homedir(), '.hermes');
+// Resolve the default HERMES_HOME from the environment. Kept as a pure exported
+// helper so each fallback step can be exercised directly in one module instance.
+export function defaultHome(env) {
+  return env.HERMES_HOME || env.CLAUDE_HOME || path.join(os.homedir(), '.hermes');
+}
+
+const home = defaultHome(process.env);
 export const createDefaultMemoryFiles = options => createMemoryFiles({
   ...options, home, workspace: process.env.HERMES_INSTRUCTIONS_ROOT || path.join(home, 'workspace'),
 });

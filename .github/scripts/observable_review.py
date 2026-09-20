@@ -298,6 +298,32 @@ def _route_skip_reason(route: dict, state: dict) -> str | None:
     return None
 
 
+def _report_skipped_route(report: dict, route: dict, skip_reason: str) -> None:
+    report.setdefault("skipped_routes", []).append({"role": route["role"], "reason": skip_reason})
+    print(f"[review] route_skipped role={safe_label(route['role'])} reason={skip_reason}", flush=True)
+
+
+def _attempt_route(route: dict, prompt: str, workspace: Path, files: set[str], execution: Path,
+                   report: dict, base: str, head: str, limits: dict, chunk_index: int,
+                   state: dict, route_outcomes: dict) -> bool:
+    """Try one route at most twice; True once an attempt was validated.
+
+    ``route_outcomes`` records the last outcome per role so the caller can
+    distinguish an exhausted rate limit from a generic failure.
+    """
+    retry_prompt = prompt
+    for number in (1, 2):
+        if _single_attempt(route, number, retry_prompt, workspace, files, execution, report, base, head, limits, chunk_index):
+            return True
+        attempt = report["attempts"][-1]
+        route_outcomes[route["role"]] = attempt["outcome"]
+        if attempt["outcome"] == "provider_incomplete_result":
+            retry_prompt = _incomplete_retry_prompt(prompt)
+        if not _retry_after_attempt(attempt, route, state):
+            break
+    return False
+
+
 def review_attempts(workspace: Path, prompt: str, files: set[str], report: dict, report_path: Path,
                     base: str, head: str, chunk_index: int = 1,
                     state: dict | None = None) -> int:
@@ -316,24 +342,16 @@ def review_attempts(workspace: Path, prompt: str, files: set[str], report: dict,
         "blocked_providers": set(circuit_state.get("blocked_providers", set())),
     }
     route_outcomes = {}
-    retry_prompt = prompt
     for route in routes():
         skip_reason = _route_skip_reason(route, state)
         if skip_reason:
-            report.setdefault("skipped_routes", []).append({"role": route["role"], "reason": skip_reason})
-            print(f"[review] route_skipped role={safe_label(route['role'])} reason={skip_reason}", flush=True)
+            _report_skipped_route(report, route, skip_reason)
             continue
-        for number in (1, 2):
-            if _single_attempt(route, number, retry_prompt, workspace, files, execution, report, base, head, limits, chunk_index):
-                circuit_state["free_daily"] = state["free_daily"]
-                circuit_state["blocked_providers"] = state["blocked_providers"]
-                return 0
-            attempt = report["attempts"][-1]
-            route_outcomes[route["role"]] = attempt["outcome"]
-            if attempt["outcome"] == "provider_incomplete_result":
-                retry_prompt = _incomplete_retry_prompt(prompt)
-            if not _retry_after_attempt(attempt, route, state):
-                break
+        if _attempt_route(route, prompt, workspace, files, execution, report, base, head,
+                          limits, chunk_index, state, route_outcomes):
+            circuit_state["free_daily"] = state["free_daily"]
+            circuit_state["blocked_providers"] = state["blocked_providers"]
+            return 0
     outcomes = set(route_outcomes.values())
     circuit_state["free_daily"] = state["free_daily"]
     circuit_state["blocked_providers"] = state["blocked_providers"]

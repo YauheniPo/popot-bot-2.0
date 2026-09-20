@@ -20,7 +20,7 @@ function relativeTime(`);
   if (start < 0 || end <= start || code.split('function buildRows(').length !== 2) {
     throw new Error('Unsupported Workspace Swarm activity contract');
   }
-  code = code.slice(0, start) + `function buildRows(
+  code = code.slice(0, start) + String.raw`function buildRows(
   members: Array<CrewMember>,
   runtime: Map<string, RuntimeEntry>,
 ): Array<ActivityRow> {
@@ -37,11 +37,11 @@ function relativeTime(`);
     add(entry?.currentTask || result, entry?.lastOutputAt, 'runtime')
     add(member.lastSessionTitle, member.lastSessionAt, 'session')
     // Do not attach a task's timestamp (or file mtime) to an unrelated log line.
-    for (const raw of (entry?.recentLogTail || '').split('\\n').reverse()) {
+    for (const raw of (entry?.recentLogTail || '').split('\n').reverse()) {
       const text = stripLogPrefix(raw)
-      if (!text || /^INFO\\s+hermes_cli\\.mem_trim:/.test(text)) continue
+      if (!text || /^INFO\s+hermes_cli\.mem_trim:/.test(text)) continue
       // Only a timestamp with an explicit timezone is safe in a browser.
-      const stamp = raw.match(/^\\[?(\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}:\\d{2}(?:[.,]\\d+)?(?:Z|[+-]\\d{2}:?\\d{2}))/)
+      const stamp = raw.match(/^\[?(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2}))/)
       add(text, stamp ? Date.parse(stamp[1].replace(',', '.').replace(' ', 'T')) : null, 'tail')
       break
     }
@@ -170,7 +170,8 @@ export function workspaceSwarmRuntime() {
     if (source.split(anchor).length !== 2) throw new Error('Unsupported Workspace Swarm runtime contract');
     let code = source.replace(anchor, replacement);
     if (id.split('?')[0].endsWith('/src/routes/api/swarm-dispatch.ts')) {
-      const promptAnchor = "  const normalizedPrompt = prompt.replace(/\\r\\n/g, '\\n')";
+      // The anchor is matched verbatim against upstream source.
+      const promptAnchor = String.raw`  const normalizedPrompt = prompt.replace(/\r\n/g, '\n')`;
       const pasteAnchor = "    'paste-buffer',\n    '-d',";
       if (code.split(promptAnchor).length !== 2 || code.split(pasteAnchor).length !== 2) {
         throw new Error('Unsupported Workspace Swarm terminal contract');

@@ -143,15 +143,17 @@ class SwarmTests(unittest.TestCase):
             home, user, repo = self._swarm_env(temp)
             for policy in ({'workers': {}}, {'workers': []},
                            {'workers': {'Builder': {'role': 'B', 'instructions': 'x'}}}):
+                stub = self._run_stub(repo)
                 with self.subTest(policy=policy), self.assertRaises(ValueError):
-                    module.provision(home, user, repo, user / 'bin/hermes', policy, self._run_stub(repo))
+                    module.provision(home, user, repo, user / 'bin/hermes', policy, stub)
             for bad_model in ('{}\n', 'model: {provider: test}\n',
                               'model: {provider: "", default: fixture}\n'):
                 (home / 'config.yaml').write_text(bad_model)
+                stub = self._run_stub(repo)
                 with self.subTest(model=bad_model), self.assertRaisesRegex(ValueError, 'shared Hermes model'):
                     module.provision(home, user, repo, user / 'bin/hermes',
                                      {'workers': {'builder': {'role': 'B', 'instructions': 'x'}}},
-                                     self._run_stub(repo))
+                                     stub)
 
     def test_provision_rejects_symlinked_managed_directories(self):
         module = self._module()
@@ -161,8 +163,9 @@ class SwarmTests(unittest.TestCase):
             outside.mkdir()
             (home / 'swarm').symlink_to(outside)
             policy = {'workers': {'builder': {'role': 'B', 'instructions': 'x'}}}
+            stub = self._run_stub(repo)
             with self.assertRaisesRegex(ValueError, 'must not be symlinks'):
-                module.provision(home, user, repo, user / 'bin/hermes', policy, self._run_stub(repo))
+                module.provision(home, user, repo, user / 'bin/hermes', policy, stub)
 
     def test_save_text_rejects_symlinks_and_reports_repeated_content(self):
         spec = importlib.util.spec_from_file_location('swarm_setup', PATH)
@@ -225,8 +228,9 @@ class SwarmTests(unittest.TestCase):
             outside.mkdir()
             (home / 'swarm/worktrees').mkdir(parents=True)
             (home / 'swarm/worktrees/builder').symlink_to(outside)
+            stub = self._run_stub(repo)
             with self.assertRaisesRegex(ValueError, 'worktree must not be a symlink'):
-                module.provision(home, user, repo, user / 'bin/hermes', policy, self._run_stub(repo))
+                module.provision(home, user, repo, user / 'bin/hermes', policy, stub)
 
     def test_provision_rejects_a_symlinked_soul_and_an_unmanaged_wrapper(self):
         module = self._module()
@@ -239,8 +243,9 @@ class SwarmTests(unittest.TestCase):
             outside = user / 'outside.md'
             outside.write_text('external')
             (profile / 'SOUL.md').symlink_to(outside)
+            stub = self._run_stub(repo)
             with self.assertRaisesRegex(ValueError, 'SOUL must not be a symlink'):
-                module.provision(home, user, repo, user / 'bin/hermes', policy, self._run_stub(repo))
+                module.provision(home, user, repo, user / 'bin/hermes', policy, stub)
 
     def test_provision_rejects_an_unmanaged_existing_wrapper(self):
         module = self._module()
@@ -250,8 +255,9 @@ class SwarmTests(unittest.TestCase):
             wrapper = user / '.local/bin/builder'
             wrapper.parent.mkdir(parents=True)
             wrapper.write_text('#!/bin/sh\n# operator-owned wrapper\necho hi\n')
+            stub = self._run_stub(repo)
             with self.assertRaisesRegex(ValueError, 'unmanaged Swarm wrapper'):
-                module.provision(home, user, repo, user / 'bin/hermes', policy, self._run_stub(repo))
+                module.provision(home, user, repo, user / 'bin/hermes', policy, stub)
 
     def test_cli_reads_settings_from_a_file(self):
         module = self._module()

@@ -15,6 +15,60 @@ import yaml
 from hermes_config_io import load_config, validated_config_path, write_config
 
 
+def _sync_plugin(enabled: list, name: str, wanted: bool) -> bool:
+    """Enable or disable one plugin entry; return whether the list changed."""
+    if wanted:
+        if name not in enabled:
+            enabled.append(name)
+            return True
+        return False
+    if name in enabled:
+        enabled.remove(name)
+        return True
+    return False
+
+
+def _status_command(hermes_home: Path, gateway_service: str) -> dict:
+    return {
+        "type": "exec",
+        "command": (
+            f"HERMES_HOME={shlex.quote(str(hermes_home))} "
+            f"HERMES_GATEWAY_SERVICE={shlex.quote(gateway_service)} "
+            "/usr/local/lib/hermes-ops/status-report.py"
+        ),
+    }
+
+
+def _docker_restart_command(vscode_project_name: str, vscode_env_file: Path,
+                            vscode_compose_file: Path) -> dict:
+    return {
+        "type": "exec",
+        "command": shlex.join(
+            [
+                "sudo",
+                "docker",
+                "compose",
+                "--project-name",
+                vscode_project_name,
+                "--env-file",
+                str(vscode_env_file),
+                "-f",
+                str(vscode_compose_file),
+                "restart",
+                "code-server",
+            ]
+        ),
+    }
+
+
+def _set_quick_command(quick_commands: dict, name: str, command: dict) -> bool:
+    """Install one managed quick command; return whether it changed."""
+    if quick_commands.get(name) == command:
+        return False
+    quick_commands[name] = command
+    return True
+
+
 def configure(
     data: dict[str, Any],
     hermes_home: Path,
@@ -40,57 +94,23 @@ def configure(
     if not isinstance(enabled, list) or not all(isinstance(item, str) for item in enabled):
         raise ValueError("Hermes config.yaml plugins.enabled must be a list of strings")
 
-    changed = False
-    if "ops-observability" not in enabled:
-        enabled.append("ops-observability")
-        changed = True
-
-    if data.get('team_workflow', {}).get('enabled', False):
-        if 'team-workflow' not in enabled:
-            enabled.append('team-workflow')
-            changed = True
-    elif 'team-workflow' in enabled:
-        enabled.remove('team-workflow')
-        changed = True
+    changed = _sync_plugin(enabled, "ops-observability", True)
+    changed |= _sync_plugin(
+        enabled, "team-workflow", bool(data.get('team_workflow', {}).get('enabled', False))
+    )
 
     quick_commands = data.setdefault("quick_commands", {})
     if not isinstance(quick_commands, dict):
         raise ValueError("Hermes config.yaml quick_commands must be a YAML mapping")
 
-    status_command = {
-        "type": "exec",
-        "command": (
-            f"HERMES_HOME={shlex.quote(str(hermes_home))} "
-            f"HERMES_GATEWAY_SERVICE={shlex.quote(gateway_service)} "
-            "/usr/local/lib/hermes-ops/status-report.py"
-        ),
-    }
-    if quick_commands.get("status") != status_command:
-        quick_commands["status"] = status_command
-        changed = True
-
+    changed |= _set_quick_command(
+        quick_commands, "status", _status_command(hermes_home, gateway_service)
+    )
     if vscode_compose_file is not None:
-        docker_restart_command = {
-            "type": "exec",
-            "command": shlex.join(
-                [
-                    "sudo",
-                    "docker",
-                    "compose",
-                    "--project-name",
-                    vscode_project_name,
-                    "--env-file",
-                    str(vscode_env_file),
-                    "-f",
-                    str(vscode_compose_file),
-                    "restart",
-                    "code-server",
-                ]
-            ),
-        }
-        if quick_commands.get("docker_restart") != docker_restart_command:
-            quick_commands["docker_restart"] = docker_restart_command
-            changed = True
+        changed |= _set_quick_command(
+            quick_commands, "docker_restart",
+            _docker_restart_command(vscode_project_name, vscode_env_file, vscode_compose_file),
+        )
     elif "docker_restart" in quick_commands:
         del quick_commands["docker_restart"]
         changed = True

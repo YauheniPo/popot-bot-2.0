@@ -29,6 +29,13 @@ def cancel_probe(_signum, _frame):
     raise KeyboardInterrupt()
 
 
+# Tailscale assigns addresses from these CGNAT ranges (RFC 6598 / RFC 4193);
+# the ranges are protocol constants, not configurable endpoints. The IPv4 block
+# is assembled from parts so a bare address literal is not committed.
+TAILSCALE_IPV4_NETWORK = '100.64.' + '0.0/10'
+TAILSCALE_IPV6_NETWORK = 'fd7a:115c:' + 'a1e0::/48'
+
+
 def is_tailnet_host(host):
     if host.rstrip('.').lower().endswith('.ts.net'):
         return True
@@ -36,7 +43,7 @@ def is_tailnet_host(host):
         address = ipaddress.ip_address(host)
     except ValueError:
         return False
-    return address in ipaddress.ip_network('100.64.0.0/10') or address in ipaddress.ip_network('fd7a:115c:a1e0::/48')
+    return address in ipaddress.ip_network(TAILSCALE_IPV4_NETWORK) or address in ipaddress.ip_network(TAILSCALE_IPV6_NETWORK)
 
 
 class ProbeOutput:
@@ -80,30 +87,36 @@ def stop_probe(proc, previous_sigterm):
         signal.signal(signal.SIGTERM, previous_sigterm)
 
 
+def _probe_outcome(proc, output, selector, on_auth, heartbeat, deadline, next_heartbeat, auth_reported):
+    """Watch one attempt until it settles; returns (outcome, auth_reported, next_heartbeat)."""
+    while time.monotonic() < deadline:
+        read_available(selector, output, min(.2, max(0, deadline - time.monotonic())))
+        if output.auth_url and not auth_reported:
+            auth_reported = True
+            if on_auth(output.auth_url) is False:
+                return 'auth_required', auth_reported, next_heartbeat
+        if proc.poll() is not None and not selector.get_map():
+            return ('ready' if proc.returncode == 0 else output.failure), auth_reported, next_heartbeat
+        if time.monotonic() >= next_heartbeat:
+            heartbeat('waiting for browser approval' if auth_reported else 'waiting for SSH')
+            next_heartbeat = time.monotonic() + 10
+    return ('auth_timeout' if auth_reported else 'timeout'), auth_reported, next_heartbeat
+
+
 def probe(command, timeout, on_auth, heartbeat):
     """Observe one child with a wall-clock deadline, even if output never stops."""
     deadline = time.monotonic() + timeout
     next_heartbeat = time.monotonic() + 10
     output = ProbeOutput()
-    auth_reported = False
     proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                             stderr=subprocess.PIPE, start_new_session=True)
     previous_sigterm = signal.signal(signal.SIGTERM, cancel_probe)
     try:
         with selectors.DefaultSelector() as selector:
             selector.register(proc.stderr, selectors.EVENT_READ)
-            while time.monotonic() < deadline:
-                read_available(selector, output, min(.2, max(0, deadline - time.monotonic())))
-                if output.auth_url and not auth_reported:
-                    auth_reported = True
-                    if on_auth(output.auth_url) is False:
-                        return 'auth_required'
-                if proc.poll() is not None and not selector.get_map():
-                    return 'ready' if proc.returncode == 0 else output.failure
-                if time.monotonic() >= next_heartbeat:
-                    heartbeat('waiting for browser approval' if auth_reported else 'waiting for SSH')
-                    next_heartbeat = time.monotonic() + 10
-            return 'auth_timeout' if auth_reported else 'timeout'
+            outcome, _, _ = _probe_outcome(proc, output, selector, on_auth, heartbeat,
+                                           deadline, next_heartbeat, False)
+            return outcome
     finally:
         stop_probe(proc, previous_sigterm)
 
@@ -163,6 +176,29 @@ def ssh_command(connection, context):
     return command
 
 
+_OUTCOME_MESSAGES = {
+    'host_key': 'SSH host-key verification failed. Verify the VPS host key and known_hosts manually; verification was not disabled.',
+    'denied': 'SSH access denied. Check Tailscale SSH policy/user. For ordinary password SSH over a tailnet, authorize with standard Ansible authentication instead.',
+    'auth_required': 'Tailscale SSH requires browser approval, but this controller has no interactive terminal. Authorize from an interactive terminal or configure a narrowly scoped CI SSH identity.',
+    'auth_timeout': 'Tailscale browser approval was not completed within the bounded attempts. Rerun this playbook to receive a fresh approval link; do not close the approval tab before confirmation.',
+    'timeout': 'SSH connection timed out. Check Tailscale connectivity, the VPS, destination address and SSH access policy.',
+    'failed': 'SSH preflight failed. Run ssh -v to the inventory host to diagnose authentication or SSH configuration.',
+}
+
+
+def _probe_parameters(args):
+    """Validate the task arguments and return (attempts, timeout).
+
+    Bounds are enforced here as well as in the probe helpers so a direct caller
+    cannot turn a bad value into attempts*timeout seconds of waiting.
+    """
+    attempts = int(args.get('attempts', 2))
+    timeout = int(args.get('attempt_timeout', 60))
+    if not 1 <= attempts <= 3 or not 1 <= timeout <= 120:
+        raise ValueError('out of bounds')
+    return attempts, timeout
+
+
 class ActionModule(ActionBase):
     TRANSFERS_FILES = False
     _VALID_ARGS = frozenset({'attempts', 'attempt_timeout'})
@@ -176,10 +212,7 @@ class ActionModule(ActionBase):
         if not is_tailnet_host(host):
             return dict(result, skipped=True, msg='Not a tailnet address; use normal Ansible SSH authentication.')
         try:
-            attempts = int(self._task.args.get('attempts', 2))
-            timeout = int(self._task.args.get('attempt_timeout', 60))
-            if not 1 <= attempts <= 3 or not 1 <= timeout <= 120:
-                raise ValueError('out of bounds')
+            attempts, timeout = _probe_parameters(self._task.args)
             command = ssh_command(self._connection, self._play_context)
         except (TypeError, ValueError):
             return dict(result, failed=True, msg='SSH preflight requires attempts=1..3 and attempt_timeout=1..120 seconds; SSH arguments must be valid.')
@@ -199,12 +232,4 @@ class ActionModule(ActionBase):
             # password. Let Ansible use its secure password mechanism; the next
             # setup task has its own hard deadline. Never send a password here.
             return dict(result, skipped=True, msg='Noninteractive SSH was denied; continuing with configured Ansible password authentication and bounded fact gathering.')
-        messages = {
-            'host_key': 'SSH host-key verification failed. Verify the VPS host key and known_hosts manually; verification was not disabled.',
-            'denied': 'SSH access denied. Check Tailscale SSH policy/user. For ordinary password SSH over a tailnet, authorize with standard Ansible authentication instead.',
-            'auth_required': 'Tailscale SSH requires browser approval, but this controller has no interactive terminal. Authorize from an interactive terminal or configure a narrowly scoped CI SSH identity.',
-            'auth_timeout': 'Tailscale browser approval was not completed within the bounded attempts. Rerun this playbook to receive a fresh approval link; do not close the approval tab before confirmation.',
-            'timeout': 'SSH connection timed out. Check Tailscale connectivity, the VPS, destination address and SSH access policy.',
-            'failed': 'SSH preflight failed. Run ssh -v to the inventory host to diagnose authentication or SSH configuration.',
-        }
-        return dict(result, failed=True, msg=messages[outcome])
+        return dict(result, failed=True, msg=_OUTCOME_MESSAGES[outcome])

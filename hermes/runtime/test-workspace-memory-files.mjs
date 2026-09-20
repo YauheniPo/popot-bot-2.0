@@ -4,7 +4,7 @@ import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { test } from 'node:test';
-import { createMemoryFiles, memoryFileVersion } from './workspace-memory-files.mjs';
+import { assertAllowedReadStat, createMemoryFiles, defaultHome, getMemoryWorkspaceRoot, memoryFileVersion, readConfiguredLimit } from './workspace-memory-files.mjs';
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-memory-test-'));
@@ -144,27 +144,51 @@ test('metadata never follows config symlinks or exposes config content', t => {
   assert.throws(() => api.describeMemoryFile('config.yaml'), /not allowed/);
 });
 
-test('the module default home falls back through CLAUDE_HOME to the user home', async () => {
-  // Line 172 picks home from HERMES_HOME, else CLAUDE_HOME, else ~/.hermes.
-  // Each fallback is a separate branch, so run the module fresh for each env.
-  const source = './workspace-memory-files.mjs';
-  const load = async (env) => {
-    const saved = { ...process.env };
-    for (const key of ['HERMES_HOME', 'CLAUDE_HOME', 'HERMES_INSTRUCTIONS_ROOT']) delete process.env[key];
-    Object.assign(process.env, env);
-    try {
-      return await import(`${source}?fallback=${Math.random()}`);
-    } finally {
-      for (const key of Object.keys(process.env)) delete process.env[key];
-      Object.assign(process.env, saved);
-    }
-  };
-  const withHermes = await load({ HERMES_HOME: '/tmp/fixture-hermes-home' });
-  assert.equal(withHermes.getMemoryWorkspaceRoot(), '/tmp/fixture-hermes-home');
-  const withClaude = await load({ CLAUDE_HOME: '/tmp/fixture-claude-home' });
-  assert.equal(withClaude.getMemoryWorkspaceRoot(), '/tmp/fixture-claude-home');
-  const withNeither = await load({});
-  assert.ok(withNeither.getMemoryWorkspaceRoot().length > 0);
+test('readConfiguredLimit refuses unsafe, oversized and unparsable configs', (t) => {
+  const { home, put } = fixture(t);
+  const parse = JSON.parse;
+  const cfg = put('home/config.yaml', JSON.stringify({ memory_char_limit: 12 }));
+  assert.equal(readConfiguredLimit(cfg, 'memory_char_limit', parse), 12);
+  // A non-positive or non-integer value is not a usable limit.
+  put('home/config.yaml', JSON.stringify({ memory_char_limit: 0 }));
+  assert.equal(readConfiguredLimit(cfg, 'memory_char_limit', parse), null);
+  // A non-integer value is refused by the type check, not the range check.
+  for (const invalid of ['12', 1.5, null, true, Number.MAX_SAFE_INTEGER + 1]) {
+    put('home/config.yaml', JSON.stringify({ memory_char_limit: invalid }));
+    assert.equal(readConfiguredLimit(cfg, 'memory_char_limit', parse), null, `expected ${String(invalid)} to be refused`);
+  }
+  // A parser failure must not leak or guess a default.
+  assert.equal(readConfiguredLimit(cfg, 'memory_char_limit', () => { throw new Error('bad yaml'); }), null);
+  // A missing file is a normal, silent refusal.
+  assert.equal(readConfiguredLimit(path.join(home, 'absent.yaml'), 'memory_char_limit', parse), null);
+});
+
+test('assertAllowedReadStat re-confirms a regular, single-link, bounded file', () => {
+  // The descriptor may describe a different file than the path check saw, so
+  // each refusal reason is asserted directly instead of relying on a race.
+  const stat = (over) => ({ isFile: () => true, nlink: 1, size: 10, ...over });
+  assert.doesNotThrow(() => assertAllowedReadStat(stat({})));
+  assert.doesNotThrow(() => assertAllowedReadStat(stat({ size: 512 * 1024 })));
+  assert.throws(() => assertAllowedReadStat(stat({ isFile: () => false })), /File not allowed/);
+  assert.throws(() => assertAllowedReadStat(stat({ nlink: 2 })), /File not allowed/);
+  assert.throws(() => assertAllowedReadStat(stat({ size: 512 * 1024 + 1 })), /File not allowed/);
+});
+
+test('defaultHome resolves HERMES_HOME, then CLAUDE_HOME, then the user home', () => {
+  // Each fallback step is a separate condition; calling the pure helper covers
+  // all three in one module instance, which the merged coverage report needs.
+  assert.equal(defaultHome({ HERMES_HOME: '/tmp/fixture-hermes-home' }), '/tmp/fixture-hermes-home');
+  assert.equal(defaultHome({ CLAUDE_HOME: '/tmp/fixture-claude-home' }), '/tmp/fixture-claude-home');
+  assert.equal(defaultHome({}), path.join(os.homedir(), '.hermes'));
+  assert.equal(defaultHome({ HERMES_HOME: '', CLAUDE_HOME: '/tmp/fixture-claude-home' }), '/tmp/fixture-claude-home');
+});
+
+test('the module default home is derived through defaultHome', () => {
+  // The module-level home is wired from defaultHome(process.env); assert the
+  // wiring here and exercise the fallback chain on the pure helper, so this
+  // file never re-imports the module (a second instance would emit a duplicate
+  // lcov record whose condition blocks cannot be merged).
+  assert.equal(getMemoryWorkspaceRoot(), defaultHome(process.env));
 });
 
 test('a symbolic-link root and an oversized file are both refused', (t) => {

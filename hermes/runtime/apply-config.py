@@ -34,14 +34,27 @@ def managed_model_values(settings: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def sync_profile_models(home: Path, settings: dict[str, Any]) -> int:
-    """Update existing profiles atomically without touching credentials or history."""
-    values = managed_model_values(settings)
+def _profile_config_updates(config: dict[str, Any], values: dict[str, str]) -> bool:
+    """Apply managed model values to one profile config; report whether it changed."""
+    changed = False
+    for key, value in values.items():
+        section, field = key.split('.')
+        target = config.setdefault(section, {})
+        if not isinstance(target, dict):
+            raise ValueError('Hermes profile model, delegation and cron must be mappings')
+        if target.get(field) != value:
+            target[field] = value
+            changed = True
+    return changed
+
+
+def _pending_profile_updates(home: Path, values: dict[str, str]) -> list:
+    """Validate every profile and return the (path, config) pairs that need writing."""
     profiles = home / 'profiles'
     if profiles.is_symlink():
         raise ValueError('Hermes profiles directory must not be a symlink')
     if not values or not profiles.exists():
-        return 0
+        return []
     pending = []
     for profile in sorted(profiles.iterdir()):
         if profile.is_symlink():
@@ -52,17 +65,14 @@ def sync_profile_models(home: Path, settings: dict[str, Any]) -> int:
         if not path.exists():
             continue
         config = load_private_config(path)
-        changed = False
-        for key, value in values.items():
-            section, field = key.split('.')
-            target = config.setdefault(section, {})
-            if not isinstance(target, dict):
-                raise ValueError('Hermes profile model, delegation and cron must be mappings')
-            if target.get(field) != value:
-                target[field] = value
-                changed = True
-        if changed:
+        if _profile_config_updates(config, values):
             pending.append((path, config))
+    return pending
+
+
+def sync_profile_models(home: Path, settings: dict[str, Any]) -> int:
+    """Update existing profiles atomically without touching credentials or history."""
+    pending = _pending_profile_updates(home, managed_model_values(settings))
     # Validate all profiles before writing any. Values/configs are never logged.
     for path, config in pending:
         write_config(path, config)

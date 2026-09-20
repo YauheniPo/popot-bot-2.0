@@ -476,6 +476,21 @@ class ObservableReviewTests(unittest.TestCase):
             self.assertIn("### Technical metadata", summary_path.read_text())
             self.assertIn("<details>\n<summary>Execution history</summary>\n\n", summary_path.read_text())
 
+    def test_run_writes_review_status_output(self):
+        # The workflow reads review_status from GITHUB_OUTPUT to decide whether
+        # the corroborating reviewer produced a result, so the write must happen
+        # even when the review itself fails.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report_path = root / "report.json"
+            output_path = root / "github_output"
+            with mock.patch.dict(os.environ, {"BASE_SHA": "a"*40, "HEAD_SHA": "b"*40, "GITHUB_OUTPUT": str(output_path)}, clear=True), \
+                    mock.patch.object(observer, "_confine_report_path", return_value=report_path), \
+                    mock.patch.object(observer, "prepare_prompt", side_effect=observer.runner.ReviewFailure("empty_or_oversized_diff")), \
+                    redirect_stdout(io.StringIO()):
+                observer.run(report_path)
+            self.assertEqual(output_path.read_text(), "review_status=failed\n")
+
     def test_confine_report_path_rejects_escape(self):
         with mock.patch.object(observer.os, "environ", {}, create=True):
             outside = Path("/definitely-outside-workspace/report.json")

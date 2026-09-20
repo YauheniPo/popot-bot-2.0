@@ -147,6 +147,41 @@ def verify_full(archive: Path, expected: list[str]) -> None:
             raise RuntimeError("Full backup failed CRC verification")
 
 
+def _expand_state_files(home: Path, names) -> set[str]:
+    """Return the personal state set, expanding listed directories to their files."""
+    expected = set(personal_files(home))
+    for name in names:
+        source = home / name
+        if source.is_dir():
+            expected.update(path.relative_to(home).as_posix()
+                            for path in files_under(source) if regular_file(path))
+        elif regular_file(source):
+            expected.add(name)
+    return expected
+
+
+def _verified_snapshot(snapshot: Path, expected: set[str]) -> None:
+    """Reject a native quick snapshot whose manifest or files are incomplete."""
+    manifest = json.loads((snapshot / "manifest.json").read_text())
+    files = manifest.get("files", {})
+    if expected - set(files):
+        raise RuntimeError("Quick backup missing required state files")
+    if manifest.get("failed_dbs") or manifest.get("oversized_skipped"):
+        raise RuntimeError("Hermes reported an incomplete quick backup")
+    for name in expected:
+        path = snapshot / name
+        if not regular_file(path) or path.stat().st_size != files[name]:
+            raise RuntimeError("Quick backup file verification failed")
+
+
+def _publish_snapshot(snapshot: Path, destination: Path) -> None:
+    """Move a verified snapshot to the directory read by freshness checks."""
+    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if destination.exists():
+        raise RuntimeError("Quick snapshot destination already exists; retry later")
+    snapshot.rename(destination)
+
+
 def quick_snapshot(home: Path, native) -> Path:
     """Keep native SQLite copy/manifest/restore; publish only verified snapshots.
 
@@ -155,14 +190,7 @@ def quick_snapshot(home: Path, native) -> Path:
     """
     original_files = native._QUICK_STATE_FILES
     original_root = native._QUICK_SNAPSHOTS_DIR
-    expected = set(personal_files(home))
-    for name in original_files:
-        source = home / name
-        if source.is_dir():
-            expected.update(path.relative_to(home).as_posix()
-                            for path in files_under(source) if regular_file(path))
-        elif regular_file(source):
-            expected.add(name)
+    expected = _expand_state_files(home, original_files)
     if not expected:
         raise RuntimeError("No Hermes state found to back up")
     snapshot = None
@@ -176,21 +204,9 @@ def quick_snapshot(home: Path, native) -> Path:
         if not snapshot_id or Path(snapshot_id).name != snapshot_id:
             raise RuntimeError("Hermes did not create a valid quick snapshot")
         snapshot = home / native._QUICK_SNAPSHOTS_DIR / snapshot_id
-        manifest = json.loads((snapshot / "manifest.json").read_text())
-        files = manifest.get("files", {})
-        if expected - set(files):
-            raise RuntimeError("Quick backup missing required state files")
-        if manifest.get("failed_dbs") or manifest.get("oversized_skipped"):
-            raise RuntimeError("Hermes reported an incomplete quick backup")
-        for name in expected:
-            path = snapshot / name
-            if not regular_file(path) or path.stat().st_size != files[name]:
-                raise RuntimeError("Quick backup file verification failed")
+        _verified_snapshot(snapshot, expected)
         destination = home / original_root / snapshot_id
-        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if destination.exists():
-            raise RuntimeError("Quick snapshot destination already exists; retry later")
-        snapshot.rename(destination)
+        _publish_snapshot(snapshot, destination)
         return destination
     finally:
         native._QUICK_STATE_FILES = original_files

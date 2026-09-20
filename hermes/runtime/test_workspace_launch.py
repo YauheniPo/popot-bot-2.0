@@ -189,10 +189,11 @@ class WorkspaceLaunchTests(unittest.TestCase):
     def test_module_entrypoint_runs_main(self):
         # runpy executes the script as a fresh module, so main() runs for real;
         # no arguments makes argparse exit before any launch.
+        script = Path(__file__).with_name('workspace-launch.py')
         with mock.patch.object(sys, 'argv', ['workspace-launch.py']), \
              mock.patch.object(sys, 'stderr', io.StringIO()), \
              self.assertRaises(SystemExit) as exit_code:
-            runpy.run_path(str(Path(__file__).with_name('workspace-launch.py')), run_name='__main__')
+            runpy.run_path(str(script), run_name='__main__')
         self.assertEqual(exit_code.exception.code, 2)
 
     def _server_source(self):

@@ -172,8 +172,10 @@ class BackupPersonalStateTests(unittest.TestCase):
     def test_incomplete_snapshot_does_not_publish_or_prune(self):
         self.put(self.home, "SOUL.md")
         old = self.put(self.home, "state-snapshots/old/manifest.json", "old backup")
+        # Building the native stub is setup; only the snapshot call must raise.
+        native = self.native(omit="SOUL.md")
         with self.assertRaisesRegex(RuntimeError, "missing"):
-            self.module.quick_snapshot(self.home, self.native(omit="SOUL.md"))
+            self.module.quick_snapshot(self.home, native)
         self.assertEqual(old.read_text(), "old backup")
         self.assertFalse((old.parent.parent / "test-scheduled").exists())
 
@@ -444,9 +446,10 @@ pathlib.Path(os.environ["HERMES_HOME"], "pruned").touch()
                          {"version": 1, "files": {"/abs/AGENTS.md": "x"}},
                          {"version": 1, "files": {"../AGENTS.md": "x"}},
                          {"version": 1, "files": {"AGENTS.md": 5}}):
+            # Writing the manifest is setup; only the restore below must raise.
+            self.module.instruction_io.write_atomic(
+                self.home / self.module.MANIFEST, json.dumps(manifest))
             with self.subTest(manifest=manifest), self.assertRaises(ValueError):
-                self.module.instruction_io.write_atomic(
-                    self.home / self.module.MANIFEST, json.dumps(manifest))
                 self.module.restore_workspace(self.home, self.workspace)
 
     def test_instruction_read_failure_during_backup_is_reported(self):
@@ -533,10 +536,10 @@ pathlib.Path(os.environ["HERMES_HOME"], "pruned").touch()
     def test_module_entrypoint_returns_a_status(self):
         # The module-level guard is only reachable via runpy; invoke the script
         # as __main__ with a bad argument so no backup is attempted.
+        script = Path(__file__).with_name("backup-personal-state.py")
         with mock.patch.object(sys, "argv", ["backup-personal-state.py"]):
             with self.assertRaises(SystemExit) as exit_code:
-                runpy.run_path(str(Path(__file__).with_name("backup-personal-state.py")),
-                               run_name="__main__")
+                runpy.run_path(str(script), run_name="__main__")
         self.assertEqual(exit_code.exception.code, 2)
 
 

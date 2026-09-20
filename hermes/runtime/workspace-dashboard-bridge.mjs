@@ -35,6 +35,21 @@ function waitWithSignal(promise, signal) {
   });
 }
 
+// Apply one upstream Set-Cookie to the session. Only a Secure, HttpOnly,
+// host-scoped cookie is adopted; anything else is ignored unchanged.
+function applySetCookie(entry, cookie) {
+  const pair = cookie.split(';', 1)[0];
+  const separator = pair.indexOf('=');
+  const name = pair.slice(0, separator);
+  if (!cookieName.test(name) || !/;\s*Secure(?:;|$)/i.test(cookie) ||
+      !/;\s*HttpOnly(?:;|$)/i.test(cookie) || !/;\s*Path=\/(?:;|$)/i.test(cookie) ||
+      /;\s*Domain=/i.test(cookie)) return;
+  const value = pair.slice(separator + 1);
+  if (/;\s*Max-Age=0(?:;|$)/i.test(cookie) || !value) entry.cookies.delete(name);
+  else entry.cookies.set(name, value);
+  entry.changes.set(name, cookie);
+}
+
 export function createDashboardBridge({ dashboardUrl, fetchImpl = globalThis.fetch,
   timeoutMs = 15_000, cacheTtlMs = 30_000 }) {
   const base = new URL(dashboardUrl);
@@ -55,7 +70,10 @@ export function createDashboardBridge({ dashboardUrl, fetchImpl = globalThis.fet
         !(path === '/api/gateway-status' || path === '/api/mcp' || path.startsWith('/api/mcp/'))) return;
     // The native route still verifies the Workspace login. Include its cookie
     // in the hash so one browser's successful probe cannot authenticate another.
-    const key = createHash('sha256').update(request.headers.get('cookie') || '').digest('hex');
+    // The raw header was captured once in handle(); reusing it keeps the hash
+    // key and the forwarded header identical without a second fallback.
+    const cookieHeader = scope.rawCookie;
+    const key = createHash('sha256').update(cookieHeader).digest('hex');
     const now = Date.now();
     for (const [id, item] of capabilityProbes) if (item.expires <= now) capabilityProbes.delete(id);
     const cached = capabilityProbes.get(key);
@@ -65,7 +83,7 @@ export function createDashboardBridge({ dashboardUrl, fetchImpl = globalThis.fet
     item.promise = (async () => {
       const url = new URL('/api/gateway-reprobe', request.url);
       const response = await reprobe(new Request(url, { method: 'POST',
-        headers: { cookie: request.headers.get('cookie') || '' } }));
+        headers: { cookie: cookieHeader } }));
       const body = await response.json().catch(() => null);
       if (!response.ok || !body?.capabilities?.mcp) item.expires = Date.now() + 5_000;
     })().catch(error => { capabilityProbes.delete(key); throw error; });
@@ -100,20 +118,34 @@ export function createDashboardBridge({ dashboardUrl, fetchImpl = globalThis.fet
     return entry;
   }
 
+  // Adopt every rotation from one response and re-key the session for the
+  // cookies it now carries, so later requests join the same queue.
+  function adoptRotatedCookies(scope, entry, response) {
+    for (const cookie of response.headers.getSetCookie()) applySetCookie(entry, cookie);
+    remember(sessionKey(entry.cookies), entry);
+    scope.cookies = new Map(entry.cookies);
+    for (const [name, cookie] of entry.changes) scope.changes.set(name, cookie);
+  }
+
+  // Bound queue/connection waits, not the lifetime of an established SSE
+  // response. Honor an upstream caller's explicit deadline when provided.
+  function connectionSignal(input, init) {
+    const supplied = init.signal || (input instanceof Request ? input.signal : null);
+    if (supplied) return { signal: supplied, timer: null };
+    const deadline = new AbortController();
+    const timer = setTimeout(() => {
+      deadline.abort(new DOMException('Dashboard connection timed out', 'TimeoutError'));
+    }, timeoutMs);
+    return { signal: deadline.signal, timer };
+  }
+
   async function bridgedFetch(input, init = {}) {
     const url = new URL(input instanceof Request ? input.url : input);
     if (url.origin !== base.origin) return fetchImpl(input, init);
     const candidate = context.getStore();
     const scope = candidate?.active ? candidate : null;
     const entry = scope ? acquire(scope.cookies) : null;
-    const suppliedSignal = init.signal || (input instanceof Request ? input.signal : null);
-    // Bound queue/connection waits, not the lifetime of an established SSE
-    // response. Honor an upstream caller's explicit deadline when provided.
-    const deadline = new AbortController();
-    const timer = suppliedSignal ? null : setTimeout(() => {
-      deadline.abort(new DOMException('Dashboard connection timed out', 'TimeoutError'));
-    }, timeoutMs);
-    const signal = suppliedSignal || deadline.signal;
+    const { signal, timer } = connectionSignal(input, init);
     let release = () => {};
     const previous = entry?.tail || Promise.resolve();
     if (entry) {
@@ -132,25 +164,7 @@ export function createDashboardBridge({ dashboardUrl, fetchImpl = globalThis.fet
       // Never forward credentials through an upstream redirect (including OAuth).
       const response = await fetchImpl(input, { ...init, headers, signal, redirect: 'manual' });
       if (scope && response.status === 401) scope.authRequired = true;
-      if (entry) {
-        for (const cookie of response.headers.getSetCookie()) {
-          const pair = cookie.split(';', 1)[0];
-          const separator = pair.indexOf('=');
-          const name = pair.slice(0, separator);
-          if (!cookieName.test(name) || !/;\s*Secure(?:;|$)/i.test(cookie) ||
-              !/;\s*HttpOnly(?:;|$)/i.test(cookie) || !/;\s*Path=\/(?:;|$)/i.test(cookie) ||
-              /;\s*Domain=/i.test(cookie)) continue;
-          const value = pair.slice(separator + 1);
-          if (/;\s*Max-Age=0(?:;|$)/i.test(cookie) || !value) entry.cookies.delete(name);
-          else entry.cookies.set(name, value);
-          entry.changes.set(name, cookie);
-        }
-        // Requests arriving with newly rotated cookies must join the same queue.
-        const key = sessionKey(entry.cookies);
-        remember(key, entry);
-        scope.cookies = new Map(entry.cookies);
-        for (const [name, cookie] of entry.changes) scope.changes.set(name, cookie);
-      }
+      if (entry) adoptRotatedCookies(scope, entry, response);
       return response;
     } finally {
       clearTimeout(timer);
@@ -159,7 +173,8 @@ export function createDashboardBridge({ dashboardUrl, fetchImpl = globalThis.fet
   }
 
   async function handle(request, handler, reprobe) {
-    const scope = { cookies: sessionCookies(request.headers.get('cookie')), changes: new Map(), authRequired: false, active: true };
+    const rawCookie = request.headers.get('cookie') || '';
+    const scope = { rawCookie, cookies: sessionCookies(rawCookie), changes: new Map(), authRequired: false, active: true };
     return context.run(scope, async () => {
       let response;
       try {
@@ -179,8 +194,9 @@ export function createDashboardBridge({ dashboardUrl, fetchImpl = globalThis.fet
       if (scope.authRequired && response.status >= 400) {
         const hostname = new URL(request.url).hostname;
         const login = /^[a-z0-9.-]+\.ts\.net$/i.test(hostname) ? `https://${hostname}/login` : null;
+        const hint = login ? ` ${login}` : '';
         response = Response.json({
-          error: `Hermes Dashboard login required. Open the official Dashboard on HTTPS port 443, sign in, then reload Workspace.${login ? ` ${login}` : ''}`,
+          error: 'Hermes Dashboard login required. Open the official Dashboard on HTTPS port 443, sign in, then reload Workspace.' + hint,
           code: 'dashboard_auth_required', login_url: login,
         }, { status: 401 });
       }

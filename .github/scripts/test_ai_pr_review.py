@@ -804,6 +804,28 @@ class OllamaCloudRequestTest(unittest.TestCase):
         self.assertEqual(retry_body["response_format"]["type"], "json_schema")
         self.assertTrue(retry_body["provider"]["require_parameters"])
 
+    def test_short_circuits_a_route_whose_free_daily_quota_is_spent(self) -> None:
+        # Once a route is marked exhausted the circuit breaker must fail the
+        # chunk before any request, instead of spending another round trip on a
+        # route the provider has already refused for the day.
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        reviewer.FREE_DAILY_QUOTA_ROUTES.clear()
+        reviewer.FREE_DAILY_QUOTA_ROUTES.add(("openrouter", "review-model:free"))
+        try:
+            with (
+                mock.patch.object(reviewer, "ACTIVE_PROVIDER", "openrouter"),
+                mock.patch.object(reviewer, "request_json") as request,
+                mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+                mock.patch("builtins.print"),
+            ):
+                with self.assertRaises(reviewer.RequestError) as caught:
+                    reviewer.review_chunk("api-key", "review-model:free", (), chunk, 1, 1)
+        finally:
+            reviewer.FREE_DAILY_QUOTA_ROUTES.clear()
+        self.assertEqual(caught.exception.reason, "free_daily_quota")
+        self.assertEqual(caught.exception.quota, "free_daily")
+        request.assert_not_called()
+
     def test_requests_ordinary_json_for_selected_ordinary_model(self) -> None:
         response = {
             "choices": [

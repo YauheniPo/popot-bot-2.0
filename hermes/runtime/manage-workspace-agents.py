@@ -179,26 +179,33 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _destination_pair(target: Path, backup_copy: Path | None) -> tuple[Path, Path | None]:
+    """Validate both destinations, replacing None when no backup copy is wanted."""
+    return _destination(target), _destination(backup_copy) if backup_copy is not None else None
+
+
+def _reconcile_instructions(args: argparse.Namespace, existing: str, managed_source: str) -> str:
+    """Return the reconciled content for the requested instruction mode."""
+    if args.common_source is None:
+        if args.legacy_source:
+            raise ManagedBlockError("--legacy-source requires --common-source")
+        return reconcile(existing, managed_source, present=args.state == "present")
+    if args.state != "present":
+        raise ManagedBlockError("shared instructions cannot be disabled via --state")
+    return reconcile_layers(
+        existing, args.common_source.read_text(encoding="utf-8"), managed_source,
+        legacy_sources=[path.read_text(encoding="utf-8") for path in args.legacy_source],
+    )
+
+
 def update_instructions(args: argparse.Namespace) -> int:
-    args.target = _destination(args.target)
-    if args.backup_copy is not None:
-        args.backup_copy = _destination(args.backup_copy)
+    args.target, args.backup_copy = _destination_pair(args.target, args.backup_copy)
     # Validate and read BOTH destinations before changing either one.
     target_content = read_optional(args.target)
     backup_content = read_optional(args.backup_copy) if args.backup_copy is not None else None
     managed_source = args.managed_source.read_text(encoding="utf-8")
     existing = target_content if target_content is not None else (backup_content or "")
-    if args.common_source is not None:
-        if args.state != "present":
-            raise ManagedBlockError("shared instructions cannot be disabled via --state")
-        updated = reconcile_layers(
-            existing, args.common_source.read_text(encoding="utf-8"), managed_source,
-            legacy_sources=[path.read_text(encoding="utf-8") for path in args.legacy_source],
-        )
-    else:
-        if args.legacy_source:
-            raise ManagedBlockError("--legacy-source requires --common-source")
-        updated = reconcile(existing, managed_source, present=args.state == "present")
+    updated = _reconcile_instructions(args, existing, managed_source)
     changed = False
     if updated != existing or (updated and target_content is None):
         write_atomic(args.target, updated)

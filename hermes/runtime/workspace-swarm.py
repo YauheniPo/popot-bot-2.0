@@ -16,6 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'ops'))
 from hermes_config_io import load_config, validated_config_path, write_config
 
 MARKER = '# Managed Hermes Swarm'
+# Managed worker wrappers are installed into this well-known user bin directory.
+USER_BIN_DIR = '.local/bin'
 SOUL_BEGIN = '<!-- BEGIN ANSIBLE MANAGED SWARM ROLE -->'
 SOUL_END = '<!-- END ANSIBLE MANAGED SWARM ROLE -->'
 RULES = '''Work only on explicitly dispatched tasks. Never run autonomous loops.
@@ -77,27 +79,137 @@ def role_soul(previous, instructions):
     return block + '\n\n## Personal additions (preserved on deploy)\n' + personal
 
 
-def provision(home, user_home, repo, hermes_bin, policy, run=subprocess.run):
+def _validated_workers(policy):
+    """Return the managed worker mapping, rejecting ids that are not safe names."""
     workers = policy['workers']
     if not isinstance(workers, dict) or not workers:
         raise ValueError('Swarm workers must be a non-empty mapping')
     for name in workers:
         if not re.fullmatch(r'[a-z][a-z0-9-]{0,40}', name):
             raise ValueError('Invalid managed Swarm worker id')
+    return workers
+
+
+def _managed_swarm_model(home):
+    """Return the shared base config and validated model route for Swarm workers."""
     base = load_config(validated_config_path(home / 'config.yaml', home))
     model = base.get('model', {})
     if not all(isinstance(model.get(k), str) and model[k].strip() for k in ('provider', 'default')):
         raise ValueError('Configure the shared Hermes model before Swarm provisioning')
-    for parent in (home / 'profiles', home / 'swarm', home / 'swarm/worktrees', user_home / '.local/bin'):
+    return base, model
+
+
+def _refuse_managed_collisions(home, user_home, workers):
+    """Fail before writing anything that is a symlink or unmanaged by this script."""
+    for parent in (home / 'profiles', home / 'swarm', home / 'swarm/worktrees', user_home / USER_BIN_DIR):
         if parent.is_symlink():
             raise ValueError('Managed Swarm directories must not be symlinks')
     for name in workers:
         profile = home / 'profiles' / name
-        wrapper = user_home / '.local/bin' / name
+        wrapper = user_home / USER_BIN_DIR / name
         if profile.is_symlink() or (profile.exists() and not (profile / '.managed-swarm').is_file()):
             raise ValueError('Refusing to overwrite an unmanaged Swarm profile')
         if wrapper.is_symlink() or (wrapper.exists() and MARKER not in wrapper.read_text()):
             raise ValueError('Refusing to overwrite an unmanaged Swarm wrapper')
+
+
+def _ensure_worktree(worktree, repo, git, common):
+    """Create the detached worker worktree when absent; return 1 when it was added."""
+    if worktree.is_symlink():
+        raise ValueError('Swarm worktree must not be a symlink')
+    if worktree.exists():
+        if Path(git(worktree, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve() != common:
+            raise ValueError('Swarm worktree belongs to a different repository')
+        return 0
+    worktree.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    git(repo, 'worktree', 'add', '--detach', str(worktree), 'HEAD')
+    return 1
+
+
+def _write_profile_config(profile, base, model, info, worktree):
+    """Apply the shared model route and terminal cwd; return 1 when the file changed."""
+    path = validated_config_path(profile / 'config.yaml', profile)
+    config = load_config(path) if path.exists() else deepcopy(base)
+    previous = deepcopy(config)
+    if not path.exists():
+        config.pop('description', None)
+        config.pop('system_prompt', None)
+    if not config.get('description'):
+        config['description'] = info.get('description') or f'{info["role"]}: {info["instructions"]}'
+    config.setdefault('model', {}).update(provider=model['provider'], default=model['default'])
+    config.setdefault('delegation', {}).update(provider=model['provider'], model=model['default'])
+    config.setdefault('terminal', {})['cwd'] = str(worktree)
+    config.setdefault('approvals', {})['mode'] = 'manual'
+    if config != previous or not path.exists():
+        write_config(path, config)
+        return 1
+    return 0
+
+
+def _link_shared_state(home, profile):
+    """Link shared credentials into a worker profile; return the number of links added."""
+    changes = 0
+    for shared in ('.env', 'auth.json'):
+        source, target = home / shared, profile / shared
+        if source.exists() and not target.exists() and not target.is_symlink():
+            target.symlink_to(source)
+            changes += 1
+    return changes
+
+
+def _write_profile_soul(profile, info):
+    """Write the managed role block into the worker SOUL.md."""
+    instructions = f'{MARKER}\n# {info["role"]}\n\n{info["instructions"]}\n\n{RULES}'
+    soul_path = profile / 'SOUL.md'
+    if soul_path.is_symlink():
+        raise ValueError('Managed Swarm SOUL must not be a symlink')
+    existing_soul = soul_path.read_text() if soul_path.exists() else ''
+    return save_text(soul_path, role_soul(existing_soul, instructions))
+
+
+def _write_worker_wrapper(user_home, name, profile, hermes_bin, worktree):
+    """Install the per-worker launcher script and return its change count."""
+    escaped_cwd = str(worktree).replace("'", "'\\''")
+    wrapper = f'''#!/bin/sh
+{MARKER}
+export HERMES_HOME={shlex.quote(str(profile))}
+cd '{escaped_cwd}' || exit 1
+if [ "$#" -eq 0 ]; then set -- chat --tui; fi
+exec {shlex.quote(str(hermes_bin))} "$@"
+'''
+    return save_text(user_home / USER_BIN_DIR / name, wrapper, 0o700)
+
+
+def _roster_entry(name, info, worktree, model):
+    """Describe one worker for the generated swarm.yaml roster."""
+    return {'id': name, 'name': info['role'], 'role': info['role'],
+            'profile': name, 'wrapper': name, 'defaultCwd': str(worktree),
+            'model': model['provider'] + '/' + model['default'],
+            'mission': info['instructions'], 'maxConcurrentTasks': 1,
+            'reviewRequired': name == 'builder', 'acceptsBroadcast': False,
+            'greenlightRequiredFor': ['commit', 'push', 'merge', 'deploy', 'destructive', 'external-send']}
+
+
+def _provision_worker(home, user_home, name, info, base, model, worktree, hermes_bin, repo, git, common):
+    """Provision one worker profile, its launcher and its worktree.
+
+    Returns (change count, roster entry) in the same write order as before.
+    """
+    changes = _ensure_worktree(worktree, repo, git, common)
+    profile = home / 'profiles' / name
+    profile.mkdir(parents=True, exist_ok=True, mode=0o700)
+    changes += save_text(profile / '.managed-swarm', MARKER + '\n')
+    changes += _write_profile_config(profile, base, model, info, worktree)
+    changes += _link_shared_state(home, profile)
+    changes += _write_profile_soul(profile, info)
+    changes += _write_worker_wrapper(user_home, name, profile, hermes_bin, worktree)
+    return changes, _roster_entry(name, info, worktree, model)
+
+
+def provision(home, user_home, repo, hermes_bin, policy, run=subprocess.run):
+    workers = _validated_workers(policy)
+    base, model = _managed_swarm_model(home)
+    _refuse_managed_collisions(home, user_home, workers)
 
     def git(directory, *args):
         return run(['git', '-C', str(directory), *args], check=True,
@@ -107,60 +219,11 @@ def provision(home, user_home, repo, hermes_bin, policy, run=subprocess.run):
     changes = 0
     roster = []
     for name, info in workers.items():
-        profile = home / 'profiles' / name
         worktree = home / 'swarm/worktrees' / name
-        if worktree.is_symlink():
-            raise ValueError('Swarm worktree must not be a symlink')
-        if worktree.exists():
-            if Path(git(worktree, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve() != common:
-                raise ValueError('Swarm worktree belongs to a different repository')
-        else:
-            worktree.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            git(repo, 'worktree', 'add', '--detach', str(worktree), 'HEAD')
-            changes += 1
-        profile.mkdir(parents=True, exist_ok=True, mode=0o700)
-        changes += save_text(profile / '.managed-swarm', MARKER + '\n')
-        path = validated_config_path(profile / 'config.yaml', profile)
-        config = load_config(path) if path.exists() else deepcopy(base)
-        previous = deepcopy(config)
-        if not path.exists():
-            config.pop('description', None)
-            config.pop('system_prompt', None)
-        if not config.get('description'):
-            config['description'] = info.get('description') or f'{info["role"]}: {info["instructions"]}'
-        config.setdefault('model', {}).update(provider=model['provider'], default=model['default'])
-        config.setdefault('delegation', {}).update(provider=model['provider'], model=model['default'])
-        config.setdefault('terminal', {})['cwd'] = str(worktree)
-        config.setdefault('approvals', {})['mode'] = 'manual'
-        if config != previous or not path.exists():
-            write_config(path, config)
-            changes += 1
-        for shared in ('.env', 'auth.json'):
-            source, target = home / shared, profile / shared
-            if source.exists() and not target.exists() and not target.is_symlink():
-                target.symlink_to(source)
-                changes += 1
-        instructions = f'{MARKER}\n# {info["role"]}\n\n{info["instructions"]}\n\n{RULES}'
-        soul_path = profile / 'SOUL.md'
-        if soul_path.is_symlink():
-            raise ValueError('Managed Swarm SOUL must not be a symlink')
-        existing_soul = soul_path.read_text() if soul_path.exists() else ''
-        changes += save_text(soul_path, role_soul(existing_soul, instructions))
-        escaped_cwd = str(worktree).replace("'", "'\\''")
-        wrapper = f'''#!/bin/sh
-{MARKER}
-export HERMES_HOME={shlex.quote(str(profile))}
-cd '{escaped_cwd}' || exit 1
-if [ "$#" -eq 0 ]; then set -- chat --tui; fi
-exec {shlex.quote(str(hermes_bin))} "$@"
-'''
-        changes += save_text(user_home / '.local/bin' / name, wrapper, 0o700)
-        roster.append({'id': name, 'name': info['role'], 'role': info['role'],
-                       'profile': name, 'wrapper': name, 'defaultCwd': str(worktree),
-                       'model': model['provider'] + '/' + model['default'],
-                       'mission': info['instructions'], 'maxConcurrentTasks': 1,
-                       'reviewRequired': name == 'builder', 'acceptsBroadcast': False,
-                       'greenlightRequiredFor': ['commit', 'push', 'merge', 'deploy', 'destructive', 'external-send']})
+        worker_changes, entry = _provision_worker(home, user_home, name, info, base, model,
+                                                  worktree, hermes_bin, repo, git, common)
+        changes += worker_changes
+        roster.append(entry)
     changes += save_text(home / 'swarm/swarm.yaml', yaml.safe_dump({'version': 1, 'workers': roster}, sort_keys=False))
     return changes
 

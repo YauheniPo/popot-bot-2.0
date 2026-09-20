@@ -196,29 +196,66 @@ class Engine:
     def _refresh(self, job, advance):
         if job['status'] == 'dispatch_unknown':
             return
-        record = ({'origin_session': job['owner'], 'state': 'completed', 'result': job['inline_result']}
-                  if 'inline_result' in job else self.backend.result(job['delegation_id']))
-        if not record or record.get('origin_session') != job['owner']:
-            job.update(status='dispatch_unknown', reason='Native result missing or belongs to another session; inspect before releasing capacity')
+        record = self._native_record(job)
+        if record is None:
             return
-        running = record.get('state') in {'running', 'stalling', 'pending', 'finalizing'}
-        if not running and record.get('state') not in {'completed', 'failed', 'error', 'cancelled', 'interrupted'}:
-            job.update(status='dispatch_unknown', reason='Unrecognized native state; no automatic replay')
+        running = self._native_running(job, record)
+        if running is None:
             return
         if job['status'] == 'cancel_requested':
-            if not running:
-                job['status'] = 'timed_out' if job['reason'] == 'deadline' else 'cancelled'
+            self._settle_cancel(job, running)
             return
         if self.now() >= job['deadline_at']:
-            self._cancel(job, 'deadline')
-            if not running:
-                job['status'] = 'timed_out'
+            self._expire(job, running)
             return
         if running:
             return
         if not advance:
             job['status'] = 'awaiting_coordinator'
             return
+        self._advance(job, record)
+
+    def _advance(self, job, record):
+        """Apply the stage payload of a settled, non-cancelled job."""
+        payload = self._stage_payload(job, record)
+        if payload is None:
+            return
+        self._apply_payload(job, payload)
+
+    def _native_record(self, job):
+        """Return this job's native record, or None after marking an unusable one."""
+        if 'inline_result' in job:
+            record = {'origin_session': job['owner'], 'state': 'completed', 'result': job['inline_result']}
+        else:
+            record = self.backend.result(job['delegation_id'])
+        if not record or record.get('origin_session') != job['owner']:
+            job.update(status='dispatch_unknown', reason='Native result missing or belongs to another session; inspect before releasing capacity')
+            return None
+        return record
+
+    def _native_running(self, job, record):
+        """Return whether the stage still runs; None stops the caller after marking the job."""
+        state = record.get('state')
+        if state in {'running', 'stalling', 'pending', 'finalizing'}:
+            return True
+        if state not in {'completed', 'failed', 'error', 'cancelled', 'interrupted'}:
+            job.update(status='dispatch_unknown', reason='Unrecognized native state; no automatic replay')
+            return None
+        return False
+
+    def _settle_cancel(self, job, running):
+        """Resolve a cancellation request once the native stage is no longer running."""
+        if not running:
+            job['status'] = 'timed_out' if job['reason'] == 'deadline' else 'cancelled'
+
+    def _expire(self, job, running):
+        """Cancel a job past its deadline and record the timeout once the stage stopped."""
+        self._cancel(job, 'deadline')
+        if not running:
+            job['status'] = 'timed_out'
+
+    def _stage_payload(self, job, record):
+        """Return the validated stage payload, or None after blocking on unusable evidence."""
         try:
             result = record['result']['results'][0]
             if (record['state'] != 'completed' or result['status'] != 'completed'
@@ -229,24 +266,48 @@ class Engine:
             self._validate(payload, job['stage'])
         except (KeyError, IndexError, TypeError, ValueError):
             job.update(status='blocked', reason='Stage failed or returned invalid/unverified evidence; inspect native result')
-            return
+            return None
+        return payload
+
+    def _apply_payload(self, job, payload):
+        """Record a validated payload and dispatch whatever stage comes next."""
         job['history'].append({'stage': job['stage'], 'revision': job['revision'], **payload})
         job.pop('inline_result', None)
         if payload['status'] != 'done':
             job.update(status=payload['status'], reason=payload['result'])
             return
         if job['stage'] == 'review':
-            if payload['verdict'] == 'pass':
-                job['status'] = 'completed'
-                return
-            if job['revision'] >= self.rounds:
-                job.update(status='needs_input', reason='Review revision budget exhausted; owner decision required')
-                return
-            job['revision'] += 1
-            job['stage'] = 'execute'
-        else:
-            job['stage'] = 'execute' if job['stage'] == 'research' else 'review'
+            self._finish_review(job, payload)
+            return
+        job['stage'] = 'execute' if job['stage'] == 'research' else 'review'
         self._dispatch(job)
+
+    def _finish_review(self, job, payload):
+        """Complete, exhaust or revise a job whose review stage returned done."""
+        if payload['verdict'] == 'pass':
+            job['status'] = 'completed'
+            return
+        if job['revision'] >= self.rounds:
+            job.update(status='needs_input', reason='Review revision budget exhausted; owner decision required')
+            return
+        job['revision'] += 1
+        job['stage'] = 'execute'
+        self._dispatch(job)
+
+    @staticmethod
+    def _validate_items(payload, key):
+        """Require a bounded list of non-empty text items for one schema key."""
+        items = payload[key]
+        if not isinstance(items, list) or len(items) > 12:
+            raise ValueError('Invalid evidence')
+        for item in items:
+            required_text(item, key, 400)
+
+    @staticmethod
+    def _validate_review(payload):
+        """Require a review verdict that agrees with the returned findings."""
+        if payload['verdict'] not in {'pass', 'revise'} or bool(payload['findings']) != (payload['verdict'] == 'revise'):
+            raise ValueError('Inconsistent review')
 
     @staticmethod
     def _validate(payload, stage):
@@ -256,18 +317,13 @@ class Engine:
         if payload['status'] not in {'done', 'blocked', 'needs_input'}:
             raise ValueError('Invalid outcome')
         for key in ('evidence', 'findings', 'changed_files'):
-            items = payload[key]
-            if not isinstance(items, list) or len(items) > 12:
-                raise ValueError('Invalid evidence')
-            for item in items:
-                required_text(item, key, 400)
+            Engine._validate_items(payload, key)
         if payload['status'] == 'done' and not payload['evidence']:
             raise ValueError('Missing evidence')
         if payload['verdict'] not in {'pass', 'revise', 'not_reviewed'}:
             raise ValueError('Invalid verdict')
         if stage == 'review' and payload['status'] == 'done':
-            if payload['verdict'] not in {'pass', 'revise'} or bool(payload['findings']) != (payload['verdict'] == 'revise'):
-                raise ValueError('Inconsistent review')
+            Engine._validate_review(payload)
 
     @staticmethod
     def _public(job):
