@@ -8,7 +8,8 @@ on:
 
 env:
   # Select reviewers through the PR_REVIEWER repository variable:
-  # 0/unset = direct, then both agent reviewers in parallel; 1 = direct; 2 = both agents.
+  # 0/unset = DirectAPI + ClaudeCodePlugin gating, with Observable corroboration;
+  # 1 = DirectAPI; 2 = ClaudeCodePlugin gating with Observable corroboration.
   PR_REVIEWER: ${{ vars.PR_REVIEWER || '0' }}
   # Both agent reviewers share CLAUDE_REVIEW_*; Direct API has its own route.
   DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'openrouter' }}
@@ -63,7 +64,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${PR_REVIEWER}" != "0" && "${PR_REVIEWER}" != "1" && "${PR_REVIEWER}" != "2" ]]; then
-            echo "::error::PR_REVIEWER must be 0 (all three), 1 (direct API), or 2 (both agent reviewers)."
+            echo "::error::PR_REVIEWER must be 0 (DirectAPI + ClaudeCodePlugin), 1 (DirectAPI), or 2 (ClaudeCodePlugin). ObservableMessagesReview is corroborating and non-gating."
             exit 1
           fi
 
@@ -870,7 +871,8 @@ jobs:
       # same free-model rate limit on the shared provider key.
       CLAUDE_REVIEW_MODEL: ${{ vars.OBSERVABLE_REVIEW_MODEL || 'nex-agi/nex-n2.5-mini:free' }}
       CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.OBSERVABLE_REVIEW_FALLBACK_MODEL || 'kimi-k2.7-code' }}
-      CLAUDE_REVIEW_MAX_TURNS: ${{ vars.CLAUDE_REVIEW_MAX_TURNS || '24' }}
+      OBSERVABLE_REVIEW_MAX_TURNS: ${{ vars.OBSERVABLE_REVIEW_MAX_TURNS || '16' }}
+      CLAUDE_REVIEW_MAX_TURNS: ${{ vars.OBSERVABLE_REVIEW_MAX_TURNS || '16' }}
       CLAUDE_REVIEW_ATTEMPT_TIMEOUT_SECONDS: ${{ vars.CLAUDE_REVIEW_ATTEMPT_TIMEOUT_SECONDS || '600' }}
       CLAUDE_REVIEW_INACTIVITY_TIMEOUT_SECONDS: ${{ vars.CLAUDE_REVIEW_INACTIVITY_TIMEOUT_SECONDS || '180' }}
       CLAUDE_REVIEW_HEARTBEAT_SECONDS: ${{ vars.CLAUDE_REVIEW_HEARTBEAT_SECONDS || '30' }}
@@ -896,7 +898,8 @@ jobs:
         id: observable_run
         # A corroborating reviewer must not block CI when a free provider is
         # unavailable or returns no valid result; the run still publishes its
-        # failure report below. review-results rejects missing review results.
+        # failure report below. Observable is corroborating and does not gate
+        # the required DirectAPI + ClaudeCodePlugin pair.
         continue-on-error: true
         env:
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
@@ -932,9 +935,9 @@ jobs:
         run: |
           set -euo pipefail
           case "$PR_REVIEWER" in
-            0) methods=(DirectAPI ClaudeCodePlugin ObservableMessagesReview); results=("$DIRECT_COMPLETE" "$CLAUDE_COMPLETE" "$OBSERVABLE_COMPLETE") ;;
+            0) methods=(DirectAPI ClaudeCodePlugin); results=("$DIRECT_COMPLETE" "$CLAUDE_COMPLETE") ;;
             1) methods=(DirectAPI); results=("$DIRECT_COMPLETE") ;;
-            2) methods=(ClaudeCodePlugin ObservableMessagesReview); results=("$CLAUDE_COMPLETE" "$OBSERVABLE_COMPLETE") ;;
+            2) methods=(ClaudeCodePlugin); results=("$CLAUDE_COMPLETE") ;;
             *) echo '::error::Invalid PR_REVIEWER'; exit 1 ;;
           esac
           printf '## AI review completion\n\n| Method | Result |\n| --- | --- |\n' >> "$GITHUB_STEP_SUMMARY"
@@ -947,6 +950,10 @@ jobs:
             fi
             printf '| %s | %s |\n' "${methods[$index]}" "$status" >> "$GITHUB_STEP_SUMMARY"
           done
+          if [[ "$PR_REVIEWER" == "0" || "$PR_REVIEWER" == "2" ]]; then
+            printf '| ObservableMessagesReview | Corroborating (non-gating): %s |\n' \
+              "$OBSERVABLE_COMPLETE" >> "$GITHUB_STEP_SUMMARY"
+          fi
           if (( failed )); then
             echo '::error::Not every selected reviewer produced and published a validated result. Inspect the reviewer reports before rerunning.'
           fi

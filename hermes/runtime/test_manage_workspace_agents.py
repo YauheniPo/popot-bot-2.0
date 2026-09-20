@@ -64,6 +64,17 @@ class ManageWorkspaceAgentsTests(unittest.TestCase):
             self.assertIn("unchanged", result.stdout)
             self.assertTrue(marker.exists())  # Left inert, never used to clobber the file.
 
+            # A partial image may lack instruction sources. Bootstrap must
+            # leave a usable empty file instead of aborting on chown/chmod.
+            target.unlink()
+            for source in (assets / "common-AGENTS.md", assets / "container-admin-AGENTS.md",
+                           assets / "legacy-container-AGENTS.md"):
+                source.unlink()
+            result = subprocess.run(["sh", "-eu", "-c", command], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue(target.is_file())
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+
     def test_shared_layers_replace_old_policy_and_preserve_personal_and_integration_blocks(self):
         personal = "# Personal\nKeep this note.\n\n<!-- BEGIN MANAGED GITHUB WORKFLOW -->\nGitHub\n<!-- END MANAGED GITHUB WORKFLOW -->\n"
         old = manage_workspace_agents.reconcile(personal, "Old VPS policy", present=True)

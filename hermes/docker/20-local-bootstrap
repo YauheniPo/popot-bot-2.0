@@ -59,11 +59,18 @@ fi
 
 # Refresh only managed layers on every start. The old marker never authorizes
 # replacing the whole file: it may already contain personal instructions.
-python3 /opt/hermes-local/manage-workspace-agents.py \
+# A stale or incomplete image must not prevent the container from starting;
+# create an empty managed file and let the next image refresh it.
+if ! python3 /opt/hermes-local/manage-workspace-agents.py \
   --target "${state_dir}/workspace/AGENTS.md" \
   --common-source /opt/hermes-local/common-AGENTS.md \
   --managed-source /opt/hermes-local/container-admin-AGENTS.md \
-  --legacy-source /opt/hermes-local/legacy-container-AGENTS.md
+  --legacy-source /opt/hermes-local/legacy-container-AGENTS.md; then
+  echo "[hermes-local] workspace instructions unavailable; continuing with existing state" >&2
+fi
+if [ ! -e "${state_dir}/workspace/AGENTS.md" ]; then
+  install -o hermes -g hermes -m 0600 /dev/null "${state_dir}/workspace/AGENTS.md"
+fi
 chown hermes:hermes "${state_dir}/workspace/AGENTS.md"
 chmod 0600 "${state_dir}/workspace/AGENTS.md"
 

@@ -22,7 +22,7 @@ from review_execution import observable_execution_report, safe_label, technical_
 LABEL = "ObservableMessagesReview"
 PREFIX = "observable"
 MAX_REPORT_BYTES = 1024 * 1024
-MAX_CHUNK_CHARS = 32_000
+MAX_CHUNK_CHARS = 48_000
 MAX_FINDINGS = 5
 RATE_LIMIT_WAIT_BUDGET = 120  # Per chunk, shared by primary and fallback retries.
 NON_RETRYABLE = {"http_400", "http_401", "http_403", "http_404",
@@ -115,11 +115,13 @@ def _chunk_prompt(policy: str, base: str, head: str, changed: str, chunk: str,
 Adapter instructions for {LABEL}:
 Perform a fresh independent review of base {base} to head {head}.
 {scope}
-First Read {runner.REVIEW_DIFF_PATH} ({len(chunk.splitlines())} lines); paginate with offset/limit.
+Read {runner.REVIEW_DIFF_PATH} ({len(chunk.splitlines())} lines) first; paginate only when
+the requested evidence is not in the current page. Do not reread pages already seen.
 Final JSON is rejected unless Read returned actual numbered lines from that diff.
 Inspect risky runtime, security, configuration and API changes first. Batch independent reads.
 Read callers and validators before alleging missing validation. No shell, execution or external tools.
-Grep uses literal strings. Read output is numbered and bounded; paginate rather than repeating a read.
+Grep uses literal strings. Read output is numbered and bounded; batch at most one targeted
+caller/validator read when the diff alone is insufficient.
 Discard findings that say behavior is equivalent, correct, harmless, or 'no fix needed'.
 Never claim complete coverage if time or context ran out; name unreviewed scope in summary.
 Return final JSON before your turn budget expires. Report at most five proven P1/P2 defects.
@@ -254,6 +256,18 @@ def _rate_limit_retry(attempt: dict, route: dict, state: dict) -> float | None:
 
 def _retry_after_attempt(attempt: dict, route: dict, state: dict) -> bool:
     print(f"[review] attempt_failed reason={attempt['outcome']} elapsed={attempt['seconds']}s", flush=True)
+    if (
+        state.get("free_daily")
+        and route.get("role") == "fallback"
+        and attempt.get("outcome") == "provider_incomplete_result"
+    ):
+        attempt["retry_decision"] = "quota_known_incomplete_skip"
+        print(
+            "[review] retry_skipped reason=quota_known_incomplete_skip "
+            "(free daily quota already exhausted; fallback retry is not useful)",
+            flush=True,
+        )
+        return False
     limited = attempt["outcome"] == "http_429"
     delay = _rate_limit_retry(attempt, route, state) if limited else 5
     if attempt["outcome"] in NON_RETRYABLE or attempt["number"] == 2 or delay is None:
@@ -264,6 +278,16 @@ def _retry_after_attempt(attempt: dict, route: dict, state: dict) -> bool:
         state["retries"] += 1
     _retry_wait(delay)
     return True
+
+
+def _incomplete_retry_prompt(prompt: str) -> str:
+    return prompt + """
+
+Retry mode: the previous attempt ended before a complete JSON response. Do not
+reread the full diff or inspect additional files. Use only evidence already
+collected (read one diff page only if absolutely necessary), then return the
+required JSON immediately with findings=[] when evidence is insufficient.
+"""
 
 
 def _route_skip_reason(route: dict, state: dict) -> str | None:
@@ -292,6 +316,7 @@ def review_attempts(workspace: Path, prompt: str, files: set[str], report: dict,
         "blocked_providers": set(circuit_state.get("blocked_providers", set())),
     }
     route_outcomes = {}
+    retry_prompt = prompt
     for route in routes():
         skip_reason = _route_skip_reason(route, state)
         if skip_reason:
@@ -299,12 +324,14 @@ def review_attempts(workspace: Path, prompt: str, files: set[str], report: dict,
             print(f"[review] route_skipped role={safe_label(route['role'])} reason={skip_reason}", flush=True)
             continue
         for number in (1, 2):
-            if _single_attempt(route, number, prompt, workspace, files, execution, report, base, head, limits, chunk_index):
+            if _single_attempt(route, number, retry_prompt, workspace, files, execution, report, base, head, limits, chunk_index):
                 circuit_state["free_daily"] = state["free_daily"]
                 circuit_state["blocked_providers"] = state["blocked_providers"]
                 return 0
             attempt = report["attempts"][-1]
             route_outcomes[route["role"]] = attempt["outcome"]
+            if attempt["outcome"] == "provider_incomplete_result":
+                retry_prompt = _incomplete_retry_prompt(prompt)
             if not _retry_after_attempt(attempt, route, state):
                 break
     outcomes = set(route_outcomes.values())

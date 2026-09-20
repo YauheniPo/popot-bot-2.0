@@ -61,8 +61,16 @@ chmod 700 "${HERMES_BACKUP_DIR}" "${HERMES_HOME}/ops"
 exec 9>"${HERMES_HOME}/ops/backup.lock"
 flock -n 9 || exit 0
 
-run_backup_command "${HERMES_PYTHON}" "${PERSONAL_BACKUP_HELPER}" mirror \
-    --hermes-home "${HERMES_HOME}" --workspace "${HERMES_WORKSPACE}"
+# Personal-state mirroring is supplementary. A missing helper or a transient
+# mirror error must never prevent the primary Hermes archive from being made.
+if [[ -f "${PERSONAL_BACKUP_HELPER}" && -x "${HERMES_PYTHON}" ]]; then
+    if ! run_backup_command "${HERMES_PYTHON}" "${PERSONAL_BACKUP_HELPER}" mirror \
+        --hermes-home "${HERMES_HOME}" --workspace "${HERMES_WORKSPACE}"; then
+        printf 'Warning: personal-state mirror failed; continuing with primary backup\n' >&2
+    fi
+else
+    printf 'Warning: personal-state mirror helper unavailable; continuing with primary backup\n' >&2
+fi
 
 # workspace/AGENTS.md contains the operator's personal agent instructions but
 # lives outside HERMES_HOME. Mirror it into the full-backup tree before every

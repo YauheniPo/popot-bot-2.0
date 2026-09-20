@@ -71,8 +71,8 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertEqual(set(aggregate["needs"]), {"direct-api-review", "claude-code-plugin-review", "observable-claude-review"})
         for selector, direct, claude, observable, expected in (
             ("0", "true", "true", "true", 0), ("0", "true", "false", "true", 1),
-            ("0", "false", "true", "true", 1), ("0", "true", "true", "false", 1),
-            ("1", "true", "", "", 0), ("2", "", "true", "true", 0), ("9", "true", "true", "true", 1),
+            ("0", "false", "true", "true", 1), ("0", "true", "true", "false", 0),
+            ("1", "true", "", "", 0), ("2", "", "true", "false", 0), ("9", "true", "true", "true", 1),
         ):
             with self.subTest(selector=selector, direct=direct, claude=claude, observable=observable), tempfile.TemporaryDirectory() as directory:
                 summary = Path(directory) / "summary.md"

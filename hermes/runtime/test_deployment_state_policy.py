@@ -202,6 +202,8 @@ class DeploymentStatePolicyTests(unittest.TestCase):
         self.assertIn("Hermes workspace must be a non-empty absolute safe path", scheduled_backup)
         self.assertIn("Hermes backup run-as user does not exist", scheduled_backup)
         self.assertIn('rm -f -- "${operator_state_agents}"', scheduled_backup)
+        self.assertIn("personal-state mirror helper unavailable; continuing with primary backup", scheduled_backup)
+        self.assertIn("personal-state mirror failed; continuing with primary backup", scheduled_backup)
 
     def test_final_config_check_runs_before_gateway_install(self) -> None:
         services = (HERMES_ROOT / "ansible" / "tasks" / "services.yml").read_text()

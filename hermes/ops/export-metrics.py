@@ -20,7 +20,10 @@ def home() -> Path:
 
 
 def label(value: object) -> str:
-    return str(value or "unknown")[:180].replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    escaped = str(value or "unknown").replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    escaped = escaped[:180]
+    # Do not emit a truncated escape sequence at the label boundary.
+    return escaped[:-1] if escaped.endswith("\\") else escaped
 
 
 def metric(

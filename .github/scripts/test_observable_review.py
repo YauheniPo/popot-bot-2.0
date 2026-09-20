@@ -187,6 +187,39 @@ class ObservableReviewTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertFalse(pauses)
 
+    def test_known_free_quota_skips_fallback_retry_after_incomplete_result(self):
+        report, calls, pauses, code, output = self.attempts([
+            observer.runner.RateLimitFailure({"scope": "platform", "quota": "free_daily"}),
+            observer.runner.ReviewFailure("provider_incomplete_result"),
+        ], models=("primary:free", "backup"), fallback_provider="ollama-cloud")
+        self.assertEqual(code, 1)
+        self.assertEqual(len(calls), 2)
+        self.assertFalse(pauses)
+        self.assertEqual(report["attempts"][-1]["retry_decision"], "quota_known_incomplete_skip")
+        self.assertIn("quota_known_incomplete_skip", output)
+
+    def test_incomplete_retry_uses_short_prompt(self):
+        prompts = []
+        state = {"free_daily": False, "blocked_providers": set()}
+
+        def attempt(*args, **kwargs):
+            prompts.append(args[2])
+            report["attempts"].append({
+                "outcome": "provider_incomplete_result" if len(prompts) == 1 else "all_attempts_failed"
+            })
+            return False
+
+        report = {"status": "failed", "attempts": []}
+        routes = [{"provider": "ollama-cloud", "role": "fallback", "model": "backup",
+                   "key": "k", "endpoint": "https://example.test"}]
+        with mock.patch.object(observer, "routes", return_value=routes), \
+                mock.patch.object(observer, "_single_attempt", side_effect=attempt), \
+                mock.patch.object(observer, "_retry_after_attempt", return_value=True):
+            observer.review_attempts(Path("."), "full review prompt", set(), report,
+                                     Path("report.json"), "a" * 40, "b" * 40, state=state)
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("reread the full diff", prompts[1])
+
     def test_free_daily_quota_state_is_shared_between_chunks(self):
         report = {"status": "failed", "attempts": []}
         chunks = [

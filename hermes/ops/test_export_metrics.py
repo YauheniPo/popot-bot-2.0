@@ -53,7 +53,8 @@ class ExportMetricsTests(unittest.TestCase):
         self.assertEqual(metrics.label(None), "unknown")
 
     def test_long_labels_do_not_cut_an_escape_sequence_in_half(self):
-        self.assertEqual(metrics.label("a" * 179 + '"tail'), "a" * 179 + '\\"')
+        self.assertEqual(metrics.label("a" * 179 + '"tail'), "a" * 179)
+        self.assertNotRegex(metrics.label("a" * 179 + "\\tail"), r"(?<!\\)\\$")
 
     def test_gateway_explicit_states_do_not_run_systemctl(self) -> None:
         with mock.patch.object(metrics.subprocess, "run") as run:
