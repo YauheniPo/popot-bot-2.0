@@ -50,6 +50,14 @@ class RateLimitFailure(ReviewFailure):
         self.details = details
 
 
+class _WorkerTurnState:
+    def __init__(self, messages: list[dict], read_files: set[str], tool_cache: dict[str, str]):
+        self.messages = messages
+        self.read_files = read_files
+        self.tool_cache = tool_cache
+        self.repeated_rounds = 0
+
+
 def _nonnegative_number(value) -> float | None:
     try:
         number = float(value)
@@ -392,13 +400,17 @@ def _response_blocks(response):
 
 
 def _run_worker_turn(
-    pipe, endpoint, api_key, model, messages, workspace, allowed, read_files, tool_cache,
-    turn, max_turns, timeout, max_tokens, repeated_rounds,
+    pipe, endpoint, api_key, model, state, workspace, allowed,
+    turn, max_turns, timeout, max_tokens,
 ):
-    """Run one investigation turn and return (finished, repeated_rounds)."""
+    """Run one investigation turn and return whether the worker is finished."""
     def emit(label):
         pipe.send(("event", label, turn))
 
+    messages = state.messages
+    read_files = state.read_files
+    tool_cache = state.tool_cache
+    repeated_rounds = state.repeated_rounds
     finalizing = turn == max_turns or repeated_rounds >= 3
     if finalizing:
         reason = "repeated_tools" if repeated_rounds >= 3 else "turn_budget"
@@ -409,39 +421,37 @@ def _run_worker_turn(
     emit(event_label(response))
     content, blocks = _response_blocks(response)
     if _final_response_or_none(pipe, response, content, blocks, read_files, turn) is not None:
-        return True, repeated_rounds
+        return True
     if finalizing:
         raise ReviewFailure("turn_limit")
     messages.append({"role": "assistant", "content": content})
     previous_calls = len(tool_cache)
     results = _tool_results(blocks, workspace, allowed, emit, read_files, tool_cache)
-    repeated_rounds = repeated_rounds + 1 if len(tool_cache) == previous_calls else 0
+    state.repeated_rounds = repeated_rounds + 1 if len(tool_cache) == previous_calls else 0
     messages.append({"role": "user", "content": results})
     if turn >= max_turns - 3:
         messages.append({"role": "user", "content":
             f"Investigation rounds remaining: {max_turns - turn - 1}; then one final JSON-only round. "
             "Finish checking the current chunk; do not expand scope. Batch only essential reads."})
-    return False, repeated_rounds
+    return False
 
 
 def _worker(pipe, endpoint, api_key, model, prompt, workspace, allowed, max_turns, timeout, max_tokens=8192):
     # Only this process owns network IO and tools. Parent can terminate it even
     # during DNS/TLS, a slow file read, a streaming response, or final teardown.
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
-    messages = [{"role": "user", "content": prompt}]
-    read_files: set[str] = set()
-    tool_cache: dict[str, str] = {}
-    repeated_rounds = 0
+    state = _WorkerTurnState(
+        messages=[{"role": "user", "content": prompt}],
+        read_files=set(),
+        tool_cache={},
+    )
     turn = 0
-
-    def emit(label):
-        pipe.send(("event", label, turn))
 
     try:
         for turn in range(1, max_turns + 1):
-            finished, repeated_rounds = _run_worker_turn(
-                pipe, endpoint, api_key, model, messages, workspace, allowed, read_files, tool_cache,
-                turn, max_turns, timeout, max_tokens, repeated_rounds,
+            finished = _run_worker_turn(
+                pipe, endpoint, api_key, model, state, workspace, allowed,
+                turn, max_turns, timeout, max_tokens,
             )
             if finished:
                 return

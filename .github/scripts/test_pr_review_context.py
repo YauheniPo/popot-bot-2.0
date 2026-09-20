@@ -370,6 +370,17 @@ class InlineCommentTest(unittest.TestCase):
         self.assertEqual(findings[0].line, 12)
         self.assertEqual(verdicts[0].verdict, "rejected")
 
+    def test_keeps_long_claude_summary_without_cutting_the_review_report(self) -> None:
+        summary = "Reviewed all changed files. " + ("Evidence retained. " * 180)
+        result = {"summary": summary, "findings": [], "thread_verdicts": []}
+        with mock.patch.object(context, "_changed_paths", return_value=set()):
+            rendered, findings, verdicts = context._validated_claude_result(
+                context.json.dumps(result), "a" * 40, "b" * 40,
+            )
+        self.assertEqual(rendered, " ".join(summary.split())[:context.MAX_CLAUDE_SUMMARY_CHARACTERS])
+        self.assertEqual(findings, [])
+        self.assertEqual(verdicts, [])
+
     def test_processes_all_validated_thread_verdicts_up_to_contract_limit(self) -> None:
         result = {
             "summary": "Re-checked all threads.",

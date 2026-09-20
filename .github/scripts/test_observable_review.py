@@ -541,7 +541,7 @@ class ObservableReviewTests(unittest.TestCase):
             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
             self.assertEqual(observer._git(root, "rev-parse", "--is-inside-work-tree").strip(), "true")
 
-    def test_single_attempt_handles_route_error_and_invalid_anchor(self):
+    def test_single_attempt_handles_route_error_and_filters_invalid_anchor(self):
         report = {"attempts": []}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -555,7 +555,8 @@ class ObservableReviewTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertEqual(report["attempts"][0]["outcome"], "missing_provider_key")
 
-        # invalid_diff_anchor branch
+        # Invalid anchors are filtered by the shared normalizer.  A readable
+        # review still succeeds, while diagnostics record what was discarded.
         report = {"attempts": []}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -566,8 +567,10 @@ class ObservableReviewTests(unittest.TestCase):
                     mock.patch.object(observer.publisher, "_normalized_claude_result", return_value='{"summary":"s","findings":[],"thread_verdicts":[]}'), \
                     mock.patch.object(observer.time, "monotonic", side_effect=[0.0, 0.1]):
                 ok = observer._single_attempt(route, 1, "prompt", root, set(), execution, report, "a"*40, "b"*40, limits)
-            self.assertFalse(ok)
-            self.assertEqual(report["attempts"][0]["outcome"], "invalid_diff_anchor")
+            self.assertTrue(ok)
+            self.assertEqual(report["attempts"][0]["outcome"], "valid_json_filtered")
+            self.assertEqual(report["attempts"][0]["filtered_findings"], 1)
+            self.assertEqual(report["result"]["findings"], [])
 
     def test_single_attempt_generic_exception(self):
         report = {"attempts": []}

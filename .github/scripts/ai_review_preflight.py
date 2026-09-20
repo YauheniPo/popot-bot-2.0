@@ -249,9 +249,11 @@ def _request_probe_response(request: urllib.request.Request, attempts: int, time
         # without an unnecessary sleep because there is no next attempt.
         if delay > remaining:
             raise RuntimeError(f"{provider} {kind} probe retry wait budget exhausted")
+        # Reserve the delay before sleeping so every retryable path, including
+        # HTTP 429/5xx responses, consumes the same bounded wait budget.
+        remaining -= delay
         print(f"[preflight] retry_wait={delay}s; no provider request in flight", file=sys.stderr)
         time.sleep(delay)
-        remaining -= delay
     return result
 
 

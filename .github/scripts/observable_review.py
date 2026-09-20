@@ -189,11 +189,18 @@ def _single_attempt(route: dict, number: int, prompt: str, workspace: Path, file
             prompt=prompt, workspace=workspace, output=execution, allowed_files=files, log=sys.stdout, **limits)
         text = publisher._claude_final_response(execution)
         normalized = publisher._normalized_claude_result(text, base, head)
-        # Never silently turn invalid anchors into an empty successful review.
-        if len(json.loads(normalized)["findings"]) != len(json.loads(text)["findings"]):
-            raise runner.ReviewFailure("invalid_diff_anchor")
-        report.update(status="success", result=json.loads(normalized))
-        attempt.update(stats, outcome="valid_json")
+        raw_document = json.loads(text)
+        normalized_document = json.loads(normalized)
+        # Findings outside the changed diff are unsafe to publish, but they
+        # must not invalidate an otherwise readable review.  The publisher's
+        # normalizer drops those findings; keep the review successful and make
+        # the filtering explicit in diagnostics instead of blocking the whole
+        # multi-reviewer gate on one over-eager model claim.
+        filtered = len(normalized_document["findings"]) != len(raw_document["findings"])
+        report.update(status="success", result=normalized_document)
+        attempt.update(stats, outcome="valid_json_filtered" if filtered else "valid_json")
+        if filtered:
+            attempt["filtered_findings"] = len(raw_document["findings"]) - len(normalized_document["findings"])
         return True
     except (runner.ReviewFailure, runner.ReviewTimeout) as error:
         attempt["outcome"] = str(error).split(":", 1)[0]

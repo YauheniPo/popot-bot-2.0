@@ -40,6 +40,7 @@ MAX_REPLY_CHARACTERS = 4_000
 MAX_INLINE_COMMENT_CHARACTERS = 4_000
 MAX_CLAUDE_EXECUTION_FILE_BYTES = 64 * 1024 * 1024
 MAX_CLAUDE_REVIEW_RESULT_BYTES = 1024 * 1024
+MAX_CLAUDE_SUMMARY_CHARACTERS = 4_000
 COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
 HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 SEMANTIC_DUPLICATE_THRESHOLD = 0.42
@@ -844,7 +845,7 @@ def _validated_claude_result(
     except json.JSONDecodeError as error:
         raise RuntimeError("Claude review output is not valid JSON") from error
     result = _validate_claude_result_contract(result)
-    summary = _clean_result_text(result.get("summary"), 1_000)
+    summary = _clean_result_text(result.get("summary"), MAX_CLAUDE_SUMMARY_CHARACTERS)
     raw_findings = result.get("findings")
     raw_verdicts = result.get("thread_verdicts")
     if not summary or not isinstance(raw_findings, list) or not isinstance(raw_verdicts, list):
