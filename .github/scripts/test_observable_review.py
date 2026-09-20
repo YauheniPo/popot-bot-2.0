@@ -461,7 +461,7 @@ class ObservableReviewTests(unittest.TestCase):
         report = {"status": "success", "result": {"summary": "s", "findings": [], "thread_verdicts": [{"x": 1}]}}
         with mock.patch.object(context, "_validated_claude_result", return_value=("summary", [], [{"thread_id": "t"}])):
             with self.assertRaisesRegex(RuntimeError, "cannot publish thread verdicts"):
-                observer._success_lines(report, "owner/repo", "1", "tok", "a"*40, "b"*40, "1", "1", "url")
+                observer._success_lines(report, "owner/repo", "1", "tok", "a"*40, "b"*40, "1", "1")
 
     def test_main_dispatch(self):
         with mock.patch.object(sys, "argv", ["observable_review.py", "run", "--report", "/tmp/x.json"]), \

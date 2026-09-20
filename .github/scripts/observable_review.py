@@ -489,7 +489,7 @@ def _publish_one_finding(finding, repo: str, pr: str, token: str, head: str,
 
 
 def _success_lines(report: dict, repo: str, pr: str, token: str, base: str, head: str,
-                   run_id: str, run_attempt: str, run_url: str) -> list[str]:
+                   run_id: str, run_attempt: str) -> list[str]:
     summary, findings, verdicts = publisher._validated_claude_result(json.dumps(report["result"]), base, head)
     if verdicts:
         raise RuntimeError("Observable reviewer cannot publish thread verdicts")
@@ -514,7 +514,7 @@ def publish(report_path: Path) -> None:
     run_url = f"https://github.com/{repo}/actions/runs/{run_id}"
     lines = [diagnostics(report), "", f"[CI run]({run_url}) · [Reviewed revision](https://github.com/{repo}/commit/{head})", ""]
     if report["status"] == "success":
-        lines.extend(_success_lines(report, repo, pr, token, base, head, run_id, run_attempt, run_url))
+        lines.extend(_success_lines(report, repo, pr, token, base, head, run_id, run_attempt))
     lines.extend(["", marker])
     publisher._request_json(url, "POST", token, {"body": "\n".join(lines)})
     print("Published ObservableMessagesReview summary.")
