@@ -334,6 +334,11 @@ def review_chunks(workspace: Path, chunks: list[dict], files: set[str], report: 
         result = chunk_report["result"]
         all_summaries.append(result.get("summary", ""))
         all_findings.extend(result.get("findings", []))
+    # Keep diagnostics truthful even if a future failure path increments the
+    # counters before deciding whether remaining chunks were skipped.
+    report["skipped_chunks"] = max(
+        0, len(chunks) - report["completed_chunks"] - report["failed_chunks"]
+    )
     if completed and chunks:
         report.update(status="success", result={
             "summary": " ".join(all_summaries),

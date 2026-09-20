@@ -313,8 +313,6 @@ def _final_result(response, content):
     text = "".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
     try:
         result = _json_response_text(text)
-        if json.loads(result)["thread_verdicts"]:
-            raise RuntimeError("thread verdicts are not supported by this reviewer")
     except RuntimeError:
         raise ReviewFailure("invalid_result") from None
     return result
@@ -322,17 +320,24 @@ def _final_result(response, content):
 
 def _tool_results(blocks, workspace, allowed, emit, read_files, cache):
     results = []
+    response_keys: set[str] = set()
     for block in blocks:
         key = json.dumps([block.get("name"), block.get("input")], sort_keys=True)
-        if key in cache:
+        # A provider can legitimately return two distinct tool calls with the
+        # same arguments in one response.  Deduplicate only across responses;
+        # same-response calls each need their own tool result and id.
+        if key in cache and key not in response_keys:
             emit("tool_cache_hit")
             results.append({"type": "tool_result", "tool_use_id": block["id"], "content":
                 f"Repeated call: use the result already provided for tool_use_id {cache[key]}. "
                 "Choose a different page/query only if needed, otherwise return final JSON."})
+            response_keys.add(key)
             continue
         emit("tool_started")
         content = execute_tool(block.get("name"), block.get("input"), workspace, allowed)
-        cache[key] = block["id"]
+        if key not in response_keys:
+            cache[key] = block["id"]
+        response_keys.add(key)
         # Errors, empty pages and omitted oversized lines are not evidence of reading.
         if block.get("name") == "Read" and re.search(r"^[1-9]\d*: ", content, re.MULTILINE):
             path = _workspace_path(workspace, block["input"]["path"], allowed)

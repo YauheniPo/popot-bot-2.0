@@ -93,10 +93,21 @@ class ClaudeReviewRunnerTests(unittest.TestCase):
             read_files, cache = set(), {}
             with mock.patch.object(runner, "execute_tool", wraps=runner.execute_tool) as execute:
                 results = runner._tool_results(blocks, root, {runner.REVIEW_DIFF_PATH}, mock.Mock(), read_files, cache)
-            self.assertEqual(execute.call_count, 2)
-            self.assertIn("tool_use_id a", results[1]["content"])
+            self.assertEqual(execute.call_count, 3)
+            self.assertIn("1: -old", results[1]["content"])
             self.assertIn("2: +new", results[2]["content"])
             self.assertEqual(read_files, {runner.REVIEW_DIFF_PATH})
+
+    def test_distinct_same_input_tool_calls_are_not_collapsed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / runner.REVIEW_DIFF_PATH).write_text("-old\n+new\n")
+            args = {"path": runner.REVIEW_DIFF_PATH, "offset": 1, "limit": 1}
+            blocks = [{"id": "a", "name": "Read", "input": args},
+                      {"id": "b", "name": "Read", "input": args}]
+            with mock.patch.object(runner, "execute_tool", wraps=runner.execute_tool) as execute:
+                runner._tool_results(blocks, root, {runner.REVIEW_DIFF_PATH}, mock.Mock(), set(), {})
+            self.assertEqual(execute.call_count, 2)
 
     def rate_limit(self, headers=None, body=None):
         error = runner.urllib.error.HTTPError("https://example.test", 429, "secret-key", headers or {},
@@ -532,10 +543,10 @@ class ClaudeReviewRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(runner.ReviewFailure, "provider_connection_error"):
                 runner.request_message("https://example.test", "key", {}, 5)
 
-    def test_final_result_rejects_thread_verdicts(self):
-        with self.assertRaisesRegex(runner.ReviewFailure, "invalid_result"):
-            runner._final_result({"stop_reason": "end_turn"},
-                [{"type": "text", "text": '{"summary":"s","findings":[],"thread_verdicts":[{"thread_id":"t","verdict":"confirmed","reason":"still valid"}]}'}])
+    def test_final_result_accepts_ignored_thread_verdicts(self):
+        result = runner._final_result({"stop_reason": "end_turn"},
+            [{"type": "text", "text": '{"summary":"s","findings":[],"thread_verdicts":[{"thread_id":"t","verdict":"confirmed","reason":"still valid"}]}'}])
+        self.assertIn('"thread_verdicts"', result)
 
     def test_final_result_requires_end_turn(self):
         with self.assertRaisesRegex(runner.ReviewFailure, "provider_incomplete_result"):

@@ -147,7 +147,18 @@ class OllamaReviewTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "retry wait budget exhausted"):
                 ai_review_preflight.probe("test-key", "json", "openrouter", "model:free")
         self.assertEqual(request.call_count, 2)
-        self.assertEqual(sum(c.args[0] for c in sleep.call_args_list), 100)
+        self.assertEqual(sum(c.args[0] for c in sleep.call_args_list), 120)
+
+    def test_transport_retry_clamps_wait_to_remaining_budget(self):
+        response = self.response({"choices": [{"message": {"content": '{"status":"ok"}'}}]})
+        with mock.patch.object(ai_review_preflight, "MAX_RETRY_WAIT_SECONDS", 10), \
+                mock.patch.object(ai_review_preflight.urllib.request, "urlopen",
+                                  side_effect=[urllib.error.URLError("temporary"), response]) as request, \
+                mock.patch.object(ai_review_preflight.time, "sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, "retry wait budget exhausted"):
+                ai_review_preflight.probe("test-key", "json", attempts_override=2)
+        self.assertEqual(request.call_count, 1)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [10])
 
     def response(self, data: object):
         result = mock.MagicMock()

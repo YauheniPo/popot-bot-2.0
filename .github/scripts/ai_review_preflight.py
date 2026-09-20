@@ -229,6 +229,8 @@ def _request_probe_response(request: urllib.request.Request, attempts: int, time
     result: object = None
     remaining = MAX_RETRY_WAIT_SECONDS
     for attempt in range(attempts):
+        if remaining <= 0:
+            raise RuntimeError(f"{provider} {kind} probe retry wait budget exhausted")
         delay = 15 * (attempt + 1)
         print(
             f"{provider} {model}: {kind} probe attempt {attempt + 1}/{attempts} "
@@ -247,8 +249,7 @@ def _request_probe_response(request: urllib.request.Request, attempts: int, time
             raise RuntimeError(f"{provider} {kind} probe returned invalid JSON") from None
         # Pace only the next request; the final retryable response raises above
         # without an unnecessary sleep because there is no next attempt.
-        if delay > remaining:
-            raise RuntimeError(f"{provider} {kind} probe retry wait budget exhausted")
+        delay = min(delay, remaining)
         # Reserve the delay before sleeping so every retryable path, including
         # HTTP 429/5xx responses, consumes the same bounded wait budget.
         remaining -= delay
