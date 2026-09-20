@@ -12,6 +12,8 @@ import time
 import urllib.error
 import urllib.request
 
+from claude_review_runner import _rate_limit_details
+from review_execution import safe_label
 
 MODEL = "moonshotai/kimi-k3"
 CHAT_COMPLETIONS_URL = "https://ollama.com/v1/chat/completions"
@@ -38,6 +40,15 @@ SMOKE_TIMEOUT_SECONDS = 90
 SMOKE_MAX_ATTEMPTS = 2
 SMOKE_FALLBACK_MAX_ATTEMPTS = 2
 RETRYABLE_STATUSES = {408, 429, 500, 502, 503, 504}
+MAX_RETRY_WAIT_SECONDS = 120
+
+
+class ProbeFailure(RuntimeError):
+    """Safe probe outcome with allow-listed rate-limit metadata only."""
+
+    def __init__(self, reason: str, details: dict | None = None):
+        super().__init__(reason)
+        self.details = details or {}
 
 
 def completion_payload(body: dict[str, object], provider: str = "ollama-cloud") -> dict[str, object]:
@@ -50,6 +61,14 @@ def completion_payload(body: dict[str, object], provider: str = "ollama-cloud") 
         key: value for key, value in body.items()
         if key not in {"provider", "plugins", "reasoning", "response_format"}
     }
+    # Ollama supports reasoning_effort, not OpenRouter's exclude extension.
+    # Dropping effort entirely silently enables long default reasoning on a
+    # real diff even when the tiny preflight responds immediately.
+    reasoning = body.get("reasoning")
+    if provider == "ollama-cloud" and isinstance(reasoning, dict):
+        effort = reasoning.get("effort")
+        if effort in ("none", "low", "medium", "high", "max"):
+            payload["reasoning_effort"] = effort
     max_tokens = payload.get("max_tokens")
     if provider == "nous" and isinstance(max_tokens, int):
         payload["max_tokens"] = min(max_tokens, NOUS_MAX_OUTPUT_TOKENS)
@@ -92,7 +111,10 @@ def configured_fallback_provider(primary_provider: str) -> str:
 
 def anthropic_base_url(provider: str) -> str:
     """Normalize operator input for both the probe and Claude's SDK routes."""
-    base_url = os.environ.get("CLAUDE_REVIEW_BASE_URL", "").strip().rstrip("/")
+    primary = os.environ.get("CLAUDE_REVIEW_PROVIDER") or os.environ.get("DIRECT_REVIEW_PROVIDER") or provider
+    primary = provider_config(primary)[0]
+    # A primary gateway override must never receive a different provider's key.
+    base_url = os.environ.get("CLAUDE_REVIEW_BASE_URL", "").strip().rstrip("/") if provider == primary else ""
     base_url = base_url or MESSAGES_BASE_URLS.get(provider, "")
     if not base_url:
         raise RuntimeError(
@@ -189,10 +211,27 @@ def _probe_response_valid(result: object, kind: str) -> bool:
         return False
 
 
+def _http_retry_delay(error, provider: str, kind: str, attempt: int, attempts: int, remaining: float) -> float:
+    with error:
+        details = _rate_limit_details(error) if error.code == 429 else {}
+    failure = ProbeFailure(f"{provider} {kind} probe failed with HTTP {error.code}", details)
+    delay = max(15 * (attempt + 1), details.get("retry_after_seconds", 0))
+    if details:
+        print(f"[preflight] rate_limit {json.dumps(details, sort_keys=True)}", file=sys.stderr)
+    if (error.code not in RETRYABLE_STATUSES or attempt == attempts - 1
+            or details.get("quota") == "free_daily" or delay > remaining):
+        raise failure from None
+    return delay
+
+
 def _request_probe_response(request: urllib.request.Request, attempts: int, timeout: int,
                             provider: str, model: str, kind: str) -> object:
     result: object = None
+    remaining = MAX_RETRY_WAIT_SECONDS
     for attempt in range(attempts):
+        if remaining <= 0:
+            raise RuntimeError(f"{provider} {kind} probe retry wait budget exhausted")
+        delay = 15 * (attempt + 1)
         print(
             f"{provider} {model}: {kind} probe attempt {attempt + 1}/{attempts} "
             f"(timeout {timeout}s)", file=sys.stderr,
@@ -202,8 +241,7 @@ def _request_probe_response(request: urllib.request.Request, attempts: int, time
                 result = json.load(response)
             break
         except urllib.error.HTTPError as error:
-            if error.code not in RETRYABLE_STATUSES or attempt == attempts - 1:
-                raise RuntimeError(f"{provider} {kind} probe failed with HTTP {error.code}") from None
+            delay = _http_retry_delay(error, provider, kind, attempt, attempts, remaining)
         except (urllib.error.URLError, TimeoutError, ConnectionError, IncompleteRead):
             if attempt == attempts - 1:
                 raise RuntimeError(f"{provider} {kind} probe failed or timed out") from None
@@ -211,7 +249,12 @@ def _request_probe_response(request: urllib.request.Request, attempts: int, time
             raise RuntimeError(f"{provider} {kind} probe returned invalid JSON") from None
         # Pace only the next request; the final retryable response raises above
         # without an unnecessary sleep because there is no next attempt.
-        time.sleep(15 * (attempt + 1))
+        delay = min(delay, remaining)
+        # Reserve the delay before sleeping so every retryable path, including
+        # HTTP 429/5xx responses, consumes the same bounded wait budget.
+        remaining -= delay
+        print(f"[preflight] retry_wait={delay}s; no provider request in flight", file=sys.stderr)
+        time.sleep(delay)
     return result
 
 
@@ -250,13 +293,15 @@ def probe(api_key: str, kind: str, provider: str = "ollama-cloud", model: str = 
 
 
 def probe_ready(api_key: str, kind: str, provider: str, model: str, role: str,
-                attempts_override: int | None = None) -> bool:
+                attempts_override: int | None = None, diagnostics: dict | None = None) -> bool:
     try:
         if attempts_override is None:
             probe(api_key, kind, provider, model)
         else:
             probe(api_key, kind, provider, model, attempts_override=attempts_override)
     except RuntimeError as error:
+        if diagnostics is not None:
+            diagnostics[role] = {"reason": safe_label(str(error)), "details": getattr(error, "details", {})}
         print(f"::warning::{provider} {model}: {role} probe unavailable. {error}", file=sys.stderr)
         return False
     print(f"{provider} {model}: live {kind} probe passed ({role})")
@@ -266,8 +311,10 @@ def probe_ready(api_key: str, kind: str, provider: str, model: str, role: str,
 def probe_models(
     api_key: str, kind: str, provider: str, primary: str, fallback: str,
     *, fallback_provider: str | None = None, fallback_api_key: str | None = None,
+    diagnostics: dict | None = None,
 ) -> tuple[bool, bool]:
-    primary_ready = probe_ready(api_key, kind, provider, primary, "primary")
+    diagnostics = diagnostics if diagnostics is not None else {}
+    primary_ready = probe_ready(api_key, kind, provider, primary, "primary", diagnostics=diagnostics)
     fallback_provider = fallback_provider or provider
     fallback_api_key = fallback_api_key if fallback_api_key is not None else api_key
     if not fallback:
@@ -275,14 +322,26 @@ def probe_models(
     elif fallback == primary and fallback_provider == provider:
         # Reuse failures as well as successes; the same model gets no extra tries.
         fallback_ready = primary_ready
+        diagnostics["fallback"] = diagnostics.get("primary", {})
+    elif _blocked_fallback(provider, fallback_provider, fallback, diagnostics):
+        fallback_ready = False
+        diagnostics["fallback"] = {"reason": "shared_platform_limit", "details": diagnostics["primary"]["details"]}
     else:
         fallback_ready = probe_ready(
             fallback_api_key, kind, fallback_provider, fallback, "fallback",
             attempts_override=SMOKE_FALLBACK_MAX_ATTEMPTS if kind == "claude" else None,
+            diagnostics=diagnostics,
         )
-    if not primary_ready and not fallback_ready:
-        raise RuntimeError("No configured review model passed preflight; see the probe failures above")
     return primary_ready, fallback_ready
+
+
+def _blocked_fallback(provider: str, fallback_provider: str, fallback: str, diagnostics: dict) -> bool:
+    details = diagnostics.get("primary", {}).get("details", {})
+    if provider != fallback_provider or details.get("scope") != "platform":
+        return False
+    if details.get("quota") == "free_daily":
+        return fallback.endswith(":free")
+    return details.get("retry_after_seconds", 0) > MAX_RETRY_WAIT_SECONDS
 
 
 def _export_outputs(
@@ -305,7 +364,7 @@ def _export_outputs(
         "anthropic_base_url": base_url,
         "primary_model": model, "primary_ready": str(primary_ready).lower(),
         "fallback_model": fallback, "fallback_ready": str(fallback_ready).lower(),
-        "selected_model": selected_model, "selected_mode": "ordinary",
+        "selected_model": selected_model if primary_ready or fallback_ready else "", "selected_mode": "ordinary",
         "secondary_model": fallback if primary_ready and fallback_ready else "",
         "secondary_provider": normalized_fallback_provider if primary_ready and fallback_ready else "",
         "fallback_provider": normalized_fallback_provider if fallback else "",
@@ -314,6 +373,17 @@ def _export_outputs(
     with open(output_path, "a", encoding="utf-8") as output:
         for key, value in values.items():
             output.write(f"{key}={value}\n")
+
+
+def _export_probe_diagnostics(output_path: str, diagnostics: dict, primary_ready: bool, fallback_ready: bool) -> None:
+    readiness = {"primary": primary_ready, "fallback": fallback_ready}
+    with open(output_path, "a", encoding="utf-8") as output:
+        for role, ready in readiness.items():
+            value = diagnostics.get(role, {})
+            reason = value.get("reason", "ready" if ready else "not_configured")
+            details = " ".join(f"{safe_label(key)}: {safe_label(str(item))}"
+                               for key, item in value.get("details", {}).items())
+            output.write(f"{role}_reason={safe_label(reason)} {details}\n")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -334,10 +404,12 @@ def main(argv: list[str] | None = None) -> int:
     fallback = configured_fallback_model()
     fallback_provider = configured_fallback_provider(provider)
     normalized_fallback_provider, fallback_api_key, _ = provider_config(fallback_provider)
+    diagnostics: dict = {}
     primary_ready, fallback_ready = probe_models(
         api_key, args.probe, provider, model, fallback,
         fallback_provider=normalized_fallback_provider,
         fallback_api_key=fallback_api_key,
+        diagnostics=diagnostics,
     )
     selected_model = model if primary_ready else fallback
     selected_provider = provider if primary_ready else normalized_fallback_provider
@@ -351,6 +423,9 @@ def main(argv: list[str] | None = None) -> int:
             primary_ready, fallback_ready, selected_model,
             normalized_fallback_provider, secondary_base_url,
         )
+        _export_probe_diagnostics(output_path, diagnostics, primary_ready, fallback_ready)
+    if not primary_ready and not fallback_ready:
+        raise RuntimeError("No configured review model passed preflight; see the probe failures above")
     print(f"{selected_provider}: selected {selected_model} for review")
     return 0
 

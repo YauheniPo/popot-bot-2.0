@@ -8,6 +8,11 @@
 __pycache__/
 .idea/
 
+# Local deployment keys and host keys prepared for Azure Secure Files.
+/azure-ci/hermes-vps-known-hosts
+/azure-ci/hermes-vps-ssh-key
+/azure-ci/hermes-vps-ssh-key.pub
+
 # Local test, coverage, and Sonar scanner artifacts. These are produced by the
 # CI and local analysis runs; they are reproducible and must never be committed.
 .coverage

@@ -16,7 +16,7 @@ from typing import Any, cast
 import urllib.error
 import urllib.request
 
-from review_execution import claude_execution_report, strip_execution_metadata
+from review_execution import claude_execution_report, strip_execution_metadata, technical_metadata
 
 
 GITHUB_API_URL = "https://api.github.com"
@@ -40,6 +40,7 @@ MAX_REPLY_CHARACTERS = 4_000
 MAX_INLINE_COMMENT_CHARACTERS = 4_000
 MAX_CLAUDE_EXECUTION_FILE_BYTES = 64 * 1024 * 1024
 MAX_CLAUDE_REVIEW_RESULT_BYTES = 1024 * 1024
+MAX_CLAUDE_SUMMARY_CHARACTERS = 4_000
 COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
 HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 SEMANTIC_DUPLICATE_THRESHOLD = 0.42
@@ -844,7 +845,7 @@ def _validated_claude_result(
     except json.JSONDecodeError as error:
         raise RuntimeError("Claude review output is not valid JSON") from error
     result = _validate_claude_result_contract(result)
-    summary = _clean_result_text(result.get("summary"), 1_000)
+    summary = _clean_result_text(result.get("summary"), MAX_CLAUDE_SUMMARY_CHARACTERS)
     raw_findings = result.get("findings")
     raw_verdicts = result.get("thread_verdicts")
     if not summary or not isinstance(raw_findings, list) or not isinstance(raw_verdicts, list):
@@ -1129,6 +1130,7 @@ def _render_review_summary(
     fixed_machine_findings: int,
     rejected_machine_findings: int,
     machine_findings_needing_human: int,
+    changed_file_count: int,
 ) -> str:
     """Render the human-facing Claude review summary in scan-friendly sections."""
     action_required = any(
@@ -1141,8 +1143,15 @@ def _render_review_summary(
         )
     )
     outcome = "Action required" if action_required else "No new actionable findings"
+    execution = claude_execution_report(os.environ)
     lines = [
         f"## {CLAUDE_REVIEWER_LABEL}",
+        "",
+        technical_metadata(execution),
+        "",
+        "### Review scope",
+        f"Complete base-to-head diff supplied · {changed_file_count} changed file(s). "
+        "Chunking and tool pagination are internal execution details.",
         "",
         "### Review outcome",
         f"**{outcome}**",
@@ -1549,6 +1558,7 @@ def _command_publish() -> None:
         fixed_machine_findings=fixed_direct_findings,
         rejected_machine_findings=rejected_direct_findings,
         machine_findings_needing_human=direct_findings_needing_human,
+        changed_file_count=len(changed_paths),
     ).splitlines()
     if new_findings:
         lines.extend(["", "New findings:"])
@@ -1578,9 +1588,8 @@ def _command_publish() -> None:
             f"- **{finding.severity} — `{finding.path}:{finding.line}`**: {finding.title}."
             for finding in posted_follow_ups
         )
-    lines.extend(["", "### Technical metadata", execution.summary()])
     if execution.details():
-        lines.append(execution.details())
+        lines.extend(["", execution.details()])
     lines.extend(["", marker])
     _request_json(comments_url, "POST", token, {"body": "\n".join(lines)})
     print(

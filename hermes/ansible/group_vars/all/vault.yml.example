@@ -36,8 +36,7 @@ hermes_secret_env: {}
 #   # Providing both values starts the Telegram gateway automatically.
 #   TELEGRAM_BOT_TOKEN: "replace-inside-ansible-vault"
 #   TELEGRAM_ALLOWED_USERS: "123456789"
-#   # Preferred name for the bundled Hermes GitHub skills and gh. Use a
-#   # fine-grained PAT limited to the repositories and permissions you need.
+#   # GitHub credentials belong only in this map; use a scoped fine-grained PAT.
 #   GITHUB_TOKEN: "replace-inside-ansible-vault"
 #   # Optional read-only GitHub MCP PAT for the explicit Workspace preset repair.
 #   # Separate from the gh token above; limit it to the required repositories.
@@ -84,7 +83,3 @@ hermes_grafana_admin_password: "replace-inside-ansible-vault"
 # Any non-empty password is accepted; the deployment JSON-escapes it for the
 # Docker Compose environment file.
 hermes_code_server_password: "replace-inside-ansible-vault"
-
-# Optional one-use, ephemeral, tagged Tailscale auth key. Leave empty to run
-# `sudo tailscale up --ssh` interactively.
-tailscale_auth_key: ""

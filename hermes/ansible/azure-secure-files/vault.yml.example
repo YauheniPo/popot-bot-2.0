@@ -18,7 +18,7 @@ hermes_secret_env:
   # FIRECRAWL_API_KEY: "replace-inside-ansible-vault"
   TELEGRAM_BOT_TOKEN: "replace-inside-ansible-vault"
   TELEGRAM_ALLOWED_USERS: "123456789"
-  # GITHUB_TOKEN: "replace-inside-ansible-vault"
+  GITHUB_TOKEN: "replace-inside-ansible-vault"
   # Dashboard OAuth values for the registered Tailscale Serve hostname. The
   # client ID is an identifier, not a password; keeping both values here
   # preserves dashboard login after managed .env redeploys.
@@ -28,6 +28,3 @@ hermes_secret_env:
 # Required by the enabled managed services.
 hermes_grafana_admin_password: "replace-inside-ansible-vault"
 hermes_code_server_password: "replace-inside-ansible-vault"
-
-# Optional one-use, ephemeral, tagged Tailscale auth key.
-tailscale_auth_key: ""
