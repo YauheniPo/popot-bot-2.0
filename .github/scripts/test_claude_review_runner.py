@@ -70,8 +70,10 @@ class ClaudeReviewRunnerTests(unittest.TestCase):
         with mock.patch.object(runner, "request_message", side_effect=failure), mock.patch.object(runner.signal, "signal"):
             runner._worker(pipe, "https://example.test", "key", "model", "p", Path.cwd(), set(), 1, 5)
         kind, value, turns = pipe.send.call_args.args[0]
+        output = Path("unused.json")
+        log = io.StringIO()
         with self.assertRaises(runner.RateLimitFailure) as caught:
-            runner._handle_message(kind, value, turns, Path("unused.json"), 0, 0, io.StringIO())
+            runner._handle_message(kind, value, turns, output, 0, 0, log)
         self.assertEqual(caught.exception.details, failure.details)
 
     def test_rate_limit_diagnostics_survive_real_worker_and_cleanup(self):
@@ -79,10 +81,13 @@ class ClaudeReviewRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(runner, "request_message", side_effect=failure):
             root = Path(directory)
             before = {p.pid for p in multiprocessing.active_children()}
+            output = root / "result.json"
+            allowed_files = set()
+            log = io.StringIO()
             with self.assertRaises(runner.RateLimitFailure) as caught:
                 runner.run_review(endpoint="https://example.test", api_key="secret-key", model="m", prompt="p",
-                    workspace=root, output=root/"result.json", allowed_files=set(), max_turns=1,
-                    attempt_timeout_seconds=5, inactivity_timeout_seconds=2, heartbeat_seconds=1, log=io.StringIO())
+                    workspace=root, output=output, allowed_files=allowed_files, max_turns=1,
+                    attempt_timeout_seconds=5, inactivity_timeout_seconds=2, heartbeat_seconds=1, log=log)
             self.assertEqual(caught.exception.details, failure.details)
             self.assertFalse((root/"result.json").exists())
             self.assertEqual({p.pid for p in multiprocessing.active_children()}, before)

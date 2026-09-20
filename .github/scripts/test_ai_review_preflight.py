@@ -18,6 +18,98 @@ import ai_review_preflight
 
 
 class OllamaReviewTest(unittest.TestCase):
+    def test_workflow_reports_missing_reviews_and_aggregates_real_results(self):
+        root = Path(__file__).resolve().parents[2]
+        jobs = yaml.safe_load((root / ".github/workflows/pr-ai-review.yml").read_text())["jobs"]
+        steps = jobs["direct-api-review"]["steps"]
+        report = next(step for step in steps if step.get("id") == "report_direct_unavailable")
+        self.assertIn("always()", report["if"])
+        self.assertIn("steps.direct_models.outcome == 'failure'", report["if"])
+        self.assertIn("gh api", report["run"])
+        self.assertIn("primary_reason", report["env"]["PRIMARY_REASON"])
+        aggregate = jobs["review-results"]
+        self.assertIn("steps.verify_claude_publication.outcome == 'success'", jobs["claude-code-plugin-review"]["outputs"]["complete"])
+        self.assertEqual(set(aggregate["needs"]), {"direct-api-review", "claude-code-plugin-review", "observable-claude-review"})
+        for selector, direct, claude, observable, expected in (
+            ("0", "true", "true", "true", 0), ("0", "true", "false", "true", 1),
+            ("0", "false", "true", "true", 1), ("0", "true", "true", "false", 1),
+            ("1", "true", "", "", 0), ("2", "", "true", "true", 0), ("9", "true", "true", "true", 1),
+        ):
+            with self.subTest(selector=selector, direct=direct, claude=claude, observable=observable), tempfile.TemporaryDirectory() as directory:
+                summary = Path(directory) / "summary.md"
+                env = {**os.environ, "PR_REVIEWER": selector, "DIRECT_COMPLETE": direct,
+                       "CLAUDE_COMPLETE": claude, "OBSERVABLE_COMPLETE": observable,
+                       "GITHUB_STEP_SUMMARY": str(summary)}
+                result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", aggregate["steps"][0]["run"]],
+                                        env=env, capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, expected, result.stderr)
+
+    def test_daily_quota_skips_same_provider_but_keeps_independent_fallback(self):
+        for fallback_provider, expected_calls, expected_ready in (("openrouter", 1, False), ("ollama-cloud", 2, True)):
+            with self.subTest(provider=fallback_provider), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "outputs"
+                error = urllib.error.HTTPError("https://example.test", 429, "secret", {"Retry-After": "3600"},
+                    io.BytesIO(b'{"error":{"message":"free-models-per-day secret"}}'))
+                response = self.response({"choices": [{"message": {"content": '{"status":"ok"}'}}]})
+                with mock.patch.dict(os.environ, {
+                    "DIRECT_REVIEW_PROVIDER": "openrouter", "DIRECT_REVIEW_MODEL": "primary:free",
+                    "DIRECT_REVIEW_FALLBACK_PROVIDER": fallback_provider, "DIRECT_REVIEW_FALLBACK_MODEL": "backup:free",
+                    "OPENROUTER_API_KEY": "test-key", "OLLAMA_API_KEY": "test-key", "GITHUB_OUTPUT": str(output),
+                }, clear=True), mock.patch.object(ai_review_preflight.urllib.request, "urlopen", side_effect=[error, response]) as request, \
+                        mock.patch.object(ai_review_preflight.time, "sleep") as sleep:
+                    if expected_ready:
+                        self.assertEqual(ai_review_preflight.main(["--probe", "json"]), 0)
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            ai_review_preflight.main(["--probe", "json"])
+                self.assertEqual(request.call_count, expected_calls)
+                sleep.assert_not_called()
+                values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+                self.assertEqual(values["primary_ready"], "false")
+                self.assertEqual(values["fallback_ready"], str(expected_ready).lower())
+                self.assertIn("free_daily", values["primary_reason"])
+                self.assertNotIn("secret", output.read_text())
+
+    def test_rate_limit_honors_retry_after_and_stops_when_wait_exceeds_budget(self):
+        for delay, calls in ((45, 2), (3600, 1)):
+            error = urllib.error.HTTPError("https://example.test", 429, "secret", {"Retry-After": str(delay)}, io.BytesIO(b'{}'))
+            response = self.response({"choices": [{"message": {"content": '{"status":"ok"}'}}]})
+            with self.subTest(delay=delay), mock.patch.object(ai_review_preflight.urllib.request, "urlopen", side_effect=[error, response]) as request, \
+                    mock.patch.object(ai_review_preflight.time, "sleep") as sleep:
+                if calls == 1:
+                    with self.assertRaises(RuntimeError):
+                        ai_review_preflight.probe("test-key", "json", "openrouter", "model:free")
+                else:
+                    ai_review_preflight.probe("test-key", "json", "openrouter", "model:free")
+                    self.assertEqual(sum(c.args[0] for c in sleep.call_args_list), delay)
+                self.assertEqual(request.call_count, calls)
+
+    def test_custom_primary_endpoint_does_not_capture_other_provider_credentials(self):
+        with mock.patch.dict(os.environ, {"CLAUDE_REVIEW_PROVIDER": "openrouter",
+                "CLAUDE_REVIEW_BASE_URL": "https://openrouter.ai/api"}, clear=True):
+            self.assertEqual(ai_review_preflight.messages_url("openrouter"), "https://openrouter.ai/api/v1/messages")
+            self.assertEqual(ai_review_preflight.messages_url("ollama-cloud"), "https://ollama.com/v1/messages")
+
+    def test_platform_cooldown_only_blocks_the_affected_provider(self):
+        for scope, delay, provider, expected in (
+            ("platform", 3600, "openrouter", True),
+            ("platform", 30, "openrouter", False),
+            ("provider", 3600, "openrouter", False),
+            ("platform", 3600, "ollama-cloud", False),
+        ):
+            with self.subTest(scope=scope, delay=delay, provider=provider):
+                diagnostics = {"primary": {"details": {"scope": scope, "retry_after_seconds": delay}}}
+                self.assertEqual(ai_review_preflight._blocked_fallback("openrouter", provider, "model:free", diagnostics), expected)
+
+    def test_mixed_transport_failures_cannot_exceed_retry_wait_budget(self):
+        error = urllib.error.HTTPError("https://example.test", 429, "limited", {"Retry-After": "100"}, io.BytesIO(b'{}'))
+        with mock.patch.object(ai_review_preflight.urllib.request, "urlopen", side_effect=[error, TimeoutError()]) as request, \
+                mock.patch.object(ai_review_preflight.time, "sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, "retry wait budget exhausted"):
+                ai_review_preflight.probe("test-key", "json", "openrouter", "model:free")
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(sum(c.args[0] for c in sleep.call_args_list), 100)
+
     def response(self, data: object):
         result = mock.MagicMock()
         result.__enter__.return_value = io.StringIO(json.dumps(data))
@@ -82,19 +174,19 @@ class OllamaReviewTest(unittest.TestCase):
     def test_transient_failure_retries_but_exhaustion_is_bounded(self):
         response = {"choices": [{"message": {"content": '```json\n{"status":"ok"}\n```'}}]}
         for failure in (
-            TimeoutError("timed out"),
-            urllib.error.HTTPError("https://ollama.com/v1/chat/completions", 503, "Unavailable", {}, None),
+            lambda: TimeoutError("timed out"),
+            lambda: urllib.error.HTTPError("https://ollama.com/v1/chat/completions", 503, "Unavailable", {}, None),
         ):
-            with self.subTest(failure=type(failure).__name__):
+            with self.subTest(failure=type(failure()).__name__):
                 with (
-                    mock.patch.object(ai_review_preflight.urllib.request, "urlopen", side_effect=[failure] * 3 + [self.response(response)]) as request,
+                    mock.patch.object(ai_review_preflight.urllib.request, "urlopen", side_effect=[failure() for _ in range(3)] + [self.response(response)]) as request,
                     mock.patch.object(ai_review_preflight.time, "sleep") as sleep,
                 ):
                     ai_review_preflight.probe("test-key", "json")
                 self.assertEqual(request.call_count, 4)
                 self.assertEqual(sleep.call_args_list, [mock.call(15), mock.call(30), mock.call(45)])
                 with (
-                    mock.patch.object(ai_review_preflight.urllib.request, "urlopen", side_effect=failure) as request,
+                    mock.patch.object(ai_review_preflight.urllib.request, "urlopen", side_effect=[failure() for _ in range(4)]) as request,
                     mock.patch.object(ai_review_preflight.time, "sleep"),
                 ):
                     with self.assertRaises(RuntimeError):
@@ -119,7 +211,11 @@ class OllamaReviewTest(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(RuntimeError, "No configured review model passed"):
                     ai_review_preflight.main(["--probe", "tools"])
-            self.assertFalse(output.exists())
+            values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+            self.assertEqual(values["primary_ready"], "false")
+            self.assertEqual(values["fallback_ready"], "false")
+            self.assertEqual(values["selected_model"], "")
+            self.assertIn("not ready", values["primary_reason"])
 
     def test_preflight_pins_outputs_and_never_discovers_another_model(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -292,7 +388,10 @@ class OllamaReviewTest(unittest.TestCase):
                         self.assertEqual(values["selected_model"], "backup")
                         self.assertEqual(values["secondary_model"], "")
                     else:
-                        self.assertFalse(output.exists())
+                        values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+                        self.assertEqual(values["primary_ready"], "false")
+                        self.assertEqual(values["fallback_ready"], "false")
+                        self.assertEqual(values["selected_model"], "")
 
     def test_nvidia_tools_require_an_explicit_anthropic_gateway_before_network(self):
         for base_url in ("", "  "):

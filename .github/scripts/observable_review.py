@@ -259,6 +259,14 @@ def _retry_after_attempt(attempt: dict, route: dict, state: dict) -> bool:
     return True
 
 
+def _route_skip_reason(route: dict, state: dict) -> str | None:
+    if state["free_daily"] and route["provider"] == "openrouter" and route["model"].endswith(":free"):
+        return "free_daily_quota"
+    if route["provider"] in state["blocked_providers"]:
+        return "platform_rate_limit"
+    return None
+
+
 def review_attempts(workspace: Path, prompt: str, files: set[str], report: dict, report_path: Path,
                     base: str, head: str, chunk_index: int = 1) -> int:
     limits = _review_limits()
@@ -266,9 +274,7 @@ def review_attempts(workspace: Path, prompt: str, files: set[str], report: dict,
     state = {"remaining": RATE_LIMIT_WAIT_BUDGET, "retries": 0, "free_daily": False, "blocked_providers": set()}
     route_outcomes = {}
     for route in routes():
-        skip_reason = "platform_rate_limit" if route["provider"] in state["blocked_providers"] else None
-        if state["free_daily"] and route["provider"] == "openrouter" and route["model"].endswith(":free"):
-            skip_reason = "free_daily_quota"
+        skip_reason = _route_skip_reason(route, state)
         if skip_reason:
             report.setdefault("skipped_routes", []).append({"role": route["role"], "reason": skip_reason})
             print(f"[review] route_skipped role={safe_label(route['role'])} reason={skip_reason}", flush=True)

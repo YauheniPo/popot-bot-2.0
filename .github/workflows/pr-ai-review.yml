@@ -13,12 +13,12 @@ env:
   # Both agent reviewers share CLAUDE_REVIEW_*; Direct API has its own route.
   DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'openrouter' }}
   DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'inclusionai/ling-3.0-flash-sante:free' }}
-  DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'deepseek/deepseek-v4-flash-0731:free' }}
-  DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'openrouter' }}
+  DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'deepseek-v4.1-flash' }}
+  DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'ollama-cloud' }}
   CLAUDE_REVIEW_PROVIDER: ${{ vars.CLAUDE_REVIEW_PROVIDER || 'openrouter' }}
   CLAUDE_REVIEW_MODEL: ${{ vars.CLAUDE_REVIEW_MODEL || 'inclusionai/ling-3.0-flash-fin:free' }}
-  CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.CLAUDE_REVIEW_FALLBACK_MODEL || 'nvidia/nemotron-3-ultra-550b-a55b:free' }}
-  CLAUDE_REVIEW_FALLBACK_PROVIDER: ${{ vars.CLAUDE_REVIEW_FALLBACK_PROVIDER || 'openrouter' }}
+  CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.CLAUDE_REVIEW_FALLBACK_MODEL || 'glm-5.3-flash' }}
+  CLAUDE_REVIEW_FALLBACK_PROVIDER: ${{ vars.CLAUDE_REVIEW_FALLBACK_PROVIDER || 'ollama-cloud' }}
   CLAUDE_REVIEW_BASE_URL: ${{ vars.CLAUDE_REVIEW_BASE_URL || '' }}
   # Pace direct API requests; tune for the selected provider and account.
   OLLAMA_REVIEW_RPM: ${{ vars.OLLAMA_REVIEW_RPM || '60' }}
@@ -54,6 +54,8 @@ jobs:
     # chunks. Allow 15 minutes for both four-attempt probes, 40 for review, and
     # five for setup/publication; a failed preflight can end much earlier.
     timeout-minutes: 60
+    outputs:
+      complete: ${{ steps.direct_review.outcome == 'success' }}
 
     steps:
       - name: Validate reviewer selection
@@ -100,6 +102,7 @@ jobs:
         run: python3 .github/scripts/ai_review_preflight.py --probe json
 
       - name: DirectAPI — review and publication
+        id: direct_review
         env:
           # The response mode is an internal preflight output, not a repository variable.
           DIRECT_REVIEW_MODEL_MODE: ${{ steps.direct_models.outputs.selected_mode }}
@@ -120,6 +123,30 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 .github/scripts/ai_pr_review.py
+
+      - name: Report unavailable Direct API review
+        id: report_direct_unavailable
+        if: always() && !cancelled() && steps.direct_models.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PRIMARY_MODEL: ${{ env.DIRECT_REVIEW_MODEL }}
+          PRIMARY_PROVIDER: ${{ env.DIRECT_REVIEW_PROVIDER }}
+          FALLBACK_MODEL: ${{ env.DIRECT_REVIEW_FALLBACK_MODEL }}
+          FALLBACK_PROVIDER: ${{ env.DIRECT_REVIEW_FALLBACK_PROVIDER }}
+          PRIMARY_REASON: ${{ steps.direct_models.outputs.primary_reason || 'Preflight failed before readiness could be established; see logs.' }}
+          FALLBACK_REASON: ${{ steps.direct_models.outputs.fallback_reason || 'Readiness not established; see logs.' }}
+        run: |
+          set -euo pipefail
+          report="${RUNNER_TEMP}/direct-unavailable.md"
+          {
+            printf '## Direct API review unavailable\n\nNo validated review was produced. This is not a clean review.\n\n'
+            printf -- '- Primary `%s` / `%s`: %s\n' "$PRIMARY_PROVIDER" "$PRIMARY_MODEL" "$PRIMARY_REASON"
+            printf -- '- Fallback `%s` / `%s`: %s\n\n' "$FALLBACK_PROVIDER" "$FALLBACK_MODEL" "$FALLBACK_REASON"
+            printf '[CI attempt %s](https://github.com/%s/actions/runs/%s/attempts/%s)\n' "$GITHUB_RUN_ATTEMPT" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+          } > "$report"
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -F "body=@${report}" >/dev/null
 
   # Preserve the existing job id so configured required checks remain stable.
   claude-code-plugin-review:
@@ -147,6 +174,8 @@ jobs:
     # off by the step cap so the fallback can still run instead of the job being
     # cancelled mid-step.
     timeout-minutes: 45
+    outputs:
+      complete: ${{ steps.publish_claude_review.outcome == 'success' && steps.verify_claude_publication.outcome == 'success' }}
 
     steps:
       - name: Check out pull request with history for review context
@@ -200,8 +229,8 @@ jobs:
         # Claude corroborates the direct reviewer, so a provider outage or rate
         # limit must not fail the job: all four agent steps below already run
         # with continue-on-error, and a failed preflight simply skips them and
-        # publishes the "unavailable" report. The direct + observable reviews
-        # remain gating.
+        # publishes the "unavailable" report. The final review-results job
+        # checks actual validated publication for all selected methods.
         continue-on-error: true
         shell: bash
         env:
@@ -695,25 +724,28 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           REVIEW_RUN_ID: ${{ github.run_id }}
           PRIMARY_MODEL: ${{ steps.claude_models.outputs.primary_model || env.CLAUDE_REVIEW_MODEL }}
-          PRIMARY_READY: ${{ steps.claude_models.outputs.primary_ready }}
+          PRIMARY_READY: ${{ steps.claude_models.outputs.primary_ready || 'false' }}
+          PRIMARY_REASON: ${{ steps.claude_models.outputs.primary_reason || 'Readiness not established; see logs.' }}
           PRIMARY_OUTCOME: ${{ steps.claude_review_primary.outcome }}
           PRIMARY_RESULT_OUTCOME: ${{ steps.extract_claude_review_primary.outcome }}
           PRIMARY_RETRY_OUTCOME: ${{ steps.claude_review_primary_retry.outcome }}
           PRIMARY_RETRY_RESULT_OUTCOME: ${{ steps.extract_claude_review_primary_retry.outcome }}
           FALLBACK_MODEL: ${{ steps.claude_models.outputs.fallback_model || env.CLAUDE_REVIEW_FALLBACK_MODEL }}
-          FALLBACK_READY: ${{ steps.claude_models.outputs.fallback_ready }}
+          FALLBACK_READY: ${{ steps.claude_models.outputs.fallback_ready || 'false' }}
+          FALLBACK_REASON: ${{ steps.claude_models.outputs.fallback_reason || 'Readiness not established; see logs.' }}
           FALLBACK_OUTCOME: ${{ steps.claude_review_fallback.outcome }}
           FALLBACK_RESULT_OUTCOME: ${{ steps.extract_claude_review_fallback.outcome }}
           FALLBACK_RETRY_OUTCOME: ${{ steps.claude_review_fallback_retry.outcome }}
           FALLBACK_RETRY_RESULT_OUTCOME: ${{ steps.extract_claude_review_fallback_retry.outcome }}
         run: |
-          message="Claude Code review was unavailable; required checks completed independently."
+          message="Claude Code review was unavailable. No validated review was produced; this is not a clean review."
           echo "::warning::${message}"
           {
             echo "## Claude Code review unavailable"
             echo
             echo "${message}"
             echo
+            printf -- '- Primary preflight: %s\n- Fallback preflight: %s\n\n' "$PRIMARY_REASON" "$FALLBACK_REASON"
             echo "- Primary \`${PRIMARY_MODEL}\`: ready=${PRIMARY_READY}, first=${PRIMARY_OUTCOME}/${PRIMARY_RESULT_OUTCOME}, retry=${PRIMARY_RETRY_OUTCOME}/${PRIMARY_RETRY_RESULT_OUTCOME}"
             echo "- Fallback \`${FALLBACK_MODEL}\`: ready=${FALLBACK_READY}, first=${FALLBACK_OUTCOME}/${FALLBACK_RESULT_OUTCOME}, retry=${FALLBACK_RETRY_OUTCOME}/${FALLBACK_RETRY_RESULT_OUTCOME}"
             echo
@@ -734,6 +766,7 @@ jobs:
             elif ! {
               printf '%s\n' "${marker}"
               printf '%s\n\n' "${message}"
+              printf -- '- Primary preflight: %s\n- Fallback preflight: %s\n\n' "$PRIMARY_REASON" "$FALLBACK_REASON"
               printf -- '- Primary `%s`: ready=%s, first=%s/%s, retry=%s/%s\n' \
                 "${PRIMARY_MODEL}" "${PRIMARY_READY}" "${PRIMARY_OUTCOME}" "${PRIMARY_RESULT_OUTCOME}" \
                 "${PRIMARY_RETRY_OUTCOME}" "${PRIMARY_RETRY_RESULT_OUTCOME}"
@@ -754,6 +787,7 @@ jobs:
           fi
 
       - name: Verify Claude published a result for this revision
+        id: verify_claude_publication
         if: always() && steps.publish_claude_review.outcome == 'success'
         shell: bash
         env:
@@ -798,6 +832,8 @@ jobs:
       pull-requests: write
     # At most four attempts of <=15min, with time left for setup/publication.
     timeout-minutes: 70
+    outputs:
+      complete: ${{ steps.observable_run.outcome == 'success' && steps.observable_publish.outcome == 'success' }}
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -805,7 +841,7 @@ jobs:
       # Code SDK reviewer (which reads CLAUDE_REVIEW_MODEL directly) for the
       # same free-model rate limit on the shared provider key.
       CLAUDE_REVIEW_MODEL: ${{ vars.OBSERVABLE_REVIEW_MODEL || 'nex-agi/nex-n2.5-mini:free' }}
-      CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.OBSERVABLE_REVIEW_FALLBACK_MODEL || 'nex-agi/nex-n2.5-pro:free' }}
+      CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.OBSERVABLE_REVIEW_FALLBACK_MODEL || 'kimi-k2.7-code' }}
       CLAUDE_REVIEW_MAX_TURNS: ${{ vars.CLAUDE_REVIEW_MAX_TURNS || '24' }}
       CLAUDE_REVIEW_ATTEMPT_TIMEOUT_SECONDS: ${{ vars.CLAUDE_REVIEW_ATTEMPT_TIMEOUT_SECONDS || '600' }}
       CLAUDE_REVIEW_INACTIVITY_TIMEOUT_SECONDS: ${{ vars.CLAUDE_REVIEW_INACTIVITY_TIMEOUT_SECONDS || '180' }}
@@ -832,7 +868,7 @@ jobs:
         id: observable_run
         # A corroborating reviewer must not block CI when a free provider is
         # unavailable or returns no valid result; the run still publishes its
-        # failure report below, and the direct + Claude reviews remain gating.
+        # failure report below. review-results rejects missing review results.
         continue-on-error: true
         env:
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
@@ -844,8 +880,46 @@ jobs:
         run: python3 .github/scripts/observable_review.py run --report "${RUNNER_TEMP}/observable-review-report.json"
 
       - name: Publish independent review or explicit failure report
+        id: observable_publish
         if: always() && !cancelled() && steps.observable_run.outcome != 'skipped'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: python3 .github/scripts/observable_review.py publish --report "${RUNNER_TEMP}/observable-review-report.json"
+
+  review-results:
+    needs: [direct-api-review, claude-code-plugin-review, observable-claude-review]
+    if: >-
+      always() && !cancelled() &&
+      (needs.direct-api-review.result != 'skipped' || needs.claude-code-plugin-review.result != 'skipped' || needs.observable-claude-review.result != 'skipped')
+    runs-on: ubuntu-latest
+    permissions: {}
+    env:
+      DIRECT_COMPLETE: ${{ needs.direct-api-review.outputs.complete }}
+      CLAUDE_COMPLETE: ${{ needs.claude-code-plugin-review.outputs.complete }}
+      OBSERVABLE_COMPLETE: ${{ needs.observable-claude-review.outputs.complete }}
+    steps:
+      - name: Require a validated result from every selected reviewer
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$PR_REVIEWER" in
+            0) methods=(DirectAPI ClaudeCodePlugin ObservableMessagesReview); results=("$DIRECT_COMPLETE" "$CLAUDE_COMPLETE" "$OBSERVABLE_COMPLETE") ;;
+            1) methods=(DirectAPI); results=("$DIRECT_COMPLETE") ;;
+            2) methods=(ClaudeCodePlugin ObservableMessagesReview); results=("$CLAUDE_COMPLETE" "$OBSERVABLE_COMPLETE") ;;
+            *) echo '::error::Invalid PR_REVIEWER'; exit 1 ;;
+          esac
+          printf '## AI review completion\n\n| Method | Result |\n| --- | --- |\n' >> "$GITHUB_STEP_SUMMARY"
+          failed=0
+          for index in "${!methods[@]}"; do
+            status='Validated and published'
+            if [[ "${results[$index]}" != true ]]; then
+              status='Unavailable, incomplete, or publication failed — not a clean review'
+              failed=1
+            fi
+            printf '| %s | %s |\n' "${methods[$index]}" "$status" >> "$GITHUB_STEP_SUMMARY"
+          done
+          if (( failed )); then
+            echo '::error::Not every selected reviewer produced and published a validated result. Inspect the reviewer reports before rerunning.'
+          fi
+          exit "$failed"

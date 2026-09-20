@@ -177,6 +177,7 @@ class ObservableReviewTests(unittest.TestCase):
         self.assertFalse(pauses)
         self.assertEqual(report["skipped_routes"][0]["reason"], "free_daily_quota")
         self.assertIn("route_skipped", output)
+        self.assertIn("Skipped route: fallback; reason: free_daily_quota.", observer.diagnostics(report))
 
     def test_daily_free_quota_allows_independent_provider_fallback(self):
         report, calls, pauses, code, _ = self.attempts([
@@ -199,6 +200,22 @@ class ObservableReviewTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertFalse(pauses)
         self.assertEqual(report["skipped_routes"][0]["reason"], "platform_rate_limit")
+        self.assertIn("Skipped route: fallback; reason: platform_rate_limit.", observer.diagnostics(report))
+
+    def test_route_skip_reason_respects_provider_and_quota_scope(self):
+        cases = (
+            ("openrouter", "model:free", False, set(), None),
+            ("openrouter", "model:free", True, set(), "free_daily_quota"),
+            ("openrouter", "paid-model", True, set(), None),
+            ("nous", "model:free", True, {"openrouter"}, None),
+            ("openrouter", "paid-model", False, {"openrouter"}, "platform_rate_limit"),
+            ("openrouter", "model:free", True, {"openrouter"}, "free_daily_quota"),
+        )
+        for provider, model, free_daily, blocked, expected in cases:
+            with self.subTest(provider=provider, model=model, free_daily=free_daily, blocked=blocked):
+                state = {"free_daily": free_daily, "blocked_providers": blocked}
+                route = {"provider": provider, "model": model}
+                self.assertEqual(observer._route_skip_reason(route, state), expected)
 
     def test_retry_wait_budget_is_shared_and_cannot_be_exceeded(self):
         report, calls, pauses, code, _ = self.attempts([
