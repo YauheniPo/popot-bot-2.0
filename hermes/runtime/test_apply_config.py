@@ -476,6 +476,22 @@ class ApplyConfigTests(unittest.TestCase):
             backup_dir=identity["backup_dir"],
         )
 
+    @staticmethod
+    def _asset_values_with(settings: dict, **overrides: str) -> dict:
+        # The same defaults as _asset_values, with one identity value varied.
+        identity = settings["vps_deploy"]["identity"]
+        arguments = {
+            "hermes_user": identity["user"],
+            "hermes_group": identity["user"],
+            "user_home": identity["user_home"],
+            "hermes_home": identity["hermes_home"],
+            "hermes_bin": identity["hermes_bin"],
+            "workspace": identity["workspace"],
+            "backup_dir": identity["backup_dir"],
+        }
+        arguments.update(overrides)
+        return apply_config.build_asset_values(settings, **arguments)
+
     def test_dashboard_can_write_only_state_and_configured_workspace(self) -> None:
         hermes_dir = MODULE_PATH.parent.parent
         settings = apply_config.load_settings(hermes_dir / 'config/vps-defaults.yml')
@@ -873,6 +889,348 @@ class ApplyConfigTests(unittest.TestCase):
         run_operation.assert_called_once()
         self.assertNotIn("warning:", errors.getvalue())
 
+    def test_managed_model_values_reject_incomplete_routes(self) -> None:
+        for model in (
+            {"provider": "", "default": "fixture-model"},
+            {"provider": "fixture-cloud", "default": "  "},
+            {"provider": 1, "default": "fixture-model"},
+            "fixture-cloud/fixture-model",
+        ):
+            with self.subTest(model=model), self.assertRaisesRegex(
+                ValueError, "managed model requires non-empty provider and default"
+            ):
+                apply_config.managed_model_values(
+                    {"vps_hermes": {"config": {"managed_overlay": {"model": model}}}}
+                )
 
-if __name__ == "__main__":
+    def test_sync_profile_models_refuses_symlinked_profiles_and_directories(self) -> None:
+        settings = {"vps_hermes": {"config": {"managed_overlay": {
+            "model": {"provider": "fixture-cloud", "default": "fixture-model"}}}}}
+
+        # A symlinked profiles directory would route writes outside HERMES_HOME.
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            real = home / "real-profiles"
+            real.mkdir()
+            (home / "profiles").symlink_to(real, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "profiles directory must not be a symlink"):
+                apply_config.sync_profile_models(home, settings)
+
+        # A symlinked profile entry would do the same for one profile.
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            profiles = home / "profiles"
+            profiles.mkdir()
+            outside = home / "outside"
+            outside.mkdir()
+            (profiles / "linked").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "profile directories must not be symlinks"):
+                apply_config.sync_profile_models(home, settings)
+
+    def test_sync_profile_models_skips_non_directories_and_absent_configs(self) -> None:
+        settings = {"vps_hermes": {"config": {"managed_overlay": {
+            "model": {"provider": "fixture-cloud", "default": "fixture-model"}}}}}
+
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            profiles = home / "profiles"
+            profiles.mkdir()
+            (profiles / "notes.txt").write_text("not a profile\n", encoding="utf-8")
+            (profiles / "empty-profile").mkdir()
+
+            # A plain file and a directory without config.yaml are left alone.
+            self.assertEqual(apply_config.sync_profile_models(home, settings), 0)
+            self.assertEqual((profiles / "notes.txt").read_text(encoding="utf-8"), "not a profile\n")
+            self.assertFalse((profiles / "empty-profile" / "config.yaml").exists())
+
+    def test_sync_profile_models_rejects_a_non_mapping_section_without_writing(self) -> None:
+        settings = {"vps_hermes": {"config": {"managed_overlay": {
+            "model": {"provider": "fixture-cloud", "default": "fixture-model"}}}}}
+
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            profile = home / "profiles" / "broken"
+            profile.mkdir(parents=True)
+            config = profile / "config.yaml"
+            config.write_text("model: not-a-mapping\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "model, delegation and cron must be mappings"):
+                apply_config.sync_profile_models(home, settings)
+            # Validation precedes writing: the broken profile is untouched.
+            self.assertEqual(config.read_text(encoding="utf-8"), "model: not-a-mapping\n")
+
+    def test_load_settings_reports_unreadable_or_non_mapping_content(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            invalid = root / "vps-defaults.yml"
+            invalid.write_text("vps_runtime: [unclosed\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "cannot read VPS settings from"):
+                apply_config.load_settings(invalid)
+            unreadable = root / "unreadable" / "vps-defaults.yml"
+            unreadable.mkdir(parents=True)
+            with self.assertRaisesRegex(ValueError, "cannot read VPS settings from"):
+                apply_config.load_settings(unreadable)
+
+        with tempfile.TemporaryDirectory() as directory:
+            non_mapping = Path(directory) / "vps-defaults.yml"
+            non_mapping.write_text("- vps_runtime\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "must contain a YAML mapping"):
+                apply_config.load_settings(non_mapping)
+
+    def test_load_config_reports_unreadable_or_non_mapping_content(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            invalid = root / "config.yaml"
+            invalid.write_text("model: [unclosed\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "cannot read Hermes config from"):
+                apply_config.load_config(invalid)
+            as_directory = root / "config-as-directory"
+            as_directory.mkdir()
+            with self.assertRaisesRegex(ValueError, "cannot read Hermes config from"):
+                apply_config.load_config(as_directory)
+            non_mapping = root / "list.yaml"
+            non_mapping.write_text("- model\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "must contain a YAML mapping"):
+                apply_config.load_config(non_mapping)
+
+        # An absent config is a fresh install, not an error.
+        self.assertEqual(apply_config.load_config(Path("/nonexistent/config.yaml")), {})
+
+    def test_render_value_substitutes_known_names_and_rejects_unknown_ones(self) -> None:
+        self.assertEqual(apply_config.render_value("$KNOWN", {"KNOWN": "/home/hermes/workspace"}),
+                         "/home/hermes/workspace")
+        self.assertEqual(apply_config.render_value(123, {}), 123)
+        for value in ("${MISSING}", "$MISSING", "prefix-${MISSING}-suffix"):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ValueError, "unresolved placeholder in VPS setting"
+            ):
+                apply_config.render_value(value, {"KNOWN": "/home/hermes/workspace"})
+
+    def test_runtime_section_helpers_reject_bad_shapes(self) -> None:
+        with self.assertRaisesRegex(ValueError, "vps_runtime.set must be a mapping"):
+            apply_config._mapping({"set": "nope"}, "set")
+        for value in ("nope", ["ok", ""], [1], {"key": "value"}):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ValueError, "vps_runtime.unset must be a list of non-empty strings"
+            ):
+                apply_config._string_list({"unset": value}, "unset")
+
+    def test_cli_value_renders_booleans_and_other_scalars(self) -> None:
+        self.assertEqual(apply_config.cli_value(True), "true")
+        self.assertEqual(apply_config.cli_value(False), "false")
+        self.assertEqual(apply_config.cli_value(42), "42")
+        self.assertEqual(apply_config.cli_value(0.5), "0.5")
+
+    def test_run_operation_shells_out_to_the_hermes_cli(self) -> None:
+        completed = mock.Mock(returncode=0, stdout="applied\n", stderr="")
+        with mock.patch.object(apply_config.subprocess, "run", return_value=completed) as run:
+            apply_config.run_operation(
+                Path("/opt/hermes-bootstrap/bin/hermes"),
+                apply_config.Operation("set", "terminal.cwd", "/home/hermes/workspace"),
+            )
+            run.assert_called_once_with(
+                ["/opt/hermes-bootstrap/bin/hermes", "config", "set", "terminal.cwd",
+                 "/home/hermes/workspace"],
+                text=True, capture_output=True, check=False,
+            )
+        with mock.patch.object(apply_config.subprocess, "run", return_value=completed) as run:
+            apply_config.run_operation(
+                Path("/opt/hermes-bootstrap/bin/hermes"),
+                apply_config.Operation("unset", "agent.max_turns"),
+            )
+            # An unset carries no value argument.
+            run.assert_called_once_with(
+                ["/opt/hermes-bootstrap/bin/hermes", "config", "unset", "agent.max_turns"],
+                text=True, capture_output=True, check=False,
+            )
+
+    def test_run_operation_raises_with_the_cli_error_detail(self) -> None:
+        operation = apply_config.Operation("set", "terminal.cwd", "/home/hermes/workspace")
+        for completed, expected in (
+            (mock.Mock(returncode=2, stdout="", stderr="unknown key\n"),
+             "Hermes config set failed for terminal.cwd: unknown key"),
+            (mock.Mock(returncode=2, stdout="stdout detail\n", stderr=""),
+             "Hermes config set failed for terminal.cwd: stdout detail"),
+            (mock.Mock(returncode=9, stdout="", stderr=""),
+             "Hermes config set failed for terminal.cwd: exit 9"),
+        ):
+            with self.subTest(expected=expected):
+                with mock.patch.object(apply_config.subprocess, "run", return_value=completed), \
+                        self.assertRaisesRegex(RuntimeError, expected):
+                    apply_config.run_operation(Path("/opt/hermes-bootstrap/bin/hermes"), operation)
+
+    def test_service_names_rejects_bad_groups_and_unsafe_units(self) -> None:
+        with self.assertRaisesRegex(ValueError, "vps_services must be a mapping"):
+            apply_config.service_names({"vps_services": []}, ["gateway"])
+        for values in ("gateway.service", [""], [1]):
+            with self.subTest(values=values), self.assertRaisesRegex(
+                ValueError, "vps_services.gateway must be a list of non-empty strings"
+            ):
+                apply_config.service_names({"vps_services": {"gateway": values}}, ["gateway"])
+        for unit in ("hermes-gateway", "../../etc/passwd.service", "gateway service.service",
+                     "gateway.socket", "gateway.service\n"):
+            with self.subTest(unit=unit), self.assertRaisesRegex(
+                ValueError, "vps_services.gateway contains an unsafe unit name"
+            ):
+                apply_config.service_names({"vps_services": {"gateway": [unit]}}, ["gateway"])
+        self.assertEqual(
+            apply_config.service_names(
+                {"vps_services": {"ops": ["hermes-ops@edge.service", "prune.timer"]}}, ["ops"]
+            ),
+            ["hermes-ops@edge.service", "prune.timer"],
+        )
+
+    def test_setting_value_and_scalar_validators_fail_closed(self) -> None:
+        with self.assertRaisesRegex(ValueError, "required VPS setting is missing: vps_ops.alert_target"):
+            apply_config.setting_value({}, "vps_ops.alert_target")
+        for value in (5, "has space", ""):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ValueError, "invalid VPS setting: vps_ops.alerts.target"
+            ):
+                apply_config._string_setting(
+                    {"vps_ops": {"alerts": {"target": value}}}, "vps_ops.alerts.target", r"[A-Za-z0-9._:-]+"
+                )
+        self.assertEqual(
+            apply_config._string_setting(
+                {"vps_ops": {"alerts": {"target": "127.0.0.1:9119"}}},
+                "vps_ops.alerts.target", r"[A-Za-z0-9._:-]+",
+            ),
+            "127.0.0.1:9119",
+        )
+        for value in (True, "5", 0, 99, 1.5):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ValueError, "invalid VPS setting: vps_ops.limit"
+            ):
+                apply_config._integer_setting({"vps_ops": {"limit": value}}, "vps_ops.limit", 1, 10)
+        self.assertEqual(
+            apply_config._integer_setting({"vps_ops": {"limit": 10}}, "vps_ops.limit", 1, 10), 10
+        )
+        for value in ("true", "yes", 1, None):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ValueError, "invalid VPS setting: vps_ops.required"
+            ):
+                apply_config._boolean_setting({"vps_ops": {"required": value}}, "vps_ops.required")
+        self.assertIs(
+            apply_config._boolean_setting({"vps_ops": {"required": False}}, "vps_ops.required"), False
+        )
+
+    def test_asset_values_require_one_gateway_and_unique_observability_ports(self) -> None:
+        settings_path = MODULE_PATH.parent.parent / "config" / "vps-defaults.yml"
+        settings = apply_config.load_settings(settings_path)
+
+        for gateway in ([], ["first.service", "second.service"]):
+            with self.subTest(gateway=gateway), self.assertRaisesRegex(ValueError, "exactly one service"):
+                self._asset_values(
+                    {**settings, "vps_services": {**settings["vps_services"], "gateway": gateway}}
+                )
+
+        duplicated = apply_config.load_settings(settings_path)
+        observability = duplicated["vps_observability"]
+        observability["grafana"]["port"] = observability["dashboard"]["port"]
+        with self.assertRaisesRegex(ValueError, "vps_observability ports must be unique"):
+            self._asset_values(duplicated)
+
+    def test_asset_values_reject_unsafe_rendered_settings(self) -> None:
+        settings = apply_config.load_settings(MODULE_PATH.parent.parent / "config" / "vps-defaults.yml")
+
+        # An empty or multi-line identity value would corrupt the rendered unit.
+        with self.assertRaisesRegex(ValueError, "unsafe rendered VPS setting: HERMES_USER"):
+            self._asset_values_with(settings, hermes_user="")
+        with self.assertRaisesRegex(ValueError, "unsafe rendered VPS setting: WORKSPACE"):
+            self._asset_values_with(settings, workspace="/home/hermes\nworkspace")
+
+    def test_render_asset_substitutes_known_and_rejects_unknown_placeholders(self) -> None:
+        self.assertEqual(apply_config.render_asset("@NAME@", {"NAME": "hermes"}), "hermes")
+        with self.assertRaisesRegex(ValueError, "unresolved template placeholders: @UNKNOWN@"):
+            apply_config.render_asset("path=@UNKNOWN@", {"NAME": "hermes"})
+
+    def test_main_services_prints_managed_units_once_in_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            settings_path = Path(temporary_directory) / "vps-defaults.yml"
+            settings_path.write_text(
+                "vps_services:\n"
+                "  gateway: [hermes-gateway.service]\n"
+                "  ops: [hermes-ops@edge.service, prune.timer, hermes-gateway.service]\n",
+                encoding="utf-8",
+            )
+            argv = ["apply-config.py", "services", "--settings", str(settings_path), "gateway", "ops"]
+            output = io.StringIO()
+            with mock.patch("sys.argv", argv), mock.patch("sys.stdout", output):
+                exit_code = apply_config.main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(output.getvalue(),
+                         "hermes-gateway.service\nhermes-ops@edge.service\nprune.timer\n")
+
+    def test_main_value_prints_one_scalar_setting(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            settings_path = Path(temporary_directory) / "vps-defaults.yml"
+            settings_path.write_text(
+                "vps_ops:\n"
+                "  api_retry:\n"
+                "    max_attempts: 3\n"
+                "  backup:\n"
+                "    required: true\n",
+                encoding="utf-8",
+            )
+            for key, expected in (("vps_ops.api_retry.max_attempts", "3"),
+                                  ("vps_ops.backup.required", "true")):
+                with self.subTest(key=key):
+                    argv = ["apply-config.py", "value", "--settings", str(settings_path), key]
+                    output = io.StringIO()
+                    with mock.patch("sys.argv", argv), mock.patch("sys.stdout", output):
+                        exit_code = apply_config.main()
+                    self.assertEqual(exit_code, 0)
+                    self.assertEqual(output.getvalue(), expected + "\n")
+
+            missing_errors = io.StringIO()
+            argv = ["apply-config.py", "value", "--settings", str(settings_path), "vps_ops.missing"]
+            with mock.patch("sys.argv", argv), mock.patch("sys.stdout", io.StringIO()), \
+                    mock.patch("sys.stderr", missing_errors):
+                exit_code = apply_config.main()
+
+            # A non-scalar setting cannot be printed as a CLI value.
+            scalar_errors = io.StringIO()
+            argv = ["apply-config.py", "value", "--settings", str(settings_path), "vps_ops.backup"]
+            with mock.patch("sys.argv", argv), mock.patch("sys.stdout", io.StringIO()), \
+                    mock.patch("sys.stderr", scalar_errors):
+                non_scalar_exit = apply_config.main()
+
+        # A missing key fails loudly instead of printing an empty value.
+        self.assertEqual(exit_code, 1)
+        self.assertIn("required VPS setting is missing: vps_ops.missing", missing_errors.getvalue())
+        self.assertEqual(non_scalar_exit, 1)
+        self.assertIn("VPS setting is not scalar: vps_ops.backup", scalar_errors.getvalue())
+
+    def test_main_render_substitutes_one_managed_asset(self) -> None:
+        settings_path = MODULE_PATH.parent.parent / "config" / "vps-defaults.yml"
+        identity = apply_config.load_settings(settings_path)["vps_deploy"]["identity"]
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            template = Path(temporary_directory) / "unit.service"
+            template.write_text("User=@HERMES_USER@\nWorkspace=@WORKSPACE@\n", encoding="utf-8")
+            argv = [
+                "apply-config.py", "render",
+                "--settings", str(settings_path),
+                "--template", str(template),
+                "--hermes-user", identity["user"],
+                "--hermes-group", identity["user"],
+                "--user-home", identity["user_home"],
+                "--hermes-home", identity["hermes_home"],
+                "--hermes-bin", identity["hermes_bin"],
+                "--workspace", identity["workspace"],
+                "--backup-dir", identity["backup_dir"],
+            ]
+            output = io.StringIO()
+            with mock.patch("sys.argv", argv), mock.patch("sys.stdout", output):
+                exit_code = apply_config.main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            output.getvalue(),
+            f"User={identity['user']}\nWorkspace={identity['workspace']}\n",
+        )
+
+
+if __name__ == '__main__':
     unittest.main()

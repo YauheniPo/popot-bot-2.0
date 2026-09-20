@@ -89,3 +89,33 @@ class WorkspaceMcpRepairTests(unittest.TestCase):
             module.repair(config, {})
         self.assertEqual(config['mcp_servers']['github']['command'], 'npx')
         self.assertEqual(module.repair({}, {}), {})
+
+    def test_unreadable_vault_is_reported_separately_from_an_unset_token(self):
+        # A sealed or unreadable Vault must not look like a deliberate omission,
+        # so the error names the mapping rather than the missing key.
+        config = {'mcp_servers': {'github': {'command': 'npx',
+            'args': ['-y', '@modelcontextprotocol/server-everything']}}}
+        with self.assertRaisesRegex(ValueError, 'Vault secrets must be a mapping'):
+            module.repair(config, None)
+        self.assertEqual(config['mcp_servers']['github']['command'], 'npx')
+
+    def test_non_mapping_sections_fail_closed(self):
+        with self.assertRaisesRegex(ValueError, 'mcp_servers must be a mapping'):
+            module.stdio_runtime({'mcp_servers': ['not', 'a', 'mapping']}, '/srv/hermes')
+        with self.assertRaisesRegex(ValueError, 'mcp_servers must be a mapping'):
+            module.repair({'mcp_servers': 'npx'}, {})
+        with self.assertRaisesRegex(ValueError, 'env must be a mapping'):
+            module.stdio_runtime({'mcp_servers': {'memory': {'command': 'npx', 'env': 'not-a-map'}}},
+                                 '/srv/hermes')
+
+    def test_servers_without_a_launcher_command_are_left_alone(self):
+        config = {'mcp_servers': {
+            'no-command': {'args': ['-y', '@modelcontextprotocol/server-fetch']},
+            'numeric': {'command': 5},
+            'remote': {'url': 'https://example.test/mcp', 'env': {}},
+        }}
+        self.assertEqual(module.stdio_runtime(config, '/srv/hermes'), config)
+
+    def test_filter_module_exposes_both_filters(self):
+        self.assertEqual(set(module.FilterModule().filters()),
+                         {'hermes_repair_workspace_mcp', 'hermes_mcp_stdio_runtime'})

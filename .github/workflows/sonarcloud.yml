@@ -53,6 +53,31 @@ jobs:
           coverage run --source=. -m unittest discover -s tests -v
           coverage xml -o coverage.xml
 
+      - name: Run Workspace runtime tests with JavaScript coverage
+        # The managed Workspace adapters are JavaScript; Sonar counts them as
+        # product code (see sonar.javascript.lcov.reportPaths). They need the
+        # pinned upstream checkout plus its type tooling, and they self-skip
+        # without WORKSPACE_UPSTREAM_DIR, so fetch it explicitly here rather
+        # than trusting this workflow to see an installed copy.
+        env:
+          WORKSPACE_REVISION: c631425d8baa933f8c61d8447040f4ec8b5f571c
+        run: |
+          set -euo pipefail
+          upstream="$RUNNER_TEMP/workspace-upstream"
+          git clone --quiet --filter=blob:none --no-checkout \
+            https://github.com/outsourc-e/hermes-workspace.git "$upstream"
+          git -C "$upstream" fetch --quiet --depth 1 origin "$WORKSPACE_REVISION"
+          git -C "$upstream" checkout --quiet --detach FETCH_HEAD
+          # The adapter tests transpile upstream TypeScript with the version the
+          # pinned checkout expects; install it in place of a full pnpm install.
+          npm install --prefix "$upstream" --no-save --no-audit --no-fund typescript@5
+          mapfile -t runtime_tests < <(find hermes/runtime -maxdepth 1 -name 'test-*.mjs' | sort)
+          WORKSPACE_UPSTREAM_DIR="$upstream" node --test \
+            --experimental-test-coverage \
+            --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=lcov --test-reporter-destination=hermes-runtime.lcov \
+            "${runtime_tests[@]}"
+
       - name: SonarQube Cloud Scan
         # GitHub does not expose repository secrets to Dependabot PRs, so the
         # Sonar token is unavailable for Dependabot and fork PRs. Keep Sonar

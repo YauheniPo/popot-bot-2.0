@@ -115,6 +115,60 @@ class NativeAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'absolute'):
             self.backend.prepare_worktree('b' * 32, '../repo')
 
+    def test_worktree_identity_and_unsafe_target_are_rejected(self):
+        repo = self.workspace / 'repo'
+        repo.mkdir()
+        subprocess.run(['git', '-C', str(repo), 'init'], check=True, capture_output=True)
+        with self.assertRaisesRegex(ValueError, 'Invalid task identity'):
+            self.backend.prepare_worktree('not-a-team-id', str(repo))
+        with self.assertRaisesRegex(ValueError, 'Invalid task identity'):
+            self.backend.prepare_worktree('A' * 32, str(repo))
+        self.assertFalse((self.state / 'worktrees').exists())
+        linked = self.root / 'linked-worktrees'
+        linked.mkdir()
+        worktrees = self.state / 'worktrees'
+        worktrees.symlink_to(linked)
+        with self.assertRaisesRegex(ValueError, 'Worktree target already exists or is unsafe'):
+            self.backend.prepare_worktree('d' * 32, str(repo))
+        self.assertEqual(list(linked.iterdir()), [])
+        worktrees.unlink()
+        existing = worktrees / ('c' * 32)
+        existing.mkdir(parents=True)
+        with self.assertRaisesRegex(ValueError, 'Worktree target already exists or is unsafe'):
+            self.backend.prepare_worktree('c' * 32, str(repo))
+        self.assertEqual(list(existing.iterdir()), [])
+
+    def test_handler_dispatches_native_work_and_returns_json(self):
+        with patch.dict(sys.modules, self.modules):
+            self.assertEqual(json.loads(PLUGIN.handle({'action': 'list'})), [])
+            started = json.loads(PLUGIN.handle({
+                'action': 'start', 'request_id': 'adapter', 'objective': 'Inspect the fixture service',
+                'mode': 'research', 'acceptance': 'Cites primary sources', 'context': 'Read-only access'}))
+        self.assertEqual(started['status'], 'running')
+        self.assertEqual(started['stage'], 'research')
+        self.assertEqual(started['mode'], 'research')
+        self.assertIn('Inspect the fixture service', self.delegate.call_args.kwargs['goal'])
+        self.assertEqual(self.delegate.call_args.kwargs['role'], 'leaf')
+        self.assertTrue(self.delegate.call_args.kwargs['background'])
+
+    def test_terminal_cwd_must_be_absolute_for_team_tasks(self):
+        for cwd in ('relative/workspace', ''):
+            with self.subTest(cwd=cwd):
+                self.config['terminal'] = {'cwd': cwd}
+                with patch.dict(sys.modules, self.modules):
+                    error = json.loads(PLUGIN.handle({'action': 'list'}))['error']
+                self.assertEqual(error, 'Configure an absolute terminal.cwd for team tasks')
+        self.delegate.assert_not_called()
+
+    def test_unexpected_controller_failure_never_replays_or_leaks_details(self):
+        self.modules['hermes_cli.config'] = module(
+            'hermes_cli.config', load_config=Mock(side_effect=RuntimeError('provider stderr with a credential')))
+        with patch.dict(sys.modules, self.modules):
+            result = json.loads(PLUGIN.handle({'action': 'start'}))
+        self.assertEqual(result, {'error': 'Team controller failed; no automatic replay',
+                                  'type': 'RuntimeError'})
+        self.delegate.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

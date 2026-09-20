@@ -65,6 +65,8 @@ def repair(config, vault):
         if name == 'fetch':
             server.update(command='uvx', args=['mcp-server-fetch'])
         else:
+            if not isinstance(vault, dict):
+                raise ValueError('Vault secrets must be a mapping before repairing GitHub MCP')
             token = vault.get('MCP_GITHUB_API_KEY')
             if not isinstance(token, str) or not token.strip():
                 raise ValueError('Put a limited-scope PAT in Vault hermes_secret_env.MCP_GITHUB_API_KEY before repairing GitHub MCP')

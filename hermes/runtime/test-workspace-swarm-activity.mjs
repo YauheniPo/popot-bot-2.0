@@ -26,6 +26,46 @@ function rows(c, entry, m = member) { return c.buildRows([m], new Map([[m.id, en
 test('activity adapter fails closed on an unsupported upstream', () => {
   assert.throws(() => workspaceSwarmRuntime().transform('changed', file), /Unsupported Workspace Swarm activity/);
 });
+
+test('swarm runtime fails closed on every unsupported pinned contract', () => {
+  const plugin = workspaceSwarmRuntime();
+  assert.equal(plugin.transform('unrelated', '/src/other.ts'), null);
+  const contracts = [
+    // activity feed: buildRows anchor missing
+    ['/src/screens/swarm2/swarm2-activity-feed.tsx', 'function relativeTime('],
+    // activity feed: the four replacements pass but buildRows is absent, so
+    // the slice would silently emit a broken module.
+    ['/src/screens/swarm2/swarm2-activity-feed.tsx', [
+      '  currentTask?: string | null',
+      "kind: 'tail' | 'session' | 'task'",
+      'function relativeTime(',
+      "  if (!ts) return 'just now'\n  const diff = Date.now() - ts",
+      'export function Swarm2ActivityFeed(',
+    ].join('\n')],
+    // reports view: its own anchor missing
+    ['/src/screens/swarm2/swarm2-reports-view.tsx', 'changed'],
+    // dispatch route: the shared args anchor is present but the terminal
+    // anchors are gone, so the rewrite must stop instead of shipping a
+    // half-patched dispatcher.
+    ['/src/routes/api/swarm-dispatch.ts',
+      "return ['chat', '-q', prompt, '-Q', '--yolo', '--ignore-rules', '--source', 'swarm-dispatch']"],
+  ];
+  for (const [target, source] of contracts) {
+    assert.throws(() => plugin.transform(source, target), /Unsupported Workspace Swarm/);
+  }
+});
+
+test('swarm runtime rewrites the roster and environment paths for the managed repo', () => {
+  const plugin = workspaceSwarmRuntime();
+  const roster = plugin.transform(
+    "export const SWARM_ROSTER_PATH = join(SWARM_CANONICAL_REPO, 'swarm.yaml')",
+    '/src/server/swarm-roster.ts').code;
+  assert.match(roster, /process\.env\.HERMES_SWARM_ROSTER \|\|/);
+  const environment = plugin.transform(
+    'export const SWARM_CANONICAL_REPO = resolve(process.cwd())',
+    '/src/server/swarm-environment.ts').code;
+  assert.match(environment, /process\.env\.HERMES_SWARM_REPO \|\| process\.cwd\(\)/);
+});
 test('seconds and milliseconds display the same age, unknown is not just now', enabled, () => {
   const c = load();
   assert.equal(c.relativeTime((now - 3600000) / 1000), '1h ago');

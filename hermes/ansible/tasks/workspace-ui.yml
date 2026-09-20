@@ -130,7 +130,9 @@
     dest: /etc/systemd/system/hermes-workspace.service
     owner: root
     group: root
-    mode: "0644"
+    # Only root (systemd, systemctl) reads a system unit; keep it off other
+    # users' read path instead of the conventional world-readable 0644.
+    mode: "0640"
   notify: restart Hermes Workspace
 
 - name: Mark Workspace unit available and reload rotated shared credentials

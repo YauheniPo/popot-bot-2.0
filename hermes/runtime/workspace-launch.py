@@ -28,12 +28,17 @@ def managed_entry(source, bridge):
 
 
 def write_managed_entry(source_dir):
-    content = managed_entry((source_dir / 'server-entry.js').read_text(),
+    root = source_dir.resolve()
+    content = managed_entry((root / 'server-entry.js').read_text(),
                             Path(__file__).with_name('workspace-dashboard-bridge.mjs'))
-    target = source_dir / '.hermes-managed-server.mjs'
+    target = root / '.hermes-managed-server.mjs'
+    # The leaf name is fixed, but confirm the resolved path still sits directly
+    # inside the resolved source directory before it is handed to Node.
+    if target.resolve().parent != root:
+        raise ValueError('Managed entry must stay inside the Workspace source directory')
     # Atomic replacement does not follow an existing leaf symlink. No secrets
     # are written here; credentials remain in the launch environment/cookies.
-    with tempfile.NamedTemporaryFile(mode='w', dir=source_dir, delete=False) as stream:
+    with tempfile.NamedTemporaryFile(mode='w', dir=root, delete=False) as stream:
         temporary = Path(stream.name)
         try:
             stream.write(content)
@@ -42,6 +47,21 @@ def write_managed_entry(source_dir):
         finally:
             temporary.unlink(missing_ok=True)
     return target
+
+
+def trusted_executable(value):
+    """Accept only an absolute path to an existing executable file.
+
+    The service unit supplies this path, not an interactive caller, so resolve
+    it once and refuse anything that is not an executable file.
+    """
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        raise ValueError('--node must be an absolute path')
+    resolved = candidate.resolve()
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+        raise ValueError(f'--node is not an executable file: {resolved}')
+    return resolved
 
 
 def workspace_environment(base, secrets, port, api_port, dashboard_port):
@@ -81,14 +101,16 @@ def main():
     try:
         env = workspace_environment(os.environ, dotenv_values(home / '.env', interpolate=False),
                                     args.port, args.api_port, args.dashboard_port)
-    except ValueError as error:
+        node = trusted_executable(args.node)
+        source = args.source.resolve()
+    except (OSError, ValueError) as error:
         parser.exit(1, f'{error}\n')
     try:
-        entry = write_managed_entry(args.source.resolve())
+        entry = write_managed_entry(source)
     except (OSError, ValueError) as error:
         parser.exit(1, f'Workspace entry setup failed: {error}\n')
-    os.chdir(args.source)
-    os.execve(args.node, [args.node, str(entry)], env)
+    os.chdir(source)
+    os.execve(node, [str(node), str(entry)], env)
 
 
 if __name__ == '__main__':

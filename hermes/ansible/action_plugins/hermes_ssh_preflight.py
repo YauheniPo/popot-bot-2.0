@@ -109,6 +109,9 @@ def probe(command, timeout, on_auth, heartbeat):
 
 
 def retry_probe(run, attempts, report):
+    # run() clamps the argument too; bound it here as well so a direct caller
+    # cannot turn a bad value into attempts*timeout seconds of waiting.
+    attempts = max(1, min(3, attempts))
     for attempt in range(1, attempts + 1):
         report(f'SSH check {attempt}/{attempts}')
         outcome = run()

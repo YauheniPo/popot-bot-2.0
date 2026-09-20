@@ -2,9 +2,11 @@
 
 import importlib.util
 from pathlib import Path
+import subprocess
 import sys
 import time
 import unittest
+from unittest import mock
 
 import yaml
 
@@ -137,6 +139,126 @@ class SshPreflightTests(unittest.TestCase):
             result = action.run(task_vars={})
         self.assertTrue(result['skipped'])
         self.assertNotIn('synthetic-test-password', str(result))
+
+    def test_probe_output_classifies_host_key_and_permission_denied(self):
+        output = preflight.ProbeOutput()
+        output.consume(b'@@@@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@@@@')
+        self.assertEqual(output.failure, 'host_key')
+        output = preflight.ProbeOutput()
+        output.consume(b'user@host: Permission denied (publickey).')
+        self.assertEqual(output.failure, 'denied')
+
+    def test_probe_reports_heartbeats_while_waiting(self):
+        # Advance the probe's own clock so a heartbeat is reached quickly
+        # instead of waiting the real 10-second interval.
+        heartbeats = []
+        clock = {'now': 0.0}
+
+        def monotonic():
+            clock['now'] += 0.5
+            return clock['now']
+
+        command = [sys.executable, '-u', '-c', "import time; time.sleep(30)"]
+        with mock.patch.object(preflight.time, 'monotonic', monotonic):
+            self.assertEqual(preflight.probe(command, 30, lambda _: None, heartbeats.append), 'timeout')
+        self.assertTrue(heartbeats)
+        self.assertIn('waiting for SSH', heartbeats)
+
+    def test_interactive_approval_opens_only_a_tailscale_url(self):
+        from unittest.mock import Mock, patch
+        opened = []
+        with patch.dict('os.environ', {'CI': ''}, clear=False), \
+             patch('builtins.open', unittest.mock.mock_open()) as tty, \
+             patch.object(preflight.shutil, 'which', return_value='/usr/bin/xdg-open'), \
+             patch.object(preflight.subprocess, 'run', side_effect=lambda *a, **k: opened.append(a[0])):
+            self.assertTrue(preflight.show_approval('https://login.tailscale.com/a/test123'))
+        self.assertEqual(opened, [['/usr/bin/xdg-open', 'https://login.tailscale.com/a/test123']])
+        tty.return_value.write.assert_called_once()
+
+    def test_interactive_approval_is_skipped_in_ci_and_without_a_terminal(self):
+        from unittest.mock import patch
+        with patch.dict('os.environ', {'CI': 'true'}, clear=False):
+            self.assertFalse(preflight.show_approval('https://login.tailscale.com/a/test123'))
+        with patch.dict('os.environ', {'CI': ''}, clear=False), \
+             patch('builtins.open', side_effect=OSError('no tty')):
+            self.assertFalse(preflight.show_approval('https://login.tailscale.com/a/test123'))
+
+    def _action(self, *, transport='ssh', host='100.64.0.1', args=None, options=None):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        action = object.__new__(preflight.ActionModule)
+        action._task = SimpleNamespace(args=args or {})
+        values = {'host': host}
+        values.update(options or {})
+        action._connection = SimpleNamespace(transport=transport, get_option=values.get)
+        action._play_context = SimpleNamespace(password=None)
+        action._display = Mock()
+        return action
+
+    def test_preflight_skips_non_ssh_transports_and_public_addresses(self):
+        from unittest.mock import patch
+        with patch.object(preflight.ActionBase, 'run', return_value={}):
+            local = self._action(transport='local')
+            self.assertTrue(local.run(task_vars={})['skipped'])
+            public = self._action(host='203.0.113.9')
+            self.assertTrue(public.run(task_vars={})['skipped'])
+
+    def test_preflight_rejects_out_of_bounds_arguments_and_missing_client(self):
+        from unittest.mock import patch
+        for args in ({'attempts': 0}, {'attempts': 4}, {'attempt_timeout': 0},
+                     {'attempt_timeout': 121}, {'attempts': 'many'}):
+            with self.subTest(args=args), patch.object(preflight.ActionBase, 'run', return_value={}), \
+                 patch.object(preflight, 'ssh_command', return_value=['ssh']):
+                result = self._action(args=args).run(task_vars={})
+                self.assertTrue(result['failed'])
+                self.assertIn('attempts=1..3', result['msg'])
+        with patch.object(preflight.ActionBase, 'run', return_value={}), \
+             patch.object(preflight, 'ssh_command', return_value=['ssh']), \
+             patch.object(preflight, 'retry_probe', side_effect=OSError('no ssh')):
+            result = self._action().run(task_vars={})
+        self.assertTrue(result['failed'])
+        self.assertIn('Cannot execute the controller SSH client', result['msg'])
+
+    def test_preflight_reports_success_and_each_failure_message(self):
+        from unittest.mock import patch
+        for outcome, expected in (('ready', 'SSH authentication confirmed'),
+                                  ('host_key', 'host-key verification failed'),
+                                  ('auth_required', 'no interactive terminal'),
+                                  ('auth_timeout', 'not completed within the bounded attempts'),
+                                  ('timeout', 'SSH connection timed out'),
+                                  ('failed', 'Run ssh -v')):
+            with self.subTest(outcome=outcome), \
+                 patch.object(preflight.ActionBase, 'run', return_value={}), \
+                 patch.object(preflight, 'ssh_command', return_value=['ssh']), \
+                 patch.object(preflight, 'retry_probe', return_value=outcome):
+                result = self._action().run(task_vars={})
+            self.assertIn(expected, result['msg'])
+            self.assertEqual(result.get('failed', False), outcome != 'ready')
+
+    def test_interactive_approval_swallows_an_opener_failure(self):
+        from unittest.mock import patch
+        with patch.dict('os.environ', {'CI': ''}, clear=False), \
+             patch('builtins.open', unittest.mock.mock_open()), \
+             patch.object(preflight.shutil, 'which', return_value='/usr/bin/xdg-open'), \
+             patch.object(preflight.subprocess, 'run',
+                          side_effect=subprocess.TimeoutExpired('xdg-open', 3)):
+            # A slow or missing opener must not fail the preflight; the URL is
+            # already printed on the operator's TTY.
+            self.assertTrue(preflight.show_approval('https://login.tailscale.com/a/test123'))
+        with patch.dict('os.environ', {'CI': ''}, clear=False), \
+             patch('builtins.open', unittest.mock.mock_open()), \
+             patch.object(preflight.shutil, 'which', return_value='/usr/bin/xdg-open'), \
+             patch.object(preflight.subprocess, 'run', side_effect=OSError('cannot exec')):
+            self.assertTrue(preflight.show_approval('https://login.tailscale.com/a/test123'))
+
+    def test_retry_probe_clamps_an_out_of_range_attempt_count(self):
+        from unittest.mock import Mock
+        run = Mock(return_value='timeout')
+        self.assertEqual(preflight.retry_probe(run, 99, lambda _: None), 'timeout')
+        self.assertEqual(run.call_count, 3)
+        run = Mock(return_value='timeout')
+        self.assertEqual(preflight.retry_probe(run, 0, lambda _: None), 'timeout')
+        self.assertEqual(run.call_count, 1)
 
 
 if __name__ == '__main__':

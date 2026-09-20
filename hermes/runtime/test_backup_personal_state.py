@@ -1,15 +1,19 @@
 """Personal state must round-trip without broadening filesystem access."""
 
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
+import runpy
 import shutil
 import subprocess
 import sys
 import tempfile
+import types
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 import zipfile
 
 
@@ -27,6 +31,9 @@ class BackupPersonalStateTests(unittest.TestCase):
         self.workspace = self.root / "workspace"
         self.home.mkdir()
         self.workspace.mkdir()
+        # main() tightens the process-wide umask; restore it so a test that
+        # calls main() cannot change how later tests create files.
+        self.addCleanup(os.umask, os.umask(0o022))
 
     def put(self, root, name, content="personal text"):
         path = root / name
@@ -232,6 +239,306 @@ pathlib.Path(os.environ["HERMES_HOME"], "pruned").touch()
         self.assertTrue((self.home / "pruned").exists())
         self.assertEqual(archives[0].stat().st_mode & 0o777, 0o600)
 
+    def test_full_backup_crc_failure_is_rejected(self):
+        archive = self.root / "corrupt.zip"
+        with zipfile.ZipFile(archive, "w") as backup:
+            backup.writestr("config.yaml", "{}")
+        with zipfile.ZipFile(archive) as backup:
+            raw = archive.read_bytes()
+        # Flip bytes inside the stored payload so the CRC no longer matches.
+        payload = b"config.yaml{}"
+        position = raw.find(payload)
+        self.assertGreaterEqual(position, 0)
+        corrupted = bytearray(raw)
+        corrupted[position + len(payload) - 1] ^= 0xFF
+        archive.write_bytes(bytes(corrupted))
+        with self.assertRaisesRegex(RuntimeError, "CRC"):
+            self.module.verify_full(archive, ["config.yaml"])
 
-if __name__ == "__main__":
+    def test_backup_directory_symlink_and_walk_error_are_rejected(self):
+        real = self.home / "real-backups"
+        real.mkdir()
+        self.put(real, "one.txt")
+        link = self.home / "linked-backups"
+        link.symlink_to(real)
+        with self.assertRaisesRegex(RuntimeError, "must not be a symlink"):
+            list(self.module.files_under(link))
+        self.put(real, "two.txt")
+        self.assertEqual(len(list(self.module.files_under(real))), 2)
+
+    def test_unreadable_directory_aborts_the_walk(self):
+        real = self.home / "private"
+        real.mkdir()
+        self.put(real, "one.txt")
+        real.chmod(0o000)
+        self.addCleanup(real.chmod, 0o755)
+        if os.geteuid() == 0:
+            self.skipTest("root bypasses directory permissions")
+        with self.assertRaises(OSError):
+            list(self.module.files_under(real))
+
+    def test_symlinked_profiles_directory_is_rejected(self):
+        outside = self.root / "outside-profiles"
+        outside.mkdir()
+        (self.home / "profiles").symlink_to(outside)
+        with self.assertRaisesRegex(RuntimeError, "Profile directory must not be a symlink"):
+            self.module.personal_files(self.home)
+
+    def test_quick_snapshot_expands_a_listed_directory_entry(self):
+        self.put(self.home, "config.yaml", "model: fixture\n")
+        nested = self.put(self.home, "profiles/custom/memories/USER.md", "preferences")
+        native = SimpleNamespace(_QUICK_STATE_FILES=("config.yaml", "profiles"),
+                                 _QUICK_SNAPSHOTS_DIR="state-snapshots")
+
+        def create(**kwargs):
+            snap = self.home / "ops/state-snapshots/expanded"
+            snap.mkdir(parents=True)
+            files = {}
+            for rel in native._QUICK_STATE_FILES:
+                source = self.home / rel
+                targets = ([source] if source.is_file()
+                           else [p for p in source.rglob("*") if p.is_file()])
+                for item in targets:
+                    relname = item.relative_to(self.home).as_posix()
+                    target = snap / relname
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(item, target)
+                    files[relname] = target.stat().st_size
+            (snap / "manifest.json").write_text(json.dumps({"files": files}))
+            return snap.name
+
+        native.create_quick_snapshot = create
+        destination = self.module.quick_snapshot(self.home, native)
+        # The directory entry is expanded to its regular files, so the nested
+        # memory file is verified rather than the directory itself.
+        self.assertTrue((destination / "profiles/custom/memories/USER.md").is_file())
+        self.assertEqual((destination / "profiles/custom/memories/USER.md").read_text(),
+                         nested.read_text())
+
+    def test_quick_snapshot_rejects_a_native_incomplete_backup_report(self):
+        self.put(self.home, "config.yaml", "model: fixture\n")
+
+        def create(**kwargs):
+            snap = self.home / "ops/state-snapshots/reported"
+            snap.mkdir(parents=True)
+            target = snap / "config.yaml"
+            shutil.copy2(self.home / "config.yaml", target)
+            (snap / "manifest.json").write_text(json.dumps(
+                {"files": {"config.yaml": target.stat().st_size}, "oversized_skipped": ["state.db"]}))
+            return snap.name
+
+        native = SimpleNamespace(_QUICK_STATE_FILES=("config.yaml",),
+                                 _QUICK_SNAPSHOTS_DIR="state-snapshots",
+                                 create_quick_snapshot=create)
+        with self.assertRaisesRegex(RuntimeError, "incomplete quick backup"):
+            self.module.quick_snapshot(self.home, native)
+
+    def test_quick_snapshot_rejects_an_unusable_native_result(self):
+        self.put(self.home, "config.yaml")
+        for snapshot_id, message in (("", "valid quick snapshot"),
+                                     ("../escape", "valid quick snapshot")):
+            native = self.native()
+            native.create_quick_snapshot = lambda _id=snapshot_id, **_: _id
+            with self.subTest(snapshot_id=snapshot_id), self.assertRaisesRegex(RuntimeError, message):
+                self.module.quick_snapshot(self.home, native)
+
+    def test_quick_snapshot_rejects_an_incomplete_manifest(self):
+        self.put(self.home, "config.yaml")
+        self.put(self.home, "SOUL.md", "personal text")
+
+        def create(**kwargs):
+            snap = self.home / "ops/state-snapshots/reported"
+            snap.mkdir(parents=True)
+            (snap / "manifest.json").write_text(json.dumps(
+                {"files": {"config.yaml": 1}, "failed_dbs": ["state.db"]}))
+            return snap.name
+
+        native = SimpleNamespace(_QUICK_STATE_FILES=("config.yaml",),
+                                 _QUICK_SNAPSHOTS_DIR="state-snapshots",
+                                 create_quick_snapshot=create)
+        with self.assertRaisesRegex(RuntimeError, "missing required state files"):
+            self.module.quick_snapshot(self.home, native)
+
+        def create_incomplete(**kwargs):
+            snap = self.home / "ops/state-snapshots/reported"
+            snap.mkdir(parents=True)
+            (snap / "manifest.json").write_text(json.dumps(
+                {"files": {}, "failed_dbs": ["state.db"]}))
+            return snap.name
+
+        native.create_quick_snapshot = create_incomplete
+        with self.assertRaisesRegex(RuntimeError, "missing required state files"):
+            self.module.quick_snapshot(self.home, native)
+
+    def test_quick_snapshot_rejects_a_size_mismatch(self):
+        self.put(self.home, "config.yaml", "current")
+
+        def create_with_truncated_file(**kwargs):
+            snap = self.home / "ops/state-snapshots/mismatched"
+            snap.mkdir(parents=True)
+            (snap / "config.yaml").write_text("x")
+            (snap / "manifest.json").write_text(json.dumps({"files": {"config.yaml": 999}}))
+            return snap.name
+
+        native = SimpleNamespace(_QUICK_STATE_FILES=("config.yaml",),
+                                 _QUICK_SNAPSHOTS_DIR="state-snapshots",
+                                 create_quick_snapshot=create_with_truncated_file)
+        with self.assertRaisesRegex(RuntimeError, "file verification failed"):
+            self.module.quick_snapshot(self.home, native)
+
+    def test_quick_snapshot_rejects_an_occupied_destination(self):
+        self.put(self.home, "config.yaml", "current")
+        snapshot_id = "test-scheduled"
+
+        def create(**kwargs):
+            snap = self.home / "ops/state-snapshots" / snapshot_id
+            snap.mkdir(parents=True)
+            target = snap / "config.yaml"
+            shutil.copy2(self.home / "config.yaml", target)
+            (snap / "manifest.json").write_text(json.dumps(
+                {"files": {"config.yaml": target.stat().st_size}}))
+            return snapshot_id
+
+        native = SimpleNamespace(_QUICK_STATE_FILES=("config.yaml",),
+                                 _QUICK_SNAPSHOTS_DIR="state-snapshots",
+                                 create_quick_snapshot=create)
+        (self.home / "state-snapshots" / snapshot_id).mkdir(parents=True)
+        with self.assertRaisesRegex(RuntimeError, "destination already exists"):
+            self.module.quick_snapshot(self.home, native)
+
+    def test_quick_snapshot_reports_an_empty_home(self):
+        native = SimpleNamespace(_QUICK_STATE_FILES=(), _QUICK_SNAPSHOTS_DIR="state-snapshots")
+        with self.assertRaisesRegex(RuntimeError, "No Hermes state found"):
+            self.module.quick_snapshot(self.home, native)
+
+    def test_quick_snapshot_expands_directory_entries_and_restores_native_settings(self):
+        self.put(self.home, "state.db")
+        nested = self.put(self.home, "config.yaml", "content")
+        native = SimpleNamespace(_QUICK_STATE_FILES=("config.yaml",),
+                                 _QUICK_SNAPSHOTS_DIR="state-snapshots")
+        seen = {}
+
+        def create(**kwargs):
+            snap = self.home / "ops/state-snapshots/built"
+            snap.mkdir(parents=True)
+            files = {}
+            for rel in native._QUICK_STATE_FILES:
+                target = snap / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(self.home / rel, target)
+                files[rel] = target.stat().st_size
+            (snap / "manifest.json").write_text(json.dumps({"files": files}))
+            seen["files"] = native._QUICK_STATE_FILES
+            return snap.name
+
+        native.create_quick_snapshot = create
+        destination = self.module.quick_snapshot(self.home, native)
+        self.assertIn("config.yaml", seen["files"])
+        self.assertEqual(native._QUICK_STATE_FILES, ("config.yaml",))
+        self.assertEqual(native._QUICK_SNAPSHOTS_DIR, "state-snapshots")
+        self.assertTrue((destination / nested.name).is_file())
+
+    def test_manifest_entries_must_be_safe_and_typed(self):
+        for manifest in ({"version": 1, "files": []},
+                         {"version": 2, "files": {}},
+                         {"version": 1, "files": {"/abs/AGENTS.md": "x"}},
+                         {"version": 1, "files": {"../AGENTS.md": "x"}},
+                         {"version": 1, "files": {"AGENTS.md": 5}}):
+            with self.subTest(manifest=manifest), self.assertRaises(ValueError):
+                self.module.instruction_io.write_atomic(
+                    self.home / self.module.MANIFEST, json.dumps(manifest))
+                self.module.restore_workspace(self.home, self.workspace)
+
+    def test_instruction_read_failure_during_backup_is_reported(self):
+        self.put(self.workspace, "AGENTS.md")
+        with mock.patch.object(self.module.instruction_io, "read_optional", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "changed during backup"):
+                self.module.mirror_workspace(self.home, self.workspace)
+
+    def test_profile_credentials_must_not_link_outside_the_shared_path(self):
+        profile = self.home / "profiles/custom"
+        profile.mkdir(parents=True)
+        outside = self.put(self.root, "outside.env")
+        (profile / ".env").symlink_to(outside)
+        with self.assertRaisesRegex(RuntimeError, "outside the shared Hermes credential path"):
+            self.module.personal_files(self.home)
+
+    def test_main_mirrors_and_restores_workspace_instructions(self):
+        self.put(self.workspace, "project/AGENTS.extra.md", "project rules")
+        for command in ("mirror", "restore"):
+            with self.subTest(command=command), \
+                 mock.patch.object(self.module.sys, "argv",
+                                   ["backup", command, "--hermes-home", str(self.home),
+                                    "--workspace", str(self.workspace)]), \
+                 mock.patch.object(self.module.sys, "stdout", io.StringIO()) as out:
+                self.assertEqual(self.module.main(), 0)
+            if command == "mirror":
+                self.assertIn("project/AGENTS.extra.md", (self.home / self.module.MANIFEST).read_text())
+            else:
+                self.assertIn("Restored 1 workspace instruction file(s)", out.getvalue())
+
+    def test_main_reports_a_legacy_archive_without_a_manifest(self):
+        archive = self.root / "legacy.zip"
+        with zipfile.ZipFile(archive, "w") as backup:
+            backup.writestr("unrelated.txt", "legacy")
+        with mock.patch.object(self.module.sys, "argv",
+                               ["backup", "restore", "--hermes-home", str(self.home),
+                                "--workspace", str(self.workspace), "--archive", str(archive)]), \
+             mock.patch.object(self.module.sys, "stdout", io.StringIO()) as out:
+            self.assertEqual(self.module.main(), 0)
+        self.assertIn("No workspace instruction manifest (legacy backup)", out.getvalue())
+
+    def test_main_requires_the_arguments_each_command_needs(self):
+        for argv in (["backup", "mirror", "--hermes-home", str(self.home)],
+                     ["backup", "verify-full", "--hermes-home", str(self.home)]):
+            with self.subTest(argv=argv), \
+                 mock.patch.object(self.module.sys, "argv", argv), \
+                 mock.patch.object(self.module.sys, "stderr", io.StringIO()), \
+                 self.assertRaises(SystemExit):
+                self.module.main()
+
+    def test_main_writes_the_inventory_and_verifies_a_full_archive(self):
+        self.put(self.home, "SOUL.md", "identity")
+        expected = self.module.personal_files(self.home)
+        archive = self.root / "full.zip"
+        with zipfile.ZipFile(archive, "w") as backup:
+            for name in expected:
+                backup.write(self.home / name, name)
+        with mock.patch.object(self.module.sys, "argv",
+                               ["backup", "inventory", "--hermes-home", str(self.home)]):
+            self.assertEqual(self.module.main(), 0)
+        self.assertEqual(json.loads((self.home / self.module.INVENTORY).read_text()), expected)
+        with mock.patch.object(self.module.sys, "argv",
+                               ["backup", "verify-full", "--hermes-home", str(self.home),
+                                "--archive", str(archive)]):
+            self.assertEqual(self.module.main(), 0)
+
+    def test_main_quick_command_delegates_to_the_installed_backup_module(self):
+        self.put(self.home, "config.yaml")
+        # main() imports the pinned Hermes backup module from the installed
+        # tree; supply the same fixture so the CLI branch runs without Hermes.
+        stub = self.native()
+        hermes_cli = types.ModuleType("hermes_cli")
+        hermes_cli.backup = stub
+        with mock.patch.object(self.module.sys, "argv",
+                               ["backup", "quick", "--hermes-home", str(self.home)]), \
+             mock.patch.dict(self.module.sys.modules,
+                             {"hermes_cli": hermes_cli, "hermes_cli.backup": stub}), \
+             mock.patch.object(self.module.sys, "stdout", io.StringIO()) as out:
+            self.assertEqual(self.module.main(), 0)
+        self.assertIn("Verified scheduled quick backup: test-scheduled", out.getvalue())
+        self.assertTrue((self.home / "state-snapshots/test-scheduled").is_dir())
+
+
+    def test_module_entrypoint_returns_a_status(self):
+        # The module-level guard is only reachable via runpy; invoke the script
+        # as __main__ with a bad argument so no backup is attempted.
+        with mock.patch.object(sys, "argv", ["backup-personal-state.py"]):
+            with self.assertRaises(SystemExit) as exit_code:
+                runpy.run_path(str(Path(__file__).with_name("backup-personal-state.py")),
+                               run_name="__main__")
+        self.assertEqual(exit_code.exception.code, 2)
+
+
+if __name__ == '__main__':
     unittest.main()

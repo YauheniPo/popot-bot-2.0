@@ -141,7 +141,23 @@ class ManageWorkspaceAgentsTests(unittest.TestCase):
         self.assertTrue(paths)
         for path in paths:
             with self.subTest(path=path):
-                self.assertTrue((MODULE_PATH.parents[2] / path).is_file())
+                self.assertTrue((MODULE_PATH.parents[2] / path).is_file()
+                                or self._is_deliberately_unversioned(MODULE_PATH.parents[2], path))
+
+    @staticmethod
+    def _is_deliberately_unversioned(root: Path, path: str) -> bool:
+        """Accept a documented path that Git deliberately ignores.
+
+        Encrypted Vault and credential paths must exist on a deployed host but
+        never in the repository, so the map check has to tell a deliberate
+        ignore apart from a dangling reference. Git is the authority for that.
+        """
+        try:
+            result = subprocess.run(["git", "-C", str(root), "check-ignore", "--quiet", "--", path],
+                                    capture_output=True, check=False)
+        except OSError:
+            return False
+        return result.returncode == 0
 
     def test_searxng_instructions_do_not_invent_an_unconfigured_endpoint(self) -> None:
         template = Environment(undefined=StrictUndefined).from_string(

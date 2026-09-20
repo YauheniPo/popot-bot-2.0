@@ -72,6 +72,14 @@ test('rejects traversal, secrets, symlink directories/files and hardlinked targe
   assert.equal(fs.readFileSync(secret, 'utf8'), 'not allowed');
 });
 
+test('rejects non-string, empty, backslash and NUL path inputs before any lookup', (t) => {
+  const { api } = fixture(t);
+  for (const bad of [null, undefined, 42, {}, [], '', 'memories\\USER.md', 'memories\u0000USER.md']) {
+    assert.throws(() => api.readMemoryFile(bad), /not allowed/i, String(bad));
+    assert.throws(() => api.writeMemoryFile(bad, 'x', memoryFileVersion('x')), /not allowed/i, String(bad));
+  }
+});
+
 test('profile memory stays isolated and exposes purpose, configured budget and managed blocks', t => {
   const { home, workspace, put } = fixture(t);
   const api = createMemoryFiles({ home, workspace, parseConfig: JSON.parse });
