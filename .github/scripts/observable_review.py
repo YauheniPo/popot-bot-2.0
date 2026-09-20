@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 import ai_review_preflight as transport
 import claude_review_runner as runner
 import pr_review_context as publisher
-from review_execution import safe_label
+from review_execution import observable_execution_report, safe_label, technical_metadata
 
 LABEL = "ObservableMessagesReview"
 PREFIX = "observable"
@@ -388,7 +388,9 @@ def _rate_limit_diagnostics(report: dict) -> list[str]:
 
 
 def diagnostics(report: dict) -> str:
-    lines = [f"## {LABEL}", "", f"Result: **{safe_label(report['status'])}**",
+    execution = observable_execution_report(report.get("attempts", []), report.get("total_chunks", 0))
+    lines = [f"## {LABEL}", "", technical_metadata(execution), "",
+             f"Result: **{safe_label(report['status'])}**",
              "Execution: independent Messages API tool loop.", "",
              "<details>", "<summary>Execution history</summary>", "",
              "| Attempt | Chunk | Provider | Model | Outcome | Seconds |",

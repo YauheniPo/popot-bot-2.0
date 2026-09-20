@@ -391,6 +391,39 @@ def _response_blocks(response):
     return content, blocks
 
 
+def _run_worker_turn(
+    pipe, endpoint, api_key, model, messages, workspace, allowed, read_files, tool_cache,
+    turn, max_turns, timeout, max_tokens, repeated_rounds,
+):
+    """Run one investigation turn and return (finished, repeated_rounds)."""
+    def emit(label):
+        pipe.send(("event", label, turn))
+
+    finalizing = turn == max_turns or repeated_rounds >= 3
+    if finalizing:
+        reason = "repeated_tools" if repeated_rounds >= 3 else "turn_budget"
+        pipe.send(("event", f"finalization_started reason={reason}", turn))
+    payload = _review_payload(model, max_tokens, messages, finalizing)
+    pipe.send(("event", "request_dispatched", turn))
+    response = request_message(endpoint, api_key, payload, timeout, emit)
+    emit(event_label(response))
+    content, blocks = _response_blocks(response)
+    if _final_response_or_none(pipe, response, content, blocks, read_files, turn) is not None:
+        return True, repeated_rounds
+    if finalizing:
+        raise ReviewFailure("turn_limit")
+    messages.append({"role": "assistant", "content": content})
+    previous_calls = len(tool_cache)
+    results = _tool_results(blocks, workspace, allowed, emit, read_files, tool_cache)
+    repeated_rounds = repeated_rounds + 1 if len(tool_cache) == previous_calls else 0
+    messages.append({"role": "user", "content": results})
+    if turn >= max_turns - 3:
+        messages.append({"role": "user", "content":
+            f"Investigation rounds remaining: {max_turns - turn - 1}; then one final JSON-only round. "
+            "Finish checking the current chunk; do not expand scope. Batch only essential reads."})
+    return False, repeated_rounds
+
+
 def _worker(pipe, endpoint, api_key, model, prompt, workspace, allowed, max_turns, timeout, max_tokens=8192):
     # Only this process owns network IO and tools. Parent can terminate it even
     # during DNS/TLS, a slow file read, a streaming response, or final teardown.
@@ -406,28 +439,12 @@ def _worker(pipe, endpoint, api_key, model, prompt, workspace, allowed, max_turn
 
     try:
         for turn in range(1, max_turns + 1):
-            finalizing = turn == max_turns or repeated_rounds >= 3
-            if finalizing:
-                reason = "repeated_tools" if repeated_rounds >= 3 else "turn_budget"
-                emit(f"finalization_started reason={reason}")
-            payload = _review_payload(model, max_tokens, messages, finalizing)
-            emit("request_dispatched")
-            response = request_message(endpoint, api_key, payload, timeout, emit)
-            emit(event_label(response))
-            content, blocks = _response_blocks(response)
-            if _final_response_or_none(pipe, response, content, blocks, read_files, turn) is not None:
+            finished, repeated_rounds = _run_worker_turn(
+                pipe, endpoint, api_key, model, messages, workspace, allowed, read_files, tool_cache,
+                turn, max_turns, timeout, max_tokens, repeated_rounds,
+            )
+            if finished:
                 return
-            if finalizing:
-                raise ReviewFailure("turn_limit")
-            messages.append({"role": "assistant", "content": content})
-            previous_calls = len(tool_cache)
-            results = _tool_results(blocks, workspace, allowed, emit, read_files, tool_cache)
-            repeated_rounds = repeated_rounds + 1 if len(tool_cache) == previous_calls else 0
-            messages.append({"role": "user", "content": results})
-            if turn >= max_turns - 3:
-                messages.append({"role": "user", "content":
-                    f"Investigation rounds remaining: {max_turns - turn - 1}; then one final JSON-only round. "
-                    "Finish checking the current chunk; do not expand scope. Batch only essential reads."})
     except RateLimitFailure as error:
         pipe.send(("rate_limit", error.details, turn))
     except ReviewFailure as error:

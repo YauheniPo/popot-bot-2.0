@@ -21,7 +21,7 @@ import urllib.error
 import urllib.request
 
 from ai_review_preflight import CHAT_COMPLETIONS_URL, MODEL, PLAIN_JSON_PROVIDERS, completion_payload, provider_config, configured_model
-from review_execution import ExecutionReport, safe_label
+from review_execution import ExecutionReport, safe_label, technical_metadata
 from direct_review_stream import StreamFailure, read_response, watchdog
 
 from pr_review_context import (
@@ -891,23 +891,33 @@ def request_with_transient_retries(
                 timeout=min(MODEL_REQUEST_TOTAL_SECONDS, available),
             )
         except RequestError as error:
-            print(f"  request failed: {error.reason if error.status is None else f'http_{error.status}'}",
-                  file=sys.stderr, flush=True)
-            if error.reason in {"inactivity_timeout", "attempt_timeout"} and attempt >= MAX_TIMEOUT_ATTEMPTS:
-                print("  repeated timeout: stop this model route; use configured fallback if available",
-                      file=sys.stderr, flush=True)
-                raise
-            if _should_switch_primary_transport_to_fallback(error, attempt, body):
-                print(
-                    f"  primary transport failed {attempt} times; switching to fallback route",
-                    file=sys.stderr,
-                )
-                raise
-            if not _retryable_request_error(error) or attempt == MAX_REQUEST_ATTEMPTS:
-                raise
-            REVIEW_DEADLINE.bounded_sleep(
-                error.retry_after_seconds or _retry_delay_seconds(error, attempt)
-            )
+            delay = _retry_delay_or_raise(error, attempt, body)
+            REVIEW_DEADLINE.bounded_sleep(delay)
+
+
+def _retry_delay_or_raise(error: RequestError, attempt: int, body: dict[str, object]) -> float:
+    """Log a failed request and return the bounded delay for the next retry."""
+    print(
+        f"  request failed: {error.reason if error.status is None else f'http_{error.status}'}",
+        file=sys.stderr,
+        flush=True,
+    )
+    if error.reason in {"inactivity_timeout", "attempt_timeout"} and attempt >= MAX_TIMEOUT_ATTEMPTS:
+        print(
+            "  repeated timeout: stop this model route; use configured fallback if available",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise error
+    if _should_switch_primary_transport_to_fallback(error, attempt, body):
+        print(
+            f"  primary transport failed {attempt} times; switching to fallback route",
+            file=sys.stderr,
+        )
+        raise error
+    if not _retryable_request_error(error) or attempt == MAX_REQUEST_ATTEMPTS:
+        raise error
+    return error.retry_after_seconds or _retry_delay_seconds(error, attempt)
 
 
 def _has_independent_configured_fallback(body: dict[str, object]) -> bool:
@@ -1759,7 +1769,7 @@ def _follow_up_marker(head_sha: str, thread_id: str) -> str:
 
 def _execution_summary(model: str) -> str:
     report = EXECUTION_REPORT or ExecutionReport(ACTIVE_PROVIDER, OLLAMA_URL, model)
-    return report.summary()
+    return technical_metadata(report)
 
 
 def _finding_execution(finding: Finding) -> str:

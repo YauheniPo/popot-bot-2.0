@@ -90,21 +90,16 @@ class ExecutionReport:
         # Each unit (chunk or triage) has one initial request. Attempt.number is
         # global report order, so counting number == 1 would mislabel new chunks.
         retries = len(self.attempts) - len({a.unit for a in self.attempts})
-        label = "Requests" if self.kind == "api" else "CI attempts"
         lines = [self.connection()]
-        if models:
-            lines.append("> Successful models: " + ", ".join(f"`{m}`" for m in models[:8]))
-        else:
-            lines.append(f"> Requested model: `{safe_label(self.primary_model)}` · Successful request not recorded")
+        lines.append("> Successful models: " + (", ".join(f"`{m}`" for m in models[:8]) or "none"))
         lines.append(
-            f"> {label}: {len(self.attempts)} · Validated: {len(successes)} · Retries: {retries} · "
+            f"> Attempts: {len(self.attempts)} · Validated: {len(successes)} · Retries: {retries} · "
             f"Fallback successes: {sum(a.route.startswith('fallback') for a in successes)}"
         )
-        if self.kind == "api":
-            lines.append(f"> API time: {sum(a.seconds or 0 for a in self.attempts):.1f}s (excludes retry waits). "
-                         "Preflight and GitHub API requests are excluded.")
-        else:
-            lines.append("> Counts describe Claude CI runs; SDK HTTP retries are not recorded.")
+        lines.append(
+            f"> Provider time: {sum(a.seconds or 0 for a in self.attempts):.1f}s "
+            "(retry waits, preflight, and GitHub API requests excluded)."
+        )
         return "\n".join(lines)
 
     def footer(self, unit: str) -> str:
@@ -146,6 +141,31 @@ class ExecutionReport:
             lines.extend(["", f"Showing first and last {MAX_HISTORY_ROWS // 2} attempts; totals include all {len(self.attempts)}."])
         lines.extend(["", "</details>"])
         return "\n".join(lines)
+
+
+def technical_metadata(report: ExecutionReport) -> str:
+    """Render the same metadata block for every reviewer publication."""
+    return "### Technical metadata\n" + report.summary()
+
+
+def observable_execution_report(raw_attempts: list[dict], total_chunks: int) -> ExecutionReport:
+    """Adapt Observable's JSON attempt records to the shared metadata format."""
+    endpoints = {
+        "openrouter": "https://openrouter.ai/api",
+        "ollama-cloud": "https://ollama.com",
+        "nvidia": "https://integrate.api.nvidia.com",
+        "nous": "https://inference-api.nousresearch.com",
+    }
+    first = raw_attempts[0] if raw_attempts else {}
+    provider = safe_label(first.get("provider", "unknown"))
+    primary = safe_label(first.get("model", "unknown"))
+    report = ExecutionReport(provider, endpoints.get(provider, ""), primary)
+    for raw in raw_attempts:
+        chunk = raw.get("chunk", 1)
+        report.unit = f"chunk {chunk}/{total_chunks}"
+        attempt = report.begin({"model": raw.get("model", "unknown")}, route=raw.get("role", "primary"))
+        report.finish(attempt, raw.get("outcome", "unknown"), raw.get("seconds"))
+    return report
 
 
 def claude_execution_report(environment: Mapping[str, str]) -> ExecutionReport:

@@ -412,6 +412,10 @@ jobs:
             GitHub/MCP tools, skills, or any tool not explicitly available. Reserve
             enough turns to validate candidates and return the final structured result;
             do not continue exploring after every changed file has been covered.
+            Do not put progress narration such as "chunk 1 of N" or a list of
+            remaining files in the final summary. The publisher reports execution
+            metadata and review scope; the final summary must describe only the
+            completed review result.
 
             For a defect already described by an unresolved thread, do not return a
             duplicate finding. Return a finding at the same anchor only if it adds

@@ -127,9 +127,12 @@ class MachineThreadTest(unittest.TestCase):
             fixed_machine_findings=4,
             rejected_machine_findings=5,
             machine_findings_needing_human=6,
+            changed_file_count=7,
         )
 
         self.assertIn("### Review outcome", body)
+        self.assertIn("### Technical metadata", body)
+        self.assertIn("Complete base-to-head diff supplied · 7 changed file(s)", body)
         self.assertIn("**Action required**", body)
         self.assertIn("### Finding activity", body)
         self.assertIn("| New inline findings | 0 |", body)

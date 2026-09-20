@@ -404,6 +404,7 @@ class ObservableReviewTests(unittest.TestCase):
                     redirect_stdout(io.StringIO()):
                 observer.run(report_path)
             self.assertIn("ObservableMessagesReview", summary_path.read_text())
+            self.assertIn("### Technical metadata", summary_path.read_text())
             self.assertIn("<details>\n<summary>Execution history</summary>\n\n", summary_path.read_text())
 
     def test_confine_report_path_rejects_escape(self):

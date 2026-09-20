@@ -82,6 +82,8 @@ class AnnotatedDiffTest(unittest.TestCase):
             self.assertNotIn("PRIVATE", output.read_text() + summary.read_text() + log.getvalue())
 
     def test_no_four_identical_timeout_retries_without_another_route(self):
+        request_body = {"model": "test"}
+        review_attempts = reviewer.ReviewAttempts()
         with (
             mock.patch.dict(reviewer.os.environ, {}, clear=True),
             mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(600)),
@@ -90,7 +92,7 @@ class AnnotatedDiffTest(unittest.TestCase):
             mock.patch.object(reviewer.time, "sleep"),
         ):
             with self.assertRaisesRegex(reviewer.RequestError, "inactivity_timeout"):
-                reviewer.request_with_transient_retries({}, {"model": "test"}, reviewer.ReviewAttempts())
+                reviewer.request_with_transient_retries({}, request_body, review_attempts)
         self.assertEqual(request.call_count, 2)
 
     def test_response_limits_are_not_retried_with_the_same_budget(self):
@@ -316,7 +318,7 @@ class RequestPublicationTest(unittest.TestCase):
             summary = reviewer._check_run_summary("primary", "head", plan, findings)
         self.assertEqual(len(report.attempts), 7)
         for text in (payload["body"], summary):
-            self.assertIn("Requests: 7", text)
+            self.assertIn("Attempts: 7", text)
             self.assertIn("Retries: 5", text)
             self.assertIn("invalid_json", text)
             self.assertIn("http_429", text)

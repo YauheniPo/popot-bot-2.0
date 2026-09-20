@@ -19,11 +19,11 @@ class ExecutionReportTest(unittest.TestCase):
             report.finish(attempt, "received", 1)
             report.validate_last("valid_json")
         self.assertEqual([a.number for a in report.attempts], [1, 2, 3, 4, 5])
-        self.assertIn("Requests: 5 · Validated: 5 · Retries: 0", report.summary())
+        self.assertIn("Attempts: 5 · Validated: 5 · Retries: 0", report.summary())
         for chunk in ("chunk 2/5", "chunk 5/5"):
             report.unit = chunk
             report.begin({"model": "model"})
-        self.assertIn("Requests: 7 · Validated: 5 · Retries: 2", report.summary())
+        self.assertIn("Attempts: 7 · Validated: 5 · Retries: 2", report.summary())
 
     def test_nous_reports_canonical_endpoints_for_both_reviewers(self):
         for endpoint in ("https://inference-api.nousresearch.com", "https://inference-api.nousresearch.com/v1/chat/completions"):
@@ -39,7 +39,7 @@ class ExecutionReportTest(unittest.TestCase):
         report.finish(first, "http_429", 1.5)
         second = report.begin({"model": "backup"})
         report.finish(second, "received", 2.5, {"id": "chatcmpl-123", "model": "backup-served"})
-        self.assertNotIn("Successful models:", report.summary())
+        self.assertIn("Successful models: none", report.summary())
         report.validate_last("valid_json")
         report.unit = "chunk 2/2"
         third = report.begin({"model": "primary", "response_format": {"type": "json_schema"}})
@@ -49,7 +49,7 @@ class ExecutionReportTest(unittest.TestCase):
         self.assertIn("nvidia", rendered)
         self.assertIn("backup", rendered)
         self.assertIn("http_429", rendered)
-        self.assertIn("Requests: 3", rendered)
+        self.assertIn("Attempts: 3", rendered)
         self.assertIn("Retries: 1", rendered)
         self.assertIn("Fallback successes: 1", rendered)
         self.assertIn("chatcmpl-123", rendered)
@@ -85,12 +85,12 @@ class ExecutionReportTest(unittest.TestCase):
             "CLAUDE_REVIEW_FALLBACK_VALIDATION": "success",
         })
         rendered = report.summary() + report.details() + report.footer("review")
-        self.assertIn("CI attempts: 3", rendered)
+        self.assertIn("Attempts: 3", rendered)
         self.assertIn("backup", rendered)
         self.assertIn("execution_failed", rendered)
         self.assertIn("validation_failed", rendered)
         self.assertIn("CI attempt #3", rendered)
-        self.assertIn("SDK HTTP retries are not recorded", rendered)
+        self.assertIn("Provider time:", rendered)
 
     def test_skipped_claude_steps_are_not_counted(self):
         report = claude_execution_report({
@@ -110,7 +110,7 @@ class ExecutionReportTest(unittest.TestCase):
             attempt = report.begin({"model": "primary"})
             report.finish(attempt, "received", 1)
             report.validate_last("valid_json")
-        self.assertIn("Requests: 100", report.summary())
+        self.assertIn("Attempts: 100", report.summary())
         self.assertIn("all 100", report.details())
         self.assertLess(len(report.details()), 10000)
 
