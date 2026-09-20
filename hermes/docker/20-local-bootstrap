@@ -2,7 +2,6 @@
 set -eu
 
 state_dir="${HERMES_HOME:-/opt/data}"
-legacy_host_admin_instruction_marker="${state_dir}/workspace/.hermes-host-admin-instructions"
 ollama_model="${HERMES_LOCAL_OLLAMA_MODEL:-kimi-k3}"
 ollama_max_tokens="${HERMES_LOCAL_OLLAMA_MAX_TOKENS:-32768}"
 edge_tts_voice="${HERMES_LOCAL_EDGE_TTS_VOICE:-ru-RU-SvetlanaNeural}"
@@ -58,12 +57,15 @@ if [ ! -e "${state_dir}/ops/model-prices.json" ]; then
     /opt/hermes-local/model-prices.json "${state_dir}/ops/model-prices.json"
 fi
 
-if [ -e "${legacy_host_admin_instruction_marker}" ] || \
-  [ ! -e "${state_dir}/workspace/AGENTS.md" ]; then
-  install -o hermes -g hermes -m 0644 \
-    /opt/hermes-local/container-admin-AGENTS.md "${state_dir}/workspace/AGENTS.md"
-  rm -f "${legacy_host_admin_instruction_marker}"
-fi
+# Refresh only managed layers on every start. The old marker never authorizes
+# replacing the whole file: it may already contain personal instructions.
+python3 /opt/hermes-local/manage-workspace-agents.py \
+  --target "${state_dir}/workspace/AGENTS.md" \
+  --common-source /opt/hermes-local/common-AGENTS.md \
+  --managed-source /opt/hermes-local/container-admin-AGENTS.md \
+  --legacy-source /opt/hermes-local/legacy-container-AGENTS.md
+chown hermes:hermes "${state_dir}/workspace/AGENTS.md"
+chmod 0600 "${state_dir}/workspace/AGENTS.md"
 
 as_hermes() {
   s6-setuidgid hermes env \

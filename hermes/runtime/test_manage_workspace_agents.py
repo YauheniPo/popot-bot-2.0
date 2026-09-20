@@ -6,7 +6,11 @@ import importlib.util
 import contextlib
 import io
 import os
+import re
 import runpy
+import shlex
+import shutil
+import subprocess
 from pathlib import Path
 import tempfile
 import stat
@@ -14,6 +18,7 @@ import unittest
 from unittest import mock
 
 import yaml
+from jinja2 import Environment, StrictUndefined
 
 MODULE_PATH = Path(__file__).with_name("manage-workspace-agents.py")
 SPEC = importlib.util.spec_from_file_location("manage_workspace_agents", MODULE_PATH)
@@ -24,6 +29,154 @@ SPEC.loader.exec_module(manage_workspace_agents)
 
 
 class ManageWorkspaceAgentsTests(unittest.TestCase):
+    def test_container_bootstrap_instruction_step_migrates_and_refreshes_without_clobbering_notes(self):
+        repo = MODULE_PATH.parents[1]
+        bootstrap = (repo / "docker/20-local-bootstrap").read_text()
+        step = bootstrap[bootstrap.index("python3 /opt/hermes-local/manage-workspace-agents.py"):bootstrap.index("\nas_hermes()")]
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            assets, state = root / "assets", root / "state"
+            assets.mkdir()
+            (state / "workspace").mkdir(parents=True)
+            for source, dest in ((MODULE_PATH, "manage-workspace-agents.py"),
+                                 (repo / "instructions/common.md", "common-AGENTS.md"),
+                                 (repo / "docker/AGENTS.md", "container-admin-AGENTS.md"),
+                                 (repo / "runtime/legacy/container-instructions.md", "legacy-container-AGENTS.md")):
+                shutil.copyfile(source, assets / dest)
+            target = state / "workspace/AGENTS.md"
+            target.write_text((assets / "legacy-container-AGENTS.md").read_text() + "\nPersonal note\n")
+            marker = state / "workspace/.hermes-host-admin-instructions"
+            marker.touch()
+            # Only adapt installed asset paths and OS identity, not bootstrap behavior.
+            command = 'state_dir=' + shlex.quote(str(state)) + '\n' + step.replace(
+                "/opt/hermes-local", str(assets)).replace("chown hermes:hermes", f"chown {os.getuid()}:{os.getgid()}")
+            for policy in ("Shared policy v1", "Shared policy v2", "Shared policy v2"):
+                (assets / "common-AGENTS.md").write_text(policy)
+                previous_time = target.stat().st_mtime_ns
+                result = subprocess.run(["sh", "-eu", "-c", command], capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(policy, target.read_text())
+                self.assertIn("Personal note", target.read_text())
+                self.assertNotIn("# Delivery discipline", target.read_text())
+                self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+                if "unchanged" in result.stdout:
+                    self.assertEqual(target.stat().st_mtime_ns, previous_time)
+            self.assertIn("unchanged", result.stdout)
+            self.assertTrue(marker.exists())  # Left inert, never used to clobber the file.
+
+    def test_shared_layers_replace_old_policy_and_preserve_personal_and_integration_blocks(self):
+        personal = "# Personal\nKeep this note.\n\n<!-- BEGIN MANAGED GITHUB WORKFLOW -->\nGitHub\n<!-- END MANAGED GITHUB WORKFLOW -->\n"
+        old = manage_workspace_agents.reconcile(personal, "Old VPS policy", present=True)
+        for environment in ("VPS administration disabled", "Container only"):
+            with self.subTest(environment=environment):
+                result = manage_workspace_agents.reconcile_layers(old, "Common rules", environment)
+                self.assertNotIn("Old VPS policy", result)
+                self.assertNotIn(manage_workspace_agents.BEGIN_MARKER, result)
+                self.assertIn(personal, result)
+                self.assertEqual(result.count("Common rules"), 1)
+                self.assertEqual(result.count(environment), 1)
+                self.assertEqual(manage_workspace_agents.reconcile_layers(result, "Common rules", environment), result)
+                updated = manage_workspace_agents.reconcile_layers(result, "Common v2", "Different environment")
+                self.assertNotIn("Common rules", updated)
+                self.assertNotIn(environment, updated)
+                self.assertIn(personal, updated)
+
+    def test_legacy_container_migration_removes_only_exact_known_prefix(self):
+        legacy = "# Old container policy\nKnown rules."
+        for existing, expected in ((legacy, ""), (legacy + "\n\nPersonal tail", "Personal tail"),
+                                   (legacy + " locally edited", legacy + " locally edited"),
+                                   ("My custom policy", "My custom policy")):
+            with self.subTest(existing=existing):
+                result = manage_workspace_agents.reconcile_layers(
+                    existing, "Common", "Container", legacy_sources=[legacy])
+                if expected:
+                    self.assertIn(expected, result)
+                if not expected.startswith(legacy):
+                    self.assertNotIn(legacy, result)
+
+    def test_layered_cli_preserves_backup_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            target, backup = root / "AGENTS.md", root / "backup.md"
+            common, environment, legacy = (root / name for name in ("common.md", "env.md", "legacy.md"))
+            common.write_text("Shared policy")
+            environment.write_text("No host administration")
+            legacy.write_text("Old container policy")
+            target.write_text("Old container policy\n\nMy notes\n")
+            argv = ["manage-workspace-agents.py", "--target", str(target),
+                    "--managed-source", str(environment), "--common-source", str(common),
+                    "--legacy-source", str(legacy), "--backup-copy", str(backup)]
+            for _ in range(2):
+                with mock.patch("sys.argv", argv):
+                    self.assertEqual(manage_workspace_agents.main(), 0)
+                self.assertEqual(target.read_text(), backup.read_text())
+                self.assertIn("Shared policy", target.read_text())
+                self.assertIn("My notes", target.read_text())
+                self.assertNotIn("Old container policy", target.read_text())
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+
+    def test_malformed_layer_markers_fail_without_writing(self):
+        for marker in ("HERMES MANAGED COMMON", "HERMES MANAGED ENVIRONMENT"):
+            for existing in (f"<!-- BEGIN {marker} -->\nPersonal", f"<!-- END {marker} -->",
+                             f"<!-- END {marker} -->\n<!-- BEGIN {marker} -->"):
+                with self.subTest(existing=existing):
+                    with self.assertRaises((manage_workspace_agents.ManagedBlockError, ValueError)):
+                        manage_workspace_agents.reconcile_layers(existing, "Common", "Environment")
+
+    def test_both_deployments_ship_the_same_common_source(self):
+        root = MODULE_PATH.parents[1]
+        playbook = (root / "ansible/playbook.yml").read_text()
+        dockerfile = (root / "docker/Dockerfile").read_text()
+        bootstrap = (root / "docker/20-local-bootstrap").read_text()
+        self.assertIn("../instructions/common.md", playbook)
+        self.assertIn("hermes/instructions/common.md", dockerfile)
+        self.assertIn("--common-source", playbook)
+        self.assertIn("--common-source", bootstrap)
+        self.assertIn("manage-workspace-agents.py", dockerfile)
+        self.assertNotIn("legacy_host_admin_instruction_marker", bootstrap)
+
+    def test_instruction_source_map_points_to_existing_repository_files(self) -> None:
+        source = (MODULE_PATH.parents[1] / "ansible/AGENTS.md").read_text()
+        paths = re.findall(r"`(hermes/[^`]+)`", source)
+        self.assertTrue(paths)
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertTrue((MODULE_PATH.parents[2] / path).is_file())
+
+    def test_searxng_instructions_do_not_invent_an_unconfigured_endpoint(self) -> None:
+        template = Environment(undefined=StrictUndefined).from_string(
+            (MODULE_PATH.parents[1] / "ansible/templates/searxng-access.md.j2").read_text()
+        )
+        for url in ("", "   "):
+            with self.subTest(url=url):
+                rendered = template.render(vps_web={"searxng_url": url})
+                self.assertIn("not configured", rendered)
+                self.assertNotIn("curl", rendered)
+                self.assertNotIn("/search", rendered)
+        for url in ("http://127.0.0.1:9876", "https://search.example.test/base/"):
+            with self.subTest(url=url):
+                rendered = template.render(vps_web={"searxng_url": url})
+                self.assertIn(f"'{url.rstrip('/')}/search'", rendered)
+                self.assertNotIn("not configured", rendered)
+
+    def test_repository_policy_update_keeps_other_blocks_and_personal_notes(self) -> None:
+        source = (MODULE_PATH.parents[1] / "ansible/AGENTS.md").read_text()
+        other_blocks = "\n".join(
+            f"<!-- BEGIN {name} -->\nKeep {name}\n<!-- END {name} -->"
+            for name in ("MANAGED VAULT ENVIRONMENT NAMES", "MANAGED GITHUB WORKFLOW",
+                         "ANSIBLE MANAGED DEVOPS ACCESS", "ANSIBLE MANAGED SEARXNG ACCESS",
+                         "ANSIBLE MANAGED DELEGATION POLICY")
+        )
+        personal = "# Personal\nKeep my project-specific instructions."
+        existing = manage_workspace_agents.reconcile(
+            other_blocks + "\n\n" + personal, "Old repository policy", present=True
+        )
+        result = manage_workspace_agents.reconcile(existing, source, present=True)
+        self.assertNotIn("Old repository policy", result)
+        self.assertEqual(result.count(source.strip()), 1)
+        self.assertIn(other_blocks + "\n\n" + personal, result)
+        self.assertEqual(manage_workspace_agents.reconcile(result, source, present=True), result)
+
     def run_cli(self, target, source, backup=None, state="present"):
         argv = ["manage-workspace-agents.py", "--target", str(target),
                 "--managed-source", str(source), "--state", state]

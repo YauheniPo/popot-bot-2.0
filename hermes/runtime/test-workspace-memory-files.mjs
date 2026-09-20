@@ -114,6 +114,15 @@ test('instruction metadata distinguishes override, reference-only and unknown ru
   assert.equal(api.describeMemoryFile('workspace/AGENTS.md').loadedInSession, null);
 });
 
+test('metadata identifies shared and environment managed blocks', t => {
+  const { api, put } = fixture(t);
+  put('workspace/AGENTS.md', '<!-- BEGIN HERMES MANAGED COMMON -->\nRules\n<!-- END HERMES MANAGED COMMON -->\n' +
+    '<!-- BEGIN HERMES MANAGED ENVIRONMENT -->\nContainer\n<!-- END HERMES MANAGED ENVIRONMENT -->\n' +
+    '<!-- BEGIN ANSIBLE MANAGED DELEGATION POLICY -->\nTeam\n<!-- END ANSIBLE MANAGED DELEGATION POLICY -->');
+  assert.deepEqual(api.describeMemoryFile('workspace/AGENTS.md').managedBlocks,
+    ['HERMES MANAGED COMMON', 'HERMES MANAGED ENVIRONMENT', 'ANSIBLE MANAGED DELEGATION POLICY']);
+});
+
 test('metadata never follows config symlinks or exposes config content', t => {
   const { api, home, workspace, put } = fixture(t);
   const target = put('outside/config.yaml', '{"memory_char_limit":99,"secret":"fixture-only"}');

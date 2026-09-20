@@ -161,7 +161,7 @@ export function createMemoryFiles({ home, workspace, parseConfig }) {
     const limit = configuredLimit(parts[0] === 'profiles' ? parts[1] : null,
       kind === 'memory' ? 'memory_char_limit' : kind === 'user' ? 'user_char_limit' : null);
     const characters = [...content].length;
-    const managedBlocks = [...new Set([...content.matchAll(/<!-- BEGIN (ANSIBLE MANAGED [A-Z0-9 _-]+) -->/g)].map(match => match[1]))];
+    const managedBlocks = [...new Set([...content.matchAll(/<!-- BEGIN ((?:ANSIBLE|HERMES) MANAGED [A-Z0-9 _-]+) -->/g)].map(match => match[1]))];
     return { profile, kind, characters, limit, overLimit: limit !== null && characters > limit,
       managedBlocks, applicability, loadedInSession: null };
   }

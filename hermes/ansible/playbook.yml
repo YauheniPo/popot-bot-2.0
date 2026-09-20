@@ -398,8 +398,21 @@
 
     - name: Copy repository-owned Hermes workspace instructions
       ansible.builtin.copy:
-        src: AGENTS.md
+        content: |
+          # Installed VPS capabilities
+
+          Host administration: {{ 'enabled; use only for explicitly authorized tasks' if (hermes_host_admin_enabled | bool) else 'disabled; no sudo, Docker administration or host service changes' }}.
+
+          {{ lookup('ansible.builtin.file', 'AGENTS.md') }}
         dest: "{{ hermes_bundle_dir }}/AGENTS.md"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Copy shared Hermes instructions for every VPS capability mode
+      ansible.builtin.copy:
+        src: ../instructions/common.md
+        dest: "{{ hermes_bundle_dir }}/common-AGENTS.md"
         owner: root
         group: root
         mode: "0644"
@@ -944,7 +957,7 @@
             - hermes_restorable_workspace_agents.stat.exists
             - "'No workspace instruction manifest' in hermes_restored_instructions.stdout"
 
-        - name: Reconcile repository-owned host-administration instructions
+        - name: Reconcile shared Hermes and VPS environment instructions
           ansible.builtin.command:
             argv:
               - python3
@@ -953,10 +966,10 @@
               - "{{ hermes_workspace }}/AGENTS.md"
               - --managed-source
               - "{{ hermes_bundle_dir }}/AGENTS.md"
+              - --common-source
+              - "{{ hermes_bundle_dir }}/common-AGENTS.md"
               - --backup-copy
               - "{{ hermes_home }}/operator-state/workspace-AGENTS.md"
-              - --state
-              - "{{ 'present' if (hermes_host_admin_enabled | bool) else 'absent' }}"
           register: hermes_workspace_agents
           changed_when: "'updated' in hermes_workspace_agents.stdout"
 

@@ -377,10 +377,11 @@ GitHub permissions и messenger tokens подключаются отдельно
 | [`ops/templates/hermes-ops.conf`](ops/templates/hermes-ops.conf) | Шаблон root-owned ops config, который каждый deploy рендерит из `vps-defaults.yml` |
 | [`ops/templates/model-prices.json`](ops/templates/model-prices.json) | Fallback-цены моделей за 1M tokens |
 | [`docker/`](docker) | Локальный Docker image c GitHub CLI, Compose, bootstrap и ignored `local.env` для provider, Telegram и GitHub credentials |
+| [`instructions/common.md`](instructions/common.md) | Единый источник общих правил Hermes для VPS и Docker: безопасность, workflow, память, проверки и общение |
 | [`docker/AGENTS.md`](docker/AGENTS.md) | Поведение Hermes в local container: `sudo` только внутри container, без доступа к Docker host или macOS |
 | [`ansible/playbook.yml`](ansible/playbook.yml) | Порядок provision/restore; network, runtime и services вынесены в [`ansible/tasks/`](ansible/tasks) |
 | [`ansible/tasks/github.yml`](ansible/tasks/github.yml) | Git/GitHub packages, identity, credential helper, private-repository probe и managed workflow instructions |
-| [`ansible/AGENTS.md`](ansible/AGENTS.md) | Поведение Hermes на выделенном VPS: полный `sudo`, запрет удаления и обращения с secrets |
+| [`ansible/AGENTS.md`](ansible/AGENTS.md) | Только особенности VPS: возможности host administration, Ansible, systemd и источники интеграций |
 | [`ansible/inventory.ini`](ansible/inventory.ini) | Нейтральный inventory-алиас; адрес VPS и SSH-пользователь загружаются из зашифрованного Vault |
 | [`ansible/group_vars/all/vars.yml`](ansible/group_vars/all/vars.yml) | Публичные IaC defaults без credentials |
 | [`ansible/group_vars/all/vault.yml.example`](ansible/group_vars/all/vault.yml.example) | Шаблон private API keys и tokens; рабочий файл — `ansible/group_vars/all/vault.yml`, он шифруется и игнорируется Git; команды находятся в [`VAULT.md`](ansible/group_vars/all/VAULT.md) |
@@ -439,7 +440,7 @@ Secrets в этот файл добавлять нельзя: они остаю�
 | `/home/hermes/.hermes/.env` | `hermes`, mode `0600` | API keys и messenger tokens, доставленные из Ansible Vault либо мастером Hermes |
 | `/home/hermes/.local/bin/hermes` | `hermes` | Hermes CLI launcher, вызываемый systemd и из SSH |
 | `/home/hermes/workspace` | `hermes` | Репозитории и рабочие файлы агента |
-| `/home/hermes/workspace/AGENTS.md` | `hermes` | Личные инструкции Hermes плюс отдельные Ansible-managed блоки host administration и имён Vault variables |
+| `/home/hermes/workspace/AGENTS.md` | `hermes` | Общие правила + возможности окружения + managed-интеграции + личные дополнения |
 | `/home/hermes/.hermes/operator-state/workspace-AGENTS.md` | `hermes`, mode `0600` | Restorable mirror workspace-инструкций, включаемый в full backup |
 | `/home/hermes/hermes-backups` | `hermes` | Local quick/full zip archives |
 | `/opt/hermes-bootstrap` | `root` | Временный versioned bundle, который Ansible копирует на VPS для deploy и ops installation |
@@ -985,6 +986,31 @@ State разделён по владельцам. Vault полностью уп�
 skills. Поэтому новый deploy применяет исправленные настройки из кода, но не
 стирает накопленную персонализацию агента.
 
+`workspace/AGENTS.md` в Memory-редакторе Workspace — тот же живой файл, а не
+отдельная копия настроек. Общий блок берётся из `instructions/common.md`,
+окружение VPS — из `ansible/AGENTS.md` с явным текущим статусом host administration;
+GitHub — из `ansible/tasks/github.yml`, DevOps, SearXNG и delegation — из
+соответствующих `ansible/templates/*-*.md.j2`, имена Vault variables — из
+`ansible/playbook.yml`.
+Карта исходников есть в разделах **Instruction ownership** и **Integration sources and wiki**.
+Общие правила меняйте только в `instructions/common.md`, особенности окружения —
+в `ansible/AGENTS.md` или `docker/AGENTS.md`, интеграции — в их исходниках;
+не копируйте весь live-файл обратно в исходный фрагмент, иначе появятся вложенные
+managed-блоки и дубли. Правки через UI внутри маркеров следующий deploy заменит,
+правки снаружи сохранит. При пустом `vps_web.searxng_url` инструкции явно сообщают,
+что endpoint не настроен, и не предлагают нерабочую команду с адресом `/search`.
+
+Оба способа установки используют `runtime/manage-workspace-agents.py`: общий
+блок `HERMES MANAGED COMMON` и блок окружения `HERMES MANAGED ENVIRONMENT`
+обновляются без дублирования. Общие правила остаются при `host_admin: false`;
+блок окружения явно запрещает администрирование хоста. Это инструкции, не замена
+системным ограничениям прав. Docker обновляет блоки при каждом старте контейнера
+из файлов image; для новых исходников нужен rebuild. Старый VPS managed-блок
+заменяется; старый Docker-текст мигрирует только при точном совпадении с известным
+префиксом (`runtime/legacy/container-instructions.md` — замороженные данные миграции,
+не источник активной политики). Неузнанный изменённый текст сохраняется для ручной
+проверки; старый marker-файл не разрешает перезапись личных инструкций.
+
 Устаревшие ключи удаляются только через явный `vps_runtime.unset`; deploy не
 угадывает, что неизвестный ключ можно безопасно стереть. После всех изменений
 обязательный `hermes config check` выполняется до запуска gateway. Если остался
@@ -1126,7 +1152,7 @@ Vault и прогоните playbook: непустой ключ включает
 `web.extract_backend: firecrawl` (`config/vps-defaults.yml`). Отдельной ручной
 настройки не требуется, без ключа остаётся `auto`. Порядок работы — поиск,
 извлечение, браузер — репозиторий ставит в managed-блок `workspace/AGENTS.md`
-разделом «Web research» из `ansible/AGENTS.md`; личные правила под свои задачи
+разделом «Skills and research» из `instructions/common.md`; личные правила под свои задачи
 дописывайте в том же файле вне managed-маркеров, deploy их сохраняет.
 
 Для собственного SearXNG задайте `vps_web.searxng_url` в

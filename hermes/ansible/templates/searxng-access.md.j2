@@ -1,11 +1,15 @@
 ## Private SearXNG search
 
-Use the private SearXNG container for cron and sandboxed searches. It does not
-require provider credentials and is reachable only from the VPS:
+{% set endpoint = vps_web.searxng_url.strip().rstrip('/') %}
+{% if endpoint %}
+Use the configured SearXNG endpoint for cron and sandboxed searches when
+reachable from their execution environment:
 
-- Endpoint: `{{ vps_web.searxng_url }}`
-- JSON search: `{{ vps_web.searxng_url }}/search?q=<url-encoded-query>&format=json`
-- The request limiter is enabled and backed by a private Valkey container; Valkey has no published host port.
+- Endpoint: `{{ endpoint }}`
+- JSON search: `{{ endpoint }}/search?q=<url-encoded-query>&format=json`
+- The repository-managed local container needs no provider credentials and
+  uses a private Valkey-backed limiter. A custom endpoint may have different
+  access rules; do not assume it is public or credential-free.
 
 Example:
 
@@ -13,9 +17,17 @@ Example:
 curl --fail --silent --show-error --get \
   --data-urlencode 'q=Hermes Agent' \
   --data 'format=json' \
-  '{{ vps_web.searxng_url }}/search'
+  '{{ endpoint }}/search'
 ```
 
 The result contains search links and snippets. Use browser or an extractor to
-read pages that require JavaScript or authentication. Do not try to pass
+read pages that require JavaScript or authentication.
+{% else %}
+The SearXNG endpoint is not configured (`vps_web.searxng_url` is empty).
+An installed container alone does not select it as Hermes' search backend.
+Use the configured web tools; do not invent an endpoint or claim sandbox/cron
+search works without checking its runtime. To enable SearXNG search, propose
+setting that URL in `hermes/config/vps-defaults.yml` and an authorized deploy.
+{% endif %}
+Do not try to pass
 `BRAVE_SEARCH_API_KEY` or another provider secret into a cron subprocess.
