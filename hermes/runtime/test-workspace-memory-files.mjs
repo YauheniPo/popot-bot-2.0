@@ -349,3 +349,37 @@ test('a config parser that throws yields no limit guess', (t) => {
   const api = createMemoryFiles({ home, workspace, parseConfig: () => { throw new Error('bad yaml'); } });
   assert.equal(api.describeMemoryFile('memories/MEMORY.md').limit, null);
 });
+
+test('readMemoryFile refuses a non-regular target for each separate reason', (t) => {
+  const { api, home } = fixture(t);
+  // (a) a directory is not a regular file - the !isFile side of line 50.
+  fs.mkdirSync(path.join(home, 'AGENTS.dir.md'), { recursive: true });
+  assert.throws(() => api.readMemoryFile('AGENTS.dir.md'), /not allowed|EISDIR|ENOENT/i);
+  // (b) an oversized target - the size side of line 50.
+  const big = path.join(home, 'AGENTS.huge.md');
+  fs.writeFileSync(big, 'x'.repeat(512 * 1024 + 1));
+  assert.throws(() => api.readMemoryFile('AGENTS.huge.md'), /larger than 512 KiB/);
+});
+
+test('the walk returns early for a missing or symlinked directory', (t) => {
+  const { api, home } = fixture(t);
+  fs.mkdirSync(path.join(home, 'memories'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'memories', 'USER.md'), 'ok');
+  // A symlinked subdirectory directly under a walked root is skipped by walk().
+  const outside = path.join(path.dirname(home), 'outside-walk');
+  fs.mkdirSync(outside, { recursive: true });
+  fs.writeFileSync(path.join(outside, 'USER.md'), 'external');
+  fs.symlinkSync(outside, path.join(home, 'memories', 'linked'));
+  const files = api.listMemoryFiles().map(f => f.path);
+  assert.ok(files.includes('memories/USER.md'));
+  assert.ok(!files.some(f => f.includes('linked')));
+});
+
+test('a config whose parser throws yields no limit guess', (t) => {
+  const { home, workspace, put } = fixture(t);
+  put('home/memories/MEMORY.md', 'fact');
+  put('home/config.yaml', '{not json');
+  // The fd opens and fstat passes, then parseConfig throws -> catch returns null.
+  const api = createMemoryFiles({ home, workspace, parseConfig: () => { throw new Error('bad'); } });
+  assert.equal(api.describeMemoryFile('memories/MEMORY.md').limit, null);
+});

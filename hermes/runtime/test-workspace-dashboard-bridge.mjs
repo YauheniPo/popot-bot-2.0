@@ -467,3 +467,38 @@ test('an expired session alias is evicted and re-acquired', async () => {
   } finally { Date.now = realNow; }
   assert.ok(upstream > afterFirst);
 });
+
+test('acquire throws once the session cache is saturated', async () => {
+  const bridge = createDashboardBridge({ dashboardUrl, fetchImpl: async () =>
+    Response.json({ ok: true }) });
+  // acquire() only runs for a bridged upstream call, so the handler must
+  // re-enter bridge.fetch for each distinct session.
+  const handlerFor = () => async () => bridge.fetch(`${dashboardUrl}/api/gateway-status`);
+  for (let i = 0; i < 256; i += 1) {
+    const cookie = `__Host-hermes_session_rt=saturated-${i}`;
+    await bridge.handle(new Request('https://example.ts.net:3002/api/gateway-status', {
+      headers: { cookie } }), handlerFor());
+  }
+  // The 257th distinct session cannot be acquired.
+  await assert.rejects(
+    bridge.handle(new Request('https://example.ts.net:3002/api/gateway-status', {
+      headers: { cookie: '__Host-hermes_session_rt=saturated-overflow' } }), handlerFor()),
+    /capacity reached/);
+});
+
+test('Set-Cookie removal honours both Max-Age=0 and an empty value', async () => {
+  // The clearing header must come from the BRIDGED upstream response (the
+  // fetchImpl result) because that is where cookie rotation is processed.
+  for (const clear of [
+    '__Host-hermes_session_at=; Path=/; Secure; HttpOnly; Max-Age=0',
+    '__Host-hermes_session_at=; Path=/; Secure; HttpOnly',
+  ]) {
+    const bridge = createDashboardBridge({ dashboardUrl, fetchImpl: async () =>
+      new Response('{}', { status: 200, headers: { 'set-cookie': clear } }) });
+    const cookie = `${session}; claude-auth=workspace`;
+    const handler = async () => bridge.fetch(`${dashboardUrl}/api/gateway-status`);
+    const response = await bridge.handle(
+      new Request('https://example.ts.net:3002/api/gateway-status', { headers: { cookie } }), handler);
+    assert.ok(response);
+  }
+});
