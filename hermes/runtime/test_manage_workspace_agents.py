@@ -49,7 +49,9 @@ class ManageWorkspaceAgentsTests(unittest.TestCase):
             marker.touch()
             # Only adapt installed asset paths and OS identity, not bootstrap behavior.
             command = 'state_dir=' + shlex.quote(str(state)) + '\n' + step.replace(
-                "/opt/hermes-local", str(assets)).replace("chown hermes:hermes", f"chown {os.getuid()}:{os.getgid()}")
+                "/opt/hermes-local", str(assets)).replace(
+                    "install -o hermes -g hermes", "install"
+                ).replace("chown hermes:hermes", f"chown {os.getuid()}:{os.getgid()}")
             for policy in ("Shared policy v1", "Shared policy v2", "Shared policy v2"):
                 (assets / "common-AGENTS.md").write_text(policy)
                 previous_time = target.stat().st_mtime_ns

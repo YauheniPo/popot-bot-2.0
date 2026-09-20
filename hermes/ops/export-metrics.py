@@ -23,7 +23,8 @@ def label(value: object) -> str:
     escaped = str(value or "unknown").replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
     escaped = escaped[:180]
     # Do not emit a truncated escape sequence at the label boundary.
-    return escaped[:-1] if escaped.endswith("\\") else escaped
+    trailing = len(escaped) - len(escaped.rstrip("\\"))
+    return escaped[:-1] if trailing % 2 else escaped
 
 
 def metric(
