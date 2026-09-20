@@ -383,3 +383,36 @@ test('a config whose parser throws yields no limit guess', (t) => {
   const api = createMemoryFiles({ home, workspace, parseConfig: () => { throw new Error('bad'); } });
   assert.equal(api.describeMemoryFile('memories/MEMORY.md').limit, null);
 });
+
+test('a root that does not exist or is a symlink is skipped by the walk', (t) => {
+  const { home, workspace } = fixture(t);
+  // (a) missing roots: walk() returns at the existsSync check (line 59).
+  const missing = createMemoryFiles({ home: path.join(home, 'absent'),
+    workspace: path.join(workspace, 'absent') });
+  assert.deepEqual(missing.listMemoryFiles(), []);
+
+  // (b) a root that is a symlink: resolveMemoryFilePath rejects it during the
+  // walk's per-entry resolution, and walk() skips only on exists/symlink.
+  const realRoot = path.join(home, 'real-memories');
+  fs.mkdirSync(realRoot, { recursive: true });
+  fs.writeFileSync(path.join(realRoot, 'USER.md'), 'ok');
+  const linkedRoot = path.join(home, 'linked-root');
+  fs.symlinkSync(realRoot, linkedRoot);
+  const linkedApi = createMemoryFiles({ home: linkedRoot, workspace });
+  assert.throws(() => linkedApi.readMemoryFile('USER.md'), /Symlink root not allowed/);
+
+  // The same directory reached without the symlink still lists normally.
+  const okApi = createMemoryFiles({ home: realRoot, workspace });
+  assert.ok(Array.isArray(okApi.listMemoryFiles()));
+});
+
+test('a profile config that cannot be opened yields no limit guess', (t) => {
+  const { home, workspace, put } = fixture(t);
+  // A named profile whose config.yaml is absent makes openSync throw ENOENT,
+  // which the catch on line 133 turns into null rather than an error.
+  put('home/profiles/builder/memories/USER.md', 'prefs');
+  const api = createMemoryFiles({ home, workspace, parseConfig: JSON.parse });
+  const meta = api.describeMemoryFile('profiles/builder/memories/USER.md');
+  assert.equal(meta.limit, null);
+  assert.equal(meta.profile, 'builder');
+});
