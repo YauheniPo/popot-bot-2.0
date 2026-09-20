@@ -663,14 +663,14 @@ class ObservableReviewTests(unittest.TestCase):
         self.assertEqual(report["status"], "failed")
         self.assertEqual(report["reason"], "all_attempts_failed")
 
-    def test_publish_one_finding_includes_attempt_metadata(self):
+    def test_publish_one_finding_keeps_metadata_in_summary_only(self):
         finding = context.ReviewFinding("P2", "app.py", "RIGHT", 1, "t", "i", "f")
         with mock.patch.object(context, "_review_already_posted", return_value=True):
             detail = observer._publish_one_finding(finding, "owner/repo", "1", "tok", "h"*40, "1", "1",
                 "https://github.com/owner/repo/actions/runs/1",
                 {"attempts": [{"provider": "p", "model": "m", "role": "primary", "number": 1}]})
-        self.assertIn("Provider: `p`", detail)
-        self.assertIn("Model: `m`", detail)
+        self.assertNotIn("Provider:", detail)
+        self.assertNotIn("Model:", detail)
 
     def test_publish_one_finding_reraises_unresolvable(self):
         finding = context.ReviewFinding("P2", "app.py", "RIGHT", 1, "t", "i", "f")

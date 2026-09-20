@@ -476,9 +476,6 @@ def _publish_one_finding(finding, repo: str, pr: str, token: str, head: str,
     digest = hashlib.sha256(f"{finding.path}:{finding.side}:{finding.line}".encode()).hexdigest()[:16]
     inline_marker = f"<!-- {PREFIX}-inline:{head}:{run_id}:{run_attempt}:{digest} -->"
     detail = f"**[{LABEL}] {finding.severity} — {finding.title}**\n\nImpact: {finding.impact}\n\nProposed fix: {finding.fix}"
-    if report["attempts"]:
-        last = report["attempts"][-1]
-        detail += f"\n\nProvider: `{safe_label(last['provider'])}` · Model: `{safe_label(last['model'])}` · [CI run]({run_url})"
     try:
         comments_url = f"{publisher.GITHUB_API_URL}/repos/{repo}/pulls/{pr}/comments"
         if not publisher._review_already_posted(comments_url, inline_marker, token):

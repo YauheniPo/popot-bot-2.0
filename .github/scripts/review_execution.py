@@ -85,7 +85,7 @@ class ExecutionReport:
         return f"> Connection: `{safe_label(self.provider)}` · API: `{endpoint}`"
 
     def summary(self) -> str:
-        successes = [a for a in self.attempts if a.outcome == "valid_json"]
+        successes = [a for a in self.attempts if a.outcome in {"valid_json", "valid_json_filtered"}]
         models = sorted({a.model for a in successes})
         # Each unit (chunk or triage) has one initial request. Attempt.number is
         # global report order, so counting number == 1 would mislabel new chunks.
@@ -104,7 +104,7 @@ class ExecutionReport:
 
     def footer(self, unit: str) -> str:
         attempts = [a for a in self.attempts if a.unit == unit]
-        successes = [a for a in attempts if a.outcome == "valid_json"]
+        successes = [a for a in attempts if a.outcome in {"valid_json", "valid_json_filtered"}]
         if not successes:
             return ""
         success = successes[-1]

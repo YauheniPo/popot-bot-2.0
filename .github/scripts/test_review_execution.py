@@ -58,6 +58,15 @@ class ExecutionReportTest(unittest.TestCase):
         self.assertIn("fallback", report.footer("chunk 1/2"))
         self.assertIn("request #3", report.footer("chunk 2/2"))
 
+    def test_filtered_json_counts_as_validated_success(self):
+        report = ExecutionReport("ollama-cloud", "https://ollama.com", "model")
+        report.unit = "chunk 1/1"
+        attempt = report.begin({"model": "model"}, route="fallback")
+        report.finish(attempt, "valid_json_filtered", 1.0)
+        self.assertIn("Successful models: `model`", report.summary())
+        self.assertIn("Attempts: 1 · Validated: 1", report.summary())
+        self.assertIn("request #1", report.footer("chunk 1/1"))
+
     def test_redacts_custom_endpoint_and_bounds_untrusted_metadata(self):
         report = ExecutionReport("openrouter", "https://user:password@private.example/v1?api_key=secret", "model")
         attempt = report.begin({"model": "model", "messages": ["private prompt"]})
