@@ -205,6 +205,21 @@ identity variables or credentials are required. Each publishes its own PR
 summary and inline findings. The observable reviewer never resolves or replies
 to other reviewers' threads, avoiding races between the parallel jobs.
 
+Observable review retries HTTP 429 with exponential backoff (30s, then 60s)
+and honors a longer `Retry-After` or rate-limit reset hint. Waiting is capped at
+120 seconds per diff chunk across both routes; a longer hint skips that route
+instead of retrying before the reset. During backoff, CI logs a heartbeat every
+15 seconds explicitly saying that no provider request is in flight. A confirmed
+OpenRouter free-model daily limit skips another free model on the same provider;
+an upstream/model limit still permits the configured fallback. No model or paid
+route is selected automatically. When no route remains usable due to limits,
+remaining chunks are skipped and the job fails rather than reporting a clean
+review. The expandable execution history separates request duration from retry
+waiting and shows sanitized limit diagnostics, while the summary shows validated,
+failed and skipped chunk counts. Partial results remain in the JSON report but
+are not published as a complete review. A bare 429 does not prove daily quota
+exhaustion; see [OpenRouter rate-limit guidance](https://openrouter.ai/docs/api_reference/limits).
+
 All three publishers suppress repeats of settled reviewer findings, including
 Observable threads. That read-only recognition does not let Claude or Direct API
 automatically resolve Observable threads. Direct API includes its diff chunks in

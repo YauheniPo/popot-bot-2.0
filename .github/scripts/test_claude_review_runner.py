@@ -25,6 +25,76 @@ SPEC.loader.exec_module(runner)
 
 
 class ClaudeReviewRunnerTests(unittest.TestCase):
+    def rate_limit(self, headers=None, body=None):
+        error = runner.urllib.error.HTTPError("https://example.test", 429, "secret-key", headers or {},
+            io.BytesIO(json.dumps({} if body is None else body).encode()))
+        with mock.patch.object(runner.urllib.request, "build_opener") as opener:
+            opener.return_value.open.side_effect = error
+            with self.assertRaises(runner.RateLimitFailure) as caught:
+                runner.request_message("https://example.test", "secret-key", {}, 5)
+        self.assertTrue(error.closed)
+        self.assertEqual(str(caught.exception), "http_429")
+        self.assertNotIn("secret-key", json.dumps(caught.exception.details))
+        return caught.exception.details
+
+    def test_rate_limit_preserves_only_safe_diagnostics(self):
+        details = self.rate_limit({"Retry-After": "45", "X-RateLimit-Remaining": "0"},
+            {"error": {"message": "Rate limit exceeded: free-models-per-day. secret-key"}})
+        self.assertEqual(details["retry_after_seconds"], 45)
+        self.assertEqual(details["scope"], "platform")
+        self.assertEqual(details["quota"], "free_daily")
+        self.assertEqual(details["remaining"], 0)
+
+    def test_rate_limit_provider_and_unknown_are_not_daily_quota(self):
+        details = self.rate_limit(body={"error": {"metadata": {"provider_code": 429,
+            "provider_name": "secret-key"}}})
+        self.assertEqual(details["scope"], "provider")
+        self.assertEqual(details["quota"], "unknown")
+        for body in ({}, {"error": "secret-key"}, {"error": {"metadata": []}}, []):
+            with self.subTest(body=body):
+                details = self.rate_limit({"Retry-After": "NaN"}, body)
+                self.assertEqual(details["scope"], "unknown")
+                self.assertNotIn("retry_after_seconds", details)
+
+    def test_rate_limit_dates_and_reset_headers(self):
+        with mock.patch.object(runner.time, "time", return_value=1_700_000_000):
+            for headers, expected in (({"Retry-After": "Tue, 14 Nov 2023 22:14:20 GMT"}, 60),
+                                      ({"X-RateLimit-Reset": "1700000060000"}, 60),
+                                      ({"X-RateLimit-Reset": "1700000060", "Retry-After": "90"}, 90)):
+                with self.subTest(headers=headers):
+                    self.assertEqual(self.rate_limit(headers)["retry_after_seconds"], expected)
+
+    def test_rate_limit_survives_worker_pipe(self):
+        failure = runner.RateLimitFailure({"scope": "provider", "quota": "unknown", "retry_after_seconds": 45})
+        pipe = mock.Mock()
+        with mock.patch.object(runner, "request_message", side_effect=failure), mock.patch.object(runner.signal, "signal"):
+            runner._worker(pipe, "https://example.test", "key", "model", "p", Path.cwd(), set(), 1, 5)
+        kind, value, turns = pipe.send.call_args.args[0]
+        with self.assertRaises(runner.RateLimitFailure) as caught:
+            runner._handle_message(kind, value, turns, Path("unused.json"), 0, 0, io.StringIO())
+        self.assertEqual(caught.exception.details, failure.details)
+
+    def test_rate_limit_diagnostics_survive_real_worker_and_cleanup(self):
+        failure = runner.RateLimitFailure({"scope": "provider", "quota": "unknown", "retry_after_seconds": 45})
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(runner, "request_message", side_effect=failure):
+            root = Path(directory)
+            before = {p.pid for p in multiprocessing.active_children()}
+            with self.assertRaises(runner.RateLimitFailure) as caught:
+                runner.run_review(endpoint="https://example.test", api_key="secret-key", model="m", prompt="p",
+                    workspace=root, output=root/"result.json", allowed_files=set(), max_turns=1,
+                    attempt_timeout_seconds=5, inactivity_timeout_seconds=2, heartbeat_seconds=1, log=io.StringIO())
+            self.assertEqual(caught.exception.details, failure.details)
+            self.assertFalse((root/"result.json").exists())
+            self.assertEqual({p.pid for p in multiprocessing.active_children()}, before)
+
+    def test_rate_limit_body_is_bounded_and_unparseable_body_keeps_headers(self):
+        for raw in (b"secret-key not json", b"x" * 20_000):
+            error = mock.Mock(headers={"Retry-After": "12"})
+            error.read.return_value = raw
+            details = runner._rate_limit_details(error)
+            error.read.assert_called_once_with(16_385)
+            self.assertEqual(details, {"scope":"unknown", "quota":"unknown", "retry_after_seconds":12})
+
     def test_final_json_requires_successful_diff_read(self):
         for read_args in (None, {"path":"app.py"}, {"path":".ci-observable-review.diff", "offset":999},
                           {"path":"missing.diff"}):

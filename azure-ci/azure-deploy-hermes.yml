@@ -5,15 +5,21 @@
 # Azure setup required before the first run:
 #   1. Create an environment named `hermes-vps` and require an owner
 #      approval, branch control for refs/heads/main, and an exclusive lock.
-#   2. Upload the four files referenced by DownloadSecureFile tasks below to
+#   2. Upload the two files referenced by DownloadSecureFile tasks below to
 #      Pipelines > Library > Secure files.
 #   3. Authorize only this pipeline to use those files. On every secure file,
 #      add branch control for refs/heads/main and an owner approval. Do not use
 #      "Open access".
 #   4. Restrict the pipeline's Queue builds permission to the repository owner.
+#   5. Configure the CI tag and SSH policy described in tailscale-deploy.md.
+#   6. Create protected variable group `hermes-deploy-secrets` with secret
+#      HERMES_VAULT_PASSWORD and HERMES_TAILSCALE_AUTH_KEY; apply the same
+#      pipeline permissions, main branch control and owner approval as files.
 #
 # The encrypted Vault file supplies ansible_host, ansible_user, and Hermes
 # secrets. Secure files are never copied into the repository checkout.
+# The VPS must run Tailscale SSH: CI authenticates by node identity and SSH
+# policy, not a private SSH key. Ordinary OpenSSH is not a fallback here.
 
 trigger: none
 pr: none
@@ -22,6 +28,18 @@ pool:
   vmImage: ubuntu-latest
 
 parameters:
+  - name: deployBranch
+    displayName: Source branch to deploy (pipeline itself must run from main)
+    type: string
+    default: main
+  - name: deployMode
+    displayName: Ansible deployment mode
+    type: string
+    default: full
+    values:
+      - full
+      - config-only
+      - runtime-only
   - name: confirmProduction
     displayName: Confirm production deployment
     type: boolean
@@ -33,9 +51,10 @@ stages:
     jobs:
       - job: ValidateTrustedSource
         displayName: Require trusted main pipeline
+        variables:
+          # Keep all remote branches available even on agents with this knob enabled.
+          VSTS.FetchByCommitForFullClone: 'false'
         steps:
-          - checkout: none
-
           # REVIEWED: this relative path is correct after the move to azure-ci/.
           # Azure Pipelines resolves a template path without a leading `/`
           # relative to the file that includes it, so this reads
@@ -56,14 +75,36 @@ stages:
             env:
               CONFIRM_PRODUCTION: ${{ parameters.confirmProduction }}
 
+          - checkout: self
+            clean: true
+            fetchDepth: 0
+            fetchTags: false
+            persistCredentials: false
+
+          - bash: python3 azure-ci/scripts/prepare-hermes-deploy.py
+            displayName: Freeze deployment branch and report commit before approval
+            env:
+              DEPLOY_BRANCH: ${{ parameters.deployBranch }}
+              DEPLOY_MODE: ${{ parameters.deployMode }}
+              DEPLOY_ARTIFACT_DIR: $(Build.ArtifactStagingDirectory)/hermes-deploy-source
+
+          - task: PublishPipelineArtifact@1
+            displayName: Preserve approved deployment source
+            inputs:
+              targetPath: $(Build.ArtifactStagingDirectory)/hermes-deploy-source
+              artifact: hermes-deploy-source
+
   - stage: DeployProduction
     displayName: Deploy Hermes to production VPS
     dependsOn: ValidateRequest
     condition: succeeded()
     lockBehavior: sequential
+    variables:
+      - group: hermes-deploy-secrets
     jobs:
       - deployment: DeployHermes
         displayName: Run Hermes Ansible playbook
+        cancelTimeoutInMinutes: 2
         environment: hermes-vps
         workspace:
           clean: all
@@ -73,28 +114,28 @@ stages:
               steps:
                 - download: none
 
-                - checkout: self
-                  clean: true
-                  fetchDepth: 1
-                  persistCredentials: false
+                - checkout: none
+
+                - download: current
+                  artifact: hermes-deploy-source
+
+                # Use the pre-approval snapshot, never resolve the branch again.
+                - bash: |
+                    set -euo pipefail
+                    mkdir -p "$DEPLOY_SOURCE_DIR"
+                    cat "$DEPLOY_ARTIFACT_DIR/deployment.md"
+                    tar -xf "$DEPLOY_ARTIFACT_DIR/source.tar" -C "$DEPLOY_SOURCE_DIR"
+                  displayName: Restore pinned deployment source
+                  workingDirectory: $(Pipeline.Workspace)
+                  env:
+                    DEPLOY_SOURCE_DIR: $(Build.SourcesDirectory)
+                    DEPLOY_ARTIFACT_DIR: $(Pipeline.Workspace)/hermes-deploy-source
 
                 - task: DownloadSecureFile@1
                   name: hermesVault
                   displayName: Download encrypted Hermes Vault
                   inputs:
                     secureFile: vault.yml
-
-                - task: DownloadSecureFile@1
-                  name: hermesVaultPassword
-                  displayName: Download Hermes Vault password
-                  inputs:
-                    secureFile: hermes-vault-password
-
-                - task: DownloadSecureFile@1
-                  name: hermesSshKey
-                  displayName: Download VPS deployment SSH key
-                  inputs:
-                    secureFile: hermes-vps-ssh-key
 
                 - task: DownloadSecureFile@1
                   name: hermesKnownHosts
@@ -104,14 +145,48 @@ stages:
 
                 - bash: |
                     set -euo pipefail
+                    set +x
+                    python3 - <<'PY'
+                    import os
+                    from pathlib import Path
+                    import re
+
+                    values = {
+                        "vault-password": os.environ["HERMES_VAULT_PASSWORD"],
+                        "tailscale-auth-key": os.environ["HERMES_TAILSCALE_AUTH_KEY"],
+                    }
+                    for value in values.values():
+                        if (not value.strip() or "\n" in value or "\r" in value
+                                or (value.startswith("$(") and value.endswith(")"))):
+                            raise SystemExit("ERROR: Set both single-line secrets in variable group hermes-deploy-secrets; empty or unresolved values are not allowed.")
+                    if not re.fullmatch(r"tskey-auth-[A-Za-z0-9-]+", values["tailscale-auth-key"]):
+                        raise SystemExit("ERROR: HERMES_TAILSCALE_AUTH_KEY in hermes-deploy-secrets must be a Tailscale auth key.")
+                    directory = Path(os.environ["AGENT_TEMPDIRECTORY"]) / "hermes-deploy-secrets"
+                    os.umask(0o077)
+                    try:
+                        directory.mkdir(mode=0o700)
+                        for name, value in values.items():
+                            with (directory / name).open("x", encoding="utf-8") as handle:
+                                handle.write(value + "\n")
+                    except OSError:
+                        raise SystemExit("ERROR: Cannot create private deployment secret files; inspect agent temp permissions or stale state.") from None
+                    PY
+                  name: PrepareDeploySecrets
+                  displayName: Prepare private files from protected secret variables
+                  env:
+                    HERMES_VAULT_PASSWORD: $(HERMES_VAULT_PASSWORD)
+                    HERMES_TAILSCALE_AUTH_KEY: $(HERMES_TAILSCALE_AUTH_KEY)
+
+                - bash: |
+                    set -euo pipefail
 
                     for required_file in \
                       "${HERMES_VAULT_FILE}" \
                       "${HERMES_VAULT_PASSWORD_FILE}" \
-                      "${HERMES_SSH_KEY_FILE}" \
-                      "${HERMES_KNOWN_HOSTS_FILE}"; do
+                      "${HERMES_KNOWN_HOSTS_FILE}" \
+                      "${HERMES_TAILSCALE_KEY_FILE}"; do
                       if [[ ! -s "${required_file}" ]]; then
-                        echo "##vso[task.logissue type=error]A required Azure Secure File is empty."
+                        echo "##vso[task.logissue type=error]A required deployment input file is empty."
                         exit 1
                       fi
                     done
@@ -124,19 +199,57 @@ stages:
                     chmod 600 \
                       "${HERMES_VAULT_FILE}" \
                       "${HERMES_VAULT_PASSWORD_FILE}" \
-                      "${HERMES_SSH_KEY_FILE}" \
-                      "${HERMES_KNOWN_HOSTS_FILE}"
-
-                    if ! ssh-keygen -y -P "" -f "${HERMES_SSH_KEY_FILE}" >/dev/null; then
-                      echo "##vso[task.logissue type=error]The deployment SSH key is invalid or requires an interactive passphrase."
-                      exit 1
-                    fi
+                      "${HERMES_KNOWN_HOSTS_FILE}" \
+                      "${HERMES_TAILSCALE_KEY_FILE}"
                   displayName: Validate protected deployment inputs
                   env:
                     HERMES_VAULT_FILE: $(hermesVault.secureFilePath)
-                    HERMES_VAULT_PASSWORD_FILE: $(hermesVaultPassword.secureFilePath)
-                    HERMES_SSH_KEY_FILE: $(hermesSshKey.secureFilePath)
+                    HERMES_VAULT_PASSWORD_FILE: $(Agent.TempDirectory)/hermes-deploy-secrets/vault-password
                     HERMES_KNOWN_HOSTS_FILE: $(hermesKnownHosts.secureFilePath)
+                    HERMES_TAILSCALE_KEY_FILE: $(Agent.TempDirectory)/hermes-deploy-secrets/tailscale-auth-key
+
+                - bash: |
+                    set -euo pipefail
+                    # Official signed apt repository; never execute a downloaded installer.
+                    . /etc/os-release
+                    [[ "$ID" == ubuntu && "$VERSION_CODENAME" =~ ^[a-z]+$ ]]
+                    curl --fail --silent --show-error --connect-timeout 10 --max-time 30 --retry 2 \
+                      "https://pkgs.tailscale.com/stable/ubuntu/${VERSION_CODENAME}.noarmor.gpg" \
+                      -o "$AGENT_TEMPDIRECTORY/tailscale-keyring.gpg"
+                    curl --fail --silent --show-error --connect-timeout 10 --max-time 30 --retry 2 \
+                      "https://pkgs.tailscale.com/stable/ubuntu/${VERSION_CODENAME}.tailscale-keyring.list" \
+                      -o "$AGENT_TEMPDIRECTORY/tailscale.list"
+                    sudo install -m 0644 "$AGENT_TEMPDIRECTORY/tailscale-keyring.gpg" /usr/share/keyrings/tailscale-archive-keyring.gpg
+                    sudo install -m 0644 "$AGENT_TEMPDIRECTORY/tailscale.list" /etc/apt/sources.list.d/tailscale.list
+                    sudo timeout --kill-after=5s 120s apt-get update -qq
+                    sudo timeout --kill-after=5s 120s apt-get install -y tailscale
+                    sudo timeout --kill-after=5s 30s systemctl start tailscaled
+                  displayName: Install Tailscale on the disposable hosted agent
+                  timeoutInMinutes: 8
+
+                - bash: |
+                    set -euo pipefail
+                    set +x
+                    if [[ ! -s "$HERMES_TAILSCALE_KEY_FILE" ]] || ! grep -Eq '^tskey-auth-[A-Za-z0-9-]+$' "$HERMES_TAILSCALE_KEY_FILE"; then
+                      echo '##vso[task.logissue type=error]Set HERMES_TAILSCALE_AUTH_KEY in hermes-deploy-secrets: a reusable, ephemeral, preauthorized auth key scoped to tag:hermes-deploy.'
+                      exit 1
+                    fi
+                    chmod 600 "$HERMES_TAILSCALE_KEY_FILE"
+                    if ! sudo timeout --kill-after=5s 75s tailscale up \
+                      --auth-key="file:${HERMES_TAILSCALE_KEY_FILE}" \
+                      --hostname="$TAILSCALE_HOSTNAME" \
+                      --advertise-tags=tag:hermes-deploy \
+                      --accept-dns=true --accept-routes=false --ssh=false --timeout=60s; then
+                      echo '##vso[task.logissue type=error]Tailscale join failed or timed out. Check auth-key expiry, tag ownership, device approval/Tailnet Lock and outbound connectivity. Deploy was not started.'
+                      exit 1
+                    fi
+                    echo 'CI agent joined Tailscale; SSH authorization will be checked separately.'
+                  name: JoinTailnet
+                  displayName: Join the private tailnet without browser login
+                  timeoutInMinutes: 2
+                  env:
+                    HERMES_TAILSCALE_KEY_FILE: $(Agent.TempDirectory)/hermes-deploy-secrets/tailscale-auth-key
+                    TAILSCALE_HOSTNAME: ado-hermes-$(Build.BuildId)-$(System.JobAttempt)
 
                 - task: UsePythonVersion@0
                   displayName: Use Python 3.12
@@ -153,6 +266,7 @@ stages:
                     ansible-galaxy collection install \
                       --requirements-file hermes/ansible/requirements.yml
                   displayName: Install Ansible dependencies
+                  workingDirectory: $(Build.SourcesDirectory)
 
                 - bash: |
                     set -euo pipefail
@@ -167,20 +281,52 @@ stages:
                     # playbook. This step only proves the YAML/module syntax
                     # is valid and that the vault decrypts with the supplied
                     # password. It never opens an SSH connection, so it takes
-                    # no --private-key / known_hosts args.
+                    # no SSH connection options.
                     ansible-playbook \
                       --syntax-check \
                       --inventory hermes/ansible/inventory.ini \
                       --vault-password-file "${HERMES_VAULT_PASSWORD_FILE}" \
                       --extra-vars "@${HERMES_VAULT_FILE}" \
+                      --extra-vars "hermes_deploy_mode=${DEPLOY_MODE}" \
                       hermes/ansible/playbook.yml
                   displayName: Syntax-check Hermes Ansible playbook (does not run assert checks)
+                  workingDirectory: $(Build.SourcesDirectory)
                   env:
+                    DEPLOY_MODE: ${{ parameters.deployMode }}
                     ANSIBLE_CONFIG: $(Build.SourcesDirectory)/hermes/ansible/ansible.cfg
                     ANSIBLE_LOCAL_TEMP: $(Agent.TempDirectory)/hermes-ansible-local
                     ANSIBLE_REMOTE_TEMP: $(Agent.TempDirectory)/hermes-ansible-remote
                     HERMES_VAULT_FILE: $(hermesVault.secureFilePath)
-                    HERMES_VAULT_PASSWORD_FILE: $(hermesVaultPassword.secureFilePath)
+                    HERMES_VAULT_PASSWORD_FILE: $(Agent.TempDirectory)/hermes-deploy-secrets/vault-password
+
+                - bash: |
+                    set -euo pipefail
+                    mkdir -p "$ANSIBLE_LOCAL_TEMP" "$ANSIBLE_REMOTE_TEMP"
+                    # raw needs no remote Python and does not run deployment tasks.
+                    # BatchMode does not prevent Tailscale's browser check from
+                    # waiting, so bound the whole authentication probe as well.
+                    if ! timeout --kill-after=5s 75s ansible hermes_vps \
+                      --inventory hermes/ansible/inventory.ini \
+                      --vault-password-file "$HERMES_VAULT_PASSWORD_FILE" \
+                      --extra-vars @hermes/config/vps-defaults.yml \
+                      --extra-vars "@$HERMES_VAULT_FILE" \
+                      --timeout 15 --become --module-name ansible.builtin.raw --args /bin/true; then
+                      echo '##vso[task.logissue type=error]Tailscale SSH/sudo preflight failed or exceeded 75s. Enable Tailscale SSH on the VPS; check Vault host/user, tailnet TCP access, SSH accept policy for tag:hermes-deploy (no browser check), trusted host key, and noninteractive sudo. Ordinary OpenSSH/private-key login is not supported by this pipeline. Deploy was not started.'
+                      exit 1
+                    fi
+                  name: ProbeDeploySsh
+                  displayName: Verify noninteractive SSH and sudo before deployment
+                  timeoutInMinutes: 2
+                  workingDirectory: $(Build.SourcesDirectory)
+                  env:
+                    ANSIBLE_CONFIG: $(Build.SourcesDirectory)/hermes/ansible/ansible.cfg
+                    ANSIBLE_LOCAL_TEMP: $(Agent.TempDirectory)/hermes-ansible-local
+                    ANSIBLE_REMOTE_TEMP: $(Agent.TempDirectory)/hermes-ansible-remote
+                    # Tailscale SSH authenticates the node before SSH session login.
+                    # Never silently fall back to a hosted-agent key or password.
+                    ANSIBLE_SSH_COMMON_ARGS: -o UserKnownHostsFile=$(hermesKnownHosts.secureFilePath) -o StrictHostKeyChecking=yes -o PubkeyAuthentication=no -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o IdentityAgent=none -o BatchMode=yes -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2
+                    HERMES_VAULT_FILE: $(hermesVault.secureFilePath)
+                    HERMES_VAULT_PASSWORD_FILE: $(Agent.TempDirectory)/hermes-deploy-secrets/vault-password
 
                 - bash: |
                     set -euo pipefail
@@ -196,15 +342,42 @@ stages:
                     ansible-playbook \
                       --inventory hermes/ansible/inventory.ini \
                       --vault-password-file "${HERMES_VAULT_PASSWORD_FILE}" \
-                      --private-key "${HERMES_SSH_KEY_FILE}" \
                       --extra-vars "@${HERMES_VAULT_FILE}" \
+                      --extra-vars "hermes_deploy_mode=${DEPLOY_MODE}" \
                       hermes/ansible/playbook.yml
                   displayName: Deploy Hermes with Ansible
+                  workingDirectory: $(Build.SourcesDirectory)
                   env:
+                    DEPLOY_MODE: ${{ parameters.deployMode }}
                     ANSIBLE_CONFIG: $(Build.SourcesDirectory)/hermes/ansible/ansible.cfg
                     ANSIBLE_LOCAL_TEMP: $(Agent.TempDirectory)/hermes-ansible-local
                     ANSIBLE_REMOTE_TEMP: $(Agent.TempDirectory)/hermes-ansible-remote
-                    ANSIBLE_SSH_COMMON_ARGS: -o UserKnownHostsFile=$(hermesKnownHosts.secureFilePath) -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes
+                    ANSIBLE_SSH_COMMON_ARGS: -o UserKnownHostsFile=$(hermesKnownHosts.secureFilePath) -o StrictHostKeyChecking=yes -o PubkeyAuthentication=no -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o IdentityAgent=none -o BatchMode=yes -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2
                     HERMES_VAULT_FILE: $(hermesVault.secureFilePath)
-                    HERMES_VAULT_PASSWORD_FILE: $(hermesVaultPassword.secureFilePath)
-                    HERMES_SSH_KEY_FILE: $(hermesSshKey.secureFilePath)
+                    HERMES_VAULT_PASSWORD_FILE: $(Agent.TempDirectory)/hermes-deploy-secrets/vault-password
+
+                - bash: |
+                    set -euo pipefail
+                    rm -f -- "$AGENT_TEMPDIRECTORY/hermes-deploy-secrets/vault-password" \
+                      "$AGENT_TEMPDIRECTORY/hermes-deploy-secrets/tailscale-auth-key"
+                    if [[ -d "$AGENT_TEMPDIRECTORY/hermes-deploy-secrets" ]]; then
+                      rmdir -- "$AGENT_TEMPDIRECTORY/hermes-deploy-secrets"
+                    fi
+                  name: CleanDeploySecrets
+                  displayName: Remove temporary deployment secrets
+                  condition: always()
+                  workingDirectory: $(Pipeline.Workspace)
+
+                - bash: |
+                    set -euo pipefail
+                    if command -v tailscale >/dev/null 2>&1; then
+                      if ! sudo timeout --kill-after=5s 20s tailscale logout; then
+                        echo '##vso[task.logissue type=warning]Tailscale logout failed; the ephemeral node will expire after disconnect. Check the Machines page if it remains.'
+                      fi
+                      sudo timeout --kill-after=5s 20s systemctl stop tailscaled
+                    fi
+                  name: LeaveTailnet
+                  displayName: Disconnect the disposable CI node
+                  condition: always()
+                  timeoutInMinutes: 1
+                  workingDirectory: $(Pipeline.Workspace)

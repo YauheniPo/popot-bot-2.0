@@ -141,11 +141,129 @@ class ObservableReviewTests(unittest.TestCase):
         self.assertFalse(pauses)
         self.assertIn("::error::", output)
 
-    def attempts(self, outcomes):
+    def test_rate_limits_back_off_and_do_not_expose_provider_body(self):
+        report, calls, pauses, code, output = self.attempts([
+            observer.runner.RateLimitFailure({"scope":"provider", "quota":"unknown", "retry_after_seconds":45}),
+            observer.runner.ReviewFailure("http_429"),
+            observer.runner.ReviewFailure("http_429"), {},
+        ])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(calls), 4)
+        self.assertGreaterEqual(sum(c.args[0] for c in pauses), 45 + 60)
+        self.assertEqual(report["attempts"][0]["retry_wait_seconds"], 45)
+        self.assertIn("retry_wait", output)
+        self.assertIn("scope=provider", output)
+        self.assertNotIn("secret-key", output)
+        self.assertIn("Retry wait", observer.diagnostics(report))
+
+    def test_long_retry_after_is_not_shortened_to_budget(self):
+        report, calls, pauses, code, _ = self.attempts([
+            observer.runner.RateLimitFailure({"scope":"provider", "quota":"unknown", "retry_after_seconds":3600}),
+            observer.runner.ReviewFailure("http_429"), observer.runner.ReviewFailure("http_429"),
+        ])
+        self.assertEqual(code, 1)
+        self.assertEqual(report["reason"], "rate_limited")
+        self.assertEqual([c.kwargs["model"] for c in calls], ["primary", "backup", "backup"])
+        self.assertEqual(report["attempts"][0]["retry_decision"], "wait_exceeds_budget")
+        self.assertLessEqual(sum(c.args[0] for c in pauses), observer.RATE_LIMIT_WAIT_BUDGET)
+
+    def test_daily_free_quota_skips_same_provider_free_fallback(self):
+        report, calls, pauses, code, output = self.attempts([
+            observer.runner.RateLimitFailure({"scope":"platform", "quota":"free_daily"}),
+        ], models=("primary:free", "backup:free"))
+        self.assertEqual(code, 1)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(report["reason"], "rate_limited")
+        self.assertFalse(pauses)
+        self.assertEqual(report["skipped_routes"][0]["reason"], "free_daily_quota")
+        self.assertIn("route_skipped", output)
+
+    def test_daily_free_quota_allows_independent_provider_fallback(self):
+        report, calls, pauses, code, _ = self.attempts([
+            observer.runner.RateLimitFailure({"scope":"platform", "quota":"free_daily"}), {},
+        ], models=("primary:free", "backup:free"), fallback_provider="nous")
+        self.assertEqual(code, 0)
+        self.assertEqual(len(calls), 2)
+        self.assertFalse(pauses)
+
+    def test_rate_limit_wait_can_be_cancelled(self):
+        with mock.patch.object(observer.time, "sleep", side_effect=KeyboardInterrupt), redirect_stdout(io.StringIO()):
+            with self.assertRaises(KeyboardInterrupt):
+                observer._retry_wait(60)
+
+    def test_platform_retry_after_blocks_same_provider_fallback(self):
+        report, calls, pauses, code, _ = self.attempts([
+            observer.runner.RateLimitFailure({"scope":"platform", "quota":"unknown", "retry_after_seconds":3600}),
+        ])
+        self.assertEqual(code, 1)
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(pauses)
+        self.assertEqual(report["skipped_routes"][0]["reason"], "platform_rate_limit")
+
+    def test_retry_wait_budget_is_shared_and_cannot_be_exceeded(self):
+        report, calls, pauses, code, _ = self.attempts([
+            observer.runner.RateLimitFailure({"scope":"provider", "quota":"unknown", "retry_after_seconds":100}),
+            observer.runner.ReviewFailure("http_429"),
+            observer.runner.RateLimitFailure({"scope":"provider", "quota":"unknown", "retry_after_seconds":30}),
+        ])
+        self.assertEqual(code, 1)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sum(c.args[0] for c in pauses), 100)
+        self.assertEqual(report["attempts"][-1]["retry_decision"], "wait_exceeds_budget")
+
+    def test_rate_limit_terminal_route_outcomes_override_earlier_transient_failure(self):
+        report, _, _, code, _ = self.attempts([
+            observer.runner.ReviewFailure("invalid_result"), observer.runner.ReviewFailure("http_429"),
+            observer.runner.ReviewFailure("http_401"),
+        ])
+        self.assertEqual(code, 1)
+        self.assertEqual(report["reason"], "rate_limited")
+
+    def test_all_429_stops_real_attempt_loop_after_first_chunk(self):
+        report = {"status":"failed", "attempts":[]}
+        chunks = [{"index": i, "prompt":"p", "diff":"+a\n"} for i in range(1, 5)]
+        routes = [{"provider":"openrouter", "role": role, "model": role + ":free", "key":"k", "endpoint":"https://example.test"}
+                  for role in ("primary", "fallback")]
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(observer, "routes", return_value=routes), \
+                mock.patch.object(observer.runner, "run_review", side_effect=observer.runner.ReviewFailure("http_429")) as run, \
+                mock.patch.object(observer.time, "sleep") as sleep, redirect_stdout(io.StringIO()):
+            root = Path(directory)
+            self.assertEqual(observer.review_chunks(root, chunks, set(), report, root/"report.json", "a"*40, "b"*40), 1)
+        self.assertEqual(run.call_count, 4)
+        self.assertEqual(report["skipped_chunks"], 3)
+        self.assertEqual(sum(c.args[0] for c in sleep.call_args_list), 90)
+
+    def test_rate_limit_stops_later_chunks_and_reports_partial_coverage(self):
+        for first_success in (False, True):
+            with self.subTest(first_success=first_success), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                report = {"status":"failed", "attempts":[]}
+                chunks = [{"index": i, "prompt":"p", "diff":"+a\n"} for i in range(1, 5)]
+                def attempt(workspace, prompt, files, chunk_report, report_path, base, head, index):
+                    if first_success and index == 1:
+                        chunk_report.update(status="success", result={"summary":"Checked first chunk", "findings":[]})
+                        return 0
+                    chunk_report.update(status="failed", reason="rate_limited")
+                    return 1
+                with mock.patch.object(observer, "review_attempts", side_effect=attempt) as run, redirect_stdout(io.StringIO()):
+                    code = observer.review_chunks(root, chunks, set(), report, root/"report.json", "a"*40, "b"*40)
+                self.assertEqual(code, 1)
+                self.assertEqual(run.call_count, 1 + first_success)
+                self.assertEqual(report["completed_chunks"], int(first_success))
+                self.assertEqual(report["skipped_chunks"], 3 - first_success)
+                self.assertEqual(report["reason"], "rate_limited")
+                self.assertNotIn("result", report)
+                details = observer.diagnostics(report)
+                self.assertIn("not a clean review", details)
+                self.assertIn(f"Validated chunks: {int(first_success)}/4", details)
+
+    def attempts(self, outcomes, models=("primary", "backup"), fallback_provider="openrouter"):
         report = {"status": "failed", "attempts": []}
         routes = [{"provider":"openrouter", "role":role, "model":model,
                    "key":"secret-key", "endpoint":"https://example.test/v1/messages"}
-                  for role, model in (("primary", "primary"), ("fallback", "backup"))]
+                  for role, model in zip(("primary", "fallback"), models)]
+        routes[1]["provider"] = fallback_provider
         result = json.dumps({"summary":"Reviewed", "findings":[], "thread_verdicts":[]})
         output = io.StringIO()
         with (
@@ -269,6 +387,7 @@ class ObservableReviewTests(unittest.TestCase):
                     redirect_stdout(io.StringIO()):
                 observer.run(report_path)
             self.assertIn("ObservableMessagesReview", summary_path.read_text())
+            self.assertIn("<details>\n<summary>Execution history</summary>\n\n", summary_path.read_text())
 
     def test_confine_report_path_rejects_escape(self):
         with mock.patch.object(observer.os, "environ", {}, create=True):
@@ -374,6 +493,29 @@ class ObservableReviewTests(unittest.TestCase):
         self.assertIn("| primary 1 | 2 |", text)
         self.assertIn("http_401", text)
         self.assertIn("not a clean review", text)
+
+    def test_diagnostics_collapses_only_attempt_table(self):
+        attempt = {"role": "primary", "number": 1, "chunk": 2, "provider": "p",
+                   "model": "m", "outcome": "valid_json", "seconds": 1.5}
+        for status in ("success", "failed"):
+            for attempts in ([], [attempt]):
+                with self.subTest(status=status, attempts=len(attempts)):
+                    text = observer.diagnostics({"status": status, "attempts": attempts,
+                                                 "reason": "all_attempts_failed"})
+                    before, details = text.split("<details>\n", 1)
+                    table, after = details.split("\n</details>", 1)
+                    self.assertIn(f"Result: **{status}**", before)
+                    self.assertIn("Execution: independent Messages API tool loop.", before)
+                    self.assertTrue(table.startswith("<summary>Execution history</summary>\n\n"))
+                    self.assertIn("| Attempt | Chunk | Provider | Model | Outcome | Seconds |", table)
+                    self.assertNotIn("<details open", text)
+                    self.assertEqual(text.count("<details>"), 1)
+                    self.assertEqual(text.count("</details>"), 1)
+                    if attempts:
+                        self.assertIn("| primary 1 | 2 | p | m | valid_json | 1.5 |", table)
+                    if status == "failed":
+                        self.assertIn("not a clean review", after)
+                        self.assertIn("Reason: all_attempts_failed", after)
 
     def test_git_runs_subprocess(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -546,6 +688,8 @@ class ObservableReviewTests(unittest.TestCase):
             self.assertIn("observable-inline:", inline.call_args.args[7])
             self.assertIn("ObservableMessagesReview", inline.call_args.args[7])
             body = post.call_args.args[3]["body"]
+            self.assertIn("<details>\n<summary>Execution history</summary>\n\n", body)
+            self.assertLess(body.index("</details>"), body.index("Independent review completed"))
             self.assertIn("observable-pr-review:", body)
             self.assertNotIn("claude-pr-review:", body)
 

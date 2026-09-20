@@ -24,6 +24,9 @@ PREFIX = "observable"
 MAX_REPORT_BYTES = 1024 * 1024
 MAX_CHUNK_CHARS = 32_000
 MAX_FINDINGS = 5
+RATE_LIMIT_WAIT_BUDGET = 120  # Per chunk, shared by primary and fallback retries.
+NON_RETRYABLE = {"http_400", "http_401", "http_403", "http_404",
+                 "missing_provider_key", "unsupported_provider_route"}
 
 
 def _confine_report_path(raw: Path) -> Path:
@@ -194,6 +197,8 @@ def _single_attempt(route: dict, number: int, prompt: str, workspace: Path, file
         return True
     except (runner.ReviewFailure, runner.ReviewTimeout) as error:
         attempt["outcome"] = str(error).split(":", 1)[0]
+        if isinstance(error, runner.RateLimitFailure):
+            attempt["rate_limit"] = error.details
     except Exception:
         attempt["outcome"] = "validation_or_transport_error"
     finally:
@@ -211,23 +216,73 @@ def _review_limits() -> dict:
     }
 
 
+def _retry_wait(seconds: float) -> None:
+    remaining = seconds
+    while remaining > 0:
+        print(f"[review] retry_wait remaining={remaining:g}s; no provider request in flight", flush=True)
+        interval = min(remaining, 15)
+        time.sleep(interval)
+        remaining -= interval
+
+
+def _rate_limit_retry(attempt: dict, route: dict, state: dict) -> float | None:
+    details = attempt.get("rate_limit", {})
+    print(f"[review] rate_limit scope={details.get('scope', 'unknown')} "
+          f"quota={details.get('quota', 'unknown')} retry_after={details.get('retry_after_seconds', 'unknown')}s", flush=True)
+    if route["provider"] == "openrouter" and details.get("quota") == "free_daily":
+        state["free_daily"] = True
+        attempt["retry_decision"] = "free_daily_quota"
+        return None
+    delay = max(30 * 2 ** min(state["retries"], 2), details.get("retry_after_seconds", 0))
+    if (attempt["number"] == 2 or delay > state["remaining"]) and details.get("scope") == "platform":
+        state["blocked_providers"].add(route["provider"])
+    if attempt["number"] == 2:
+        attempt["retry_decision"] = "route_exhausted"
+        return None
+    if delay > state["remaining"]:
+        attempt["retry_decision"] = "wait_exceeds_budget"
+        return None
+    return delay
+
+
+def _retry_after_attempt(attempt: dict, route: dict, state: dict) -> bool:
+    print(f"[review] attempt_failed reason={attempt['outcome']} elapsed={attempt['seconds']}s", flush=True)
+    limited = attempt["outcome"] == "http_429"
+    delay = _rate_limit_retry(attempt, route, state) if limited else 5
+    if attempt["outcome"] in NON_RETRYABLE or attempt["number"] == 2 or delay is None:
+        return False
+    attempt["retry_wait_seconds"] = delay
+    if limited:
+        state["remaining"] -= delay
+        state["retries"] += 1
+    _retry_wait(delay)
+    return True
+
+
 def review_attempts(workspace: Path, prompt: str, files: set[str], report: dict, report_path: Path,
                     base: str, head: str, chunk_index: int = 1) -> int:
     limits = _review_limits()
     execution = report_path.with_suffix(".execution.json")
+    state = {"remaining": RATE_LIMIT_WAIT_BUDGET, "retries": 0, "free_daily": False, "blocked_providers": set()}
+    route_outcomes = {}
     for route in routes():
+        skip_reason = "platform_rate_limit" if route["provider"] in state["blocked_providers"] else None
+        if state["free_daily"] and route["provider"] == "openrouter" and route["model"].endswith(":free"):
+            skip_reason = "free_daily_quota"
+        if skip_reason:
+            report.setdefault("skipped_routes", []).append({"role": route["role"], "reason": skip_reason})
+            print(f"[review] route_skipped role={safe_label(route['role'])} reason={skip_reason}", flush=True)
+            continue
         for number in (1, 2):
             if _single_attempt(route, number, prompt, workspace, files, execution, report, base, head, limits, chunk_index):
                 return 0
             attempt = report["attempts"][-1]
-            print(f"[review] attempt_failed reason={attempt['outcome']} elapsed={attempt['seconds']}s", flush=True)
-            if attempt["outcome"] in {"http_400", "http_401", "http_403", "http_404",
-                                      "missing_provider_key", "unsupported_provider_route"}:
+            route_outcomes[route["role"]] = attempt["outcome"]
+            if not _retry_after_attempt(attempt, route, state):
                 break
-            if number == 1:
-                print("[review] retrying same route in 5s", flush=True)
-                time.sleep(5)
-    report.update(status="failed", reason="all_attempts_failed")
+    outcomes = set(route_outcomes.values())
+    rate_limited = "http_429" in outcomes and outcomes <= {"http_429"} | NON_RETRYABLE
+    report.update(status="failed", reason="rate_limited" if rate_limited else "all_attempts_failed")
     print("::error::Observable review exhausted its attempts without a validated result; see the attempt table.", flush=True)
     return 1
 
@@ -246,15 +301,23 @@ def review_chunks(workspace: Path, chunks: list[dict], files: set[str], report: 
     all_summaries: list[str] = []
     all_findings: list[dict] = []
     completed = True
+    report.update(total_chunks=len(chunks), completed_chunks=0, failed_chunks=0, skipped_chunks=0)
     for chunk in chunks:
         diff_path.write_text(chunk["diff"], encoding="utf-8")
         chunk_report: dict = {"status": "failed", "attempts": []}
         code = review_attempts(workspace, chunk["prompt"], files, chunk_report,
                                report_path, base, head, chunk["index"])
         report["attempts"].extend(chunk_report.get("attempts", []))
+        report.setdefault("skipped_routes", []).extend(chunk_report.get("skipped_routes", []))
         if code != 0 or not chunk_report.get("result"):
             completed = False
+            report["failed_chunks"] += 1
+            if chunk_report.get("reason") == "rate_limited":
+                report.update(reason="rate_limited", skipped_chunks=len(chunks) - report["completed_chunks"] - report["failed_chunks"])
+                print(f"[review] stopping remaining chunks: rate_limited; skipped={report['skipped_chunks']}", flush=True)
+                break
             continue
+        report["completed_chunks"] += 1
         result = chunk_report["result"]
         all_summaries.append(result.get("summary", ""))
         all_findings.extend(result.get("findings", []))
@@ -265,7 +328,9 @@ def review_chunks(workspace: Path, chunks: list[dict], files: set[str], report: 
             "thread_verdicts": [],
         })
         return 0
-    report.update(status="failed", reason="all_attempts_failed")
+    report.update(status="failed", reason="rate_limited" if report.get("reason") == "rate_limited" else "all_attempts_failed")
+    if all_summaries:
+        report["partial_result"] = {"summary": " ".join(all_summaries), "findings": all_findings[:MAX_FINDINGS]}
     print("::error::Observable review exhausted its attempts without a validated result; see the attempt table.", flush=True)
     return 1
 
@@ -295,9 +360,31 @@ def run(report_path: Path) -> int:
                 target.write("\n" + diagnostics(report) + "\n")
 
 
+def _rate_limit_diagnostics(report: dict) -> list[str]:
+    lines = []
+    limited = [a for a in report["attempts"] if a["outcome"] == "http_429"]
+    if limited:
+        lines.extend(["", "Seconds measures attempt execution only; Retry wait is additional backoff.", "",
+                      "| Chunk / attempt | Limit source | Quota | Remaining / limit | Retry after (s) | Retry wait (s) | Decision |",
+                      "| --- | --- | --- | --- | --- | --- | --- |"])
+        for attempt in limited:
+            details = attempt.get("rate_limit", {})
+            values = [f"{attempt.get('chunk', '')} / {attempt['role']} {attempt['number']}",
+                      details.get("scope", "unknown"), details.get("quota", "unknown"),
+                      f"{details.get('remaining', '?')} / {details.get('limit', '?')}",
+                      details.get("retry_after_seconds", "unknown"), attempt.get("retry_wait_seconds", 0),
+                      attempt.get("retry_decision", "retry" if attempt.get("retry_wait_seconds") else "route_exhausted")]
+            lines.append("| " + " | ".join(safe_label(str(v)) for v in values) + " |")
+    for route in report.get("skipped_routes", []):
+        lines.append("")
+        lines.append(f"Skipped route: {safe_label(route['role'])}; reason: {safe_label(route['reason'])}.")
+    return lines
+
+
 def diagnostics(report: dict) -> str:
     lines = [f"## {LABEL}", "", f"Result: **{safe_label(report['status'])}**",
              "Execution: independent Messages API tool loop.", "",
+             "<details>", "<summary>Execution history</summary>", "",
              "| Attempt | Chunk | Provider | Model | Outcome | Seconds |",
              "| --- | --- | --- | --- | --- | --- |"]
     for attempt in report["attempts"]:
@@ -305,9 +392,19 @@ def diagnostics(report: dict) -> str:
                   attempt["provider"], attempt["model"], attempt["outcome"],
                   str(attempt.get("seconds", 0))]
         lines.append("| " + " | ".join(safe_label(v) for v in values) + " |")
+    lines.extend(_rate_limit_diagnostics(report))
+    lines.extend(["", "</details>"])
+    if "total_chunks" in report:
+        lines.extend(["", f"Validated chunks: {report['completed_chunks']}/{report['total_chunks']}; "
+                      f"failed: {report['failed_chunks']}; skipped: {report['skipped_chunks']}."])
     if report["status"] != "success":
-        lines.extend(["", "No validated review result was produced. This is not a clean review.",
+        result_note = ("Review is partial; only the chunks above have validated results."
+                       if report.get("completed_chunks") else "No validated review result was produced.")
+        lines.extend(["", result_note + " This is not a clean review.",
                       "Reason: " + safe_label(report.get("reason", "all_attempts_failed"))])
+        if report.get("reason") == "rate_limited":
+            lines.append("Routes are rate-limited; remaining chunks were not requested. "
+                         "Retry after the limit resets. Unknown scope does not establish a daily quota exhaustion.")
     return "\n".join(lines)
 
 

@@ -110,7 +110,10 @@ Vault password или API keys в чат, Git, issue либо shell history.
 - `hermes_code_server_password` — пароль браузерного IDE code-server
   (`vps_vscode.host_port` доступен только через SSH-туннель); допускаются любые
   непустые символы, перед записью в Compose окружение пароль JSON-экранируется;
-- `tailscale_auth_key` — временный ключ подключения Tailscale.
+- `tailscale_auth_key` — необязательный top-level ключ только для первоначального
+  подключения VPS к Tailscale. Если VPS уже подключён, не добавляйте его в Vault.
+  CI использует другой ключ — secret variable `HERMES_TAILSCALE_AUTH_KEY`
+  в защищённой группе `hermes-deploy-secrets` Azure DevOps.
 
 Для совместимости deployment также принимает `GH_TOKEN` или
 `GITHUB_PERSONAL_ACCESS_TOKEN`, но в managed Vault предпочтительно единое имя

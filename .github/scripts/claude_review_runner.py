@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import fnmatch
+from email.utils import parsedate_to_datetime
 import json
+import math
 import multiprocessing
 from pathlib import Path
 import re
@@ -38,6 +40,69 @@ class ReviewTimeout(RuntimeError):
 
 class ReviewFailure(RuntimeError):
     """Safe machine-readable failure reason; never carries provider body text."""
+
+
+class RateLimitFailure(ReviewFailure):
+    """Only allow-listed rate-limit diagnostics may cross the worker boundary."""
+
+    def __init__(self, details: dict):
+        super().__init__("http_429")
+        self.details = details
+
+
+def _nonnegative_number(value) -> float | None:
+    try:
+        number = float(value)
+        return number if math.isfinite(number) and number >= 0 else None
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _retry_hint(headers: dict) -> int | None:
+    now = time.time()
+    raw = headers.get("retry-after", "")
+    delay = _nonnegative_number(raw)
+    if delay is None and raw:
+        try:
+            delay = max(0, parsedate_to_datetime(raw).timestamp() - now)
+        except (ValueError, TypeError, OverflowError):
+            pass
+    reset = _nonnegative_number(headers.get("x-ratelimit-reset"))
+    if reset is not None:
+        # Accept Unix reset timestamps expressed in seconds or milliseconds.
+        reset = reset / 1000 if reset > 100_000_000_000 else reset
+        delay = max(delay or 0, reset - now, 0)
+    return math.ceil(delay) if delay is not None else None
+
+
+def _rate_limit_details(error) -> dict:
+    headers = {key.lower(): value for key, value in (error.headers or {}).items()}
+    details = {"scope": "unknown", "quota": "unknown"}
+    # Never retain arbitrary messages, provider metadata, request IDs or URLs:
+    # providers can echo credentials and prompt content in an error body.
+    try:
+        raw = error.read(16_385)
+        body = json.loads(raw) if len(raw) <= 16_384 else {}
+    except (OSError, ValueError, TypeError):
+        body = {}
+    body = body.get("error", {}) if isinstance(body, dict) else {}
+    body = body if isinstance(body, dict) else {}
+    metadata = body.get("metadata", {})
+    if isinstance(metadata, dict) and (metadata.get("provider_code") or metadata.get("provider_name")):
+        details["scope"] = "provider"
+    if any(key.startswith("x-ratelimit-") for key in headers):
+        details["scope"] = "platform"
+    message = body.get("message", "")
+    if isinstance(message, str) and re.search(r"\bfree[- ]models?[- ]per[- ]day\b", message, re.IGNORECASE):
+        details.update(scope="platform", quota="free_daily")
+    delay = _retry_hint(headers)
+    if delay is not None:
+        details["retry_after_seconds"] = delay
+    for name in ("limit", "remaining"):
+        value = _nonnegative_number(headers.get(f"x-ratelimit-{name}"))
+        if value is not None:
+            details[name] = value
+    return details
 
 
 def tracked_files(workspace: Path) -> set[str]:
@@ -222,7 +287,9 @@ def request_message(endpoint: str, api_key: str, payload: dict, timeout: float, 
                 result = json.loads(raw)
                 emit("provider_response")
     except urllib.error.HTTPError as error:
-        raise ReviewFailure(f"http_{error.code}") from None
+        with error:
+            failure = RateLimitFailure(_rate_limit_details(error)) if error.code == 429 else ReviewFailure(f"http_{error.code}")
+        raise failure from None
     except OSError:
         raise ReviewFailure("provider_connection_error") from None
     except (ValueError, KeyError, TypeError):
@@ -316,6 +383,8 @@ def _worker(pipe, endpoint, api_key, model, prompt, workspace, allowed, max_turn
             if turn >= max_turns - 2:
                 messages.append({"role": "user", "content": "Budget nearly exhausted. Return final JSON now. State any unreviewed scope in summary; do not claim complete coverage."})
         raise ReviewFailure("turn_limit")
+    except RateLimitFailure as error:
+        pipe.send(("rate_limit", error.details, turn))
     except ReviewFailure as error:
         pipe.send(("failure", str(error), turn))
     except Exception:
@@ -361,6 +430,8 @@ def _maybe_heartbeat(now, heartbeat, heartbeat_seconds, started, last_activity, 
 
 
 def _handle_message(kind, value, turns, output, started, events, log):
+    if kind == "rate_limit":
+        raise RateLimitFailure(value)
     if kind == "failure":
         raise ReviewFailure(value)
     if kind == "result":

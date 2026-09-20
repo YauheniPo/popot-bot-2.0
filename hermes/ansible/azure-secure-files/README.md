@@ -1,7 +1,8 @@
 # Azure Secure Files для Hermes deployment
 
 Этот каталог содержит только безопасные примеры. Рабочие файлы без суффикса
-`.example` игнорируются Git и загружаются в Azure DevOps вручную.
+`.example` игнорируются Git. В Azure DevOps загружаются только два файла,
+перечисленные ниже; пароль Vault и CI-ключ задаются secret variables.
 
 ## Подготовка Vault
 
@@ -38,21 +39,24 @@ EDITOR=nano ansible-vault edit \
 Первая строка готового файла должна начинаться с `$ANSIBLE_VAULT;`. Никогда не
 загружайте и не коммитьте его расшифрованную версию.
 
-## Подготовка SSH key
+Уже заданный `hermes_secret_env.GITHUB_TOKEN` используйте без дублирования:
+отдельного top-level `GITHUB_TOKEN` или GitHub-токена для этого pipeline не нужно.
+Для подключённого VPS `tailscale_auth_key` в Vault не требуется. CI-ключ
+`HERMES_TAILSCALE_AUTH_KEY` задаётся отдельно в защищённой группе переменных
+`hermes-deploy-secrets` (см. ниже). Локальный `hermes-vault-password` нужен для
+команд подготовки Vault; в Secure Files он не загружается.
 
-Не копируйте placeholder private key из примера. Создайте отдельную пару без
-интерактивной passphrase — Azure хранит private key как защищённый Secure File:
+## Вход через Tailscale SSH без private key
 
-```bash
-ssh-keygen -t ed25519 \
-  -f hermes-vps-ssh-key \
-  -C azure-hermes-deploy \
-  -N ''
-chmod 600 hermes-vps-ssh-key
-```
+На VPS должен быть включён Tailscale SSH. CI-узел подключается к tailnet через
+`HERMES_TAILSCALE_AUTH_KEY`, а SSH policy разрешает тегу `tag:hermes-deploy`
+вход пользователем из `ansible_user` без browser check. Отдельные private/public
+SSH keys и правки `authorized_keys` не нужны. Обычный OpenSSH этим pipeline
+не поддерживается; локальный способ deployment не меняется.
 
-Добавьте содержимое `hermes-vps-ssh-key.pub` в `authorized_keys` пользователя,
-указанного как `ansible_user`. Public key в Azure загружать не нужно.
+Старый Secure File `hermes-vps-ssh-key` больше не используется после обновления
+pipeline в `main`. Его можно убрать из ADO, если он не нужен другим pipelines.
+Полная настройка и миграция: [tailscale-deploy.md](../../../azure-ci/tailscale-deploy.md).
 
 ## Подготовка known_hosts
 
@@ -71,6 +75,8 @@ chmod 600 hermes-vps-known-hosts
 
 Для нестандартного порта добавьте `-p PORT`; запись должна соответствовать
 значению `ansible_port` в Vault.
+Для Tailscale SSH используйте его host key и адрес из Vault: ключ публичного
+OpenSSH может отличаться.
 
 ## Проверка и загрузка
 
@@ -80,18 +86,35 @@ chmod 600 hermes-vps-known-hosts
 ansible-vault view \
   --vault-password-file hermes-vault-password \
   ../group_vars/all/vault.yml >/dev/null
-ssh-keygen -y -P '' -f hermes-vps-ssh-key >/dev/null
 test -s hermes-vps-known-hosts
 ```
 
-В **Azure DevOps → Pipelines → Library → Secure files** загрузите ровно четыре
+В **Azure DevOps → Pipelines → Library → Secure files** загрузите два
 рабочих файла:
 
 - `vault.yml` — загрузите напрямую `../group_vars/all/vault.yml`
-- `hermes-vault-password`
-- `hermes-vps-ssh-key`
 - `hermes-vps-known-hosts`
 
 Не загружайте `.example` и `.pub`. Для каждого Secure File разрешите только
 Hermes deployment pipeline и добавьте owner approval вместе с Branch control
 для `refs/heads/main`.
+
+## Secret variables вместо двух дополнительных файлов
+
+В **Library → Variable groups** создайте группу `hermes-deploy-secrets`:
+
+| Имя | Значение |
+|---|---|
+| `HERMES_VAULT_PASSWORD` | Пароль, которым зашифрован ваш `vault.yml` |
+| `HERMES_TAILSCALE_AUTH_KEY` | Отдельный CI auth key из [инструкции Tailscale](../../../azure-ci/tailscale-deploy.md) |
+
+Обе переменные пометьте **Keep this value secret**. Вводите сами значения
+одной строкой, без обрамляющих кавычек или Base64. Для группы разрешите только
+deployment pipeline; добавьте owner approval и Branch control `refs/heads/main`.
+Не включайте Open access. Подключение группы уже задано в YAML, только на
+stage `DeployProduction`, после фиксации SHA.
+
+При ротации обновляйте значение в группе, не создавайте Secure File.
+Pipeline создаёт временные файлы `0600` в каталоге `0700` на hosted agent,
+передаёт потребителям пути и удаляет эти файлы отдельным шагом `always()`.
+Ни пароль, ни CI-ключ не добавляйте в Git или `hermes_secret_env`.
