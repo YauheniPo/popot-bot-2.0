@@ -18,6 +18,88 @@ SPEC.loader.exec_module(apply_config)
 
 
 class ApplyConfigTests(unittest.TestCase):
+    def test_one_managed_model_overrides_ui_routes_without_changing_other_settings(self):
+        settings = {'vps_hermes': {'config': {
+            'ui_owned_sections': ['model', 'cron'],
+            'managed_overlay': {'model': {'provider': 'fixture-cloud', 'default': 'fixture-model'}},
+        }}, 'vps_deploy': {'features': {'workspace_ui': True}}}
+        current = {'model': {'provider': 'old', 'default': 'old', 'max_tokens': 123},
+                   'delegation': {'model': 'old'}, 'cron': {'model': 'old'}}
+        operations = apply_config.build_operations(settings, current, {}, set())
+        actual = {op.key: op.value for op in operations}
+        for key in ('model.default', 'delegation.model', 'cron.model'):
+            self.assertEqual(actual[key], 'fixture-model')
+        for key in ('model.provider', 'delegation.provider', 'cron.model_provider'):
+            self.assertEqual(actual[key], 'fixture-cloud')
+        self.assertNotIn('model.max_tokens', actual)
+        converged = {'model': {'provider': 'fixture-cloud', 'default': 'fixture-model'},
+                     'delegation': {'provider': 'fixture-cloud', 'model': 'fixture-model'},
+                     'cron': {'model_provider': 'fixture-cloud', 'model': 'fixture-model'}}
+        self.assertEqual(apply_config.build_operations(settings, converged, {}, set()), [])
+
+    def test_existing_profiles_get_managed_model_without_losing_private_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            profile = home / 'profiles' / 'builder'
+            profile.mkdir(parents=True)
+            config = profile / 'config.yaml'
+            config.write_text('model:\n  default: old\n  max_tokens: 123\ncustom: keep\n')
+            settings = {'vps_hermes': {'config': {'managed_overlay': {
+                'model': {'provider': 'test-cloud', 'default': 'test-model'}}}}}
+            self.assertEqual(apply_config.sync_profile_models(home, settings), 1)
+            value = apply_config.load_config(config)
+            self.assertEqual(value['model'], {'provider': 'test-cloud', 'default': 'test-model', 'max_tokens': 123})
+            self.assertEqual(value['delegation']['model'], 'test-model')
+            self.assertEqual(value['custom'], 'keep')
+            self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(apply_config.sync_profile_models(home, settings), 0)
+            config.unlink()
+            outside = home / 'outside.yaml'
+            outside.write_text('model: {}\n')
+            config.symlink_to(outside)
+            with self.assertRaises(ValueError):
+                apply_config.sync_profile_models(home, settings)
+            self.assertEqual(outside.read_text(), 'model: {}\n')
+
+    def test_workspace_endpoint_is_included_in_manual_bootstrap(self) -> None:
+        settings = apply_config.load_settings(MODULE_PATH.parent.parent / 'config/vps-defaults.yml')
+        port = settings['vps_workspace_ui']['port']
+        endpoint = f'https {port} http://127.0.0.1:{port}'
+        self.assertIn(endpoint, apply_config.web_and_serve_assets(settings)[1])
+        settings['vps_tailscale']['serve']['services'].append({
+            'protocol': 'http', 'port': port, 'target': f'http://127.0.0.1:{port}',
+        })
+        with self.assertRaisesRegex(ValueError, 'overlap'):
+            apply_config.web_and_serve_assets(settings)
+        settings['vps_tailscale']['serve']['services'].pop()
+        settings['vps_deploy']['features']['workspace_ui'] = False
+        self.assertNotIn(endpoint, apply_config.web_and_serve_assets(settings)[1])
+
+    def test_workspace_preserves_existing_operator_settings_but_not_security(self) -> None:
+        settings = {
+            'vps_deploy': {'features': {'workspace_ui': True}},
+            'vps_hermes': {'config': {'ui_owned_sections': ['model', 'compression']}},
+            'vps_runtime': {'set': {
+                'model.max_tokens': 999, 'compression.threshold': 0.7,
+                'approvals.mode': 'manual',
+            }},
+        }
+        current = {'model': {'max_tokens': 123}, 'approvals': {'mode': 'off'}}
+        operations = apply_config.build_operations(settings, current, {}, set())
+        self.assertNotIn('model.max_tokens', [op.key for op in operations])
+        self.assertIn('compression.threshold', [op.key for op in operations])
+        self.assertIn(apply_config.Operation('set', 'approvals.mode', 'manual'), operations)
+        settings['vps_deploy']['features']['workspace_ui'] = False
+        self.assertIn('model.max_tokens', [op.key for op in apply_config.build_operations(settings, current, {}, set())])
+
+    def test_workspace_cannot_move_security_sections_to_ui_ownership(self) -> None:
+        settings = {
+            'vps_deploy': {'features': {'workspace_ui': True}},
+            'vps_hermes': {'config': {'ui_owned_sections': ['approvals']}},
+        }
+        with self.assertRaisesRegex(ValueError, 'ui_owned_sections'):
+            apply_config.build_operations(settings, {}, {}, set())
+
     def test_repository_settings_have_required_structure_and_valid_types(self) -> None:
         settings_path = MODULE_PATH.parent.parent / "config" / "vps-defaults.yml"
 
@@ -90,8 +172,9 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertLessEqual(overlay["compression"]["threshold"], 1)
         self.assertIsInstance(overlay["auxiliary"]["compression"]["provider"], str)
         self.assertIsInstance(overlay["auxiliary"]["compression"]["model"], str)
-        self.assertIsInstance(overlay["cron"]["model_provider"], str)
-        self.assertIsInstance(overlay["cron"]["model"], str)
+        routes = apply_config.managed_model_values(settings)
+        self.assertEqual(routes['cron.model_provider'], overlay['model']['provider'])
+        self.assertEqual(routes['cron.model'], overlay['model']['default'])
         self.assertIsInstance(overlay["cron"]["model_drift_guard"], bool)
         self.assertEqual(settings["vps_runtime"]["set"]["model.max_tokens"], 32768)
         self.assertIsInstance(overlay["web"]["search_backend"], str)
@@ -316,6 +399,21 @@ class ApplyConfigTests(unittest.TestCase):
             backup_dir=identity["backup_dir"],
         )
 
+    def test_dashboard_can_write_only_state_and_configured_workspace(self) -> None:
+        hermes_dir = MODULE_PATH.parent.parent
+        settings = apply_config.load_settings(hermes_dir / 'config/vps-defaults.yml')
+        identity = settings['vps_deploy']['identity']
+        identity['hermes_home'] = '/srv/agent/state'
+        identity['workspace'] = '/srv/agent/projects'
+        template = (hermes_dir / 'ops/systemd/hermes-dashboard.service').read_text()
+        rendered = apply_config.render_asset(template, self._asset_values(settings))
+        writable = [line.partition('=')[2] for line in rendered.splitlines()
+                    if line.startswith('ReadWritePaths=')]
+        self.assertEqual(writable, [f"{identity['hermes_home']} {identity['workspace']}"])
+        for protection in ('ProtectSystem=strict', 'ProtectHome=read-only',
+                           'NoNewPrivileges=true', 'PrivateTmp=true'):
+            self.assertIn(protection, rendered.splitlines())
+
     def test_vps_web_searxng_url_validation_rejects_malformed_values(self) -> None:
         settings = apply_config.load_settings(
             MODULE_PATH.parent.parent / "config" / "vps-defaults.yml"
@@ -349,6 +447,9 @@ class ApplyConfigTests(unittest.TestCase):
         settings = apply_config.load_settings(
             MODULE_PATH.parent.parent / "config" / "vps-defaults.yml"
         )
+        # This test covers the explicit endpoint list; the optional companion
+        # endpoint is covered independently above.
+        settings['vps_deploy']['features']['workspace_ui'] = False
 
         # The repository default renders the managed endpoint list for the script.
         values = self._asset_values(settings)

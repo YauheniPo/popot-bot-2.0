@@ -131,6 +131,46 @@
       "targets": [{"expr": "hermes_gateway_process_resident_memory_bytes", "legendFormat": "Hermes gateway RSS", "refId": "A"}, {"expr": "node_memory_MemAvailable_bytes", "legendFormat": "Host available memory", "refId": "B"}],
       "title": "Gateway and host memory",
       "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Recorded user input messages in the preceding hour, per profile. Sliding window gauge, not LLM calls or a lifetime counter. Prometheus history begins at the first scrape.",
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 40},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "hermes_profile_user_requests{window=\"1h\"}", "legendFormat": "{{profile}}", "refId": "A"}],
+      "title": "Profile requests — preceding hour",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Counts from retained Hermes input history. Includes recorded smoke-test prompts. Deleting, importing or restoring history changes these gauges; do not apply rate/increase.",
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 40},
+      "options": {"colorMode": "value", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "hermes_profile_user_requests{window=~\"24h|7d|retained\"}", "legendFormat": "{{profile}} · {{window}}", "instant": true, "refId": "A"}],
+      "title": "Profile requests — day / week / retained history",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Time of the most recent retained user input, not process startup or background maintenance. Empty history is shown as No requests.",
+      "fieldConfig": {"defaults": {"unit": "dateTimeAsLocal", "mappings": [{"type": "value", "options": {"0": {"text": "No requests"}}}]}, "overrides": []},
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 48},
+      "options": {"colorMode": "value", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "hermes_profile_last_request_timestamp_seconds * 1000", "legendFormat": "{{profile}}", "instant": true, "refId": "A"}],
+      "title": "Profile last request",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Zero means missing/unreadable history or a query timeout; usage is then unknown, not zero. One means the profile history was read successfully, including an empty history.",
+      "fieldConfig": {"defaults": {"min": 0, "max": 1, "mappings": [{"type": "value", "options": {"0": {"text": "History unavailable", "color": "red"}, "1": {"text": "History readable", "color": "green"}}}]}, "overrides": []},
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 48},
+      "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "hermes_profile_history_readable", "legendFormat": "{{profile}}", "instant": true, "refId": "A"}],
+      "title": "Profile usage collection",
+      "type": "stat"
     }
   ],
   "refresh": "30s",

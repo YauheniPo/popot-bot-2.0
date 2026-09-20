@@ -110,13 +110,23 @@ else
     add_issue "memory-check" "не удалось проверить память"
 fi
 
-cpu_count="$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')"
+cpu_count="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
 load_one="$(awk '{print $1}' /proc/loadavg 2>/dev/null || true)"
-if is_number "${cpu_count}" && is_number "${load_one}" && [[ "${cpu_count}" != "0" ]]; then
-    load_limit="$(awk -v cpus="${cpu_count}" -v factor="${HERMES_LOAD_WARN_PER_CPU}" 'BEGIN {printf "%.1f", cpus * factor}')"
-    if awk -v load="${load_one}" -v limit="${load_limit}" 'BEGIN {exit !(load >= limit)}'; then
+if is_number "${cpu_count}" && is_number "${load_one}" && [[ "${cpu_count}" != "0" ]] &&
+    is_number "${HERMES_LOAD_WARN_PER_CPU}" &&
+    load_limit="$(awk -v cpus="${cpu_count}" -v factor="${HERMES_LOAD_WARN_PER_CPU}" 'BEGIN {printf "%.1f", cpus * factor}')" &&
+    is_number "${load_limit}"; then
+    if awk -v load1="${load_one}" -v limit="${load_limit}" 'BEGIN {exit !(load1 >= limit)}'; then
         add_issue "load" "load1=${load_one}, порог ${load_limit} для ${cpu_count} CPU"
+    else
+        load_check_rc=$?
+        # 1 means below threshold; an awk/runtime failure is not a healthy host.
+        if ((load_check_rc != 1)); then
+            add_issue "load-check" "ошибка проверки нагрузки (awk exit ${load_check_rc})"
+        fi
     fi
+else
+    add_issue "load-check" "не удалось проверить нагрузку или вычислить её порог"
 fi
 
 if [[ -f "${HERMES_METRICS_FILE}" ]]; then

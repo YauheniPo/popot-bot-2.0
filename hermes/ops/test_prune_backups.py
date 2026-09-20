@@ -112,6 +112,31 @@ class PruneBackupsTests(unittest.TestCase):
         os.utime(path, (modified, modified))
         return path
 
+    def test_repeated_deployments_remain_bounded_and_retention_is_idempotent(self):
+        for keep in (2, 4):
+            with self.subTest(keep=keep), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                for index in range(9):
+                    prefix = f"pre-config-deploy-20260919T1200{index:02d}"
+                    archive = root / f"{prefix}.zip"
+                    archive.touch()
+                    os.utime(archive, (index + 1, index + 1))
+                    (root / f"{prefix}-state.json").touch()
+                    prune_backups.prune_deployment_backups(root, keep)
+                    self.assertEqual(len(list(root.glob("*.zip"))), min(index + 1, keep))
+                    self.assertEqual(len(list(root.glob("*-state.json"))), min(index + 1, keep))
+                    self.assertTrue(archive.exists())
+                    self.assertEqual(prune_backups.prune_deployment_backups(root, keep), 0)
+
+    def test_quick_retention_keeps_all_recent_snapshots_not_a_count_limit(self):
+        now, day = 2_000_000_000, 86400
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index in range(21):
+                self.create_snapshot(root, str(index), "scheduled", now - index * day / 3)
+            self.assertEqual(prune_backups.prune_scheduled_quick_snapshots(root, 14, now=now), 0)
+            self.assertEqual(len(list(root.iterdir())), 21)
+
 
 if __name__ == "__main__":
     unittest.main()

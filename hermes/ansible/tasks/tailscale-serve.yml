@@ -48,6 +48,21 @@
     - vps_tailscale.serve.enabled | bool
     - tailscale_serve_connection.rc == 0
 
+- name: Publish the companion Workspace privately over HTTPS
+  ansible.builtin.command:
+    argv:
+      - tailscale
+      - serve
+      - --bg
+      - "--https={{ vps_workspace_ui.port }}"
+      - "http://127.0.0.1:{{ vps_workspace_ui.port }}"
+  when:
+    - hermes_enable_tailscale | bool
+    - vps_tailscale.serve.enabled | bool
+    - tailscale_serve_connection.rc == 0
+    - vps_deploy.features.workspace_ui | default(false) | bool
+  changed_when: true
+
 - name: Publish local web services privately through Tailscale Serve
   ansible.builtin.command:
     argv:

@@ -122,9 +122,7 @@ class ConfigWriteSecurityTests(unittest.TestCase):
             with self.subTest(writer=module.__name__), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
                 target = root / "config.yaml"
-                alias = root / "alias.yaml"
-                alias.symlink_to(target)
-                argv = [module.__name__, "--config", str(alias)]
+                argv = [module.__name__, "--config", str(target)]
                 if module.__name__ == "configure-plugin":
                     argv.extend(["--hermes-home", str(root)])
                 with mock.patch("sys.argv", argv), \
@@ -135,6 +133,84 @@ class ConfigWriteSecurityTests(unittest.TestCase):
                     self.assertEqual(module.main(), 0)
                 read.assert_called_once_with(target.resolve())
                 write.assert_called_once_with(target.resolve(), read.return_value)
+
+    def test_main_rejects_config_symlinks_without_modifying_the_destination(self):
+        for module, _ in WRITERS:
+            for kind in ("outside", "dangling", "cli-alias"):
+                with self.subTest(writer=module.__name__, kind=kind), tempfile.TemporaryDirectory() as temp:
+                    root = Path(temp).resolve()
+                    home = root / "home"
+                    home.mkdir()
+                    victim = root / "unrelated.yaml"
+                    victim.write_text("custom: original\n", encoding="utf-8")
+                    config = home / "config.yaml"
+                    argument = config
+                    if kind == "cli-alias":
+                        config.write_text("custom: original\n", encoding="utf-8")
+                        argument = home / "alias.yaml"
+                        argument.symlink_to(config)
+                    else:
+                        config.symlink_to(victim if kind == "outside" else root / "missing.yaml")
+                    argv = [module.__name__, "--config", str(argument)]
+                    if module.__name__ == "configure-plugin":
+                        argv.extend(["--hermes-home", str(home)])
+                    with mock.patch("sys.argv", argv), \
+                            mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}), \
+                            contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(module.main(), 1)
+                    self.assertEqual(victim.read_text(encoding="utf-8"), "custom: original\n")
+                    self.assertFalse((root / "missing.yaml").exists())
+                    self.assertTrue(argument.is_symlink())
+
+    def test_load_rejects_symlinks_hardlinks_and_special_files(self):
+        module = WRITERS[0][0]
+        for kind in ("symlink", "dangling", "hardlink", "fifo"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                victim = root / "other.yaml"
+                victim.write_text("secret: untouched\n", encoding="utf-8")
+                config = root / "config.yaml"
+                if kind in ("symlink", "dangling"):
+                    config.symlink_to(victim if kind == "symlink" else root / "missing")
+                elif kind == "hardlink":
+                    os.link(victim, config)
+                else:
+                    os.mkfifo(config)
+                # A FIFO must be rejected without a blocking read.
+                with mock.patch.object(Path, "read_text", return_value="secret: untouched\n"), \
+                        self.assertRaises((OSError, ValueError)):
+                    module.load_config(config)
+
+    def test_load_rejects_symlink_swapped_just_before_open(self):
+        module = WRITERS[0][0]
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = root / "config.yaml"
+            config.write_text("custom: original\n", encoding="utf-8")
+            victim = root / "other.yaml"
+            victim.write_text("secret: untouched\n", encoding="utf-8")
+            original_open = os.open
+
+            def swap(path, flags):
+                config.unlink()
+                config.symlink_to(victim)
+                return original_open(path, flags)
+
+            with mock.patch.object(os, "open", side_effect=swap), self.assertRaises(OSError):
+                module.load_config(config)
+
+    def test_write_rejects_existing_symlink(self):
+        module = WRITERS[0][0]
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            victim = root / "other.yaml"
+            victim.write_text("custom: original\n", encoding="utf-8")
+            config = root / "config.yaml"
+            config.symlink_to(victim)
+            with self.assertRaises(ValueError):
+                module.write_config(config, {"custom": "new"})
+            self.assertTrue(config.is_symlink())
+            self.assertEqual(victim.read_text(encoding="utf-8"), "custom: original\n")
 
     def test_copied_bundle_runs_from_an_unrelated_directory_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as temp:

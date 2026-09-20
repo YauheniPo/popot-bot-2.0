@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -19,7 +20,7 @@ def home() -> Path:
 
 
 def label(value: object) -> str:
-    return str(value or "unknown").replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")[:180]
+    return str(value or "unknown")[:180].replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
 def metric(
@@ -42,6 +43,9 @@ def rows(database: Path, sql: str) -> Iterable[tuple]:
         # still letting SQLite include recently committed records in its WAL.
         connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=3)
         try:
+            # Group on exactly the labels we expose, including unknown values
+            # and length normalization, rather than distinct raw DB values.
+            connection.create_function("metric_label", 1, label, deterministic=True)
             return list(connection.execute(sql).fetchall())
         finally:
             connection.close()
@@ -60,6 +64,59 @@ def memory_ratio() -> float:
         return values.get("MemAvailable", 0) / max(values.get("MemTotal", 0), 1)
     except (OSError, ValueError):
         return 0.0
+
+
+def _profile_request_counts(database: Path, now: float) -> tuple:
+    """Read aggregate metadata only; never load prompts or mutate Hermes history."""
+    if database.is_symlink() or not database.is_file():
+        raise OSError('Profile history unavailable')
+    connection = sqlite3.connect(database.resolve().as_uri() + '?mode=ro', uri=True, timeout=1)
+    try:
+        deadline = time.monotonic() + 1
+        connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 10000)
+        columns = {row[1] for row in connection.execute('PRAGMA table_info(messages)')}
+        summary_filter = ' AND COALESCE(_compressed_summary,0)=0' if '_compressed_summary' in columns else ''
+        return connection.execute(
+            'SELECT COUNT(*), COALESCE(MAX(timestamp),0), '
+            'COALESCE(SUM(timestamp>=?),0), COALESCE(SUM(timestamp>=?),0), '
+            'COALESCE(SUM(timestamp>=?),0) FROM messages '
+            "WHERE role='user' AND typeof(timestamp) IN ('real','integer') "
+            'AND timestamp>0 AND timestamp<=?' + summary_filter,
+            (now - 3600, now - 86400, now - 604800, now),
+        ).fetchone()
+    finally:
+        connection.close()
+
+
+def profile_request_metrics(root: Path, now: float | None = None) -> list[str]:
+    """Counts of retained input records, not monotonic invocation counters."""
+    now = time.time() if now is None else now
+    profiles = [('default', root)]
+    directory = root / 'profiles'
+    if directory.is_dir() and not directory.is_symlink():
+        profiles.extend((p.name, p) for p in sorted(directory.iterdir())
+                        if p.is_dir() and not p.is_symlink() and (p / 'config.yaml').is_file()
+                        and p.name != 'default' and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', p.name))
+    lines = [
+        '# HELP hermes_profile_user_requests Retained user input records by profile and lookback window; excludes compression summaries. Not LLM calls or lifetime totals.',
+        '# TYPE hermes_profile_user_requests gauge',
+        '# HELP hermes_profile_last_request_timestamp_seconds Latest retained user input time; zero means empty history.',
+        '# TYPE hermes_profile_last_request_timestamp_seconds gauge',
+        '# HELP hermes_profile_history_readable Whether this profile history could be collected; missing or unreadable is not zero usage.',
+        '# TYPE hermes_profile_history_readable gauge',
+    ]
+    for profile, path in profiles:
+        tags = {'profile': profile}
+        try:
+            retained, latest, hour, day, week = _profile_request_counts(path / 'state.db', now)
+        except (OSError, sqlite3.Error):
+            lines.append(metric('hermes_profile_history_readable', 0, tags))
+            continue
+        lines.append(metric('hermes_profile_history_readable', 1, tags))
+        lines.append(metric('hermes_profile_last_request_timestamp_seconds', latest, tags))
+        for window, count in [('1h', hour), ('24h', day), ('7d', week), ('retained', retained)]:
+            lines.append(metric('hermes_profile_user_requests', count, {**tags, 'window': window}))
+    return lines
 
 
 def gateway_up() -> float:
@@ -211,7 +268,7 @@ def main() -> int:
         "SELECT COALESCE(provider,'unknown'),COALESCE(model,'unknown'),status,COUNT(*),"
         "COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(cache_read_tokens),0),"
         "COALESCE(SUM(total_tokens),0),COALESCE(SUM(cost_usd),0),COALESCE(SUM(duration_ms),0) "
-        "FROM api_calls GROUP BY provider,model,status",
+        "FROM api_calls GROUP BY metric_label(provider),metric_label(model),metric_label(status)",
     ):
         tags = {"provider": provider, "model": model, "status": status}
         lines.extend(
@@ -228,29 +285,24 @@ def main() -> int:
     for tool, status, calls, average_ms, duration_ms in rows(
         database,
         "SELECT COALESCE(tool_name,'unknown'),status,COUNT(*),COALESCE(AVG(duration_ms),0),COALESCE(SUM(duration_ms),0) "
-        "FROM tool_calls GROUP BY tool_name,status",
+        "FROM tool_calls GROUP BY metric_label(tool_name),metric_label(status)",
     ):
         tags = {"tool": tool, "status": status}
         lines.append(metric("hermes_tool_calls_total", calls, tags))
         lines.append(metric("hermes_tool_duration_ms_average", average_ms, tags))
         lines.append(metric("hermes_tool_duration_ms_total", duration_ms, tags))
-    for command, calls in rows(database, "SELECT COALESCE(command,'unknown'),COUNT(*) FROM commands GROUP BY command"):
+    for command, calls in rows(database, "SELECT COALESCE(command,'unknown'),COUNT(*) FROM commands GROUP BY metric_label(command)"):
         lines.append(metric("hermes_commands_total", calls, {"command": command}))
-    for model, platform, completed, failed, interrupted, turns in rows(
+    for model, platform, outcome, turns in rows(
         database,
-        "SELECT COALESCE(model,'unknown'),COALESCE(platform,'unknown'),completed,failed,interrupted,COUNT(*) "
-        "FROM sessions WHERE event='end' GROUP BY model,platform,completed,failed,interrupted",
+        "SELECT COALESCE(model,'unknown'),COALESCE(platform,'unknown'),"
+        "CASE WHEN completed THEN 'completed' WHEN interrupted THEN 'interrupted' ELSE 'failed' END AS outcome,COUNT(*) "
+        "FROM sessions WHERE event='end' GROUP BY metric_label(model),metric_label(platform),outcome",
     ):
-        if completed:
-            outcome = "completed"
-        elif interrupted:
-            outcome = "interrupted"
-        else:
-            outcome = "failed"
         lines.append(metric("hermes_turns_total", turns, {"model": model, "platform": platform, "outcome": outcome}))
     for choice, responses in rows(
         database,
-        "SELECT COALESCE(choice,'unknown'),COUNT(*) FROM approvals WHERE event='response' GROUP BY choice",
+        "SELECT COALESCE(choice,'unknown'),COUNT(*) FROM approvals WHERE event='response' GROUP BY metric_label(choice)",
     ):
         lines.append(metric("hermes_approval_responses_total", responses, {"choice": choice}))
     audit = root / "logs" / "ops-audit.jsonl"
@@ -259,6 +311,7 @@ def main() -> int:
         path.stat().st_size for path in (database, Path(str(database) + "-wal"), Path(str(database) + "-shm")) if path.exists()
     )
     lines.append(metric("hermes_metrics_database_bytes", database_bytes))
+    lines.extend(profile_request_metrics(root))
 
     target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary = target.with_suffix(target.suffix + f".{os.getpid()}.tmp")

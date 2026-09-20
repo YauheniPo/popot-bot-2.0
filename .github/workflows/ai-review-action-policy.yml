@@ -45,13 +45,22 @@ jobs:
               with urllib.request.urlopen(request, timeout=20) as response:
                   return json.load(response)
 
+          def invalid_policy(detail):
+              print(
+                  "::error title=CI Action policy mirror is unavailable::"
+                  "ACTIONS_ALLOWED_PATTERNS must be a JSON array of strings; "
+                  f"{detail}."
+              )
+              sys.exit(1)
+
           try:
               allowed = json.loads(os.environ["ACTIONS_ALLOWED_PATTERNS"])
-          except (KeyError, json.JSONDecodeError):
-              allowed = []
+          except KeyError:
+              invalid_policy("variable is missing")
+          except json.JSONDecodeError:
+              invalid_policy("value is not valid JSON")
           if not isinstance(allowed, list) or not all(isinstance(item, str) for item in allowed):
-              print("::error title=CI Action policy mirror is unavailable::ACTIONS_ALLOWED_PATTERNS must contain a JSON array.")
-              sys.exit(1)
+              invalid_policy(f"received type {type(allowed).__name__} (all array items must be strings)")
 
           repository = os.environ["REPOSITORY"]
           tree = api(f"/repos/{repository}/git/trees/{os.environ['HEAD_SHA']}?recursive=1")

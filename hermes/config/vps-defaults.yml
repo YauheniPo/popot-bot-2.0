@@ -39,6 +39,7 @@ vps_deploy:
     searxng: true
     lock_public_ssh: true
     vscode_server: true
+    workspace_ui: true
   # Deliver provider keys (including OLLAMA_API_KEY and optional
   # OPENROUTER_API_KEY) from encrypted Vault.
   # hermes_secret_env owns the entire .env; retain every active secret there.
@@ -47,14 +48,34 @@ vps_deploy:
     managed: true
 
 # Non-secret nested Hermes config.yaml values can be managed here. Repository
-# policy wins over the deprecated hermes_llm_config Vault variable. The main
-# model is deliberately authoritative here, so a /model_global override is
-# reset to this default on the next deploy.
+# policy wins over the deprecated hermes_llm_config Vault variable. With
+# Workspace enabled, ui_owned_sections are initial defaults, not deploy-time
+# resets: both UIs edit the same live config. Exception: model.provider/default
+# are authoritative for agents, delegation, cron defaults and Swarm profiles.
 vps_hermes:
   config:
+    ui_owned_sections:
+      - model
+      - fallback_providers
+      - auxiliary
+      - compression
+      - cron
+      - user_char_limit
+      - memory_char_limit
+      - display
+      - session_reset
     managed_overlay:
+      # Hermes defaults to English. Empty means detect the recording's language;
+      # never change the user's STT provider, model or vocabulary on deploy.
+      stt:
+        language: ""
+      team_workflow:
+        enabled: true
+        max_revision_rounds: 2
+        deadline_seconds: 1800
       model:
-        default: deepseek-v4-pro
+        # Single source: deploy also applies this route to existing profiles.
+        default: deepseek-v4.1-flash
         provider: ollama-cloud
       # Use a separate provider for emergency fallback with NVIDIA_API_KEY.
       fallback_providers:
@@ -70,11 +91,9 @@ vps_hermes:
         compression:
           provider: openrouter
           model: nvidia/nemotron-3-ultra-550b-a55b:free
-      # Keep scheduled jobs independent from interactive model changes.
-      # A per-job provider/model pin still takes precedence.
+      # The runtime derives cron's default route from model above; do not
+      # duplicate it here. Explicit per-job pins still take precedence.
       cron:
-        model_provider: nvidia
-        model: nvidia/nemotron-3-ultra-550b-a55b
         model_drift_guard: true
       # Let Hermes select only providers whose credentials/capabilities are
       # available. Managed Vault keys still enable Brave and Firecrawl through
@@ -151,6 +170,32 @@ vps_external_skills:
     # This exposes the repository's engineering skills, not unrelated domains.
     skills_dir: /opt/hermes-external-skills/mattpocock-skills/skills/engineering
 
+# Companion UI only; shares vps_deploy.identity.hermes_home with the official UI.
+# Secrets: hermes_secret_env.API_SERVER_KEY and HERMES_WORKSPACE_PASSWORD in Vault.
+vps_workspace_ui:
+  revision: c631425d8baa933f8c61d8447040f4ec8b5f571c
+  pnpm_version: "10.28.2"
+  bind_address: 127.0.0.1
+  port: 3002
+  api_port: 8642
+  swarm:
+    enabled: true
+    repository_dir: /home/hermes/workspace/repositories/popot-bot-2.0
+    start_workers: true
+    workers:
+      researcher:
+        role: Researcher
+        description: Исследует код и документацию, собирает источники и составляет проверяемый план. Не изменяет код.
+        instructions: Research code and documentation, cite evidence, and report without changing task files.
+      builder:
+        role: Builder
+        description: Реализует согласованную задачу в отдельном worktree, добавляет тесты и передаёт результат на ревью.
+        instructions: Implement only the assigned scope in your worktree, add tests, and hand the diff to Reviewer. Do not commit or push.
+      reviewer:
+        role: Reviewer
+        description: Независимо проверяет результат, тесты и риски. Возвращает подтверждённые замечания без изменения кода.
+        instructions: Independently inspect the assigned Builder diff, verify regressions and tests, and report actionable findings without editing task files.
+
 vps_tools:
   google_workspace_cli:
     version: "0.22.5"
@@ -175,6 +220,14 @@ vps_runtime:
     # Restarts and other dangerous terminal commands remain available to the
     # agent, but execute only after the owner explicitly approves them.
     approvals.mode: manual
+    # Native Telegram delegation, not separate Workspace/tmux workers.
+    # This caps each batch and the number of async units, NOT a global
+    # host-wide worker count. Instructions prohibit overlapping batches.
+    delegation.max_concurrent_children: 2
+    delegation.max_spawn_depth: 1
+    delegation.max_iterations: 50
+    delegation.child_timeout_seconds: 900
+    delegation.subagent_auto_approve: false
     checkpoints.enabled: true
     updates.pre_update_backup: full
     updates.non_interactive_local_changes: stash
@@ -404,9 +457,13 @@ vps_searxng:
 # untouched across deployments.
 vps_agent_policy:
   response_language_instruction: >-
-    Always think and write your reasoning/thinking trace in Russian, regardless
-    of the language of the user's query. Final answers are written in the
-    language of the user's latest message.
+    Write user-facing replies and explanations in the language of the user's
+    latest message, unless the user explicitly requests another language.
+    For voice messages, use the language of the recording as represented by
+    its transcript. Do not translate or paraphrase a requested transcription
+    unless asked. Preserve names and technical terms; ask about unclear words
+    or consequential ambiguities instead of inventing them.
+    Explain conclusions and relevant evidence concisely.
 
 # Only these application-owned services are restarted by deployment. Network,
 # SSH, Docker, and unrelated host services are intentionally excluded.

@@ -27,6 +27,17 @@ MANAGED_RESTART = (
 
 
 class ConfigurePluginTests(unittest.TestCase):
+    def test_team_workflow_enable_preserves_other_plugins_and_can_be_disabled(self):
+        data = {'team_workflow': {'enabled': True}, 'plugins': {'enabled': ['custom']}}
+        configure_plugin.configure(data, Path('/home/hermes/.hermes'))
+        self.assertIn('team-workflow', data['plugins']['enabled'])
+        self.assertIn('custom', data['plugins']['enabled'])
+        self.assertFalse(configure_plugin.configure(data, Path('/home/hermes/.hermes')))
+        data['team_workflow']['enabled'] = False
+        self.assertTrue(configure_plugin.configure(data, Path('/home/hermes/.hermes')))
+        self.assertNotIn('team-workflow', data['plugins']['enabled'])
+        self.assertIn('custom', data['plugins']['enabled'])
+
     def test_direct_configure_rejects_unsafe_arguments_before_mutating_config(self) -> None:
         for options in (
             {"vscode_project_name": "--help"},

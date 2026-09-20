@@ -157,6 +157,9 @@ backup_existing_installation() {
   KANBAN_AFTER_SNAPSHOT="$HERMES_BACKUP_DIR/pre-deploy-$timestamp-kanban-after.json"
   UPDATE_GUARD_ACTIVE=true
 
+  run_as_hermes python3 "$SCRIPT_DIR/runtime/backup-personal-state.py" mirror \
+    --hermes-home "$HERMES_HOME" --workspace "$HERMES_WORKSPACE"
+
   if [[ -f "$HERMES_WORKSPACE/AGENTS.md" ]]; then
     install -d -o "$HERMES_USER" -g "$HERMES_GROUP" -m 0700 \
       "$HERMES_HOME/operator-state"

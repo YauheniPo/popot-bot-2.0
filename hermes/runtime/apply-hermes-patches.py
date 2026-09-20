@@ -11,7 +11,7 @@ the recorded previous patch matches exactly.
 Covered customizations (not yet upstream):
  * gateway commands: /gw-restart (canonical, with /restart and /gw_restart
    aliases so the Telegram menu entry resolves), /model_global, and /doctor
- * /status shows reasoning effort, visibility, global + topic model
+ * /status shows reasoning, models, and session-scoped background activity
  * busy-session dispatch handles /gw-restart like /restart
  * Telegram command-menu usage ranking, with explicit user priorities pinned
  * /update is CLI-only: chat/gateway surfaces cannot trigger Hermes's own
@@ -410,29 +410,90 @@ _PATCHES: list[tuple[str, str, str, str]] = [
         '''            t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),
         ])
         # Local Hermes: status subagent activity
-        active_delegations = []
+        status_session_key = str(session_key or "")
+        status_session_id = str(session_entry.session_id or "")
+
+        def _status_owned(owner_key, parent_id):
+            # A matching chat must not pull in work from before /new. When
+            # present, both identifiers must agree; never match empty IDs.
+            if owner_key and owner_key != status_session_key:
+                return False
+            if parent_id and parent_id != status_session_id:
+                return False
+            return bool(owner_key or parent_id)
+
+        active_delegations = None
         try:
             from tools.async_delegation import list_async_delegations
 
-            status_session_key = str(session_key or "")
-            status_session_id = str(session_entry.session_id or "")
             active_delegations = [
                 d for d in list_async_delegations()
-                if d.get("status") in ("running", "stalling", "finalizing") and (
-                    (status_session_key and str(d.get("session_key") or "") == status_session_key) or
-                    (status_session_id and str(d.get("parent_session_id") or "") == status_session_id)
+                if d.get("status") in ("running", "stalling", "finalizing") and _status_owned(
+                    str(d.get("session_key") or ""), str(d.get("parent_session_id") or "")
                 )
             ]
         except Exception:
-            active_delegations = []
-        if active_delegations:
-            # The parent turn can finish immediately after delegation. Report
-            # its children as active work rather than a misleading idle state.
-            lines[-1] = t("gateway.status.agent_running", state=t("gateway.status.state_yes"))
-            lines.append(
-                f"**Subagents:** {len(active_delegations)} active — "
-                "results will be delivered to this chat automatically."
-            )
+            pass
+
+        # Local Hermes: status background processes
+        # Query metadata only: never read logs/wait (which consume completion
+        # delivery), print shell commands, or list across chats on a missing key.
+        background_processes = None
+        if status_session_key:
+            try:
+                from tools.process_registry import process_registry
+
+                owned_processes = []
+                for row in process_registry.list_sessions(session_key=status_session_key):
+                    if row.get("status") != "running":
+                        continue
+                    process = process_registry.get(row["session_id"])
+                    if process is None or process.exited:
+                        continue
+                    if not _status_owned(process.session_key, process.parent_session_id):
+                        continue
+                    owned_processes.append(row)
+                background_processes = owned_processes
+            except Exception:
+                pass
+
+        if is_running:
+            work_state = "agent responding"
+        elif agent is _AGENT_PENDING_SENTINEL:
+            work_state = "agent starting"
+        elif active_delegations or background_processes:
+            work_state = "background active (main agent idle)"
+        elif active_delegations is None or background_processes is None:
+            work_state = "unknown (activity data unavailable)"
+        else:
+            work_state = "idle"
+        lines.append(f"**Work:** {work_state}")
+        subagent_state = "unavailable" if active_delegations is None else f"{len(active_delegations)} active"
+        process_state = "unavailable" if background_processes is None else f"{len(background_processes)} running"
+        lines.extend([f"**Subagents:** {subagent_state}", f"**Background processes:** {process_state}"])
+
+        def _status_process_line(row):
+            import re
+
+            # Only registry-generated IDs, elapsed time and a boolean are
+            # user-visible; raw commands/output may contain credentials.
+            process_id = str(row.get("session_id") or "")
+            if not re.fullmatch(r"proc_[a-fA-F0-9]+", process_id):
+                process_id = "process"
+            try:
+                seconds = max(0, int(row["uptime_seconds"]))
+                hours, remainder = divmod(seconds, 3600)
+                minutes, seconds = divmod(remainder, 60)
+                elapsed = f"{hours}h {minutes}m {seconds}s" if hours else f"{minutes}m {seconds}s"
+            except (KeyError, TypeError, ValueError, OverflowError):
+                elapsed = "age unknown"
+            notification = "enabled" if row.get("notify_on_complete") is True else "disabled"
+            return f"• {process_id} — {elapsed}; agent notification on exit: {notification}"
+
+        for row in (background_processes or [])[:5]:
+            lines.append(_status_process_line(row))
+        if background_processes and len(background_processes) > 5:
+            lines.append(f"… {len(background_processes) - 5} more running processes")
         # Local Hermes: status reasoning
         reasoning_cfg = getattr(self, "_reasoning_config", None)
         if isinstance(reasoning_cfg, dict) and reasoning_cfg.get("enabled") is False:

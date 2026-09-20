@@ -14,6 +14,20 @@ HERMES_FULL_BACKUP_KEEP="${HERMES_FULL_BACKUP_KEEP:-5}"
 # from the weekly scheduled full-backup retention above.
 HERMES_DEPLOYMENT_BACKUP_KEEP="${HERMES_DEPLOYMENT_BACKUP_KEEP:-10}"
 HERMES_BACKUP_PRUNER="${HERMES_BACKUP_PRUNER:-$(dirname "${BASH_SOURCE[0]}")/prune-backups.py}"
+PERSONAL_BACKUP_HELPER="$(dirname "${BASH_SOURCE[0]}")/backup-personal-state.py"
+HERMES_PYTHON="${HERMES_HOME}/hermes-agent/venv/bin/python"
+
+run_backup_command() {
+    if [[ "${EUID}" -eq 0 && -n "${HERMES_RUN_AS_USER}" ]]; then
+        /usr/sbin/runuser --user "${HERMES_RUN_AS_USER}" -- env -i \
+            HOME="${HERMES_USER_HOME}" HERMES_HOME="${HERMES_HOME}" \
+            LANG="${LANG:-C.UTF-8}" LOGNAME="${HERMES_RUN_AS_USER}" \
+            PATH="${HERMES_USER_HOME}/.local/bin:${HERMES_HOME}/node/bin:/usr/local/bin:/usr/bin:/bin" \
+            USER="${HERMES_RUN_AS_USER}" "$@"
+    else
+        "$@"
+    fi
+}
 
 if [[ ! "${HERMES_BACKUP_RETENTION_DAYS}" =~ ^[1-9][0-9]*$ ]] ||
     [[ ! "${HERMES_FULL_BACKUP_KEEP}" =~ ^[1-9][0-9]*$ ]] ||
@@ -47,6 +61,9 @@ chmod 700 "${HERMES_BACKUP_DIR}" "${HERMES_HOME}/ops"
 exec 9>"${HERMES_HOME}/ops/backup.lock"
 flock -n 9 || exit 0
 
+run_backup_command "${HERMES_PYTHON}" "${PERSONAL_BACKUP_HELPER}" mirror \
+    --hermes-home "${HERMES_HOME}" --workspace "${HERMES_WORKSPACE}"
+
 # workspace/AGENTS.md contains the operator's personal agent instructions but
 # lives outside HERMES_HOME. Mirror it into the full-backup tree before every
 # scheduled run so weekly archives can restore it on a replacement VPS.
@@ -77,27 +94,18 @@ if [[ "$(date -u +%u)" == "${HERMES_FULL_BACKUP_DAY}" ]] ||
     ! find "${HERMES_BACKUP_DIR}" -maxdepth 1 -type f -name 'scheduled-full-*.zip' ! -name '*.partial.zip' -print -quit | grep -q .; then
     backup_mode="full"
 fi
-declare -a backup_args=(backup)
 if [[ "${backup_mode}" == "quick" ]]; then
-    backup_args+=(--quick --label scheduled)
+    run_backup_command "${HERMES_PYTHON}" "${PERSONAL_BACKUP_HELPER}" quick \
+        --hermes-home "${HERMES_HOME}"
 else
     backup_file="${HERMES_BACKUP_DIR}/scheduled-full-${timestamp}.zip"
     temporary_file="${backup_file%.zip}.partial.zip"
     trap 'rm -f -- "${temporary_file}"' EXIT
-    backup_args+=(--output "${temporary_file}")
-fi
-
-if [[ "${EUID}" -eq 0 && -n "${HERMES_RUN_AS_USER}" ]]; then
-    /usr/sbin/runuser --user "${HERMES_RUN_AS_USER}" -- env -i \
-        HOME="${HERMES_USER_HOME}" \
-        HERMES_HOME="${HERMES_HOME}" \
-        LANG="${LANG:-C.UTF-8}" \
-        LOGNAME="${HERMES_RUN_AS_USER}" \
-        PATH="${HERMES_USER_HOME}/.local/bin:${HERMES_HOME}/node/bin:/usr/local/bin:/usr/bin:/bin" \
-        USER="${HERMES_RUN_AS_USER}" \
-        "${HERMES_BIN}" "${backup_args[@]}"
-else
-    "${HERMES_BIN}" "${backup_args[@]}"
+    run_backup_command "${HERMES_PYTHON}" "${PERSONAL_BACKUP_HELPER}" inventory \
+        --hermes-home "${HERMES_HOME}"
+    run_backup_command "${HERMES_BIN}" backup --output "${temporary_file}"
+    run_backup_command "${HERMES_PYTHON}" "${PERSONAL_BACKUP_HELPER}" verify-full \
+        --hermes-home "${HERMES_HOME}" --archive "${temporary_file}"
 fi
 
 # Hermes --quick creates a consistent state snapshot in state-snapshots rather

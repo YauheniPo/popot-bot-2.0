@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import importlib.util
+import json
 import math
 import os
 import sqlite3
@@ -49,6 +51,9 @@ class ExportMetricsTests(unittest.TestCase):
         self.assertEqual(metrics.metric("sample", 2, {"z": 'a"b\nc\\d', "a": "first"}),
                          'sample{a="first",z="a\\"b\\nc\\\\d"} 2')
         self.assertEqual(metrics.label(None), "unknown")
+
+    def test_long_labels_do_not_cut_an_escape_sequence_in_half(self):
+        self.assertEqual(metrics.label("a" * 179 + '"tail'), "a" * 179 + '\\"')
 
     def test_gateway_explicit_states_do_not_run_systemctl(self) -> None:
         with mock.patch.object(metrics.subprocess, "run") as run:
@@ -163,8 +168,8 @@ class ExportMetricsTests(unittest.TestCase):
         query_rows = [
             [("provider-a", "model-a", "ok", 2, 10, 5, 1, 15, 0.25, 20)],
             [("terminal", "ok", 2, 10, 20)], [("status", 2)],
-            [("model-a", "telegram", 1, 0, 0, 2), ("model-a", "telegram", 0, 0, 1, 1),
-             ("model-a", "telegram", 0, 1, 0, 1)], [("allow", 1)],
+            [("model-a", "telegram", "completed", 2), ("model-a", "telegram", "interrupted", 1),
+             ("model-a", "telegram", "failed", 1)], [("allow", 1)],
         ]
         disk = SimpleNamespace(total=100, free=25)
         filesystem = SimpleNamespace(f_files=100, f_ffree=75)
@@ -196,6 +201,115 @@ class ExportMetricsTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HERMES_HOME": " "}), \
                 mock.patch.object(Path, "home", return_value=self.root):
             self.assertEqual(metrics.home(), self.root / ".hermes")
+
+    def profile_db(self, name, messages):
+        root = self.root if name == 'default' else self.root / 'profiles' / name
+        root.mkdir(parents=True, exist_ok=True)
+        (root / 'config.yaml').write_text('{}')
+        with closing(sqlite3.connect(root / 'state.db')) as connection, connection:
+            connection.execute('CREATE TABLE messages (role TEXT, timestamp REAL, _compressed_summary INTEGER DEFAULT 0)')
+            connection.executemany('INSERT INTO messages VALUES (?, ?, ?)', messages)
+        return root
+
+    def test_profile_requests_count_input_records_and_time_windows(self):
+        now = 1800000000
+        self.profile_db('default', [('user', now - 30, 0)])
+        self.profile_db('builder', [('user', now - 10, 0), ('user', now - 4000, 0),
+                                   ('user', now - 90000, 0), ('user', now - 700000, 0),
+                                   ('assistant', now - 1, 0), ('tool', now - 1, 0),
+                                   ('user', now - 1, 1), ('user', now + 100, 0)])
+        self.profile_db('reviewer', [])
+        lines = metrics.profile_request_metrics(self.root, now)
+        for window, count in [('1h', 1), ('24h', 2), ('7d', 3), ('retained', 4)]:
+            self.assertIn(f'hermes_profile_user_requests{{profile="builder",window="{window}"}} {count}', lines)
+        self.assertIn(f'hermes_profile_last_request_timestamp_seconds{{profile="builder"}} {now - 10}.0', lines)
+        self.assertIn('hermes_profile_user_requests{profile="reviewer",window="retained"} 0', lines)
+        self.assertIn('hermes_profile_user_requests{profile="default",window="retained"} 1', lines)
+        self.assertEqual(lines, metrics.profile_request_metrics(self.root, now))
+
+    def test_profile_collection_failures_are_not_zero_usage_and_symlinks_are_not_followed(self):
+        good = self.profile_db('builder', [])
+        broken = self.root / 'profiles' / 'broken'
+        broken.mkdir()
+        (broken / 'config.yaml').write_text('{}')
+        (broken / 'state.db').write_text('corrupt')
+        (self.root / 'profiles' / 'alias').symlink_to(good, target_is_directory=True)
+        lines = metrics.profile_request_metrics(self.root, 1800000000)
+        self.assertIn('hermes_profile_history_readable{profile="broken"} 0', lines)
+        self.assertFalse(any('user_requests{profile="broken"' in line for line in lines))
+        self.assertFalse(any('profile="alias"' in line for line in lines))
+        self.assertIn('hermes_profile_history_readable{profile="builder"} 1', lines)
+        self.assertFalse((self.root / 'state.db').exists())
+
+    def test_dashboard_exposes_profile_usage_without_counter_rates(self):
+        dashboard = MODULE_PATH.parents[1] / 'observability/grafana/provisioning/dashboards/hermes/hermes-overview.json'
+        panels = json.loads(dashboard.read_text())['panels']
+        expressions = [target['expr'] for panel in panels for target in panel.get('targets', [])]
+        self.assertTrue(any('hermes_profile_user_requests' in expr for expr in expressions))
+        self.assertTrue(any('hermes_profile_last_request_timestamp_seconds' in expr for expr in expressions))
+        self.assertFalse(any('rate(hermes_profile_user_requests' in expr for expr in expressions))
+
+    def test_profile_requests_read_legacy_schema_and_committed_wal_without_mutation(self):
+        now = 1800000000
+        database = self.root / 'state.db'
+        with closing(sqlite3.connect(database)) as connection:
+            connection.execute('PRAGMA journal_mode=WAL')
+            connection.execute('CREATE TABLE messages (role, timestamp)')
+            connection.execute('INSERT INTO messages VALUES (?, ?)', ('user', now - 10))
+            connection.commit()
+            snapshot = {p.name: p.read_bytes() for p in (database, Path(str(database) + '-wal'))}
+            lines = metrics.profile_request_metrics(self.root, now)
+            self.assertIn('hermes_profile_user_requests{profile="default",window="1h"} 1', lines)
+            self.assertEqual(snapshot, {p.name: p.read_bytes() for p in (database, Path(str(database) + '-wal'))})
+            connection.execute('DELETE FROM messages')
+            connection.commit()
+            lines = metrics.profile_request_metrics(self.root, now)
+            self.assertIn('hermes_profile_user_requests{profile="default",window="retained"} 0', lines)
+
+    def test_profile_request_failed_query_closes_connection(self):
+        database = self.root / 'state.db'
+        database.touch()
+        connection = mock.Mock()
+        connection.execute.side_effect = sqlite3.OperationalError('interrupted')
+        with mock.patch.object(metrics.sqlite3, 'connect', return_value=connection) as connect:
+            self.assertIn('hermes_profile_history_readable{profile="default"} 0',
+                          metrics.profile_request_metrics(self.root, 1800000000))
+        self.assertIn('?mode=ro', connect.call_args.args[0])
+        self.assertEqual(connect.call_args.kwargs['timeout'], 1)
+        connection.set_progress_handler.assert_called_once()
+        connection.close.assert_called_once()
+
+    def test_real_database_aggregates_unique_rendered_label_sets(self) -> None:
+        database = self.root / "ops" / "metrics.db"
+        database.parent.mkdir()
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.executescript("""
+                CREATE TABLE sessions(model,platform,completed,failed,interrupted,event);
+                CREATE TABLE commands(command);
+                CREATE TABLE approvals(choice,event);
+                CREATE TABLE tool_calls(tool_name,status,duration_ms);
+                CREATE TABLE api_calls(provider,model,status,input_tokens,output_tokens,
+                    cache_read_tokens,total_tokens,cost_usd,duration_ms);
+            """)
+            for name in (None, "", "unknown"):
+                for completed, failed, interrupted in ((1,0,0), (1,0,1), (0,0,1), (0,1,1), (0,1,0), (0,0,0)):
+                    connection.execute("INSERT INTO sessions VALUES(?,?,?,?,?,'end')",
+                                       (name, name, completed, failed, interrupted))
+                connection.execute("INSERT INTO commands VALUES(?)", (name,))
+                connection.execute("INSERT INTO approvals VALUES(?,'response')", (name,))
+                connection.execute("INSERT INTO tool_calls VALUES(?,?,?)", (name, name, 10))
+                connection.execute("INSERT INTO api_calls VALUES(?,?,?,1,2,3,6,0.5,10)", (name,name,name))
+        with mock.patch.object(metrics, "gateway_process_metrics", return_value=(0, 0)):
+            self.assertEqual(metrics.main(), 0)
+        output = (self.root / "output" / "hermes.prom").read_text()
+        samples = [line for line in output.splitlines() if not line.startswith("#")]
+        keys = [line.rsplit(" ", 1)[0] for line in samples]
+        self.assertEqual(len(keys), len(set(keys)), "Duplicate Prometheus label sets")
+        for outcome in ("completed", "interrupted", "failed"):
+            self.assertIn(f'hermes_turns_total{{model="unknown",outcome="{outcome}",platform="unknown"}} 6\n', output)
+        self.assertIn('hermes_commands_total{command="unknown"} 3\n', output)
+        self.assertIn('hermes_tool_duration_ms_average{status="unknown",tool="unknown"} 10.0\n', output)
+        self.assertIn('hermes_tokens_total{model="unknown",provider="unknown",status="unknown"} 18\n', output)
 
     def test_newest_helpers_return_zero_for_missing_directory(self) -> None:
         missing = self.root / "does-not-exist"

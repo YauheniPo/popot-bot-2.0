@@ -1,4 +1,25 @@
 ---
+- name: Create the managed native team workflow plugin directory
+  ansible.builtin.file:
+    path: "{{ hermes_home }}/plugins/team-workflow"
+    state: directory
+    owner: "{{ hermes_user }}"
+    group: "{{ hermes_user }}"
+    mode: "0700"
+
+- name: Install the managed native team workflow plugin
+  ansible.builtin.copy:
+    src: "../ops/plugin/team-workflow/{{ item }}"
+    dest: "{{ hermes_home }}/plugins/team-workflow/{{ item }}"
+    owner: "{{ hermes_user }}"
+    group: "{{ hermes_user }}"
+    mode: "0600"
+  loop:
+    - __init__.py
+    - engine.py
+    - plugin.yaml
+  notify: restart Hermes gateway
+
 - name: Materialize encrypted API keys and tokens for Hermes
   ansible.builtin.template:
     src: templates/hermes.env.j2
@@ -9,6 +30,7 @@
   when: hermes_manage_secret_env | bool
   no_log: true
   diff: false
+  register: hermes_shared_environment
   notify: restart Hermes gateway
 
 - name: Install the managed development and VPS diagnostic CLI bundle
@@ -159,6 +181,33 @@
   when: hermes_managed_config | length > 0
   no_log: true
 
+- name: Repair known Workspace MCP presets when explicitly requested (GitHub requires MCP_GITHUB_API_KEY in Vault)
+  ansible.builtin.set_fact:
+    hermes_existing_config: "{{ hermes_existing_config | hermes_repair_workspace_mcp(hermes_secret_env) }}"
+  when:
+    - vps_deploy.features.workspace_ui | default(false) | bool
+    - hermes_repair_workspace_mcp_presets | default(false) | bool
+  no_log: true
+
+- name: Verify uvx is available before applying the requested Fetch repair
+  ansible.builtin.command:
+    argv: [uvx, --version]
+  become_user: "{{ hermes_user }}"
+  environment:
+    PATH: "{{ hermes_home }}/bin:{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/bin:/usr/bin:/bin"
+  when:
+    - vps_deploy.features.workspace_ui | default(false) | bool
+    - hermes_repair_workspace_mcp_presets | default(false) | bool
+    - hermes_existing_config.get('mcp_servers', {}).get('fetch', {}).get('command') == 'uvx'
+  changed_when: false
+  timeout: 15
+
+- name: Default MCP package caches to the writable Hermes home
+  ansible.builtin.set_fact:
+    hermes_existing_config: "{{ hermes_existing_config | hermes_mcp_stdio_runtime(hermes_home) }}"
+  when: vps_deploy.features.workspace_ui | default(false) | bool
+  no_log: true
+
 - name: Apply the managed Hermes model and voice configuration
   ansible.builtin.copy:
     content: >-
@@ -172,6 +221,34 @@
            ),
            recursive=true,
            list_merge='replace'
+         ) |
+         combine(
+           (hermes_existing_config | dict2items |
+            selectattr('key', 'in', vps_hermes.config.ui_owned_sections | default([])) |
+            list | items2dict)
+           if (vps_deploy.features.workspace_ui | default(false) | bool) else {},
+           recursive=true, list_merge='replace'
+         ) |
+         combine(
+           {'platforms': {'api_server': {'enabled': true}}}
+           if (vps_deploy.features.workspace_ui | default(false) | bool) else {},
+           recursive=true
+         ) |
+         combine(
+           {
+             'model': {
+               'provider': hermes_managed_config.model.provider,
+               'default': hermes_managed_config.model.default
+             },
+             'delegation': {
+               'provider': hermes_managed_config.model.provider,
+               'model': hermes_managed_config.model.default
+             },
+             'cron': {
+               'model_provider': hermes_managed_config.model.provider,
+               'model': hermes_managed_config.model.default
+             }
+           }, recursive=true
          ) |
          to_nice_yaml(indent=2, sort_keys=false) }}
     dest: "{{ hermes_home }}/config.yaml"

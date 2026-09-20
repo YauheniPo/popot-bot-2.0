@@ -2,11 +2,77 @@
 - name: Provision or restore a Hermes VPS
   hosts: hermes_vps
   become: true
-  gather_facts: true
+  gather_facts: false
   vars_files:
     - ../config/vps-defaults.yml
 
   pre_tasks:
+    - name: Check Tailscale SSH authentication before gathering facts
+      hermes_ssh_preflight:
+        attempts: 2
+        attempt_timeout: 60
+      become: false
+      tags: always
+
+    - name: Gather facts after SSH authentication
+      ansible.builtin.setup:
+        gather_timeout: 30
+      timeout: 60
+      tags: always
+
+    - name: Validate Workspace companion prerequisites before deployment
+      ansible.builtin.assert:
+        that:
+          - hermes_enable_ops | bool
+          - hermes_manage_secret_env | bool
+          - vps_deploy.features.tailscale | bool
+          - vps_tailscale.serve.enabled | bool
+          - vps_workspace_ui.revision is match('^[0-9a-f]{40}$')
+          - vps_workspace_ui.pnpm_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+          - vps_workspace_ui.bind_address == '127.0.0.1'
+          - vps_hermes.config.ui_owned_sections is sequence
+          - vps_hermes.config.ui_owned_sections is not string
+          - >-
+            vps_hermes.config.ui_owned_sections |
+            difference(['model', 'fallback_providers', 'auxiliary', 'compression',
+                        'cron', 'user_char_limit', 'memory_char_limit', 'display',
+                        'session_reset']) | length == 0
+          - vps_workspace_ui.port | int > 1024
+          - vps_workspace_ui.port | int < 65536
+          - vps_workspace_ui.api_port | int > 1024
+          - vps_workspace_ui.api_port | int < 65536
+          - >-
+            ([vps_workspace_ui.port | int, vps_workspace_ui.api_port | int,
+              vps_observability.dashboard.port | int, vps_observability.grafana.port | int,
+              vps_observability.prometheus.port | int, vps_observability.node_exporter.port | int,
+              vps_vscode.host_port | int, vps_searxng.host_port | int] | unique | length) == 8
+          - vps_workspace_ui.port | int not in (vps_tailscale.serve.services | map(attribute='port') | map('int') | list)
+        fail_msg: >-
+          Workspace requires private Tailscale HTTPS, observability/dashboard,
+          managed Vault env and distinct ports. Add API_SERVER_KEY and
+          HERMES_WORKSPACE_PASSWORD (4+ characters each) to hermes_secret_env
+          in encrypted vault.yml, or disable vps_deploy.features.workspace_ui.
+      when: vps_deploy.features.workspace_ui | default(false) | bool
+
+    - name: Check shared Workspace credentials without exposing values
+      ansible.builtin.set_fact:
+        hermes_workspace_credentials_valid: >-
+          {{ (hermes_secret_env.API_SERVER_KEY | default('') is string) and
+             (hermes_secret_env.HERMES_WORKSPACE_PASSWORD | default('') is string) and
+             ((hermes_secret_env.API_SERVER_KEY | default('') | length) >= 4) and
+             ((hermes_secret_env.HERMES_WORKSPACE_PASSWORD | default('') | length) >= 4) }}
+      when: vps_deploy.features.workspace_ui | default(false) | bool
+      no_log: true
+
+    - name: Require Vault credentials for the Workspace companion
+      ansible.builtin.assert:
+        that: hermes_workspace_credentials_valid | bool
+        fail_msg: >-
+          Add independent API_SERVER_KEY and HERMES_WORKSPACE_PASSWORD secrets
+          (at least 4 characters each) to hermes_secret_env in encrypted
+          vault.yml, or disable vps_deploy.features.workspace_ui.
+      when: vps_deploy.features.workspace_ui | default(false) | bool
+
     - name: Validate supported operating system
       ansible.builtin.assert:
         that:
@@ -220,6 +286,14 @@
       when: hermes_existing_passwd.rc == 0
 
   handlers:
+    - name: restart Hermes Workspace
+      ansible.builtin.systemd_service:
+        name: hermes-workspace.service
+        enabled: true
+        daemon_reload: true
+        state: restarted
+      when: hermes_workspace_service_available | default(false) | bool
+
     - name: restart Hermes gateway
       ansible.builtin.systemd_service:
         name: "{{ hermes_gateway_service }}"
@@ -249,6 +323,18 @@
         - hermes_gateway_enabled | bool
 
   tasks:
+    - name: Inspect installed Workspace companion service
+      ansible.builtin.service_facts:
+
+    - name: Stop and disable the companion when Workspace is disabled
+      ansible.builtin.systemd_service:
+        name: hermes-workspace.service
+        state: stopped
+        enabled: false
+      when:
+        - not (vps_deploy.features.workspace_ui | default(false) | bool)
+        - "'hermes-workspace.service' in ansible_facts.services"
+
     - name: Create the remote Hermes infrastructure bundle directory
       ansible.builtin.file:
         path: "{{ hermes_bundle_dir }}"
@@ -367,6 +453,21 @@
         - hermes_binary.stat.exists
         - hermes_live_workspace_agents.stat.exists
 
+    - name: Snapshot all workspace instructions before deployment backup
+      become: true
+      become_user: "{{ hermes_user }}"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ hermes_bundle_dir }}/runtime/backup-personal-state.py"
+          - mirror
+          - --hermes-home
+          - "{{ hermes_home }}"
+          - --workspace
+          - "{{ hermes_workspace }}"
+      changed_when: false
+      when: hermes_binary.stat.exists
+
     - name: Read the installed Hermes commit
       ansible.builtin.command:
         argv:
@@ -422,567 +523,655 @@
           match the pinned commit. Run with -e hermes_deploy_mode=full instead.
       when: hermes_deploy_mode != 'full'
 
-    - name: Prepare the mandatory config-only deployment backup location
-      ansible.builtin.file:
-        path: "{{ hermes_backup_dir }}"
-        state: directory
-        owner: "{{ hermes_user }}"
-        group: "{{ hermes_user }}"
-        mode: "0700"
-      when:
-        - hermes_binary.stat.exists
-        - not (hermes_source_update_required | bool)
-        - hermes_deploy_mode == 'full'
-
-    - name: Define the mandatory config-only deployment backup paths
-      ansible.builtin.set_fact:
-        hermes_config_backup_archive: >-
-          {{ hermes_backup_dir }}/pre-config-deploy-{{ ansible_date_time.iso8601_basic_short }}.zip
-        hermes_config_backup_snapshot: >-
-          {{ hermes_backup_dir }}/pre-config-deploy-{{ ansible_date_time.iso8601_basic_short }}-state.json
-      when:
-        - hermes_binary.stat.exists
-        - not (hermes_source_update_required | bool)
-        - hermes_deploy_mode == 'full'
-
-    - name: Check whether the gateway is active before a config-only deployment
-      ansible.builtin.command:
-        argv: [systemctl, is-active, --quiet, "{{ hermes_gateway_service }}"]
-      register: hermes_config_backup_gateway
-      changed_when: false
-      failed_when: false
-      when:
-        - hermes_binary.stat.exists
-        - not (hermes_source_update_required | bool)
-        - hermes_deploy_mode == 'full'
-
-    - name: Create and verify the mandatory config-only deployment backup
+    - name: Deploy Hermes with bounded maintenance coverage
       block:
-        - name: Stop the active gateway for a consistent config-only backup
-          ansible.builtin.systemd_service:
-            name: "{{ hermes_gateway_service }}"
-            state: stopped
-          when: hermes_config_backup_gateway.rc == 0
-
-        - name: Normalize Hermes home ownership before backup
-          # The upstream Hermes installer occasionally leaves some files
-          # (e.g. bundled marketplace skill assets) root-owned, which makes
-          # `hermes backup` (running as hermes_user) skip them and report an
-          # incomplete backup. Force ownership back to hermes_user so the
-          # mandatory backup below can read everything.
+        - name: Prepare maintenance marker directory for an existing Hermes
           ansible.builtin.file:
-            path: "{{ hermes_home }}"
+            path: "{{ hermes_home }}/ops"
             state: directory
             owner: "{{ hermes_user }}"
             group: "{{ hermes_user }}"
-            recurse: true
-            # `follow` defaults to true, and a recursive run then chowns the
-            # target of every symlink it meets — including venv/bin/python,
-            # which points at the system interpreter. Touch the links
-            # themselves only.
-            follow: false
+            mode: "0700"
+          when:
+            - hermes_enable_ops | bool
+            - hermes_binary.stat.exists
 
-        - name: Snapshot Hermes state before a config-only deployment
-          ansible.builtin.command:
-            argv:
-              - python3
-              - "{{ hermes_bundle_dir }}/runtime/verify-update-state.py"
-              - snapshot
-              - --hermes-home
-              - "{{ hermes_home }}"
-              - --output
-              - "{{ hermes_config_backup_snapshot }}"
-          changed_when: true
-
-        - name: Create the mandatory full config-only deployment backup
-          ansible.builtin.command:
-            argv:
-              - "{{ hermes_bin }}"
-              - backup
-              - --output
-              - "{{ hermes_config_backup_archive }}"
-          become_user: "{{ hermes_user }}"
-          environment:
-            HOME: "{{ hermes_user_home }}"
-            HERMES_HOME: "{{ hermes_home }}"
-            PATH: "{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/bin:/usr/bin:/bin"
-          register: hermes_config_backup_result
-          changed_when: true
-
-        - name: Inspect the config-only deployment backup archive
-          ansible.builtin.stat:
-            path: "{{ hermes_config_backup_archive }}"
-          register: hermes_config_backup_file
-
-        - name: Show the Hermes backup command output for diagnosis
-          ansible.builtin.debug:
-            msg:
-              stdout: "{{ hermes_config_backup_result.stdout | default('') }}"
-              stderr: "{{ hermes_config_backup_result.stderr | default('') }}"
-
-        - name: Require Hermes to report a clean complete config-only deployment backup
-          ansible.builtin.assert:
-            that:
-              - "hermes_config_backup_result.stderr | default('') | trim == ''"
-              - "'Backup complete:' in hermes_config_backup_result.stdout | default('')"
-              - hermes_config_backup_file.stat.exists
-              - hermes_config_backup_file.stat.size | int > 0
-            fail_msg: Hermes did not create a complete full backup; deployment aborted.
-
-        - name: Verify the config-only deployment backup contents
-          ansible.builtin.command:
-            argv:
-              - python3
-              - "{{ hermes_bundle_dir }}/runtime/verify-update-state.py"
-              - verify-backup
-              - --backup
-              - "{{ hermes_config_backup_archive }}"
-              - --snapshot
-              - "{{ hermes_config_backup_snapshot }}"
-          changed_when: false
-
-        - name: Protect config-only deployment backup artifacts
+        - name: Mark maintenance before stopping an existing gateway
           ansible.builtin.file:
-            path: "{{ item }}"
+            path: "{{ hermes_home }}/ops/gateway-maintenance"
+            state: touch
             owner: "{{ hermes_user }}"
             group: "{{ hermes_user }}"
             mode: "0600"
-          loop:
-            - "{{ hermes_config_backup_archive }}"
-            - "{{ hermes_config_backup_snapshot }}"
-      rescue:
-        - name: Restart the previously active gateway after backup failure
+          when:
+            - hermes_enable_ops | bool
+            - hermes_binary.stat.exists
+
+        - name: Prepare the mandatory config-only deployment backup location
+          ansible.builtin.file:
+            path: "{{ hermes_backup_dir }}"
+            state: directory
+            owner: "{{ hermes_user }}"
+            group: "{{ hermes_user }}"
+            mode: "0700"
+          when:
+            - hermes_binary.stat.exists
+            - not (hermes_source_update_required | bool)
+            - hermes_deploy_mode == 'full'
+
+        - name: Define the mandatory config-only deployment backup paths
+          ansible.builtin.set_fact:
+            hermes_config_backup_archive: >-
+              {{ hermes_backup_dir }}/pre-config-deploy-{{ ansible_date_time.iso8601_basic_short }}.zip
+            hermes_config_backup_snapshot: >-
+              {{ hermes_backup_dir }}/pre-config-deploy-{{ ansible_date_time.iso8601_basic_short }}-state.json
+          when:
+            - hermes_binary.stat.exists
+            - not (hermes_source_update_required | bool)
+            - hermes_deploy_mode == 'full'
+
+        - name: Check whether the gateway is active before a config-only deployment
+          ansible.builtin.command:
+            argv: [systemctl, is-active, --quiet, "{{ hermes_gateway_service }}"]
+          register: hermes_config_backup_gateway
+          changed_when: false
+          failed_when: false
+          when:
+            - hermes_binary.stat.exists
+            - not (hermes_source_update_required | bool)
+            - hermes_deploy_mode == 'full'
+
+        - name: Create and verify the mandatory config-only deployment backup
+          block:
+            - name: Stop the active gateway for a consistent config-only backup
+              ansible.builtin.systemd_service:
+                name: "{{ hermes_gateway_service }}"
+                state: stopped
+              when: hermes_config_backup_gateway.rc == 0
+
+            - name: Normalize Hermes home ownership before backup
+              # The upstream Hermes installer occasionally leaves some files
+              # (e.g. bundled marketplace skill assets) root-owned, which makes
+              # `hermes backup` (running as hermes_user) skip them and report an
+              # incomplete backup. Force ownership back to hermes_user so the
+              # mandatory backup below can read everything.
+              ansible.builtin.file:
+                path: "{{ hermes_home }}"
+                state: directory
+                owner: "{{ hermes_user }}"
+                group: "{{ hermes_user }}"
+                recurse: true
+                # `follow` defaults to true, and a recursive run then chowns the
+                # target of every symlink it meets — including venv/bin/python,
+                # which points at the system interpreter. Touch the links
+                # themselves only.
+                follow: false
+
+            - name: Snapshot Hermes state before a config-only deployment
+              ansible.builtin.command:
+                argv:
+                  - python3
+                  - "{{ hermes_bundle_dir }}/runtime/verify-update-state.py"
+                  - snapshot
+                  - --hermes-home
+                  - "{{ hermes_home }}"
+                  - --output
+                  - "{{ hermes_config_backup_snapshot }}"
+              changed_when: true
+
+            - name: Create the mandatory full config-only deployment backup
+              ansible.builtin.command:
+                argv:
+                  - "{{ hermes_bin }}"
+                  - backup
+                  - --output
+                  - "{{ hermes_config_backup_archive }}"
+              become_user: "{{ hermes_user }}"
+              environment:
+                HOME: "{{ hermes_user_home }}"
+                HERMES_HOME: "{{ hermes_home }}"
+                PATH: "{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/bin:/usr/bin:/bin"
+              register: hermes_config_backup_result
+              changed_when: true
+
+            - name: Inspect the config-only deployment backup archive
+              ansible.builtin.stat:
+                path: "{{ hermes_config_backup_archive }}"
+              register: hermes_config_backup_file
+
+            - name: Show the Hermes backup command output for diagnosis
+              ansible.builtin.debug:
+                msg:
+                  stdout: "{{ hermes_config_backup_result.stdout | default('') }}"
+                  stderr: "{{ hermes_config_backup_result.stderr | default('') }}"
+
+            - name: Require Hermes to report a clean complete config-only deployment backup
+              ansible.builtin.assert:
+                that:
+                  - "hermes_config_backup_result.stderr | default('') | trim == ''"
+                  - "'Backup complete:' in hermes_config_backup_result.stdout | default('')"
+                  - hermes_config_backup_file.stat.exists
+                  - hermes_config_backup_file.stat.size | int > 0
+                fail_msg: Hermes did not create a complete full backup; deployment aborted.
+
+            - name: Verify the config-only deployment backup contents
+              ansible.builtin.command:
+                argv:
+                  - python3
+                  - "{{ hermes_bundle_dir }}/runtime/verify-update-state.py"
+                  - verify-backup
+                  - --backup
+                  - "{{ hermes_config_backup_archive }}"
+                  - --snapshot
+                  - "{{ hermes_config_backup_snapshot }}"
+              changed_when: false
+
+            - name: Protect config-only deployment backup artifacts
+              ansible.builtin.file:
+                path: "{{ item }}"
+                owner: "{{ hermes_user }}"
+                group: "{{ hermes_user }}"
+                mode: "0600"
+              loop:
+                - "{{ hermes_config_backup_archive }}"
+                - "{{ hermes_config_backup_snapshot }}"
+          rescue:
+            - name: Restart the previously active gateway after backup failure
+              ansible.builtin.systemd_service:
+                name: "{{ hermes_gateway_service }}"
+                state: started
+              failed_when: false
+              when: hermes_config_backup_gateway.rc == 0
+
+            - name: Abort a config-only deployment without a verified backup
+              ansible.builtin.fail:
+                msg: Mandatory config-only deployment backup failed; no managed configuration was changed.
+          when:
+            - hermes_binary.stat.exists
+            - not (hermes_source_update_required | bool)
+            - hermes_deploy_mode == 'full'
+
+        - name: Install or update Hermes to the pinned commit
+          ansible.builtin.command:
+            argv: >-
+              {{
+                [
+                  hermes_bundle_dir ~ '/deploy-hermes.sh',
+                  '--user', hermes_user,
+                  '--user-home', hermes_user_home,
+                  '--hermes-home', hermes_home,
+                  '--workspace', hermes_workspace,
+                  '--backup-dir', hermes_backup_dir,
+                  '--branch', hermes_branch,
+                  '--expected-version', hermes_version,
+                  '--release', hermes_release,
+                  '--commit', hermes_commit,
+                  '--installer-sha256', hermes_installer_sha256,
+                  '--skip-setup',
+                  '--skip-mcp',
+                  '--no-gateway',
+                  '--without-ops',
+                  '--without-tailscale'
+                ] +
+                (
+                  ['--with-browser']
+                  if (vps_deploy.features.browser_automation | bool)
+                  else ['--without-browser']
+                ) +
+                (
+                  ['--with-dev-cli']
+                  if (vps_deploy.features.development_clis | bool)
+                  else ['--without-dev-cli']
+                ) +
+                (
+                  ['--with-google-cli']
+                  if (vps_deploy.features.google_workspace_cli | bool)
+                  else ['--without-google-cli']
+                ) +
+                ([] if (hermes_host_admin_enabled | bool) else ['--without-host-admin'])
+              }}
+          when:
+            - hermes_source_update_required | bool
+            - hermes_deploy_mode == 'full'
+
+        - name: Configure private networking and firewall
+          ansible.builtin.import_tasks: tasks/network.yml
+          when: hermes_deploy_mode != 'runtime-only'
+
+        - name: Configure private Tailscale web services
+          ansible.builtin.import_tasks: tasks/tailscale-serve.yml
+          when: hermes_deploy_mode != 'runtime-only'
+
+        - name: Stop the gateway before restoring a backup
           ansible.builtin.systemd_service:
             name: "{{ hermes_gateway_service }}"
-            state: started
+            state: stopped
           failed_when: false
-          when: hermes_config_backup_gateway.rc == 0
+          when: hermes_backup_archive | length > 0
 
-        - name: Abort a config-only deployment without a verified backup
-          ansible.builtin.fail:
-            msg: Mandatory config-only deployment backup failed; no managed configuration was changed.
-      when:
-        - hermes_binary.stat.exists
-        - not (hermes_source_update_required | bool)
-        - hermes_deploy_mode == 'full'
+        - name: Restore Hermes state from the encrypted-at-rest backup archive
+          block:
+            - name: Copy the encrypted-at-rest Hermes restore archive temporarily
+              ansible.builtin.copy:
+                src: "{{ hermes_backup_archive }}"
+                dest: /var/tmp/hermes-restore.zip
+                owner: "{{ hermes_user }}"
+                mode: "0600"
+              no_log: true
 
-    - name: Install or update Hermes to the pinned commit
-      ansible.builtin.command:
-        argv: >-
-          {{
-            [
-              hermes_bundle_dir ~ '/deploy-hermes.sh',
-              '--user', hermes_user,
-              '--user-home', hermes_user_home,
-              '--hermes-home', hermes_home,
-              '--workspace', hermes_workspace,
-              '--backup-dir', hermes_backup_dir,
-              '--branch', hermes_branch,
-              '--expected-version', hermes_version,
-              '--release', hermes_release,
-              '--commit', hermes_commit,
-              '--installer-sha256', hermes_installer_sha256,
-              '--skip-setup',
-              '--skip-mcp',
-              '--no-gateway',
-              '--without-ops',
-              '--without-tailscale'
-            ] +
-            (
-              ['--with-browser']
-              if (vps_deploy.features.browser_automation | bool)
-              else ['--without-browser']
-            ) +
-            (
-              ['--with-dev-cli']
-              if (vps_deploy.features.development_clis | bool)
-              else ['--without-dev-cli']
-            ) +
-            (
-              ['--with-google-cli']
-              if (vps_deploy.features.google_workspace_cli | bool)
-              else ['--without-google-cli']
-            ) +
-            ([] if (hermes_host_admin_enabled | bool) else ['--without-host-admin'])
-          }}
-      when:
-        - hermes_source_update_required | bool
-        - hermes_deploy_mode == 'full'
+            - name: Restore Hermes state, credentials, sessions, skills, and profiles
+              ansible.builtin.command:
+                argv:
+                  - runuser
+                  - --user
+                  - "{{ hermes_user }}"
+                  - --
+                  - env
+                  - "HOME={{ hermes_user_home }}"
+                  - "HERMES_HOME={{ hermes_home }}"
+                  - "LANG=C.UTF-8"
+                  - "LOGNAME={{ hermes_user }}"
+                  - "PATH={{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/bin:/usr/bin:/bin"
+                  - "USER={{ hermes_user }}"
+                  - "{{ hermes_bin }}"
+                  - import
+                  - /var/tmp/hermes-restore.zip
+                  - --force
+              no_log: true
 
-    - name: Configure private networking and firewall
-      ansible.builtin.import_tasks: tasks/network.yml
-      when: hermes_deploy_mode != 'runtime-only'
+            - name: Restore additional workspace instructions from the imported backup
+              become: true
+              become_user: "{{ hermes_user }}"
+              ansible.builtin.command:
+                argv:
+                  - python3
+                  - "{{ hermes_bundle_dir }}/runtime/backup-personal-state.py"
+                  - restore
+                  - --hermes-home
+                  - "{{ hermes_home }}"
+                  - --workspace
+                  - "{{ hermes_workspace }}"
+                  - --archive
+                  - /var/tmp/hermes-restore.zip
+              register: hermes_restored_instructions
+              changed_when: >-
+                'Restored ' in hermes_restored_instructions.stdout and
+                'Restored 0 ' not in hermes_restored_instructions.stdout
+          always:
+            - name: Remove the temporary restore archive
+              ansible.builtin.file:
+                path: /var/tmp/hermes-restore.zip
+                state: absent
+          when: hermes_backup_archive | length > 0
 
-    - name: Configure private Tailscale web services
-      ansible.builtin.import_tasks: tasks/tailscale-serve.yml
-      when: hermes_deploy_mode != 'runtime-only'
+        - name: Validate the encrypted Hermes environment map
+          ansible.builtin.assert:
+            that:
+              - hermes_secret_env is mapping
+              - hermes_secret_env | length > 0
+            fail_msg: >-
+              Managed .env requires a non-empty hermes_secret_env mapping of
+              ENV_NAME to secret string. Refusing to replace .env with an empty map.
+          when: hermes_manage_secret_env | bool
+          no_log: true
 
-    - name: Stop the gateway before restoring a backup
-      ansible.builtin.systemd_service:
-        name: "{{ hermes_gateway_service }}"
-        state: stopped
-      failed_when: false
-      when: hermes_backup_archive | length > 0
+        - name: Validate encrypted Hermes environment entries
+          ansible.builtin.assert:
+            that:
+              - item.key is match('^[A-Z][A-Z0-9_]*$')
+              - item.value is string
+              - item.value | length > 0
+              - item.value != 'replace-inside-ansible-vault'
+            fail_msg: Secret names must be uppercase environment names and values must be non-empty strings.
+          loop: "{{ hermes_secret_env | dict2items }}"
+          when: hermes_manage_secret_env | bool
+          no_log: true
 
-    - name: Restore Hermes state from the encrypted-at-rest backup archive
-      block:
-        - name: Copy the encrypted-at-rest Hermes restore archive temporarily
+        - name: Keep non-secret browser policy out of encrypted Vault
+          ansible.builtin.assert:
+            that:
+              - "'AGENT_BROWSER_ARGS' not in hermes_secret_env"
+              - "'AGENT_BROWSER_CONFIG' not in hermes_secret_env"
+            fail_msg: >-
+              AGENT_BROWSER_ARGS and AGENT_BROWSER_CONFIG are managed from
+              config/vps-defaults.yml and must not be duplicated in Vault.
+          when: hermes_manage_secret_env | bool
+          no_log: true
+
+        - name: Decide whether Telegram credentials enable the gateway
+          ansible.builtin.set_fact:
+            hermes_gateway_enabled: >-
+              {{ (hermes_enable_gateway | bool) or
+                 (vps_deploy.features.workspace_ui | default(false) | bool) or
+                 ((hermes_auto_enable_gateway | bool) and
+                  (hermes_manage_secret_env | bool) and
+                  ((hermes_secret_env.TELEGRAM_BOT_TOKEN | default('', true) | string | length) > 0) and
+                  ((hermes_secret_env.TELEGRAM_ALLOWED_USERS | default('', true) | string | length) > 0)) }}
+          no_log: true
+
+        - name: Validate managed Hermes configuration overlays
+          ansible.builtin.assert:
+            that:
+              - hermes_llm_config is mapping
+              - vps_hermes.config.managed_overlay is mapping
+              - hermes_managed_config is mapping
+            fail_msg: Managed Hermes config overlays must be YAML mappings.
+          no_log: true
+
+        - name: Install sudo for an explicitly administrator-enabled Hermes
+          ansible.builtin.apt:
+            name: sudo
+            state: present
+            update_cache: true
+          when: hermes_host_admin_enabled | bool
+
+        - name: Install Docker Engine for an administrator-enabled Hermes
+          ansible.builtin.apt:
+            name: docker.io
+            state: present
+            update_cache: true
+          when: hermes_host_admin_enabled | bool
+
+        - name: Start Docker Engine
+          ansible.builtin.systemd_service:
+            name: docker.service
+            state: started
+            enabled: true
+          when: hermes_host_admin_enabled | bool
+
+        - name: Grant Hermes Docker administration access
+          ansible.builtin.user:
+            name: "{{ hermes_user }}"
+            groups: docker
+            append: true
+          when: hermes_host_admin_enabled | bool
+
+        - name: Read Hermes group membership when host administration is disabled
+          ansible.builtin.command:
+            argv: [id, -nG, "{{ hermes_user }}"]
+          register: hermes_groups
+          changed_when: false
+          when: not (hermes_host_admin_enabled | bool)
+
+        - name: Remove Hermes Docker administration access when disabled
+          ansible.builtin.command:
+            argv: [gpasswd, --delete, "{{ hermes_user }}", docker]
+          when:
+            - not (hermes_host_admin_enabled | bool)
+            - "'docker' in hermes_groups.stdout.split()"
+          changed_when: true
+
+        - name: Verify Hermes can access Docker Engine
+          ansible.builtin.command:
+            argv: [runuser, --user, "{{ hermes_user }}", --, docker, version]
+          changed_when: false
+          when: hermes_host_admin_enabled | bool
+
+        - name: Authorize Hermes for full VPS administration
           ansible.builtin.copy:
-            src: "{{ hermes_backup_archive }}"
-            dest: /var/tmp/hermes-restore.zip
+            content: |
+              # Explicit owner opt-in: Hermes can administer this host via sudo.
+              {{ hermes_user }} ALL=(ALL:ALL) NOPASSWD: ALL
+            dest: /etc/sudoers.d/hermes-host-admin
+            owner: root
+            group: root
+            mode: "0440"
+            validate: /usr/sbin/visudo -cf %s
+          when: hermes_host_admin_enabled | bool
+
+        - name: Remove Hermes VPS administration authorization when disabled
+          ansible.builtin.file:
+            path: /etc/sudoers.d/hermes-host-admin
+            state: absent
+          when: not (hermes_host_admin_enabled | bool)
+
+        - name: Inspect restorable workspace instructions after Hermes import
+          ansible.builtin.stat:
+            path: "{{ hermes_home }}/operator-state/workspace-AGENTS.md"
+          register: hermes_restorable_workspace_agents
+          when: hermes_backup_archive | length > 0
+
+        - name: Restore workspace instructions from the imported Hermes backup
+          ansible.builtin.copy:
+            src: "{{ hermes_home }}/operator-state/workspace-AGENTS.md"
+            remote_src: true
+            dest: "{{ hermes_workspace }}/AGENTS.md"
             owner: "{{ hermes_user }}"
+            group: "{{ hermes_user }}"
+            mode: "0600"
+          when:
+            - hermes_backup_archive | length > 0
+            - hermes_restorable_workspace_agents.stat.exists
+            - "'No workspace instruction manifest' in hermes_restored_instructions.stdout"
+
+        - name: Reconcile repository-owned host-administration instructions
+          ansible.builtin.command:
+            argv:
+              - python3
+              - "{{ hermes_bundle_dir }}/runtime/manage-workspace-agents.py"
+              - --target
+              - "{{ hermes_workspace }}/AGENTS.md"
+              - --managed-source
+              - "{{ hermes_bundle_dir }}/AGENTS.md"
+              - --backup-copy
+              - "{{ hermes_home }}/operator-state/workspace-AGENTS.md"
+              - --state
+              - "{{ 'present' if (hermes_host_admin_enabled | bool) else 'absent' }}"
+          register: hermes_workspace_agents
+          changed_when: "'updated' in hermes_workspace_agents.stdout"
+
+        - name: Inspect the reconciled Hermes workspace instructions
+          ansible.builtin.stat:
+            path: "{{ hermes_workspace }}/AGENTS.md"
+          register: hermes_workspace_agents_file
+
+        - name: Protect the Hermes workspace instructions
+          ansible.builtin.file:
+            path: "{{ hermes_workspace }}/AGENTS.md"
+            state: file
+            owner: "{{ hermes_user }}"
+            group: "{{ hermes_user }}"
+            mode: "0600"
+          when: hermes_workspace_agents_file.stat.exists
+
+        - name: Protect the restorable operator-state directory
+          ansible.builtin.file:
+            path: "{{ hermes_home }}/operator-state"
+            state: directory
+            owner: "{{ hermes_user }}"
+            group: "{{ hermes_user }}"
+            mode: "0700"
+
+        - name: Publish Vault environment variable names to Hermes without values
+          ansible.builtin.blockinfile:
+            path: "{{ hermes_workspace }}/AGENTS.md"
+            create: true
+            marker: "<!-- {mark} MANAGED VAULT ENVIRONMENT NAMES -->"
+            insertafter: EOF
+            block: |
+              # Vault-managed environment variable names
+
+              These names are available to guide tool selection. Their values are
+              not included in this document and must never be read or requested in
+              chat.
+
+              {% if (hermes_manage_secret_env | bool) and (hermes_secret_env | length > 0) %}
+              {{ hermes_secret_env.keys() | list | sort | join(', ') }}
+              {% else %}
+              No Vault-managed environment variables are configured.
+              {% endif %}
+            owner: "{{ hermes_user }}"
+            group: "{{ hermes_user }}"
             mode: "0600"
           no_log: true
 
-        - name: Restore Hermes state, credentials, sessions, skills, and profiles
-          ansible.builtin.command:
-            argv:
-              - runuser
-              - --user
-              - "{{ hermes_user }}"
-              - --
-              - env
-              - "HOME={{ hermes_user_home }}"
-              - "HERMES_HOME={{ hermes_home }}"
-              - "LANG=C.UTF-8"
-              - "LOGNAME={{ hermes_user }}"
-              - "PATH={{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/bin:/usr/bin:/bin"
-              - "USER={{ hermes_user }}"
-              - "{{ hermes_bin }}"
-              - import
-              - /var/tmp/hermes-restore.zip
-              - --force
+        - name: Publish managed Azure DevOps and SonarQube instructions
+          ansible.builtin.blockinfile:
+            path: "{{ hermes_workspace }}/AGENTS.md"
+            create: true
+            owner: "{{ hermes_user }}"
+            group: "{{ hermes_user }}"
+            mode: "0600"
+            marker: "<!-- {mark} ANSIBLE MANAGED DEVOPS ACCESS -->"
+            insertafter: EOF
+            block: "{{ lookup('ansible.builtin.template', 'templates/devops-access.md.j2') }}"
+
+        - name: Publish managed private SearXNG instructions
+          ansible.builtin.blockinfile:
+            path: "{{ hermes_workspace }}/AGENTS.md"
+            create: true
+            owner: "{{ hermes_user }}"
+            group: "{{ hermes_user }}"
+            mode: "0600"
+            marker: "<!-- {mark} ANSIBLE MANAGED SEARXNG ACCESS -->"
+            insertafter: EOF
+            block: "{{ lookup('ansible.builtin.template', 'templates/searxng-access.md.j2') }}"
+          when: vps_deploy.features.searxng | default(false) | bool
+
+        - name: Publish managed Telegram delegation instructions
+          ansible.builtin.blockinfile:
+            path: "{{ hermes_workspace }}/AGENTS.md"
+            create: true
+            owner: "{{ hermes_user }}"
+            group: "{{ hermes_user }}"
+            mode: "0600"
+            marker: "<!-- {mark} ANSIBLE MANAGED DELEGATION POLICY -->"
+            insertafter: EOF
+            block: "{{ lookup('ansible.builtin.template', 'templates/delegation-policy.md.j2') }}"
+
+        - name: Mirror the final workspace instructions into Hermes backup state
+          ansible.builtin.copy:
+            src: "{{ hermes_workspace }}/AGENTS.md"
+            remote_src: true
+            dest: "{{ hermes_home }}/operator-state/workspace-AGENTS.md"
+            owner: "{{ hermes_user }}"
+            group: "{{ hermes_user }}"
+            mode: "0600"
+
+        - name: Validate Grafana administrator credentials from Vault
+          ansible.builtin.assert:
+            that:
+              - hermes_grafana_admin_user is match('^[A-Za-z0-9._-]{1,64}$')
+              - hermes_grafana_admin_password is string
+              - hermes_grafana_admin_password | length >= 4
+              - hermes_grafana_admin_password != 'replace-inside-ansible-vault'
+            fail_msg: Set a real Grafana password of at least 4 characters in encrypted vault.yml.
+          when: hermes_enable_ops | bool
           no_log: true
+
+        # Re-stat after the install task above, which reinstalls the full venv
+        # (interpreter + Hermes package + dependencies) via deploy-hermes.sh
+        # whenever the earlier stat found it missing or broken. A bare
+        # `python3 -m venv` here would only recreate an empty interpreter with no
+        # Hermes package installed into it, breaking the next task differently.
+        - name: Re-stat the Hermes venv Python interpreter
+          ansible.builtin.stat:
+            path: "{{ hermes_home }}/hermes-agent/venv/bin/python"
+            follow: true
+          register: hermes_venv_python
+
+        - name: Fail loudly if the Hermes venv is still broken after installation
+          ansible.builtin.assert:
+            that: hermes_venv_python.stat.exists
+            fail_msg: >-
+              {{ hermes_home }}/hermes-agent/venv/bin/python is still missing or
+              broken after running deploy-hermes.sh. Investigate the installer
+              output on the VPS manually; Hermes runtime configuration and
+              dependent services cannot proceed.
+          when: hermes_binary.stat.exists
+
+        - name: Complete Hermes deployment and report its result
+          block:
+            # Both UIs write config.yaml directly. Stop them while Ansible updates
+            # shared configuration; this does not start/stop the gateway itself.
+            - name: Pause active configuration UIs during deployment
+              ansible.builtin.systemd_service:
+                name: "{{ item }}"
+                state: stopped
+              loop: [hermes-dashboard.service, hermes-workspace.service]
+              when:
+                - vps_deploy.features.workspace_ui | default(false) | bool
+                - ansible_facts.services.get(item, {}).get('state') == 'running'
+
+            - name: Install and start private SearXNG search before Hermes runtime configuration
+              ansible.builtin.import_tasks: tasks/searxng.yml
+              when:
+                - hermes_host_admin_enabled | bool
+                - vps_deploy.features.searxng | default(false) | bool
+                - hermes_deploy_mode != 'runtime-only'
+
+            - name: Configure Hermes runtime
+              ansible.builtin.import_tasks: tasks/runtime.yml
+              when: hermes_venv_python.stat.exists
+
+            - name: Configure managed GitHub tooling and access
+              ansible.builtin.import_tasks: tasks/github.yml
+              when: hermes_deploy_mode != 'runtime-only'
+
+            - name: Install and reconcile Hermes services
+              ansible.builtin.import_tasks: tasks/services.yml
+
+            - name: Install the companion Workspace on the shared Hermes backend
+              ansible.builtin.import_tasks: tasks/workspace-ui.yml
+              when: vps_deploy.features.workspace_ui | default(false) | bool
+
+            - name: Install and start the code-server container
+              ansible.builtin.import_tasks: tasks/vscode.yml
+              when:
+                - hermes_host_admin_enabled | bool
+                - vps_deploy.features.vscode_server | default(false) | bool
+                - hermes_deploy_mode != 'runtime-only'
+          rescue:
+            - name: Capture the failed Hermes deployment task
+              ansible.builtin.set_fact:
+                hermes_deployment_notification: >-
+                  ❌ Hermes deployment failed
+                  Task: {{ ansible_failed_task.name | default('unknown task') }}
+                  Host: {{ inventory_hostname }}
+                  Error: {{ 'details hidden because the failed task protects sensitive output' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.msg | default('no error details')) }}
+                  RC: {{ 'hidden' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.rc | default('n/a')) }}
+                  Details: {{ 'hidden' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.stderr | default(ansible_failed_result.stdout | default(''), true) | trim | truncate(1200, true, '...')) }}
+                hermes_deployment_failed: true
+              no_log: true
+
+            - name: Notify Telegram about the failed Hermes deployment
+              ansible.builtin.include_tasks: tasks/deployment-notify.yml
+
+            - name: Re-raise the Hermes deployment failure
+              ansible.builtin.fail:
+                msg: >-
+                  Hermes deployment failed at task
+                  '{{ ansible_failed_task.name | default('unknown task') }}'.
+                  Error: {{ 'details hidden because the failed task protects sensitive output' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.msg | default('no error details')) }}
+                  RC: {{ 'hidden' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.rc | default('n/a')) }}
+                  Details: {{ 'hidden' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.stderr | default(ansible_failed_result.stdout | default(''), true) | trim | truncate(4000, true, '...')) }}
+          always:
+            - name: Restore previously active configuration UIs after deployment
+              ansible.builtin.systemd_service:
+                name: "{{ item }}"
+                state: started
+              loop: [hermes-dashboard.service, hermes-workspace.service]
+              when:
+                - vps_deploy.features.workspace_ui | default(false) | bool
+                - ansible_facts.services.get(item, {}).get('state') == 'running'
+
+            - name: Prepare successful Hermes deployment notification
+              ansible.builtin.set_fact:
+                hermes_deployment_notification: >-
+                  ✅ Hermes deployment completed successfully
+                  Host: {{ inventory_hostname }}
+                hermes_deployment_failed: "{{ hermes_deployment_failed | default(false) }}"
+              when: not (hermes_deployment_failed | default(false) | bool)
+              no_log: true
+
+            - name: Notify Telegram about the successful Hermes deployment
+              ansible.builtin.include_tasks: tasks/deployment-notify.yml
+              when: not (hermes_deployment_failed | default(false) | bool)
       always:
-        - name: Remove the temporary restore archive
+        # Also run on backup/install/configuration failures. Unreachable hosts
+        # cannot run cleanup; the health-check marker TTL remains the fallback.
+        - name: Clear planned Hermes gateway maintenance marker
           ansible.builtin.file:
-            path: /var/tmp/hermes-restore.zip
+            path: "{{ hermes_home }}/ops/gateway-maintenance"
             state: absent
-      when: hermes_backup_archive | length > 0
-
-    - name: Validate the encrypted Hermes environment map
-      ansible.builtin.assert:
-        that:
-          - hermes_secret_env is mapping
-          - hermes_secret_env | length > 0
-        fail_msg: >-
-          Managed .env requires a non-empty hermes_secret_env mapping of
-          ENV_NAME to secret string. Refusing to replace .env with an empty map.
-      when: hermes_manage_secret_env | bool
-      no_log: true
-
-    - name: Validate encrypted Hermes environment entries
-      ansible.builtin.assert:
-        that:
-          - item.key is match('^[A-Z][A-Z0-9_]*$')
-          - item.value is string
-          - item.value | length > 0
-          - item.value != 'replace-inside-ansible-vault'
-        fail_msg: Secret names must be uppercase environment names and values must be non-empty strings.
-      loop: "{{ hermes_secret_env | dict2items }}"
-      when: hermes_manage_secret_env | bool
-      no_log: true
-
-    - name: Keep non-secret browser policy out of encrypted Vault
-      ansible.builtin.assert:
-        that:
-          - "'AGENT_BROWSER_ARGS' not in hermes_secret_env"
-          - "'AGENT_BROWSER_CONFIG' not in hermes_secret_env"
-        fail_msg: >-
-          AGENT_BROWSER_ARGS and AGENT_BROWSER_CONFIG are managed from
-          config/vps-defaults.yml and must not be duplicated in Vault.
-      when: hermes_manage_secret_env | bool
-      no_log: true
-
-    - name: Decide whether Telegram credentials enable the gateway
-      ansible.builtin.set_fact:
-        hermes_gateway_enabled: >-
-          {{ (hermes_enable_gateway | bool) or
-             ((hermes_auto_enable_gateway | bool) and
-              (hermes_manage_secret_env | bool) and
-              ((hermes_secret_env.TELEGRAM_BOT_TOKEN | default('', true) | string | length) > 0) and
-              ((hermes_secret_env.TELEGRAM_ALLOWED_USERS | default('', true) | string | length) > 0)) }}
-      no_log: true
-
-    - name: Validate managed Hermes configuration overlays
-      ansible.builtin.assert:
-        that:
-          - hermes_llm_config is mapping
-          - vps_hermes.config.managed_overlay is mapping
-          - hermes_managed_config is mapping
-        fail_msg: Managed Hermes config overlays must be YAML mappings.
-      no_log: true
-
-    - name: Install sudo for an explicitly administrator-enabled Hermes
-      ansible.builtin.apt:
-        name: sudo
-        state: present
-        update_cache: true
-      when: hermes_host_admin_enabled | bool
-
-    - name: Install Docker Engine for an administrator-enabled Hermes
-      ansible.builtin.apt:
-        name: docker.io
-        state: present
-        update_cache: true
-      when: hermes_host_admin_enabled | bool
-
-    - name: Start Docker Engine
-      ansible.builtin.systemd_service:
-        name: docker.service
-        state: started
-        enabled: true
-      when: hermes_host_admin_enabled | bool
-
-    - name: Grant Hermes Docker administration access
-      ansible.builtin.user:
-        name: "{{ hermes_user }}"
-        groups: docker
-        append: true
-      when: hermes_host_admin_enabled | bool
-
-    - name: Read Hermes group membership when host administration is disabled
-      ansible.builtin.command:
-        argv: [id, -nG, "{{ hermes_user }}"]
-      register: hermes_groups
-      changed_when: false
-      when: not (hermes_host_admin_enabled | bool)
-
-    - name: Remove Hermes Docker administration access when disabled
-      ansible.builtin.command:
-        argv: [gpasswd, --delete, "{{ hermes_user }}", docker]
-      when:
-        - not (hermes_host_admin_enabled | bool)
-        - "'docker' in hermes_groups.stdout.split()"
-      changed_when: true
-
-    - name: Verify Hermes can access Docker Engine
-      ansible.builtin.command:
-        argv: [runuser, --user, "{{ hermes_user }}", --, docker, version]
-      changed_when: false
-      when: hermes_host_admin_enabled | bool
-
-    - name: Authorize Hermes for full VPS administration
-      ansible.builtin.copy:
-        content: |
-          # Explicit owner opt-in: Hermes can administer this host via sudo.
-          {{ hermes_user }} ALL=(ALL:ALL) NOPASSWD: ALL
-        dest: /etc/sudoers.d/hermes-host-admin
-        owner: root
-        group: root
-        mode: "0440"
-        validate: /usr/sbin/visudo -cf %s
-      when: hermes_host_admin_enabled | bool
-
-    - name: Remove Hermes VPS administration authorization when disabled
-      ansible.builtin.file:
-        path: /etc/sudoers.d/hermes-host-admin
-        state: absent
-      when: not (hermes_host_admin_enabled | bool)
-
-    - name: Inspect restorable workspace instructions after Hermes import
-      ansible.builtin.stat:
-        path: "{{ hermes_home }}/operator-state/workspace-AGENTS.md"
-      register: hermes_restorable_workspace_agents
-      when: hermes_backup_archive | length > 0
-
-    - name: Restore workspace instructions from the imported Hermes backup
-      ansible.builtin.copy:
-        src: "{{ hermes_home }}/operator-state/workspace-AGENTS.md"
-        remote_src: true
-        dest: "{{ hermes_workspace }}/AGENTS.md"
-        owner: "{{ hermes_user }}"
-        group: "{{ hermes_user }}"
-        mode: "0600"
-      when:
-        - hermes_backup_archive | length > 0
-        - hermes_restorable_workspace_agents.stat.exists
-
-    - name: Reconcile repository-owned host-administration instructions
-      ansible.builtin.command:
-        argv:
-          - python3
-          - "{{ hermes_bundle_dir }}/runtime/manage-workspace-agents.py"
-          - --target
-          - "{{ hermes_workspace }}/AGENTS.md"
-          - --managed-source
-          - "{{ hermes_bundle_dir }}/AGENTS.md"
-          - --backup-copy
-          - "{{ hermes_home }}/operator-state/workspace-AGENTS.md"
-          - --state
-          - "{{ 'present' if (hermes_host_admin_enabled | bool) else 'absent' }}"
-      register: hermes_workspace_agents
-      changed_when: "'updated' in hermes_workspace_agents.stdout"
-
-    - name: Inspect the reconciled Hermes workspace instructions
-      ansible.builtin.stat:
-        path: "{{ hermes_workspace }}/AGENTS.md"
-      register: hermes_workspace_agents_file
-
-    - name: Protect the Hermes workspace instructions
-      ansible.builtin.file:
-        path: "{{ hermes_workspace }}/AGENTS.md"
-        state: file
-        owner: "{{ hermes_user }}"
-        group: "{{ hermes_user }}"
-        mode: "0600"
-      when: hermes_workspace_agents_file.stat.exists
-
-    - name: Protect the restorable operator-state directory
-      ansible.builtin.file:
-        path: "{{ hermes_home }}/operator-state"
-        state: directory
-        owner: "{{ hermes_user }}"
-        group: "{{ hermes_user }}"
-        mode: "0700"
-
-    - name: Publish Vault environment variable names to Hermes without values
-      ansible.builtin.blockinfile:
-        path: "{{ hermes_workspace }}/AGENTS.md"
-        create: true
-        marker: "<!-- {mark} MANAGED VAULT ENVIRONMENT NAMES -->"
-        insertafter: EOF
-        block: |
-          # Vault-managed environment variable names
-
-          These names are available to guide tool selection. Their values are
-          not included in this document and must never be read or requested in
-          chat.
-
-          {% if (hermes_manage_secret_env | bool) and (hermes_secret_env | length > 0) %}
-          {{ hermes_secret_env.keys() | list | sort | join(', ') }}
-          {% else %}
-          No Vault-managed environment variables are configured.
-          {% endif %}
-        owner: "{{ hermes_user }}"
-        group: "{{ hermes_user }}"
-        mode: "0600"
-      no_log: true
-
-    - name: Publish managed Azure DevOps and SonarQube instructions
-      ansible.builtin.blockinfile:
-        path: "{{ hermes_workspace }}/AGENTS.md"
-        create: true
-        owner: "{{ hermes_user }}"
-        group: "{{ hermes_user }}"
-        mode: "0600"
-        marker: "<!-- {mark} ANSIBLE MANAGED DEVOPS ACCESS -->"
-        insertafter: EOF
-        block: "{{ lookup('ansible.builtin.template', 'templates/devops-access.md.j2') }}"
-
-    - name: Publish managed private SearXNG instructions
-      ansible.builtin.blockinfile:
-        path: "{{ hermes_workspace }}/AGENTS.md"
-        create: true
-        owner: "{{ hermes_user }}"
-        group: "{{ hermes_user }}"
-        mode: "0600"
-        marker: "<!-- {mark} ANSIBLE MANAGED SEARXNG ACCESS -->"
-        insertafter: EOF
-        block: "{{ lookup('ansible.builtin.template', 'templates/searxng-access.md.j2') }}"
-      when: vps_deploy.features.searxng | default(false) | bool
-
-    - name: Mirror the final workspace instructions into Hermes backup state
-      ansible.builtin.copy:
-        src: "{{ hermes_workspace }}/AGENTS.md"
-        remote_src: true
-        dest: "{{ hermes_home }}/operator-state/workspace-AGENTS.md"
-        owner: "{{ hermes_user }}"
-        group: "{{ hermes_user }}"
-        mode: "0600"
-
-    - name: Validate Grafana administrator credentials from Vault
-      ansible.builtin.assert:
-        that:
-          - hermes_grafana_admin_user is match('^[A-Za-z0-9._-]{1,64}$')
-          - hermes_grafana_admin_password is string
-          - hermes_grafana_admin_password | length >= 4
-          - hermes_grafana_admin_password != 'replace-inside-ansible-vault'
-        fail_msg: Set a real Grafana password of at least 4 characters in encrypted vault.yml.
-      when: hermes_enable_ops | bool
-      no_log: true
-
-    # Re-stat after the install task above, which reinstalls the full venv
-    # (interpreter + Hermes package + dependencies) via deploy-hermes.sh
-    # whenever the earlier stat found it missing or broken. A bare
-    # `python3 -m venv` here would only recreate an empty interpreter with no
-    # Hermes package installed into it, breaking the next task differently.
-    - name: Re-stat the Hermes venv Python interpreter
-      ansible.builtin.stat:
-        path: "{{ hermes_home }}/hermes-agent/venv/bin/python"
-        follow: true
-      register: hermes_venv_python
-
-    - name: Fail loudly if the Hermes venv is still broken after installation
-      ansible.builtin.assert:
-        that: hermes_venv_python.stat.exists
-        fail_msg: >-
-          {{ hermes_home }}/hermes-agent/venv/bin/python is still missing or
-          broken after running deploy-hermes.sh. Investigate the installer
-          output on the VPS manually; Hermes runtime configuration and
-          dependent services cannot proceed.
-      when: hermes_binary.stat.exists
-
-    - name: Complete Hermes deployment and report its result
-      block:
-        - name: Install and start private SearXNG search before Hermes runtime configuration
-          ansible.builtin.import_tasks: tasks/searxng.yml
-          when:
-            - hermes_host_admin_enabled | bool
-            - vps_deploy.features.searxng | default(false) | bool
-            - hermes_deploy_mode != 'runtime-only'
-
-        - name: Configure Hermes runtime
-          ansible.builtin.import_tasks: tasks/runtime.yml
-          when: hermes_venv_python.stat.exists
-
-        - name: Configure managed GitHub tooling and access
-          ansible.builtin.import_tasks: tasks/github.yml
-          when: hermes_deploy_mode != 'runtime-only'
-
-        - name: Install and reconcile Hermes services
-          ansible.builtin.import_tasks: tasks/services.yml
-
-        - name: Install and start the code-server container
-          ansible.builtin.import_tasks: tasks/vscode.yml
-          when:
-            - hermes_host_admin_enabled | bool
-            - vps_deploy.features.vscode_server | default(false) | bool
-            - hermes_deploy_mode != 'runtime-only'
-      rescue:
-        - name: Capture the failed Hermes deployment task
-          ansible.builtin.set_fact:
-            hermes_deployment_notification: >-
-              ❌ Hermes deployment failed
-              Task: {{ ansible_failed_task.name | default('unknown task') }}
-              Host: {{ inventory_hostname }}
-              Error: {{ 'details hidden because the failed task protects sensitive output' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.msg | default('no error details')) }}
-              RC: {{ 'hidden' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.rc | default('n/a')) }}
-              Details: {{ 'hidden' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.stderr | default(ansible_failed_result.stdout | default(''), true) | trim | truncate(1200, true, '...')) }}
-            hermes_deployment_failed: true
-          no_log: true
-
-        - name: Notify Telegram about the failed Hermes deployment
-          ansible.builtin.include_tasks: tasks/deployment-notify.yml
-
-        - name: Re-raise the Hermes deployment failure
-          ansible.builtin.fail:
-            msg: >-
-              Hermes deployment failed at task
-              '{{ ansible_failed_task.name | default('unknown task') }}'.
-              Error: {{ 'details hidden because the failed task protects sensitive output' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.msg | default('no error details')) }}
-              RC: {{ 'hidden' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.rc | default('n/a')) }}
-              Details: {{ 'hidden' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.stderr | default(ansible_failed_result.stdout | default(''), true) | trim | truncate(4000, true, '...')) }}
-      always:
-        - name: Prepare successful Hermes deployment notification
-          ansible.builtin.set_fact:
-            hermes_deployment_notification: >-
-              ✅ Hermes deployment completed successfully
-              Host: {{ inventory_hostname }}
-            hermes_deployment_failed: "{{ hermes_deployment_failed | default(false) }}"
-          when: not (hermes_deployment_failed | default(false) | bool)
-          no_log: true
-
-        - name: Notify Telegram about the successful Hermes deployment
-          ansible.builtin.include_tasks: tasks/deployment-notify.yml
-          when: not (hermes_deployment_failed | default(false) | bool)
+          when: hermes_enable_ops | bool

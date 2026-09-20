@@ -1,0 +1,14 @@
+// Managed build wrapper. Do not edit upstream vite.config.ts or generated assets.
+import upstream from './vite.config.ts';
+import { workspaceMcpUi } from {{ (hermes_bundle_dir ~ '/runtime/workspace-mcp-ui.mjs') | to_json }};
+import { workspaceModelPolicy } from {{ (hermes_bundle_dir ~ '/runtime/workspace-model-policy.mjs') | to_json }};
+import { workspaceSwarmRuntime } from {{ (hermes_bundle_dir ~ '/runtime/workspace-swarm-runtime.mjs') | to_json }};
+import { workspaceMemoryUi } from {{ (hermes_bundle_dir ~ '/runtime/workspace-memory-ui.mjs') | to_json }};
+import { workspaceProfileUi } from {{ (hermes_bundle_dir ~ '/runtime/workspace-profile-ui.mjs') | to_json }};
+import { workspaceVoiceUi } from {{ (hermes_bundle_dir ~ '/runtime/workspace-voice-ui.mjs') | to_json }};
+import { workspaceBackgroundRuns } from {{ (hermes_bundle_dir ~ '/runtime/workspace-background-runs.mjs') | to_json }};
+
+export default async function (environment) {
+  const config = await (typeof upstream === 'function' ? upstream(environment) : upstream);
+  return { ...config, plugins: [workspaceMcpUi(), workspaceModelPolicy(), workspaceSwarmRuntime(), workspaceMemoryUi(), workspaceProfileUi(), workspaceVoiceUi(), workspaceBackgroundRuns(), ...(config.plugins || [])] };
+}

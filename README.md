@@ -222,6 +222,10 @@ the defaults displayed in the launch form. Set both there; changing the PR's
 The direct reviewer uses `DIRECT_REVIEW_MODEL` for every supported provider.
 The model validated by preflight is passed to the review step automatically.
 
+The Azure summary links to the GitHub run, published review and available
+PR/findings pages. Review-report artifacts remain uploaded for collection and
+diagnostics; the summary does not include a separate artifact-page link.
+
 For a pull request opened by someone else, use the `ai-review-approved` label
 after you have inspected the change. Only the repository owner adding that label
 starts the owner-approved direct review. The workflow removes the label before

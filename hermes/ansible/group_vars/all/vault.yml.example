@@ -39,12 +39,26 @@ hermes_secret_env: {}
 #   # Preferred name for the bundled Hermes GitHub skills and gh. Use a
 #   # fine-grained PAT limited to the repositories and permissions you need.
 #   GITHUB_TOKEN: "replace-inside-ansible-vault"
+#   # Optional read-only GitHub MCP PAT for the explicit Workspace preset repair.
+#   # Separate from the gh token above; limit it to the required repositories.
+#   MCP_GITHUB_API_KEY: "replace-inside-ansible-vault"
 #   # Optional Azure DevOps PAT for terminal REST requests (also recognized by
 #   # Azure DevOps CLI if installed separately). Scope it to the required work.
 #   AZURE_DEVOPS_EXT_PAT: "replace-inside-ansible-vault"
 #   # Optional SonarQube user/PAT token for reading issues and Quality Gates.
 #   # A GitHub Actions SONAR_TOKEN is not automatically available on the VPS.
 #   SONAR_TOKEN: "replace-inside-ansible-vault"
+#
+#   # Required for features.workspace_ui: two strings of at least 4 characters.
+#   # Long random values are recommended (e.g. openssl rand -hex 32). Quote
+#   # numeric-only values so YAML keeps them strings. Do not use these
+#   # example placeholders. API_SERVER_KEY protects the shared loopback API;
+#   # HERMES_WORKSPACE_PASSWORD is the browser login, not a provider API key.
+#   # With Workspace enabled, deploy writes SHA256(API_SERVER_KEY) to .env as
+#   # the actual API token; other API clients must use that derived token.
+#   # The password is unchanged. Hashing does not strengthen a short secret.
+#   API_SERVER_KEY: "replace-inside-ansible-vault"
+#   HERMES_WORKSPACE_PASSWORD: "replace-inside-ansible-vault"
 #
 #   # Dashboard OAuth registration for the Tailscale Serve hostname. These are
 #   # not passwords, but keeping them in the managed map makes dashboard login

@@ -13,6 +13,61 @@ from typing import Any, NamedTuple
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'ops'))
+from hermes_config_io import load_config as load_private_config, validated_config_path, write_config
+
+
+def managed_model_values(settings: dict[str, Any]) -> dict[str, str]:
+    """One route for agent defaults; explicit session/job overrides are separate."""
+    model = settings.get('vps_hermes', {}).get('config', {}).get('managed_overlay', {}).get('model')
+    if model is None:
+        return {}
+    if not isinstance(model, dict) or any(
+        not isinstance(model.get(key), str) or not model[key].strip()
+        for key in ('provider', 'default')
+    ):
+        raise ValueError('managed model requires non-empty provider and default')
+    return {
+        'model.provider': model['provider'], 'model.default': model['default'],
+        'delegation.provider': model['provider'], 'delegation.model': model['default'],
+        'cron.model_provider': model['provider'], 'cron.model': model['default'],
+    }
+
+
+def sync_profile_models(home: Path, settings: dict[str, Any]) -> int:
+    """Update existing profiles atomically without touching credentials or history."""
+    values = managed_model_values(settings)
+    profiles = home / 'profiles'
+    if profiles.is_symlink():
+        raise ValueError('Hermes profiles directory must not be a symlink')
+    if not values or not profiles.exists():
+        return 0
+    pending = []
+    for profile in sorted(profiles.iterdir()):
+        if profile.is_symlink():
+            raise ValueError('Hermes profile directories must not be symlinks')
+        if not profile.is_dir():
+            continue
+        path = validated_config_path(profile / 'config.yaml', profile)
+        if not path.exists():
+            continue
+        config = load_private_config(path)
+        changed = False
+        for key, value in values.items():
+            section, field = key.split('.')
+            target = config.setdefault(section, {})
+            if not isinstance(target, dict):
+                raise ValueError('Hermes profile model, delegation and cron must be mappings')
+            if target.get(field) != value:
+                target[field] = value
+                changed = True
+        if changed:
+            pending.append((path, config))
+    # Validate all profiles before writing any. Values/configs are never logged.
+    for path, config in pending:
+        write_config(path, config)
+    return len(pending)
+
 
 class Operation(NamedTuple):
     action: str
@@ -173,6 +228,16 @@ def build_operations(
         raise ValueError("vps_runtime must be a mapping")
 
     operations = _set_operations(runtime, current_config, variables)
+    if settings.get('vps_deploy', {}).get('features', {}).get('workspace_ui', False):
+        owned = settings.get('vps_hermes', {}).get('config', {}).get('ui_owned_sections', [])
+        allowed = {'model', 'fallback_providers', 'auxiliary', 'compression', 'cron',
+                   'user_char_limit', 'memory_char_limit', 'display', 'session_reset'}
+        if not isinstance(owned, list) or any(not isinstance(key, str) or key not in allowed for key in owned):
+            raise ValueError('vps_hermes.config.ui_owned_sections contains an unsupported section')
+        # Seed missing values, but preserve choices made through either UI.
+        # Infrastructure/safety settings and capability overrides remain managed.
+        operations = [op for op in operations if
+                      op.key.split('.')[0] not in owned or not nested_value(current_config, op.key)[0]]
     operations.extend(_set_if_missing_operations(runtime, current_config, variables))
     operations.extend(_unset_operations(runtime, current_config))
 
@@ -183,6 +248,12 @@ def build_operations(
         _capability_operations(capability_settings, capabilities, current_config, variables)
     )
 
+    # Route policy wins over UI-owned sections and legacy runtime pins. Keep
+    # token budgets, compression, fallback routes and other UI settings intact.
+    model_values = managed_model_values(settings)
+    operations = [op for op in operations if op.key not in model_values]
+    operations.extend(Operation('set', key, value) for key, value in model_values.items()
+                      if nested_value(current_config, key) != (True, value))
     return operations
 
 
@@ -300,6 +371,14 @@ def web_and_serve_assets(settings: dict[str, Any]) -> tuple[str, list[str]]:
     if not isinstance(serve_services, list) or not serve_services:
         raise ValueError("vps_tailscale.serve.services must be a non-empty list")
     serve_endpoints = [_render_tailscale_serve_endpoint(service) for service in serve_services]
+    if features.get("workspace_ui", False):
+        port = settings.get("vps_workspace_ui", {}).get("port")
+        endpoint = _render_tailscale_serve_endpoint({
+            "protocol": "https", "port": port, "target": f"http://127.0.0.1:{port}",
+        })
+        if any(service["port"] == port for service in serve_services):
+            raise ValueError("Workspace port must not overlap managed Tailscale Serve endpoints")
+        serve_endpoints.append(endpoint)
     return searxng_url, serve_endpoints
 
 
@@ -628,9 +707,10 @@ def main() -> int:
         )
         for operation in operations:
             run_operation(args.hermes_bin, operation)
-        print(f"Hermes runtime settings applied: {len(operations)} change(s)")
+        profiles_changed = sync_profile_models(args.hermes_home, settings)
+        print(f"Hermes runtime settings applied: {len(operations) + profiles_changed} change(s)")
         return 0
-    except (ValueError, RuntimeError) as error:
+    except (OSError, ValueError, RuntimeError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 

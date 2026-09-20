@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 import tempfile
+import textwrap
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -345,7 +348,151 @@ class ApplyHermesPatchesTests(unittest.TestCase):
         self.assertIn("list_async_delegations", status)
         self.assertIn('d.get("session_key")', status)
         self.assertIn('d.get("parent_session_id")', status)
-        self.assertIn("results will be delivered to this chat automatically", status)
+        self.assertIn("**Subagents:**", status)
+
+    def render_activity(self, processes=(), delegations=(), session_key="chat-a", **values):
+        """Execute the actual injected block, using the pinned registry's API shape."""
+        status = next(new for _, marker, _, new in apply_hermes_patches._PATCHES
+                      if marker == "# Local Hermes: status reasoning")
+        block = status.split("        ])\n", 1)[1].split(
+            "        # Local Hermes: status reasoning\n", 1
+        )[0]
+        registry = mock.Mock()
+        registry.list_sessions.side_effect = lambda *, session_key: [
+            p for p in processes if p.get("session_key") == session_key
+        ]
+        registry.get.side_effect = lambda pid: next(
+            (SimpleNamespace(**p) for p in processes if p["session_id"] == pid), None
+        )
+        ns = dict(lines=["Agent Running: No"], is_running=False, agent=None,
+                  _AGENT_PENDING_SENTINEL=object(), session_key=session_key,
+                  session_entry=SimpleNamespace(session_id="session-a"),
+                  t=lambda key, **kw: f"{key}: {kw}")
+        ns.update(values)
+        def list_delegations():
+            if isinstance(delegations, Exception):
+                raise delegations
+            return delegations
+
+        modules = {
+            "tools": mock.Mock(),
+            "tools.process_registry": SimpleNamespace(process_registry=registry),
+            "tools.async_delegation": SimpleNamespace(list_async_delegations=list_delegations),
+        }
+        with mock.patch.dict(sys.modules, modules):
+            exec(textwrap.dedent(block), ns)
+        return "\n".join(ns["lines"]), registry
+
+    @staticmethod
+    def process(pid="proc_123abc", **kwargs):
+        return dict(session_id=pid, session_key="chat-a", parent_session_id="session-a",
+                    status="running", exited=False, uptime_seconds=463,
+                    notify_on_complete=True, pid=123, command="TOKEN=secret",
+                    output_preview="private output", **kwargs)
+
+    def test_status_background_work_is_distinct_from_foreground_agent(self):
+        output, registry = self.render_activity([self.process()])
+        self.assertIn("Agent Running: No", output)
+        self.assertIn("**Work:** background active", output)
+        self.assertIn("**Subagents:** 0 active", output)
+        self.assertIn("**Background processes:** 1 running", output)
+        self.assertIn("proc_123abc", output)
+        self.assertIn("7m 43s", output)
+        self.assertIn("agent notification on exit: enabled", output)
+        self.assertNotIn("secret", output)
+        self.assertNotIn("private output", output)
+        registry.list_sessions.assert_called_once_with(session_key="chat-a")
+        registry.read_log.assert_not_called()
+        registry.wait.assert_not_called()
+
+    def test_status_excludes_foreign_finished_and_previous_session_processes(self):
+        active = self.process()
+        foreign = dict(self.process("proc_abcdef"), session_key="chat-b")
+        previous = dict(self.process("proc_123def"), parent_session_id="old-session")
+        finished = dict(self.process("proc_123aaa"), status="exited", exited=True)
+        output, _ = self.render_activity([active, foreign, previous, finished])
+        self.assertIn("**Background processes:** 1 running", output)
+        for process in (foreign, previous, finished):
+            self.assertNotIn(process["session_id"], output)
+
+    def test_status_no_session_key_never_lists_all_processes(self):
+        output, registry = self.render_activity([self.process()], session_key="")
+        registry.list_sessions.assert_not_called()
+        self.assertIn("**Background processes:** unavailable", output)
+        self.assertNotIn("proc_123abc", output)
+
+    def test_status_registry_error_reports_unknown_not_idle(self):
+        class BrokenProcesses:
+            def __iter__(self):
+                raise RuntimeError("sensitive details")
+        output, _ = self.render_activity(BrokenProcesses())
+        self.assertIn("**Background processes:** unavailable", output)
+        self.assertIn("**Work:** unknown", output)
+        self.assertNotIn("sensitive details", output)
+
+    def test_status_idle_and_disabled_notification(self):
+        output, _ = self.render_activity()
+        self.assertIn("**Work:** idle", output)
+        process = dict(self.process(), notify_on_complete=False)
+        output, _ = self.render_activity([process])
+        self.assertIn("agent notification on exit: disabled", output)
+
+    def test_status_subagents_are_scoped_and_do_not_claim_foreground_running(self):
+        delegations = [
+            dict(status="running", session_key="chat-a", parent_session_id="session-a"),
+            dict(status="stalling", session_key="chat-b", parent_session_id="session-b"),
+            dict(status="completed", session_key="chat-a", parent_session_id="session-a"),
+            dict(status="running", session_key="chat-a", parent_session_id="old-session"),
+        ]
+        output, _ = self.render_activity(delegations=delegations)
+        self.assertIn("Agent Running: No", output)
+        self.assertIn("**Subagents:** 1 active", output)
+        self.assertIn("**Work:** background active", output)
+
+    def test_status_limits_process_details_without_hiding_total(self):
+        processes = [self.process(f"proc_{n:012x}") for n in range(12)]
+        output, _ = self.render_activity(processes)
+        self.assertIn("**Background processes:** 12 running", output)
+        self.assertEqual(output.count("agent notification on exit:"), 5)
+        self.assertIn("7 more", output)
+
+    def test_status_foreground_work_has_priority(self):
+        output, _ = self.render_activity([self.process()], is_running=True)
+        self.assertIn("**Work:** agent responding", output)
+
+    def test_status_pending_agent_is_not_idle(self):
+        sentinel = object()
+        output, _ = self.render_activity(agent=sentinel, _AGENT_PENDING_SENTINEL=sentinel)
+        self.assertIn("**Work:** agent starting", output)
+
+    def test_status_subagent_failure_does_not_hide_running_process(self):
+        output, _ = self.render_activity([self.process()], delegations=RuntimeError("secret"))
+        self.assertIn("**Subagents:** unavailable", output)
+        self.assertIn("**Background processes:** 1 running", output)
+        self.assertIn("**Work:** background active", output)
+        self.assertNotIn("secret", output)
+
+    def test_status_handles_invalid_age_and_untrusted_id_without_leaking(self):
+        process = dict(self.process("TOKEN=secret\n**injected**"), uptime_seconds=float("nan"))
+        output, _ = self.render_activity([process])
+        self.assertIn("• process — age unknown", output)
+        self.assertNotIn("secret", output)
+        self.assertNotIn("injected", output)
+
+    def test_status_rechecks_process_that_exited_during_listing(self):
+        process = dict(self.process(), status="running", exited=True)
+        output, _ = self.render_activity([process])
+        self.assertIn("**Background processes:** 0 running", output)
+        self.assertIn("**Work:** idle", output)
+
+    def test_status_accepts_legacy_chat_owned_process_and_parent_only_delegation(self):
+        process = dict(self.process(), parent_session_id="", uptime_seconds=3661)
+        delegations = [dict(status="finalizing", parent_session_id="session-a"),
+                       dict(status="running", parent_session_id="", session_key="")]
+        output, _ = self.render_activity([process], delegations)
+        self.assertIn("**Subagents:** 1 active", output)
+        self.assertIn("**Background processes:** 1 running", output)
+        self.assertIn("1h 1m 1s", output)
 
     def test_status_includes_portal_provider_and_tool_info(self) -> None:
         patches = {

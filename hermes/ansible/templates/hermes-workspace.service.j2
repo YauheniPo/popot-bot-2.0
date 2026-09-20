@@ -1,0 +1,35 @@
+[Unit]
+Description=Hermes Workspace companion UI (shared Hermes backend)
+After=network-online.target hermes-dashboard.service {{ hermes_gateway_service }}
+Wants=network-online.target
+
+[Service]
+# Restart when the installed launcher changes, as well as when the unit does.
+# Launcher SHA256: {{ lookup('ansible.builtin.file', '../runtime/workspace-launch.py') | hash('sha256') }}
+# Dashboard bridge SHA256: {{ lookup('ansible.builtin.file', '../runtime/workspace-dashboard-bridge.mjs') | hash('sha256') }}
+# MCP adapter SHA256: {{ lookup('ansible.builtin.file', '../runtime/workspace-mcp-adapter.mjs') | hash('sha256') }}
+Type=simple
+User={{ hermes_user }}
+Group={{ hermes_user }}
+WorkingDirectory={{ hermes_user_home }}/.local/share/hermes-workspace/{{ vps_workspace_ui.revision }}
+Environment="HOME={{ hermes_user_home }}"
+Environment="HERMES_HOME={{ hermes_home }}"
+Environment="HERMES_AGENT_PATH={{ hermes_home }}/hermes-agent"
+Environment="HERMES_INSTRUCTIONS_ROOT={{ hermes_workspace }}"
+Environment="TMUX_BIN=/usr/bin/tmux"
+Environment="HERMES_CLI_BIN={{ hermes_bin }}"
+{% if vps_workspace_ui.swarm.enabled | default(false) %}
+Environment="HERMES_SWARM_REPO={{ vps_workspace_ui.swarm.repository_dir }}"
+Environment="HERMES_SWARM_ROSTER={{ hermes_home }}/swarm/swarm.yaml"
+Environment="HERMES_SWARM_MEMORY_ROOT={{ hermes_home }}/swarm"
+{% endif %}
+Environment="PATH={{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart={{ hermes_home }}/hermes-agent/venv/bin/python {{ hermes_bundle_dir }}/runtime/workspace-launch.py --node {{ hermes_home }}/node/bin/node --source {{ hermes_user_home }}/.local/share/hermes-workspace/{{ vps_workspace_ui.revision }} --port {{ vps_workspace_ui.port }} --api-port {{ vps_workspace_ui.api_port }} --dashboard-port {{ vps_observability.dashboard.port }}
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillMode=control-group
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

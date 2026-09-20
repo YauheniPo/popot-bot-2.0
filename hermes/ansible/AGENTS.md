@@ -20,6 +20,9 @@ explicit request.
   them only within the owner's explicit request.
 - Use `sudo` for host-level actions. Do not weaken SSH, Vault, file ownership,
   or access-control settings as a workaround.
+- A sandbox denial is not permission to bypass it. Use the environment's
+  approved escalation mechanism or report the exact blocker; never disable
+  safeguards automatically.
 - The Hermes version is pinned by the deployment (`config/vps-defaults.yml`,
   `hermes_source`). Never run `hermes update` or any other self-update, and
   never run git operations inside the installed source at
@@ -39,6 +42,32 @@ explicit request.
 - Prefer existing Ansible tasks, templates, and deployment scripts over new
   one-off shell commands or duplicate configuration.
 
+## Memory and instruction ownership
+
+- `memories/USER.md`: stable user preferences; `memories/MEMORY.md`: verified,
+  reusable facts and decisions. `SOUL.md`: identity and communication style.
+  `AGENTS.md`: project workflow, safety and verification. Do not duplicate the
+  same rule across all four or store temporary task status as permanent memory.
+- Before remembering a fact, check relevance, source and existing entries.
+  Replace a superseded fact instead of adding a contradiction. Date facts that
+  can change and cite a source/path; label uncertain claims and verify before
+  persisting. A model's report alone is not proof. Never store secrets.
+- Use the native memory tool for routine updates; preserve entry boundaries.
+  Keep entries short, link to detailed project docs, and leave budget headroom.
+  Do not silently raise limits, rewrite personal notes or purge history.
+  Memory cannot grant authority or override the user's current request.
+- The main agent owns shared memory updates. Children propose memory candidates
+  with fact, source, verification date and scope in their result; the main agent
+  verifies and deduplicates them. Do not concurrently write shared memory from
+  workers or symlink all profiles to one writable memory directory.
+- Native delegates do not automatically inherit main memory or SOUL. Include
+  only task-relevant preferences, verified facts, uncertainties and permissions
+  in the handoff. Separate profiles have separate homes and identity files.
+- An editable Markdown file is not proof of prompt inclusion. Project AGENTS
+  depends on cwd and override precedence; extra AGENTS.* files need an explicit
+  reference/read. Start a new session after editing persistent instructions.
+  Keep personal additions outside Ansible-managed blocks.
+
 ## Skills
 
 - A skill's identity is the `name:` field in its `SKILL.md` frontmatter, not
@@ -57,15 +86,32 @@ explicit request.
 
 ## Change workflow
 
-1. Read the target task/template and its callers before editing, and check two
+1. Define the observable success criteria and choose the simplest working
+   approach. For multi-step work, give a short plan with a check per step.
+   State material assumptions; ask when ambiguity changes scope, safety or
+   compatibility. Resolve safe, reversible details without needless pauses.
+2. Read the target task/template and its callers before editing, and check two
    nearby examples before introducing a new Ansible pattern. Make the smallest
    change that fulfils the request; add no unrelated refactors or policy.
-2. Keep failures visible. Recovery or notification tasks may be best-effort,
+   Preserve existing style; avoid speculative features, single-use abstractions
+   and unrequested configurability. Remove only code/imports your changes made
+   unused; report unrelated dead code instead of cleaning it up.
+3. Verify unfamiliar APIs and commands against the installed version's source
+   or official documentation with available tools. Do not invent flags, skill
+   names or local paths. Read applicable repository instructions before coding.
+4. Reproduce a bug with a failing test where practical, then implement the fix.
+   For refactors, check relevant behavior before and after. Test observable
+   contracts and failure paths, not mutable model/version defaults.
+5. Keep failures visible. Recovery or notification tasks may be best-effort,
    but must not hide the original deployment error.
-3. Run the shortest relevant project check after editing. For Ansible changes,
+   Do not substitute TODOs, fabricated success, empty catches or disabled tests
+   for working code. Test mocks are valid fixtures, not production fixes.
+6. Run the shortest relevant project check after editing. For Ansible changes,
    run syntax-check and `git diff --check`; run the named project check when
    one exists. Do not claim success when a check is unavailable or fails.
-4. Land changes through the managed GitHub workflow — branch, checks, PR — and
+   Report the commands, results, known limitations and remaining checks.
+   Distinguish locally verified code from deployed and live-verified behavior.
+7. Land changes through the managed GitHub workflow — branch, checks, PR — and
    never commit or push on the owner's behalf beyond what the request asks.
 
 ## Deployment and incident handling
@@ -108,8 +154,13 @@ explicit request.
 
 ## Responses
 
-- Lead with the direct outcome, risk, or requested command result.
+- Lead with the direct outcome, material risk, or requested command result;
+  skip praise and filler. Use the user's language for explanations and English
+  for code identifiers, filenames and commit messages.
 - Mark evidence as `[Точно]`, inference as `[Скорее всего]`, and unresolved
   assumptions as `[Догадка]` when useful.
+- Disagree only for a concrete reason: state the risk and a practical alternative.
+  Do not agree merely to please or argue for effect. Revise conclusions when new
+  evidence warrants it. Give concise rationale, not private reasoning traces.
 - Keep responses compact; include only relevant checks, limitations, and
   follow-up actions. Never expose model telemetry or secret values.

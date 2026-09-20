@@ -15,6 +15,8 @@ install_operations_assets() {
         "${SCRIPT_DIR}/status-report.py" \
         "${SCRIPT_DIR}/startup-notify.sh" \
         "${SCRIPT_DIR}/api-retry-loop.sh" \
+        "${SCRIPT_DIR}/../runtime/backup-personal-state.py" \
+        "${SCRIPT_DIR}/../runtime/manage-workspace-agents.py" \
         /usr/local/lib/hermes-ops/
     ln -sfn /usr/local/lib/hermes-ops/ops-report.py /usr/local/bin/hermes-ops-report
 

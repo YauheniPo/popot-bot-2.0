@@ -1,0 +1,5 @@
+name: team-workflow
+version: 1.0.0
+description: Bounded native research, execution and independent review for interactive tasks
+provides_tools:
+  - team_workflow

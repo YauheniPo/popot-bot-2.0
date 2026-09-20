@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from hermes_config_io import load_config, write_config
+from hermes_config_io import load_config, validated_config_path, write_config
 
 
 def configure(
@@ -43,6 +43,14 @@ def configure(
     changed = False
     if "ops-observability" not in enabled:
         enabled.append("ops-observability")
+        changed = True
+
+    if data.get('team_workflow', {}).get('enabled', False):
+        if 'team-workflow' not in enabled:
+            enabled.append('team-workflow')
+            changed = True
+    elif 'team-workflow' in enabled:
+        enabled.remove('team-workflow')
         changed = True
 
     quick_commands = data.setdefault("quick_commands", {})
@@ -93,7 +101,7 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument(
         "--config", required=True, type=Path,
-        help="must resolve to <hermes-home>/config.yaml; no other location is accepted",
+        help="must be <hermes-home>/config.yaml; config symlinks are not accepted",
     )
     result.add_argument("--hermes-home", required=True, type=Path)
     result.add_argument("--gateway-service", default="hermes-gateway.service")
@@ -137,9 +145,7 @@ def main() -> int:
         # Anchor --config to --hermes-home instead of trusting its basename
         # alone: a basename-only check still lets the directory component
         # point anywhere on the filesystem.
-        expected_config = (args.hermes_home.expanduser() / "config.yaml").resolve()
-        if args.config.resolve() != expected_config:
-            raise ValueError(f"--config must be {expected_config}")
+        expected_config = validated_config_path(args.config, args.hermes_home)
         resolved_vscode_compose_file, resolved_vscode_env_file = _resolve_vscode_paths(
             args.vscode_compose_file, args.vscode_env_file
         )

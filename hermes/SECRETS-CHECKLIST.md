@@ -27,9 +27,10 @@ Ansible Vault и `.env` исключены из Git.
 | [ ] | Разрешённый Telegram user ID | `TELEGRAM_ALLOWED_USERS="123..."` | ID личного аккаунта, не username | Vault/`.env`; это allowlist, не пароль |
 
 Добавьте credentials для каждого выбранного provider; основной provider,
-модели и fallback задаются в `vps_hermes.config.managed_overlay`. Deploy
-повторно применяет поля из overlay: если модель должна управляться через
-`/model_global`, уберите соответствующий pin из overlay. Минимальный фрагмент
+модели и fallback из `vps_hermes.config.managed_overlay` задают начальные значения.
+При включённом Workspace существующие UI-owned настройки сохраняются при
+deploy; без Workspace overlay снова становится авторитетным. Подробнее —
+[правила общего конфига](workspace-ui/README.md). Минимальный фрагмент
 и правила замены placeholders находятся в
 [`ansible/group_vars/all/VAULT.md`](ansible/group_vars/all/VAULT.md).
 
@@ -48,6 +49,19 @@ OAuth (`hermes auth add nous`), а не API key в `hermes_secret_env`.
 выберите **Ollama Cloud** через `/model`. Для Azure обновите копию
 зашифрованного Vault в Secure files. Полные шаги — в
 [инструкции Ollama Cloud](README.md#ollama-cloud).
+
+## Workspace
+
+Для включённого `vps_deploy.features.workspace_ui` добавьте в `hermes_secret_env`
+два значения длиной не менее 4 символов: `API_SERVER_KEY`
+(общий gateway API) и `HERMES_WORKSPACE_PASSWORD` (вход в Workspace).
+Для защиты рекомендуется сгенерировать каждый отдельно, например
+`openssl rand -hex 32`, и сохранить
+только в зашифрованном Vault. Deploy не выводит их в лог и не копирует в frontend.
+Пароль Workspace не заменяет OAuth официальной панели.
+API-значение из Vault преобразуется в SHA-256-токен при записи `.env`;
+Workspace читает этот же токен. Пароль остаётся без изменения. Короткий
+исходный секрет остаётся перебираемым — хеширование не повышает его стойкость.
 
 ## Web search и браузер
 

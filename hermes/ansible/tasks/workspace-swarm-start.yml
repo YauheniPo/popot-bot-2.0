@@ -1,0 +1,30 @@
+---
+# Start only after the Workspace handler: tmux created by an older Workspace
+# may belong to its systemd cgroup and be stopped with that service.
+- name: Inspect managed Swarm tmux sessions
+  ansible.builtin.command:
+    argv: [/usr/bin/tmux, has-session, -t, "=swarm-{{ item }}"]
+  loop: "{{ vps_workspace_ui.swarm.workers.keys() | list }}"
+  become_user: "{{ hermes_user }}"
+  register: hermes_swarm_sessions
+  failed_when: hermes_swarm_sessions.rc not in [0, 1]
+  changed_when: false
+
+- name: Start missing Swarm sessions without interrupting existing workers
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/tmux
+      - new-session
+      - -d
+      - -s
+      - "swarm-{{ item.item }}"
+      - "{{ hermes_user_home }}/.local/bin/{{ item.item }}"
+  loop: "{{ hermes_swarm_sessions.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  become_user: "{{ hermes_user }}"
+  environment:
+    HOME: "{{ hermes_user_home }}"
+    PATH: "{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/bin:{{ hermes_home }}/node/bin:/usr/local/bin:/usr/bin:/bin"
+  when: item.rc == 1
+  changed_when: true

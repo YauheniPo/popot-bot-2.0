@@ -79,7 +79,13 @@ def main() -> int:
     if len(sys.argv) > 2:
         print(f"Usage: {Path(sys.argv[0]).name} [PATH_TO_TTS_TOOL]", file=sys.stderr)
         return 2
-    target = Path(target_arg or os.environ.get("HERMES_TTS_TOOL_PATH", DEFAULT_TARGET)).expanduser().resolve()
+    target = Path(target_arg or os.environ.get("HERMES_TTS_TOOL_PATH", DEFAULT_TARGET)).expanduser()
+    if target.is_symlink():
+        print("[hermes] Edge TTS retry refused: target must not be a symlink", file=sys.stderr)
+        return 2
+    # Resolve only the parent: preserve the leaf for O_NOFOLLOW in patch_target,
+    # including a symlink substituted after the preliminary check above.
+    target = target.parent.resolve() / target.name
     # Do not follow a symlink at the default path to whitelist its destination.
     expected_target = Path(DEFAULT_TARGET)
     trusted = target == expected_target or (

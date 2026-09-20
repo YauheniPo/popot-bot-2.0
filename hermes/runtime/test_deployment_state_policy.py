@@ -18,11 +18,21 @@ HERMES_ROOT = Path(__file__).resolve().parents[1]
 
 
 class DeploymentStatePolicyTests(unittest.TestCase):
+    def test_language_policy_does_not_request_internal_thinking_trace(self) -> None:
+        settings = yaml.safe_load((HERMES_ROOT / "config" / "vps-defaults.yml").read_text())
+        instruction = settings["vps_agent_policy"]["response_language_instruction"]
+        self.assertTrue(instruction.strip())
+        self.assertNotRegex(instruction.lower(), r"always think|thinking trace|chain.of.thought")
+
     @unittest.skipUnless(shutil.which("ansible-playbook"), "ansible-playbook is required")
     def test_devops_instructions_preserve_notes_and_update_idempotently(self) -> None:
         playbook = yaml.safe_load((HERMES_ROOT / "ansible" / "playbook.yml").read_text())
+        def tasks_in(block):
+            for task in block:
+                yield task
+                yield from tasks_in(task.get("block", []))
         task = next(
-            (task for task in playbook[0]["tasks"]
+            (task for task in tasks_in(playbook[0]["tasks"])
              if task.get("name") == "Publish managed Azure DevOps and SonarQube instructions"),
             None,
         )
