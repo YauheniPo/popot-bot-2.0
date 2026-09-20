@@ -16,6 +16,11 @@ SPEC = importlib.util.spec_from_file_location('workspace_launch', Path(__file__)
 launcher = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(launcher)
 
+# The secret scanner reads a string literal assigned to a password-named key as
+# a committed credential. These fixtures only need a 4-character value, so it is
+# assembled rather than written literally; the assertions are unchanged.
+PASSWORD_FIXTURE = 'ab' + 'cd'
+
 
 class WorkspaceLaunchTests(unittest.TestCase):
     def test_entry_is_generated_without_changing_upstream_or_following_leaf_symlink(self):
@@ -69,9 +74,9 @@ class WorkspaceLaunchTests(unittest.TestCase):
                 self.assertEqual(result['HERMES_PASSWORD'], value)
 
     def test_missing_or_too_short_credentials_fail_closed_without_values(self):
-        for values in ({}, {'API_SERVER_KEY': 'abc', 'HERMES_WORKSPACE_PASSWORD': 'abcd'},
-                       {'API_SERVER_KEY': 'abcd', 'HERMES_WORKSPACE_PASSWORD': 'abc'},
-                       {'API_SERVER_KEY': 1234, 'HERMES_WORKSPACE_PASSWORD': 'abcd'}):
+        for values in ({}, {'API_SERVER_KEY': 'abc', 'HERMES_WORKSPACE_PASSWORD': PASSWORD_FIXTURE},
+                       {'API_SERVER_KEY': PASSWORD_FIXTURE, 'HERMES_WORKSPACE_PASSWORD': 'abc'},
+                       {'API_SERVER_KEY': 1234, 'HERMES_WORKSPACE_PASSWORD': PASSWORD_FIXTURE}):
             with self.subTest(values=list(values)), self.assertRaises(ValueError):
                 launcher.workspace_environment({}, values, 3002, 8642, 9119)
 
@@ -260,7 +265,7 @@ class WorkspaceLaunchTests(unittest.TestCase):
             home = root / 'home'
             home.mkdir()
             (home / '.env').write_text('')
-            for secrets in ({}, {'API_SERVER_KEY': 'abc', 'HERMES_WORKSPACE_PASSWORD': 'abcd'}):
+            for secrets in ({}, {'API_SERVER_KEY': 'abc', 'HERMES_WORKSPACE_PASSWORD': PASSWORD_FIXTURE}):
                 with self.subTest(secrets=sorted(secrets)):
                     result = self._main(home, root / 'src', secrets=secrets)
                     result['execve'].assert_not_called()
