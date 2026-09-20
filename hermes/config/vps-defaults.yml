@@ -108,6 +108,21 @@ vps_hermes:
       # update. This list is authoritative (list_merge=replace), so a
       # deployment always re-asserts it.
       skills:
+        # Names kept in `disabled` after upstream removed the skill from the
+        # catalog: v0.21.0 consolidated the six per-task github-* copies into
+        # one `github` skill, and svg-graphics was dropped. They stay listed so
+        # a future catalog change cannot silently re-enable them, and the
+        # host-side audit in `runtime/apply-config.py` requires every OTHER
+        # disabled name to exist on disk — which is what turns a typo in this
+        # list into a visible deployment failure instead of a silent no-op.
+        catalog_churn:
+          - svg-graphics
+          - github-auth
+          - github-code-review
+          - github-issue-to-pr
+          - github-issues
+          - github-pr-workflow
+          - github-repo-management
         disabled:
           # macOS-only integrations
           - apple-notes
@@ -119,14 +134,10 @@ vps_hermes:
           - xurl
           - songsee
           - gif-search
-          - grilling
-          - product-price-monitor
           # Office suites and SaaS this deployment does not use
           - airtable
           - box
           - notion
-          - maps
-          - powerpoint
           # Heavy creative tooling (architecture-diagram, excalidraw,
           # claude-design and design-md stay: useful for QA docs).
           - comfyui
@@ -140,7 +151,6 @@ vps_hermes:
           - pretext
           - baoyu-infographic
           - popular-web-designs
-          - humanizer
           - svg-graphics
           # ML infrastructure — not this stack
           - huggingface-hub
@@ -156,6 +166,29 @@ vps_hermes:
           - github-issues
           - github-pr-workflow
           - github-repo-management
+          # Unusable on this VPS — verified 2026-09-19 by `command -v` and the
+          # env-var sweep in hermes-vps-ops/references/skill-toolset-mcp-inventory.md.
+          # CLI absent (nothing to delegate to; use delegate_task instead):
+          - claude-code
+          - codex
+          - opencode
+          # Policy-forbidden surface (AGENTS.md: no computer-use / X11 here):
+          - computer-use
+          # CLI absent:
+          - obsidian                       # no vault on this host
+          # Credentials missing (re-enable when provisioned):
+          - teams-meeting-pipeline         # MSGRAPH_TENANT_ID, MSGRAPH_CLIENT_ID, MSGRAPH_CLIENT_SECRET
+          # Wrong stack / superseded for this deployment:
+          - research-paper-writing         # NeurIPS/ICML ML-paper pipeline
+          - nano-pdf                       # superseded by pdf + ocr-and-documents
+          # google-workspace, himalaya and email-inbox-triage stay ENABLED until
+          # Google/email credentials exist — disable them then, not now.
+          # Merged into hermes-agent + hermes-vps-ops (2026-09-19): their VPS
+          # self-diagnostic, gateway-customization and kanban/memory content now
+          # lives in hermes-vps-ops (references/ + scripts/deep-self-diagnostic.sh).
+          - hermes-vps-operations
+          - hermes-gateway-ops
+          - hermes-vps-kanban-memory
 
 # Third-party skills are fetched by Ansible, never by a running Hermes session.
 # Pinning a commit makes a deploy repeatable and keeps a later upstream change

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -298,6 +299,82 @@ class ApplyConfigTests(unittest.TestCase):
             "excalidraw",
         ):
             self.assertNotIn(kept, disabled)
+
+    def test_catalog_churn_names_are_a_subset_of_disabled_and_never_essential(self) -> None:
+        settings = apply_config.load_settings(MODULE_PATH.parent.parent / "config" / "vps-defaults.yml")
+
+        churn = apply_config.catalog_churn_names(settings)
+        disabled = apply_config.disabled_skill_names(settings)
+
+        # Churn is an exemption list: every entry must also be disabled, or the
+        # exemption would hide a name that nothing turns off.
+        self.assertTrue(churn)
+        self.assertLessEqual(churn, set(disabled))
+        self.assertEqual(len(disabled), len(set(disabled)))
+
+    def test_catalog_churn_names_defaults_to_empty_and_fails_closed(self) -> None:
+        # A missing catalog_churn is optional and yields an empty set, and an
+        # entirely absent overlay is valid too (every level defaults to {}).
+        # A malformed overlay must raise ValueError (caught by main), never a
+        # KeyError/TypeError traceback from a direct dict access.
+        for absent in (
+            {},
+            {"vps_hermes": {}},
+            {"vps_hermes": {"config": {"managed_overlay": {"skills": {"disabled": ["a"]}}}}},
+        ):
+            with self.subTest(value=absent):
+                self.assertEqual(apply_config.catalog_churn_names(absent), set())
+        for broken in (
+            {"vps_hermes": []},
+            {"vps_hermes": {"config": []}},
+            {"vps_hermes": {"config": {"managed_overlay": []}}},
+            {"vps_hermes": {"config": {"managed_overlay": {"skills": []}}}},
+        ):
+            with self.subTest(value=broken):
+                with self.assertRaisesRegex(ValueError, "must be a mapping"):
+                    apply_config.catalog_churn_names(broken)
+
+    def test_verify_disabled_skills_flags_a_name_that_exists_nowhere(self) -> None:
+        settings = apply_config.load_settings(MODULE_PATH.parent.parent / "config" / "vps-defaults.yml")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            skill_dir = root / "skills" / "productivity" / "known"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text("---\nname: known\n---\n", encoding="utf-8")
+            (root / "skills" / ".archive" / "old").mkdir(parents=True)
+            (root / "skills" / ".archive" / "old" / "SKILL.md").write_text(
+                "---\nname: archived-only\n---\n", encoding="utf-8"
+            )
+
+            # A real name resolves; a typo and an archived-only name are flagged;
+            # a catalog-churn name is exempt.
+            unknown = apply_config.verify_disabled_skills(settings, root)
+
+        self.assertNotIn("known", unknown)
+        self.assertNotIn("github-auth", unknown)
+        self.assertIn("apple-notes", unknown)
+        self.assertIn("imessage", unknown)
+        self.assertNotIn("archived-only", unknown)
+
+    def test_verify_disabled_skills_is_a_no_op_without_a_catalog(self) -> None:
+        settings = apply_config.load_settings(MODULE_PATH.parent.parent / "config" / "vps-defaults.yml")
+        with tempfile.TemporaryDirectory() as directory:
+            # A fresh install has no skills tree yet; that must not fail a deploy.
+            self.assertEqual(apply_config.verify_disabled_skills(settings, Path(directory)), [])
+
+    def test_verify_disabled_skills_rejects_a_malformed_disable_list(self) -> None:
+        for broken in (None, "not-a-list", ["ok", ""], [1]):
+            with self.subTest(value=broken):
+                settings = {"vps_hermes": {"config": {"managed_overlay": {
+                    "skills": {"disabled": broken, "catalog_churn": []}}}}}
+                with self.assertRaisesRegex(ValueError, "skills.disabled"):
+                    apply_config.verify_disabled_skills(settings, Path("/nonexistent"))
+
+    def test_verify_disabled_skills_rejects_a_malformed_catalog_churn(self) -> None:
+        settings = {"vps_hermes": {"config": {"managed_overlay": {
+            "skills": {"disabled": ["known"], "catalog_churn": "not-a-list"}}}}}
+        with self.assertRaisesRegex(ValueError, "catalog_churn"):
+            apply_config.verify_disabled_skills(settings, Path("/nonexistent"))
 
     def test_matt_pocock_engineering_skills_are_pinned_and_enabled(self) -> None:
         settings = apply_config.load_settings(MODULE_PATH.parent.parent / "config" / "vps-defaults.yml")
@@ -627,6 +704,174 @@ class ApplyConfigTests(unittest.TestCase):
     def test_capability_operations_reject_non_string_capability(self) -> None:
         with self.assertRaisesRegex(ValueError, "each capability must have a name"):
             apply_config._capability_operations({1: {"a": "b"}}, set(), {}, {})
+
+    def test_verify_disabled_skills_rejects_a_malformed_overlay_shape(self) -> None:
+        # Every level of the overlay path fails closed on a non-mapping.
+        for broken in (
+            {"vps_hermes": []},
+            {"vps_hermes": {"config": []}},
+            {"vps_hermes": {"config": {"managed_overlay": []}}},
+            {"vps_hermes": {"config": {"managed_overlay": {"skills": []}}}},
+        ):
+            with self.subTest(value=broken):
+                with self.assertRaisesRegex(ValueError, "must be a mapping"):
+                    apply_config.disabled_skill_names(broken)
+
+    def test_discover_skill_names_skips_files_without_frontmatter_or_name(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            good = root / "skills" / "a" / "SKILL.md"
+            good.parent.mkdir(parents=True)
+            good.write_text("---\nname: alpha\n---\n", encoding="utf-8")
+            no_frontmatter = root / "skills" / "b" / "SKILL.md"
+            no_frontmatter.parent.mkdir(parents=True)
+            no_frontmatter.write_text("# no frontmatter\n", encoding="utf-8")
+            no_name = root / "skills" / "c" / "SKILL.md"
+            no_name.parent.mkdir(parents=True)
+            no_name.write_text("---\ndescription: nameless\n---\n", encoding="utf-8")
+
+            self.assertEqual(apply_config.discover_skill_names(root), {"alpha"})
+
+    def test_discover_skill_names_skips_unreadable_or_unparsable_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            good = root / "skills" / "ok" / "SKILL.md"
+            good.parent.mkdir(parents=True)
+            good.write_text("---\nname: alpha\n---\n", encoding="utf-8")
+            bad_yaml = root / "skills" / "bad" / "SKILL.md"
+            bad_yaml.parent.mkdir(parents=True)
+            bad_yaml.write_text("---\nname: [unclosed\n---\n", encoding="utf-8")
+
+            errors = io.StringIO()
+            with mock.patch("sys.stderr", errors):
+                # Unparsable frontmatter is skipped, reported, not fatal.
+                self.assertEqual(apply_config.discover_skill_names(root), {"alpha"})
+            self.assertIn("invalid frontmatter", errors.getvalue())
+
+            original = Path.read_text
+            def selective(path_self, *args, **kwargs):
+                if path_self.name == "SKILL.md" and path_self.parent.name == "ok":
+                    raise OSError("denied")
+                return original(path_self, *args, **kwargs)
+
+            errors = io.StringIO()
+            with mock.patch.object(Path, "read_text", selective), mock.patch("sys.stderr", errors):
+                # An unreadable file is skipped and reported; the call still
+                # returns the names it could read, so the advisory audit
+                # continues instead of aborting the deployment.
+                self.assertEqual(apply_config.discover_skill_names(root), set())
+            self.assertIn("cannot read skill file", errors.getvalue())
+
+    def test_main_apply_warns_but_does_not_abort_on_an_absent_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            settings_path = root / "vps-defaults.yml"
+            settings_path.write_text(
+                "vps_runtime:\n"
+                "  set:\n"
+                "    terminal.cwd: /home/hermes/workspace\n"
+                "vps_hermes:\n"
+                "  config:\n"
+                "    managed_overlay:\n"
+                "      skills:\n"
+                "        catalog_churn: [retired]\n"
+                "        disabled: [present, typoed]\n",
+                encoding="utf-8",
+            )
+            skill = root / "home" / "skills" / "present"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("---\nname: present\n---\n", encoding="utf-8")
+            argv = [
+                "apply-config.py", "apply",
+                "--settings", str(settings_path),
+                "--hermes-home", str(root / "home"),
+                "--hermes-bin", "/opt/hermes-bootstrap/bin/hermes",
+                "--workspace", "/home/hermes/workspace",
+            ]
+            errors = io.StringIO()
+            with mock.patch("sys.argv", argv), mock.patch.object(
+                apply_config, "run_operation"
+            ) as run_operation, mock.patch("sys.stderr", errors):
+                exit_code = apply_config.main()
+
+        # The audit is advisory: a legitimately absent name (unseeded catalog,
+        # agent-created skill) must never strand a deployment that already
+        # stopped its gateway. It warns and the apply proceeds.
+        self.assertEqual(exit_code, 0)
+        run_operation.assert_called_once()
+        self.assertIn("warning:", errors.getvalue())
+        self.assertIn("typoed", errors.getvalue())
+        # The exempt churn name must not be reported.
+        self.assertNotIn("retired", errors.getvalue())
+
+    def test_main_apply_is_quiet_when_every_disabled_name_resolves(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            settings_path = root / "vps-defaults.yml"
+            settings_path.write_text(
+                "vps_runtime:\n"
+                "  set:\n"
+                "    terminal.cwd: /home/hermes/workspace\n"
+                "vps_hermes:\n"
+                "  config:\n"
+                "    managed_overlay:\n"
+                "      skills:\n"
+                "        catalog_churn: [retired]\n"
+                "        disabled: [present, retired]\n",
+                encoding="utf-8",
+            )
+            skill = root / "home" / "skills" / "present"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("---\nname: present\n---\n", encoding="utf-8")
+            argv = [
+                "apply-config.py", "apply",
+                "--settings", str(settings_path),
+                "--hermes-home", str(root / "home"),
+                "--hermes-bin", "/opt/hermes-bootstrap/bin/hermes",
+                "--workspace", "/home/hermes/workspace",
+            ]
+            errors = io.StringIO()
+            with mock.patch("sys.argv", argv), mock.patch.object(
+                apply_config, "run_operation"
+            ) as run_operation, mock.patch("sys.stderr", errors):
+                exit_code = apply_config.main()
+
+        self.assertEqual(exit_code, 0)
+        run_operation.assert_called_once()
+        self.assertNotIn("warning:", errors.getvalue())
+
+    def test_main_apply_skips_the_audit_without_a_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            settings_path = root / "vps-defaults.yml"
+            settings_path.write_text(
+                "vps_runtime:\n"
+                "  set:\n"
+                "    terminal.cwd: /home/hermes/workspace\n"
+                "vps_hermes:\n"
+                "  config:\n"
+                "    managed_overlay:\n"
+                "      skills:\n"
+                "        disabled: [anything-at-all]\n",
+                encoding="utf-8",
+            )
+            argv = [
+                "apply-config.py", "apply",
+                "--settings", str(settings_path),
+                "--hermes-home", str(root / "home"),
+                "--hermes-bin", "/opt/hermes-bootstrap/bin/hermes",
+                "--workspace", "/home/hermes/workspace",
+            ]
+            errors = io.StringIO()
+            with mock.patch("sys.argv", argv), mock.patch.object(
+                apply_config, "run_operation"
+            ) as run_operation, mock.patch("sys.stderr", errors):
+                exit_code = apply_config.main()
+
+        # No skills tree yet (fresh install): no warning at all, deploy proceeds.
+        self.assertEqual(exit_code, 0)
+        run_operation.assert_called_once()
+        self.assertNotIn("warning:", errors.getvalue())
 
 
 if __name__ == "__main__":

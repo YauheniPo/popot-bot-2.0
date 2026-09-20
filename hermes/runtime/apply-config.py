@@ -145,6 +145,109 @@ def _string_list(section: dict[str, Any], key: str) -> list[str]:
     return value
 
 
+def _managed_skills(settings: dict[str, Any]) -> dict[str, Any]:
+    """Return the validated `managed_overlay.skills` mapping, failing closed."""
+    overlay = settings.get("vps_hermes", {})
+    if not isinstance(overlay, dict):
+        raise ValueError("vps_hermes must be a mapping")
+    config = overlay.get("config", {})
+    if not isinstance(config, dict):
+        raise ValueError("vps_hermes.config must be a mapping")
+    managed = config.get("managed_overlay", {})
+    if not isinstance(managed, dict):
+        raise ValueError("vps_hermes.config.managed_overlay must be a mapping")
+    skills = managed.get("skills", {})
+    if not isinstance(skills, dict):
+        raise ValueError("vps_hermes.config.managed_overlay.skills must be a mapping")
+    return skills
+
+
+def disabled_skill_names(settings: dict[str, Any]) -> list[str]:
+    """Return the managed `skills.disabled` list, failing closed on bad shape."""
+    disabled = _managed_skills(settings).get("disabled", [])
+    if not isinstance(disabled, list) or not all(
+        isinstance(name, str) and name.strip() for name in disabled
+    ):
+        raise ValueError("managed skills.disabled must be a list of non-empty strings")
+    return [name.strip() for name in disabled]
+
+
+def catalog_churn_names(settings: dict[str, Any]) -> set[str]:
+    """Disabled names upstream removed from the catalog; these need not exist.
+
+    Goes through the same validated accessor as `disabled_skill_names` so a
+    malformed overlay raises a ValueError (caught by main) rather than a
+    KeyError/TypeError traceback.
+    """
+    churn = _managed_skills(settings).get("catalog_churn", [])
+    if not isinstance(churn, list) or not all(
+        isinstance(name, str) and name.strip() for name in churn
+    ):
+        raise ValueError("managed skills.catalog_churn must be a list of non-empty strings")
+    return {name.strip() for name in churn}
+
+
+def discover_skill_names(hermes_home: Path) -> set[str]:
+    """Frontmatter `name:` of every discoverable SKILL.md under HERMES_HOME.
+
+    A skill's identity is the `name:` field, not its directory, and
+    `skills/.archive/` is excluded from discovery. Returns an empty set when
+    no catalog exists yet (a fresh install before the first sync), so a
+    deployment does not fail merely because the skills tree is not there.
+
+    An individual file that cannot be read or parsed is skipped, not raised:
+    this feeds an advisory audit, and a single unreadable file (bad permission,
+    broken symlink, truncated YAML) must not turn that audit into a fatal
+    deployment failure. The skip is reported on stderr so it stays visible.
+    """
+    root = hermes_home / "skills"
+    if not root.is_dir():
+        return set()
+    names: set[str] = set()
+    for path in root.rglob("SKILL.md"):
+        if ".archive" in path.parts:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as error:
+            print(f"warning: cannot read skill file {path}: {error}", file=sys.stderr)
+            continue
+        match = re.match(r"^---\n(.*?)\n---", text, re.S)
+        if match is None:
+            continue
+        try:
+            frontmatter = yaml.safe_load(match.group(1)) or {}
+        except yaml.YAMLError as error:
+            print(f"warning: invalid frontmatter in {path}: {error}", file=sys.stderr)
+            continue
+        if isinstance(frontmatter, dict) and isinstance(frontmatter.get("name"), str):
+            names.add(frontmatter["name"].strip())
+    return names
+
+
+def verify_disabled_skills(settings: dict[str, Any], hermes_home: Path) -> list[str]:
+    """Return disabled names that exist nowhere on disk and are not catalog churn.
+
+    A disabled name that matches no SKILL.md is a silent no-op: the typo reads
+    as "skill turned off" while the skill stays enabled. Only names deliberately
+    recorded under `catalog_churn` are exempt.
+
+    This is reported, never fatal. A name can legitimately be absent: the
+    catalog may not be seeded yet on a fresh or replacement install, and
+    agent-created skills (e.g. the local hermes-vps-* set) are never bundled,
+    so a hard failure would strand a working deployment on a heuristic. The
+    caller surfaces the list as a warning instead. With no catalog at all the
+    check is a deliberate no-op: it cannot tell a typo from an unseeded tree,
+    and reporting every name would bury the signal it exists to give.
+    """
+    disabled = disabled_skill_names(settings)
+    churn = catalog_churn_names(settings)
+    available = discover_skill_names(hermes_home)
+    if not available:
+        return []
+    return sorted(name for name in disabled if name not in available and name not in churn)
+
+
 def _set_operations(
     settings: dict[str, Any],
     current_config: dict[str, Any],
@@ -698,6 +801,18 @@ def main() -> int:
         # actually executes --hermes-bin as a subprocess.
         if re.fullmatch(r"/[A-Za-z0-9._/@+-]+", str(args.hermes_bin)) is None:
             raise ValueError(f"unsafe or unsupported --hermes-bin path: {args.hermes_bin}")
+        unknown = verify_disabled_skills(settings, args.hermes_home)
+        if unknown:
+            # Reported, not fatal: a disabled name can legitimately be absent
+            # (catalog not seeded yet, or an agent-created skill that is never
+            # bundled). Aborting here would strand a working deployment on a
+            # heuristic; a visible warning still catches the typo it is for.
+            print(
+                "warning: managed skills.disabled lists names with no SKILL.md "
+                "on disk and not recorded in skills.catalog_churn: "
+                + ", ".join(unknown),
+                file=sys.stderr,
+            )
         current = load_config(args.hermes_home / "config.yaml")
         operations = build_operations(
             settings,
