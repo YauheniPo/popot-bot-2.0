@@ -193,14 +193,70 @@ class ManageWorkspaceAgentsTests(unittest.TestCase):
         self.assertIn(other_blocks + "\n\n" + personal, result)
         self.assertEqual(manage_workspace_agents.reconcile(result, source, present=True), result)
 
-    def run_cli(self, target, source, backup=None, state="present"):
+    def run_cli(self, target, source, backup=None, state="present", common=None, legacy=()):
         argv = ["manage-workspace-agents.py", "--target", str(target),
                 "--managed-source", str(source), "--state", state]
         if backup is not None:
             argv.extend(["--backup-copy", str(backup)])
+        if common is not None:
+            argv.extend(["--common-source", str(common)])
+        for path in legacy:
+            argv.extend(["--legacy-source", str(path)])
         with mock.patch("sys.argv", argv), contextlib.redirect_stderr(io.StringIO()), \
                 contextlib.redirect_stdout(io.StringIO()):
             return manage_workspace_agents.main()
+
+    def test_shared_source_rejects_empty_marker_bearing_and_disabled_input(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            target = root / "AGENTS.md"
+            target.write_text("Personal notes\n")
+            source = root / "env.md"
+            source.write_text("VPS policy\n")
+            for content in ("   ", "<!-- BEGIN HERMES MANAGED COMMON -->\nbody\n",
+                            "body\n<!-- END HERMES MANAGED COMMON -->"):
+                common = root / "common.md"
+                common.write_text(content)
+                with self.subTest(content=content[:20]):
+                    self.assertEqual(self.run_cli(target, source, common=common), 2)
+                    self.assertEqual(target.read_text(), "Personal notes\n")
+            # --state only means something for the single-source form.
+            common = root / "common.md"
+            common.write_text("Shared policy\n")
+            self.assertEqual(self.run_cli(target, source, common=common, state="absent"), 2)
+
+    def test_legacy_source_requires_the_shared_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            target = root / "AGENTS.md"
+            target.write_text("Personal notes\n")
+            source = root / "env.md"
+            source.write_text("VPS policy\n")
+            legacy = root / "legacy.md"
+            legacy.write_text("Old container policy\n")
+            self.assertEqual(self.run_cli(target, source, legacy=[legacy]), 2)
+            self.assertEqual(target.read_text(), "Personal notes\n")
+
+    def test_shared_source_composes_both_layers_and_migrates_legacy_copy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            target = root / "AGENTS.md"
+            target.write_text("Old container policy\n\nMy notes\n")
+            managed = root / "env.md"
+            managed.write_text("VPS policy\n")
+            common = root / "common.md"
+            common.write_text("Shared policy\n")
+            legacy = root / "legacy.md"
+            legacy.write_text("Old container policy\n")
+            self.assertEqual(self.run_cli(target, managed, common=common, legacy=[legacy]), 0)
+            written = target.read_text()
+            self.assertIn("Shared policy", written)
+            self.assertIn("VPS policy", written)
+            self.assertIn("My notes", written)
+            self.assertNotIn("Old container policy", written)
+            # Re-running is a no-op.
+            self.assertEqual(self.run_cli(target, managed, common=common, legacy=[legacy]), 0)
+            self.assertEqual(target.read_text(), written)
 
     def test_linked_destinations_are_rejected_before_either_file_is_changed(self) -> None:
         for destination in ("target", "backup"):
