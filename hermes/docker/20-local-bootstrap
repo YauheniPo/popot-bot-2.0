@@ -71,8 +71,10 @@ fi
 if [ ! -e "${state_dir}/workspace/AGENTS.md" ]; then
   install -o hermes -g hermes -m 0600 /dev/null "${state_dir}/workspace/AGENTS.md"
 fi
-chown hermes:hermes "${state_dir}/workspace/AGENTS.md"
-chmod 0600 "${state_dir}/workspace/AGENTS.md"
+if [ -e "${state_dir}/workspace/AGENTS.md" ]; then
+  chown hermes:hermes "${state_dir}/workspace/AGENTS.md"
+  chmod 0600 "${state_dir}/workspace/AGENTS.md"
+fi
 
 as_hermes() {
   s6-setuidgid hermes env \

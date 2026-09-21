@@ -271,6 +271,13 @@ class DeploymentStatePolicyTests(unittest.TestCase):
         self.assertIn("state exists but its CLI is missing", deploy_runtime)
         self.assertNotIn("skipping backup of an unusable installation", deploy_runtime)
 
+    def test_personal_state_mirror_cannot_abort_mandatory_backup(self) -> None:
+        deploy_runtime = (HERMES_ROOT / "deploy" / "runtime.sh").read_text()
+
+        self.assertIn('if [[ -f "$SCRIPT_DIR/runtime/backup-personal-state.py" ]]; then', deploy_runtime)
+        self.assertIn('if ! run_as_hermes python3 "$SCRIPT_DIR/runtime/backup-personal-state.py" mirror', deploy_runtime)
+        self.assertIn("personal-state mirror failed; continuing with the mandatory backup", deploy_runtime)
+
 
 if __name__ == "__main__":
     unittest.main()
