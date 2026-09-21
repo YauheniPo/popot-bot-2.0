@@ -104,39 +104,36 @@ export function createMemoryFiles({ home, workspace, parseConfig }) {
     const walkedRoots = new Set(['memory', 'memories', 'profiles', 'swarm']);
     const excluded = new Set(['.git', 'node_modules', '__pycache__', '.pytest_cache']);
 
-    function shouldDescend(prefix, name) {
-      if (prefix.startsWith('profiles/') && prefix !== 'profiles/' &&
-          !(prefix.split('/').length === 3 && name === 'memories')) return false;
-      if (prefix === 'swarm/' && name !== 'worktrees') return false;
-      return Boolean(prefix) || walkedRoots.has(name);
-    }
+    function shouldDescend(prefix, name, walkedRoots) {
+  if (prefix.startsWith('profiles/') && prefix !== 'profiles/' &&
+      !(prefix.split('/').length === 3 && name === 'memories')) return false;
+  if (prefix === 'swarm/' && name !== 'worktrees') return false;
+  return Boolean(prefix) || walkedRoots.has(name);
+}
 
-    function visitFile(directory, entry, prefix) {
+function walk(directory, prefix, depth, walkedRoots, excluded, results, resolveMemoryFilePath) {
+  if (!fs.existsSync(directory) || fs.lstatSync(directory).isSymbolicLink()) return;
+  if (depth > 20) throw new Error('Instruction tree exceeds editor depth limit');
+  let visited = 0;
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    if (++visited > 30_000) throw new Error('Instruction tree exceeds editor scan limit');
+    if (entry.name.startsWith('.') || excluded.has(entry.name) || entry.isSymbolicLink()) continue;
+    if (entry.isDirectory()) {
+      if (shouldDescend(prefix, entry.name, walkedRoots)) {
+        walk(path.join(directory, entry.name), prefix + entry.name + '/', depth + 1, walkedRoots, excluded, results, resolveMemoryFilePath);
+      }
+    } else {
       try {
         const { stat } = resolveMemoryFilePath(prefix + entry.name);
         results.push({ path: prefix + entry.name, name: entry.name, size: stat.size, modified: stat.mtime.toISOString() });
       } catch { /* Unlisted files, links and oversized files are not editor targets. */ }
     }
-
-    function walk(directory, prefix, depth = 0) {
-      if (!fs.existsSync(directory) || fs.lstatSync(directory).isSymbolicLink()) return;
-      if (depth > 20) throw new Error('Instruction tree exceeds editor depth limit');
-      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-        if (++visited > 30_000) throw new Error('Instruction tree exceeds editor scan limit');
-        if (entry.name.startsWith('.') || excluded.has(entry.name) || entry.isSymbolicLink()) continue;
-        if (entry.isDirectory()) {
-          if (shouldDescend(prefix, entry.name)) {
-            walk(path.join(directory, entry.name), prefix + entry.name + '/', depth + 1);
-          }
-        } else {
-          visitFile(directory, entry, prefix);
-        }
-      }
-    }
-    walk(roots.home, '');
-    walk(roots.workspace, 'workspace/');
-    return results.sort((a, b) => a.path.localeCompare(b.path));
   }
+}
+  walk(roots.home, '', 0, walkedRoots, excluded, results, resolveMemoryFilePath);
+  walk(roots.workspace, 'workspace/', 0, walkedRoots, excluded, results, resolveMemoryFilePath);
+  return results.sort((a, b) => a.path.localeCompare(b.path));
+}
 
   function writeMemoryFile(input, content, expectedVersion) {
     const { fullPath, stat } = resolveMemoryFilePath(input);
