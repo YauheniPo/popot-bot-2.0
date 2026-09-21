@@ -102,28 +102,34 @@ export function createMemoryFiles({ home, workspace, parseConfig }) {
     // Only these top-level trees are ever walked, and profile directories are
     // limited to their instruction and native-memory subtrees.
     const walkedRoots = new Set(['memory', 'memories', 'profiles', 'swarm']);
-    const descends = (prefix, name) => {
+    const excluded = new Set(['.git', 'node_modules', '__pycache__', '.pytest_cache']);
+
+    function shouldDescend(prefix, name) {
       if (prefix.startsWith('profiles/') && prefix !== 'profiles/' &&
           !(prefix.split('/').length === 3 && name === 'memories')) return false;
       if (prefix === 'swarm/' && name !== 'worktrees') return false;
       return Boolean(prefix) || walkedRoots.has(name);
-    };
+    }
+
+    function visitFile(directory, entry, prefix) {
+      try {
+        const { stat } = resolveMemoryFilePath(prefix + entry.name);
+        results.push({ path: prefix + entry.name, name: entry.name, size: stat.size, modified: stat.mtime.toISOString() });
+      } catch { /* Unlisted files, links and oversized files are not editor targets. */ }
+    }
+
     function walk(directory, prefix, depth = 0) {
       if (!fs.existsSync(directory) || fs.lstatSync(directory).isSymbolicLink()) return;
       if (depth > 20) throw new Error('Instruction tree exceeds editor depth limit');
       for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
         if (++visited > 30_000) throw new Error('Instruction tree exceeds editor scan limit');
         if (entry.name.startsWith('.') || excluded.has(entry.name) || entry.isSymbolicLink()) continue;
-        const relative = prefix + entry.name;
         if (entry.isDirectory()) {
-          if (descends(prefix, entry.name)) {
-            walk(path.join(directory, entry.name), relative + '/', depth + 1);
+          if (shouldDescend(prefix, entry.name)) {
+            walk(path.join(directory, entry.name), prefix + entry.name + '/', depth + 1);
           }
         } else {
-          try {
-            const { stat } = resolveMemoryFilePath(relative);
-            results.push({ path: relative, name: entry.name, size: stat.size, modified: stat.mtime.toISOString() });
-          } catch { /* Unlisted files, links and oversized files are not editor targets. */ }
+          visitFile(directory, entry, prefix);
         }
       }
     }

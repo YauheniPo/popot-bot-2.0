@@ -91,16 +91,33 @@ def _probe_outcome(proc, output, selector, on_auth, heartbeat, deadline, next_he
     """Watch one attempt until it settles; returns (outcome, auth_reported, next_heartbeat)."""
     while time.monotonic() < deadline:
         read_available(selector, output, min(.2, max(0, deadline - time.monotonic())))
-        if output.auth_url and not auth_reported:
-            auth_reported = True
-            if on_auth(output.auth_url) is False:
-                return 'auth_required', auth_reported, next_heartbeat
-        if proc.poll() is not None and not selector.get_map():
+        auth_reported = _handle_auth(output, on_auth, auth_reported)
+        if auth_reported == 'auth_required':
+            return 'auth_required', True, next_heartbeat
+        if _attempt_finished(proc, output, selector):
             return ('ready' if proc.returncode == 0 else output.failure), auth_reported, next_heartbeat
-        if time.monotonic() >= next_heartbeat:
-            heartbeat('waiting for browser approval' if auth_reported else 'waiting for SSH')
-            next_heartbeat = time.monotonic() + 10
+        next_heartbeat = _maybe_heartbeat(heartbeat, auth_reported, next_heartbeat)
     return ('auth_timeout' if auth_reported else 'timeout'), auth_reported, next_heartbeat
+
+
+def _handle_auth(output, on_auth, auth_reported):
+    if output.auth_url and not auth_reported:
+        if on_auth(output.auth_url) is False:
+            return 'auth_required'
+        return True
+    return auth_reported
+
+
+def _maybe_heartbeat(heartbeat, auth_reported, next_heartbeat):
+    if time.monotonic() >= next_heartbeat:
+        heartbeat('waiting for browser approval' if auth_reported else 'waiting for SSH')
+        return time.monotonic() + 10
+    return next_heartbeat
+
+
+def _attempt_finished(proc, output, selector):
+    """True if the child has exited and no unread output remains."""
+    return proc.poll() is not None and not selector.get_map()
 
 
 def probe(command, timeout, on_auth, heartbeat):
