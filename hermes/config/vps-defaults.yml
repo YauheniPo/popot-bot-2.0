@@ -86,11 +86,15 @@ vps_hermes:
       # Compact long sessions after 70% of the active model context is used.
       compression:
         threshold: 0.70
-      # Context compaction uses its own route with OPENROUTER_API_KEY.
+      # Context compaction keeps its explicit OpenRouter primary, then uses the
+      # managed fallback route only for this compression request.
       auxiliary:
         compression:
           provider: openrouter
           model: nvidia/nemotron-3-ultra-550b-a55b:free
+          fallback_chain:
+            - provider: nvidia
+              model: nvidia/nemotron-3-ultra-550b-a55b
       # The runtime derives cron's default route from model above; do not
       # duplicate it here. Explicit per-job pins still take precedence.
       cron:

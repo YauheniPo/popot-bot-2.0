@@ -48,6 +48,25 @@ def _profile_config_updates(config: dict[str, Any], values: dict[str, str]) -> b
     return changed
 
 
+def api_retry_fallbacks(settings: dict[str, Any]) -> str:
+    """Render the managed global fallback chain for the one-shot API helper."""
+    overlay = settings.get('vps_hermes', {}).get('config', {}).get('managed_overlay', {})
+    chain = overlay.get('fallback_providers', [])
+    if not isinstance(chain, list):
+        raise ValueError('managed fallback_providers must be a list')
+    routes = []
+    for entry in chain:
+        if not isinstance(entry, dict):
+            raise ValueError('managed fallback provider entries must be mappings')
+        provider = entry.get('provider')
+        model = entry.get('model')
+        if (not isinstance(provider, str) or not re.fullmatch(r'[a-z][a-z0-9-]*', provider)
+                or not isinstance(model, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/+-]*', model)):
+            raise ValueError('managed fallback provider entries require valid provider and model')
+        routes.append(f'{provider}:{model}')
+    return ','.join(routes)
+
+
 def _pending_profile_updates(home: Path, values: dict[str, str]) -> list:
     """Validate every profile and return the (path, config) pairs that need writing."""
     profiles = home / 'profiles'
@@ -691,6 +710,7 @@ def build_asset_values(
         "GATEWAY_SERVICE": gateway_services[0],
         "API_RETRY_PROVIDER": api_retry_provider,
         "API_RETRY_MODEL": api_retry_model,
+        "API_RETRY_FALLBACKS": api_retry_fallbacks(settings),
         "API_RETRY_MESSAGE": api_retry_message,
         "API_RETRY_MAX_ATTEMPTS": str(api_retry_max_attempts),
         "API_RETRY_WAIT_SECONDS": str(api_retry_wait_seconds),

@@ -82,6 +82,7 @@ os.execvp(sys.argv[4], sys.argv[4:])
             "HERMES_API_RETRY_MODEL": "vendor/test-model",
             "HERMES_API_RETRY_MESSAGE": "Hello", "HERMES_API_RETRY_MAX_ATTEMPTS": "2",
             "HERMES_API_RETRY_WAIT_SECONDS": "1", "HERMES_API_RETRY_TIMEOUT_SECONDS": "180",
+            "HERMES_API_RETRY_FALLBACKS": "",
         }
         settings.update(overrides or {})
         config = temporary / "hermes-ops.conf"
@@ -148,6 +149,33 @@ os.execvp(sys.argv[4], sys.argv[4:])
                     self.assertIn("timed out", result.stderr)
                 else:
                     self.assertEqual(sleeps.read_text().splitlines(), ["1"])
+
+    def test_api_retry_switches_to_fallback_for_the_rest_of_the_trigger(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, calls, sleeps, _ = self.run_retry_helper(
+                Path(directory), [1, 1, 0],
+                overrides={"HERMES_API_RETRY_FALLBACKS": "backup-provider:vendor/backup-model",
+                           "HERMES_API_RETRY_MAX_ATTEMPTS": "3"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                [(call["args"][2], call["args"][4]) for call in calls],
+                [("test-provider", "vendor/test-model"),
+                 ("backup-provider", "vendor/backup-model"),
+                 ("backup-provider", "vendor/backup-model")],
+            )
+            self.assertEqual(sleeps.read_text().splitlines(), ["1", "1"])
+
+    def test_api_retry_uses_fallback_after_a_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, calls, _, _ = self.run_retry_helper(
+                Path(directory), [124, 0],
+                overrides={"HERMES_API_RETRY_FALLBACKS": "backup-provider:vendor/backup-model",
+                           "HERMES_API_RETRY_MAX_ATTEMPTS": "2"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(calls[0]["args"][2], "test-provider")
+            self.assertEqual(calls[1]["args"][2], "backup-provider")
 
     def test_api_retry_stops_on_fixed_cli_usage_error(self):
         with tempfile.TemporaryDirectory() as directory:

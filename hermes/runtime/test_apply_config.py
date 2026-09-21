@@ -173,6 +173,16 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertLessEqual(overlay["compression"]["threshold"], 1)
         self.assertIsInstance(overlay["auxiliary"]["compression"]["provider"], str)
         self.assertIsInstance(overlay["auxiliary"]["compression"]["model"], str)
+        self.assertEqual(
+            overlay["auxiliary"]["compression"],
+            {
+                "provider": "openrouter",
+                "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+                "fallback_chain": [
+                    {"provider": "nvidia", "model": "nvidia/nemotron-3-ultra-550b-a55b"},
+                ],
+            },
+        )
         routes = apply_config.managed_model_values(settings)
         self.assertEqual(routes['cron.model_provider'], overlay['model']['provider'])
         self.assertEqual(routes['cron.model'], overlay['model']['default'])
@@ -195,6 +205,7 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertTrue(all(isinstance(value, str) and (value or key == "SEARXNG_URL") for key, value in values.items()))
         self.assertEqual(values["API_RETRY_PROVIDER"], settings["vps_ops"]["api_retry"]["provider"])
         self.assertEqual(values["API_RETRY_MODEL"], settings["vps_ops"]["api_retry"]["model"])
+        self.assertEqual(values["API_RETRY_FALLBACKS"], "nvidia:nvidia/nemotron-3-ultra-550b-a55b")
         self.assertEqual(values["SEARXNG_URL"], "")
 
     def assert_runtime_contract(self, runtime: dict) -> None:
