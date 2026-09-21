@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const nonempty = value => value && Object.keys(value).length > 0;
 const safeName = value => typeof value === 'string' && value.trim() &&
-  !['.', '..'].includes(value.trim()) && !/[\\/\x00-\x1f\x7f]/.test(value);
+  !['.', '..'].includes(value.trim()) && !/[\\/\\\x00-\x1f\x7f]/.test(value);
 
 export function correctWorkspacePresets(value) {
   if (!Array.isArray(value?.presets)) return value;
@@ -63,6 +63,23 @@ function createInput(body) {
   return result;
 }
 
+function classifyMcpRequest(path, method) {
+  if (path === '/api/mcp/servers' && method === 'GET') return 'collection';
+  if (path === '/api/mcp/servers' && method === 'POST') return 'collection';
+  if (path === '/api/mcp' && (method === 'GET' || method === 'POST')) return 'collection';
+  if (path === '/api/mcp/configure' && method === 'PUT') return 'configure';
+  if (path === '/api/mcp/test' && method === 'POST') return 'test';
+  if (path.startsWith('/api/mcp/servers/') && path.endsWith('/enabled')) return 'configure';
+  if (path.startsWith('/api/mcp/servers/') && path.endsWith('/test')) return 'test';
+  if (path.startsWith('/api/mcp/servers/') && method === 'DELETE') return 'deletion';
+  if (path.startsWith('/api/mcp/servers/') && (method === 'PUT' || method === 'PATCH')) return 'edit';
+  if (/^\/api\/mcp\/[^/]+$/.test(path) && method === 'DELETE') return 'deletion';
+  if (/^\/api\/mcp\/[^/]+$/.test(path) && (method === 'PUT' || method === 'PATCH')) return 'edit';
+  if (path.startsWith('/api/mcp/') && method !== 'GET') return 'discover';
+  if (path.startsWith('/api/mcp/') && path.endsWith('/logs')) return 'logs';
+  return null;
+}
+
 function buildRequestProfile(input, init) {
   const url = new URL(input instanceof Request ? input.url : input);
   const method = (init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
@@ -81,26 +98,6 @@ async function buildRequestBody(method, init, input) {
   } catch {
     throw new Error('Invalid MCP payload or server name.');
   }
-}
-
-function planForKind(kind, url, body, profile, method) {
-  if (kind === 'discover') return { refusal: true };
-  if (kind === 'logs') return { refusal: true };
-  if (!kind) return null;
-  return planMcpRequest(kind, url, body, profile, method);
-}
-
-function attachObservationState(method, kind, key, observations, test) {
-  let testedEntry = undefined;
-  if (method !== 'GET') {
-    const previous = observations.get(key);
-    observations.delete(key);
-    if (test && previous) {
-      testedEntry = { profile: key.split(',')[0], fingerprint: previous.fingerprint };
-      observations.set(key, testedEntry);
-    }
-  }
-  return testedEntry;
 }
 
 function buildFetchHeaders(init, input, payload) {
@@ -143,12 +140,41 @@ function handleRenderFailure() {
   return Response.json({ ok: false, error: 'Unexpected native Hermes MCP response.' }, { status: 502, headers: { 'cache-control': 'no-store' } });
 }
 
+function manageObservations(method, kind, key, observations, test, profile) {
+  if (method === 'GET') return;
+  const previous = observations.get(key);
+  observations.delete(key);
+  if (test && previous) {
+    observations.set(key, { profile, fingerprint: previous.fingerprint });
+  }
+}
+
+async function processResponse(fetchImpl, response, testedEntry, key, observations, now, render) {
+  const value = await parseResponseBody(response);
+  const outputHeaders = stripOutputHeaders(response.headers);
+  if (!response.ok) return buildErrorResponse(response.status,
+    `Hermes MCP request failed (HTTP ${response.status}). Check authorization, server name and native field requirements.`);
+  try {
+    if (!object(value)) throw new Error('Invalid MCP response');
+    const rendered = render(value);
+    if (testedEntry && observations.get(key) === testedEntry) {
+      testedEntry.result = { status: rendered.status,
+        toolCount: rendered.discoveredTools.length, error: rendered.error };
+      testedEntry.testedAt = now();
+    }
+    return handleSuccessfulResponse(rendered, outputHeaders);
+  } catch {
+    return handleRenderFailure();
+  }
+}
+
 export function createMcpAdapter({ dashboardUrl, fetchImpl, now = Date.now, probeTtlMs = 300_000 }) {
   const base = new URL(dashboardUrl);
   // Last explicit Test only, never an implicit process launch or an auth cache.
   // Every list still reaches the protected native API. No credentials on disk.
   const observations = new Map();
   const keyFor = (profile, name) => JSON.stringify([profile, name]);
+
   function listView(servers, profile) {
     const present = new Set(servers.map(server => keyFor(profile, server?.name)));
     for (const [key, entry] of observations) {
@@ -173,27 +199,7 @@ export function createMcpAdapter({ dashboardUrl, fetchImpl, now = Date.now, prob
       return view;
     });
   }
-  // Classify one MCP request. Returns the handled operation kind, or null when
-  // the request is not ours and must be passed through to the original fetch.
-  function classifyMcpRequest(path, method) {
-    if (path === '/api/mcp/servers' && method === 'GET') return 'collection';
-    if (path === '/api/mcp/servers' && method === 'POST') return 'collection';
-    if (path === '/api/mcp' && (method === 'GET' || method === 'POST')) return 'collection';
-    if (path === '/api/mcp/configure' && method === 'PUT') return 'configure';
-    if (path === '/api/mcp/test' && method === 'POST') return 'test';
-    if (path.startsWith('/api/mcp/servers/') && path.endsWith('/enabled')) return 'configure';
-    if (path.startsWith('/api/mcp/servers/') && path.endsWith('/test')) return 'test';
-    if (path.startsWith('/api/mcp/servers/') && method === 'DELETE') return 'deletion';
-    if (path.startsWith('/api/mcp/servers/') && (method === 'PUT' || method === 'PATCH')) return 'edit';
-    if (/^\/api\/mcp\/[^/]+$/.test(path) && method === 'DELETE') return 'deletion';
-    if (/^\/api\/mcp\/[^/]+$/.test(path) && (method === 'PUT' || method === 'PATCH')) return 'edit';
-    if (path.startsWith('/api/mcp/') && method !== 'GET') return 'discover';
-    if (path.startsWith('/api/mcp/') && path.endsWith('/logs')) return 'logs';
-    return null;
-  }
 
-  // Rewrite the upstream path and pick the response renderer for one operation.
-  // Each branch returns either an early refusal Response or the request plan.
   function planMcpRequest(kind, url, body, profile, method) {
     if (kind === 'collection') {
       url.pathname = '/api/mcp/servers';
@@ -239,82 +245,45 @@ export function createMcpAdapter({ dashboardUrl, fetchImpl, now = Date.now, prob
     return {};
   }
 
-  function createFetchPlan(kind, url, body, profile, method) {
-      const plan = planMcpRequest(kind, url, body, profile, method);
-      if (plan.refusal) return { refusal: plan.refusal };
-      return { payload: plan.payload, render: plan.render || (value => value) };
+  return async function mcpFetch(input, init = {}) {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (url.origin !== base.origin || !/^\/api\/mcp(?:\/|$)/.test(url.pathname)) {
+      return fetchImpl(input, init);
+    }
+    const method = (init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
+    const path = url.pathname;
+    const profile = url.searchParams.get('profile') || '';
+    const kind = classifyMcpRequest(path, method);
+    if (kind === 'discover') {
+      return unsupported('Native Hermes tests saved servers only. Save the server, then use Test; unsaved discovery is unavailable.');
+    }
+    if (kind === 'logs') {
+      return Response.json({ ok: false, error: 'This Hermes version has no per-server MCP log stream. Use the official Dashboard.' }, { status: 501 });
+    }
+    if (!kind) return fetchImpl(input, init);
+
+    let body;
+    try {
+      body = await buildRequestBody(method, init, input);
+      if (kind === 'deletion' && !safeName(decodeURIComponent(path.slice('/api/mcp/'.length)))) throw new Error('Invalid name');
+    } catch {
+      return unsupported('Invalid MCP payload or server name.');
     }
 
-    function manageObservations(method, kind, key, observations, test, profile) {
-      let testedEntry = undefined;
-      if (method !== 'GET') {
-        const previous = observations.get(key);
-        observations.delete(key);
-        if (test && previous) {
-          testedEntry = { profile, fingerprint: previous.fingerprint };
-          observations.set(key, testedEntry);
-        }
-      }
-      return testedEntry;
-    }
+    const planResult = planMcpRequest(kind, url, body, profile, method);
+    if (planResult.refusal) return planResult.refusal;
+    const payload = planResult.payload;
+    const render = planResult.render || (value => value);
+    const deletion = kind === 'deletion';
+    const test = kind === 'test';
 
-    async function processResponse(fetchImpl, response, testedEntry, key, observations, now, render) {
-      const value = await parseResponseBody(response);
-      const outputHeaders = stripOutputHeaders(response.headers);
-      if (!response.ok) return buildErrorResponse(response.status,
-        `Hermes MCP request failed (HTTP ${response.status}). Check authorization, server name and native field requirements.`);
-      try {
-        if (!object(value)) throw new Error('Invalid MCP response');
-        const rendered = render(value);
-        if (testedEntry && observations.get(key) === testedEntry) {
-          testedEntry.result = { status: rendered.status,
-            toolCount: rendered.discoveredTools.length, error: rendered.error };
-          testedEntry.testedAt = now();
-        }
-        return handleSuccessfulResponse(rendered, outputHeaders);
-      } catch {
-        return handleRenderFailure();
-      }
-    }
+    const key = keyFor(profile, deletion ? decodeURIComponent(path.slice('/api/mcp/'.length)) : body.name);
+    manageObservations(method, kind, key, observations, test, profile);
+    const testedEntry = observations.get(key);
 
-    return async function mcpFetch(input, init = {}) {
-      const url = new URL(input instanceof Request ? input.url : input);
-      if (url.origin !== base.origin || !/^\/api\/mcp(?:\/|$)/.test(url.pathname)) {
-        return fetchImpl(input, init);
-      }
-      const method = (init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
-      const path = url.pathname;
-      const profile = url.searchParams.get('profile') || '';
-      const kind = classifyMcpRequest(path, method);
-      if (kind === 'discover') {
-        return unsupported('Native Hermes tests saved servers only. Save the server, then use Test; unsaved discovery is unavailable.');
-      }
-      if (kind === 'logs') {
-        return Response.json({ ok: false, error: 'This Hermes version has no per-server MCP log stream. Use the official Dashboard.' }, { status: 501 });
-      }
-      if (!kind) return fetchImpl(input, init);
+    const headers = buildFetchHeaders(init, input, payload);
+    const response = await prepareNativeFetch(fetchImpl, init, input, url, method, headers, payload);
 
-      let body;
-      try {
-        body = await buildRequestBody(method, init, input);
-        if (kind === 'deletion' && !safeName(decodeURIComponent(path.slice('/api/mcp/'.length)))) throw new Error('Invalid name');
-      } catch {
-        return unsupported('Invalid MCP payload or server name.');
-      }
-
-      const planResult = createFetchPlan(kind, url, body, profile, method);
-      if (planResult.refusal) return planResult.refusal;
-      const payload = planResult.payload;
-      const render = planResult.render;
-      const deletion = kind === 'deletion';
-      const test = kind === 'test';
-
-      const key = keyFor(profile, deletion ? decodeURIComponent(path.slice('/api/mcp/'.length)) : body.name);
-      const testedEntry = manageObservations(method, kind, key, observations, test, profile);
-
-      const headers = buildFetchHeaders(init, input, payload);
-      const response = await prepareNativeFetch(fetchImpl, init, input, url, method, headers, payload);
-
-      return processResponse(fetchImpl, response, testedEntry, key, observations, now, render);
-    };
-  }
+    return processResponse(fetchImpl, response, testedEntry, key, observations, now, render);
+  };
+}
