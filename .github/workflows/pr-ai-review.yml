@@ -21,6 +21,8 @@ env:
   CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.CLAUDE_REVIEW_FALLBACK_MODEL || 'glm-5.3-flash' }}
   CLAUDE_REVIEW_FALLBACK_PROVIDER: ${{ vars.CLAUDE_REVIEW_FALLBACK_PROVIDER || 'ollama-cloud' }}
   CLAUDE_REVIEW_BASE_URL: ${{ vars.CLAUDE_REVIEW_BASE_URL || '' }}
+  # Override for claude-code-plugin step to use a model that satisfies the response contract
+  CLAUDE_CODE_REVIEW_MODEL: 'inclusionai/ling-3.0-flash-fin:free'
   # Pace direct API requests; tune for the selected provider and account.
   OLLAMA_REVIEW_RPM: ${{ vars.OLLAMA_REVIEW_RPM || '60' }}
   # Used only in mode 0, between reviewers; useful when they share a quota.
@@ -475,7 +477,7 @@ jobs:
           # Claude Code has 48 turns to corroborate it and return its JSON.
           claude_args: |
             --max-turns 48
-            --model "${{ env.CLAUDE_REVIEW_MODEL }}"
+            --model "${{ env.CLAUDE_CODE_REVIEW_MODEL }}"
             --tools "Read,Glob,Grep"
             --allowedTools "Read,Glob,Grep"
             --disallowedTools "mcp__github_comment__*,mcp__github_ci__*,mcp__github_inline_comment__*,mcp__github_file_ops__*"
@@ -543,7 +545,7 @@ jobs:
           prompt: *claude_review_prompt
           claude_args: |
             --max-turns 48
-            --model "${{ env.CLAUDE_REVIEW_MODEL }}"
+            --model "${{ env.CLAUDE_CODE_REVIEW_MODEL }}"
             --tools "Read,Glob,Grep"
             --allowedTools "Read,Glob,Grep"
             --disallowedTools "mcp__github_comment__*,mcp__github_ci__*,mcp__github_inline_comment__*,mcp__github_file_ops__*"
