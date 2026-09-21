@@ -2,6 +2,9 @@ global:
   scrape_interval: @PROMETHEUS_SCRAPE_INTERVAL@
   evaluation_interval: @PROMETHEUS_EVALUATION_INTERVAL@
 
+rule_files:
+  - /etc/hermes-observability/rules/*.yml
+
 scrape_configs:
   - job_name: hermes
     static_configs:

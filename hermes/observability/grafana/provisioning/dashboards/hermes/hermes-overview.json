@@ -267,16 +267,130 @@
     },
     {
       "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "description": "Latest successful and failed response timestamps by provider/model; useful for finding long periods of unavailability.",
+      "description": "Latest successful, failed and rate-limited response timestamps by provider/model; useful for finding long periods of unavailability. Empty cell means the event was never observed.",
       "fieldConfig": {"defaults": {"unit": "dateTimeAsLocal", "mappings": [{"type": "value", "options": {"0": {"text": "No event"}}}]}, "overrides": []},
-      "gridPos": {"h": 7, "w": 24, "x": 0, "y": 106},
-      "options": {"colorMode": "value", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 106},
+      "options": {"cellHeight": "lg", "showHeader": true, "sortBy": [{"displayName": "Last success", "desc": true}]},
       "targets": [
-        {"expr": "hermes_api_last_success_timestamp_seconds * 1000", "legendFormat": "{{provider}} / {{model}} last success", "instant": true, "refId": "A"},
-        {"expr": "hermes_api_last_error_timestamp_seconds * 1000", "legendFormat": "{{provider}} / {{model}} last error", "instant": true, "refId": "B"}
+        {"expr": "hermes_api_last_success_timestamp_seconds * 1000", "format": "table", "instant": true, "refId": "A"},
+        {"expr": "hermes_api_last_error_timestamp_seconds * 1000", "format": "table", "instant": true, "refId": "B"},
+        {"expr": "hermes_api_last_rate_limit_timestamp_seconds * 1000", "format": "table", "instant": true, "refId": "C"}
       ],
-      "title": "Last model availability events",
-      "type": "stat"
+      "transformations": [
+        {"id": "organize", "options": {"excludeByName": {"Time": true}}},
+        {"id": "merge", "options": {}},
+        {"id": "organize", "options": {"renameByName": {"Value #A": "Last success", "Value #B": "Last error", "Value #C": "Last rate limit"}}}
+      ],
+      "title": "Model/provider — latest availability events",
+      "type": "table"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Route scorecard for the selected range. Availability and first-attempt success show stability, p95 and output tok/s show speed, truncation and empty-response shares are quality proxies. Routes without traffic in the range have no ratio values instead of a misleading 0; errors include every class.",
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": [{"matcher": {"id": "byName", "options": "Availability"}, "properties": [{"id": "unit", "value": "percentunit"}]}, {"matcher": {"id": "byName", "options": "First-attempt success"}, "properties": [{"id": "unit", "value": "percentunit"}]}, {"matcher": {"id": "byName", "options": "p95 response time"}, "properties": [{"id": "unit", "value": "ms"}]}, {"matcher": {"id": "byName", "options": "Truncated"}, "properties": [{"id": "unit", "value": "percentunit"}]}, {"matcher": {"id": "byName", "options": "Empty responses"}, "properties": [{"id": "unit", "value": "percentunit"}]}, {"matcher": {"id": "byName", "options": "Cost per success"}, "properties": [{"id": "unit", "value": "currencyUSD"}]}]},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 116},
+      "options": {"cellHeight": "lg", "showHeader": true, "sortBy": [{"displayName": "Availability", "desc": true}]},
+      "targets": [
+        {"expr": "sum by (provider, model) (increase(hermes_api_success_total[$__range])) / (sum by (provider, model) (increase(hermes_api_calls_total[$__range])) > 0)", "format": "table", "instant": true, "refId": "A"},
+        {"expr": "sum by (provider, model) (increase(hermes_api_first_attempt_success_total[$__range])) / (sum by (provider, model) (increase(hermes_api_success_total[$__range])) > 0)", "format": "table", "instant": true, "refId": "B"},
+        {"expr": "histogram_quantile(0.95, sum by (provider, model, le) (increase(hermes_api_duration_ms_bucket{status=\"ok\"}[$__range])))", "format": "table", "instant": true, "refId": "C"},
+        {"expr": "1000 * sum by (provider, model) (increase(hermes_output_tokens_total{status=\"ok\"}[$__range])) / (sum by (provider, model) (increase(hermes_api_duration_ms_total{status=\"ok\"}[$__range])) > 0)", "format": "table", "instant": true, "refId": "D"},
+        {"expr": "sum by (provider, model) (increase(hermes_api_finish_total{reason=\"length\"}[$__range])) / (sum by (provider, model) (increase(hermes_api_success_total[$__range])) > 0)", "format": "table", "instant": true, "refId": "E"},
+        {"expr": "sum by (provider, model) (increase(hermes_api_empty_success_total[$__range])) / (sum by (provider, model) (increase(hermes_api_success_total[$__range])) > 0)", "format": "table", "instant": true, "refId": "F"},
+        {"expr": "sum by (provider, model) (increase(hermes_cost_usd_total{status=\"ok\"}[$__range])) / (sum by (provider, model) (increase(hermes_api_success_total[$__range])) > 0)", "format": "table", "instant": true, "refId": "G"},
+        {"expr": "sum by (provider, model) (increase(hermes_api_success_total[$__range]))", "format": "table", "instant": true, "refId": "H"},
+        {"expr": "sum by (provider, model) (increase(hermes_api_errors_total[$__range]))", "format": "table", "instant": true, "refId": "I"},
+        {"expr": "sum by (provider, model) (increase(hermes_api_rate_limits_total[$__range]))", "format": "table", "instant": true, "refId": "J"},
+        {"expr": "sum by (provider, model) (increase(hermes_api_retries_total[$__range]))", "format": "table", "instant": true, "refId": "K"}
+      ],
+      "transformations": [
+        {"id": "organize", "options": {"excludeByName": {"Time": true}}},
+        {"id": "merge", "options": {}},
+        {"id": "organize", "options": {"renameByName": {"Value #A": "Availability", "Value #B": "First-attempt success", "Value #C": "p95 response time", "Value #D": "Output tok/s", "Value #E": "Truncated", "Value #F": "Empty responses", "Value #G": "Cost per success", "Value #H": "Successes", "Value #I": "Errors", "Value #J": "Rate limits", "Value #K": "Retries"}}}
+      ],
+      "title": "Route scorecard — selected range",
+      "type": "table"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Failed API responses by error class. rate_limit and server point at the provider; auth and client point at configuration or request shape; timeout and network at connectivity.",
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}, "overrides": []},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 126},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "sum", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (provider, model, class) (increase(hermes_api_errors_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}} · {{class}}", "refId": "A"}],
+      "title": "API errors by class",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "95th percentile of successful response time per route, from the exporter's latency histogram. The average hides slow tails; compare this with the scorecard.",
+      "fieldConfig": {"defaults": {"unit": "ms", "min": 0}, "overrides": []},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 126},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (provider, model, le) (rate(hermes_api_duration_ms_bucket{status=\"ok\"}[$__rate_interval])))", "legendFormat": "{{provider}} / {{model}} p95", "refId": "A"}],
+      "title": "Model response latency — p95",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Successful responses by normalized finish reason. A growing 'length' share means truncated answers; 'content_filter' means provider refusals; 'unknown' means the provider reported no reason.",
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}, "overrides": []},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 135},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "sum", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (provider, model, reason) (increase(hermes_api_finish_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}} · {{reason}}", "refId": "A"}],
+      "title": "Finish reasons",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Route switches made by the API retry helper in the selected range, with the latest switch time. Frequent switches away from a route mean it failed when it was needed.",
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": [{"matcher": {"id": "byName", "options": "Last switch"}, "properties": [{"id": "unit", "value": "dateTimeAsLocal"}]}]},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 135},
+      "options": {"cellHeight": "lg", "showHeader": true, "sortBy": [{"displayName": "Switches", "desc": true}]},
+      "targets": [
+        {"expr": "sum by (from_provider, from_model, to_provider, to_model) (increase(hermes_api_fallback_total[$__range]))", "format": "table", "instant": true, "refId": "A"},
+        {"expr": "max by (from_provider, from_model, to_provider, to_model) (hermes_api_last_fallback_timestamp_seconds) * 1000", "format": "table", "instant": true, "refId": "B"}
+      ],
+      "transformations": [
+        {"id": "organize", "options": {"excludeByName": {"Time": true}}},
+        {"id": "merge", "options": {}},
+        {"id": "organize", "options": {"renameByName": {"Value #A": "Switches", "Value #B": "Last switch"}}}
+      ],
+      "title": "Route fallbacks — selected range",
+      "type": "table"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Share of failed tool calls by the model active in the session. Malformed arguments and wrong tool choices surface here before they show in user-visible errors.",
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": [{"matcher": {"id": "byName", "options": "Failed share"}, "properties": [{"id": "unit", "value": "percentunit"}]}]},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 144},
+      "options": {"cellHeight": "lg", "showHeader": true, "sortBy": [{"displayName": "Failed share", "desc": true}]},
+      "targets": [
+        {"expr": "sum by (model) (increase(hermes_tool_calls_by_model_total{status!=\"ok\"}[$__range])) / (sum by (model) (increase(hermes_tool_calls_by_model_total[$__range])) > 0)", "format": "table", "instant": true, "refId": "A"},
+        {"expr": "sum by (model) (increase(hermes_tool_calls_by_model_total[$__range]))", "format": "table", "instant": true, "refId": "B"}
+      ],
+      "transformations": [
+        {"id": "organize", "options": {"excludeByName": {"Time": true}}},
+        {"id": "merge", "options": {}},
+        {"id": "organize", "options": {"renameByName": {"Value #A": "Failed share", "Value #B": "Tool calls"}}}
+      ],
+      "title": "Tool call failures by model — selected range",
+      "type": "table"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Responses served by a different model than requested. Any row means the provider silently rerouted the request; check the route before trusting its scorecard.",
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 144},
+      "options": {"cellHeight": "lg", "showHeader": true, "sortBy": [{"displayName": "Responses", "desc": true}]},
+      "targets": [{"expr": "sum by (provider, requested, served) (increase(hermes_api_model_mismatch_total[$__range]))", "format": "table", "instant": true, "refId": "A"}],
+      "transformations": [
+        {"id": "organize", "options": {"excludeByName": {"Time": true}}},
+        {"id": "merge", "options": {}},
+        {"id": "organize", "options": {"renameByName": {"Value #A": "Responses"}}}
+      ],
+      "title": "Requested vs served model — selected range",
+      "type": "table"
     }
   ],
   "refresh": "30s",
@@ -287,5 +401,5 @@
   "timezone": "browser",
   "title": "Hermes Overview",
   "uid": "hermes-overview",
-  "version": 1
+  "version": 2
 }

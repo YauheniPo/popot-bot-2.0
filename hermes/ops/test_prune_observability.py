@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sqlite3
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -17,6 +19,20 @@ assert SPEC is not None
 assert SPEC.loader is not None
 prune_observability = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(prune_observability)
+
+
+def create_schema(root: Path) -> Path:
+    """Create the plugin's real schema under root/ops/metrics.db."""
+    if "ops_observability" not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            "ops_observability", Path(__file__).with_name("plugin") / "ops-observability" / "__init__.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+    with mock.patch.dict(os.environ, {"HERMES_HOME": str(root)}):
+        sys.modules["ops_observability"]._db().close()
+    return root / "ops" / "metrics.db"
 
 
 class PruneObservabilityTests(unittest.TestCase):
@@ -56,8 +72,8 @@ class PruneObservabilityTests(unittest.TestCase):
             database = root / "other.db?mode=rwc#%" / "metrics.db"
             database.parent.mkdir()
             connection = sqlite3.connect(database)
-            connection.execute("CREATE TABLE commands (ts TEXT)")
-            connection.execute("INSERT INTO commands VALUES ('2000-01-01')")
+            connection.execute("CREATE TABLE commands (ts TEXT, command TEXT)")
+            connection.execute("INSERT INTO commands VALUES ('2000-01-01', 'status')")
             connection.commit()
             connection.close()
             before = set(root.rglob("*"))
@@ -67,11 +83,10 @@ class PruneObservabilityTests(unittest.TestCase):
     def test_prune_removes_only_expired_rows_from_known_tables(self) -> None:
         now = datetime(2026, 8, 25, tzinfo=timezone.utc)
         with tempfile.TemporaryDirectory() as temporary_directory:
-            database = Path(temporary_directory) / "metrics.db"
+            database = create_schema(Path(temporary_directory))
             connection = sqlite3.connect(database)
             try:
                 for table in prune_observability.TABLES:
-                    connection.execute(f"CREATE TABLE {table} (ts TEXT NOT NULL)")
                     connection.execute(
                         f"INSERT INTO {table} (ts) VALUES (?)",
                         ((now - timedelta(days=91)).isoformat(timespec="milliseconds"),),
@@ -91,8 +106,38 @@ class PruneObservabilityTests(unittest.TestCase):
             try:
                 for table in prune_observability.TABLES:
                     self.assertEqual(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone(), (1,))
+                    self.assertEqual(connection.execute(f"SELECT SUM(weight) FROM {table}_rollup").fetchone(), (1,))
             finally:
                 connection.close()
+
+    def test_rollups_accumulate_across_runs_and_keep_pre_bucketed_latency(self) -> None:
+        now = datetime(2026, 8, 25, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database = create_schema(Path(temporary_directory))
+            with sqlite3.connect(database) as connection:
+                connection.executemany(
+                    "INSERT INTO api_calls (ts, session_id, provider, model, status, duration_ms, output_tokens,"
+                    " input_tokens, total_tokens, retry_count, call_index) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    [((now - timedelta(days=age)).isoformat(timespec="milliseconds"), "s", "p", "m", status, ms,
+                      out, 3, 3 + out, retries, index)
+                     for age, status, ms, out, retries, index in (
+                         (95, "ok", 300, 5, 0, 1), (94, "error", 100, 0, 1, 2), (94, "ok", 1500, 0, 0, 2),
+                         (92, "ok", 700, 2, 0, 3), (10, "ok", 50, 1, 0, 4))],
+                )
+            prune_observability.prune_database(database, 93, now=now)
+            prune_observability.prune_database(database, 90, now=now)
+            with sqlite3.connect(database) as connection:
+                rollup = connection.execute(
+                    "SELECT status, duration_bucket, weight, output_tokens, retry_count, first_attempt, empty_success "
+                    "FROM api_calls_rollup ORDER BY status, duration_bucket"
+                ).fetchall()
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM api_calls").fetchone(), (1,))
+            self.assertEqual(rollup, [
+                ("error", 250, 1, 0, 1, 0, 0),
+                ("ok", 500, 1, 5, 0, 1, 0),    # first run
+                ("ok", 1000, 1, 2, 0, 1, 0),   # second run, new bucket
+                ("ok", 2000, 1, 0, 0, 0, 1),   # retried after the error of call 2; empty output
+            ])
 
     def test_prune_rejects_symlink_database(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

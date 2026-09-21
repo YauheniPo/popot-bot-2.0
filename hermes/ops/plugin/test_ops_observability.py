@@ -230,23 +230,53 @@ class ObservabilityReportingTests(unittest.TestCase):
         self.hooks._pre_tool_call(tool_name="terminal", args={"command": "echo private-input"})
         self.hooks._pre_api_request(provider="test-provider", model="test-model", approx_input_tokens=12)
         self.hooks._post_api_request(
-            provider="test-provider", model="test-model", api_duration_ms=17,
-            usage={"prompt_tokens": 2, "completion_tokens": 1},
+            provider="test-provider", model="test-model", response_model="served-model", api_duration_ms=17,
+            api_call_count=3, finish_reason="length", usage={"prompt_tokens": 2, "completion_tokens": 1},
         )
-        self.hooks._api_request_error(api_duration=0.1, status_code=429, retry_count=2, retryable=True)
+        self.hooks._api_request_error(
+            provider="test-provider", model="test-model", api_duration=0.1, status_code=429,
+            retry_count=2, retryable=True, api_call_count=3,
+        )
 
         rows = self.connection.execute(
             "SELECT status, duration_ms, input_tokens, output_tokens, total_tokens, cost_usd, "
-            "cost_source, status_code, retry_count FROM api_calls ORDER BY rowid"
+            "cost_source, status_code, retry_count, model, requested_model, call_index, finish_reason "
+            "FROM api_calls ORDER BY rowid"
         ).fetchall()
         self.assertEqual(rows, [
-            ("ok", 500, 10, 5, 15, 0.25, "provider", 0, 0),
-            ("ok", 17, 2, 1, 3, 0, "unavailable", 0, 0),
-            ("error", 100, 0, 0, 0, 0, "unavailable", 429, 2),
+            ("ok", 500, 10, 5, 15, 0.25, "provider", 0, 0, "test-model", "test-model", 0, ""),
+            ("ok", 17, 2, 1, 3, 0, "unavailable", 0, 0, "served-model", "test-model", 3, "length"),
+            ("error", 100, 0, 0, 0, 0, "unavailable", 429, 2, "test-model", "test-model", 3, ""),
         ])
         self.assertEqual(self.connection.execute("SELECT tool_name, status, duration_ms FROM tool_calls").fetchall(),
                          [("terminal", "error", 20)])
         self.assertNotIn("private-input", str(self.audit.call_args_list))
+
+    def test_existing_database_gains_new_api_call_columns_in_place(self) -> None:
+        self.connection.close()
+        database = self.root / "ops" / "metrics.db"
+        database.unlink()
+        with sqlite3.connect(database) as legacy:
+            legacy.execute(
+                "CREATE TABLE api_calls (ts TEXT NOT NULL, request_id TEXT, session_id TEXT, turn_id TEXT,"
+                " provider TEXT, model TEXT, platform TEXT, status TEXT, duration_ms REAL DEFAULT 0,"
+                " input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0,"
+                " cache_read_tokens INTEGER DEFAULT 0, total_tokens INTEGER DEFAULT 0,"
+                " cost_usd REAL DEFAULT 0, cost_source TEXT DEFAULT 'unavailable', finish_reason TEXT,"
+                " status_code INTEGER DEFAULT 0, retry_count INTEGER DEFAULT 0)"
+            )
+            legacy.execute("INSERT INTO api_calls VALUES ('2026-09-01T00:00:00Z','','','','p','m','',"
+                           "'ok',1,0,0,0,0,0,'unavailable','',0,0)")
+        self.connection = observability._db()
+        observability._db().close()  # repeated registration must stay idempotent
+        columns = [row[1] for row in self.connection.execute("PRAGMA table_info(api_calls)")]
+        self.assertEqual(columns[-2:], ["requested_model", "call_index"])
+        self.assertEqual(self.connection.execute("SELECT requested_model, call_index FROM api_calls").fetchall(),
+                         [(None, 0)])
+        self.hooks._post_api_request(provider="p", model="m", api_call_count=1)
+        self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM api_calls").fetchone(), (2,))
+        self.assertIn("route_fallbacks", {row[0] for row in self.connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")})
 
     def test_session_and_approval_hooks_preserve_outcomes(self) -> None:
         self.hooks._on_session_start(session_id="session-a")

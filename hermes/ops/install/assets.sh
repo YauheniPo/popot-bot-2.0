@@ -31,7 +31,7 @@ install_operations_assets() {
         "/etc/systemd/system/${gateway_service}.d/observability.conf" 0644
 
     log "installing Prometheus configuration and Grafana dashboards"
-    install -d -o root -g prometheus -m 0750 /etc/hermes-observability
+    install -d -o root -g prometheus -m 0750 /etc/hermes-observability /etc/hermes-observability/rules
     install -d -o prometheus -g prometheus -m 0750 /var/lib/hermes-prometheus
     install -d -o root -g grafana -m 0750 \
         /etc/grafana/provisioning/datasources \
@@ -40,6 +40,8 @@ install_operations_assets() {
         "${SCRIPT_DIR}/templates/hermes-prometheus.yml" /etc/hermes-observability/prometheus.yml 0640
     chown root:prometheus /etc/hermes-observability/prometheus.yml
     chmod 0640 /etc/hermes-observability/prometheus.yml
+    install -o root -g prometheus -m 0640 \
+        "${SCRIPT_DIR}/../observability/rules/hermes.rules.yml" /etc/hermes-observability/rules/hermes.rules.yml
     render \
         "${SCRIPT_DIR}/templates/grafana-hermes-prometheus.yml" /etc/grafana/provisioning/datasources/hermes-prometheus.yml 0640
     chown root:grafana /etc/grafana/provisioning/datasources/hermes-prometheus.yml

@@ -6,10 +6,12 @@ import getpass
 import json
 import os
 import shlex
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 
@@ -152,12 +154,19 @@ os.execvp(sys.argv[4], sys.argv[4:])
 
     def test_api_retry_switches_to_fallback_for_the_rest_of_the_trigger(self):
         with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / ".hermes" / "ops").mkdir(parents=True)
             result, calls, sleeps, _ = self.run_retry_helper(
                 Path(directory), [1, 1, 0],
                 overrides={"HERMES_API_RETRY_FALLBACKS": "backup-provider:vendor/backup-model",
                            "HERMES_API_RETRY_MAX_ATTEMPTS": "3"},
             )
             self.assertEqual(result.returncode, 0, result.stderr)
+            database = Path(directory) / ".hermes" / "ops" / "metrics.db"
+            with closing(sqlite3.connect(database)) as connection:
+                self.assertEqual(connection.execute(
+                    "SELECT from_provider, from_model, to_provider, to_model FROM route_fallbacks").fetchall(),
+                    [("test-provider", "vendor/test-model", "backup-provider", "vendor/backup-model")])
+            self.assertEqual(database.stat().st_mode & 0o777, 0o600)
             self.assertEqual(
                 [(call["args"][2], call["args"][4]) for call in calls],
                 [("test-provider", "vendor/test-model"),

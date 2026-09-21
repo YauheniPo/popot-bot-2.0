@@ -91,6 +91,27 @@ runner+=(env -i HOME="$HERMES_USER_HOME" HERMES_HOME="$HERMES_HOME"
     "$TIMEOUT_BIN" --kill-after=5s "${TIMEOUT_SECONDS}s")
 cd -- "$HERMES_USER_HOME" || die "Cannot enter Hermes user home: ${HERMES_USER_HOME}"
 
+record_fallback() {
+    # Metadata-only observability row for the Grafana route scorecard. Written
+    # as the service user through the same runner; a failure never changes the
+    # retry outcome and nothing is created when Hermes has no ops directory yet.
+    "${runner[@]}" python3 - "$HERMES_HOME/ops/metrics.db" "$1" "$2" "$3" "$4" <<'PY' || true
+import os, sqlite3, sys
+from datetime import datetime, timezone
+from pathlib import Path
+database = Path(sys.argv[1])
+if database.parent.is_dir() and not database.is_symlink():
+    connection = sqlite3.connect(database, timeout=3)
+    with connection:
+        connection.execute("CREATE TABLE IF NOT EXISTS route_fallbacks (ts TEXT NOT NULL, from_provider TEXT,"
+                           " from_model TEXT, to_provider TEXT, to_model TEXT)")
+        connection.execute("INSERT INTO route_fallbacks VALUES (?, ?, ?, ?, ?)",
+                           (datetime.now(timezone.utc).isoformat(timespec="milliseconds"), *sys.argv[2:6]))
+    connection.close()
+    os.chmod(database, 0o600)
+PY
+}
+
 printf 'Hermes query: provider=%s model=%s; up to %s CLI attempts\n' "$PROVIDER_NAME" "$MODEL_NAME" "$MAX_ATTEMPTS"
 response_file="$(mktemp)" || die "Cannot create a temporary response file"
 trap 'rm -f -- "$response_file"' EXIT
@@ -121,11 +142,14 @@ for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
     fi
     if (( fallback_index < ${#fallback_routes[@]} )); then
         route="${fallback_routes[fallback_index]}"
+        previous_provider="$current_provider"
+        previous_model="$current_model"
         current_provider="${route%%:*}"
         current_model="${route#*:}"
         ((fallback_index += 1))
         printf 'Switching to fallback provider=%s model=%s for the remaining attempts.\n' \
             "$current_provider" "$current_model" >&2
+        record_fallback "$previous_provider" "$previous_model" "$current_provider" "$current_model"
     elif (( status == 2 || status == 126 || status == 127 )); then
         # These are permanent invocation errors only when no fallback route is
         # available for this trigger.

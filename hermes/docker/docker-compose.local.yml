@@ -152,6 +152,7 @@ services:
       - --web.listen-address=:9090
     volumes:
       - ../observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../observability/rules:/etc/prometheus/rules:ro
       - hermes_local_test_prometheus:/prometheus
     read_only: true
     tmpfs:

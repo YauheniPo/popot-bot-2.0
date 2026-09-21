@@ -543,7 +543,7 @@ Hermes работает как отдельный пользователь `herm
 | `hermes-prometheus.service` | Собирает локальные metrics, хранит 30 дней, слушает `127.0.0.1:9090` | постоянно |
 | `grafana-server.service` | Versioned Hermes dashboard на `127.0.0.1:3000` | постоянно |
 | `hermes-backup.timer` | Делает daily quick и первый/еженедельный full backup | 1 день |
-| `hermes-observability-prune.timer` | Удаляет строки локальной SQLite старше 90 дней | 1 день |
+| `hermes-observability-prune.timer` | Сворачивает строки локальной SQLite старше 90 дней в rollup-счётчики и удаляет их | 1 день |
 | `hermes-startup-notify.service` | После запуска gateway вне окна deploy отправляет VPS, default model и время в alert target; во время deploy уведомление подавляется, ошибка доставки не влияет на gateway | на каждый старт вне окна deploy |
 | `ops-observability` | Считает вызовы моделей/tools/команд, токены, ошибки, latency и стоимость | по событиям |
 | audit rotation | Ограничивает основной log и 2 ротации размером 5 MiB каждая | при записи и ежедневно |
@@ -580,6 +580,53 @@ root-owned файла намеренно не сохраняются.
 Метрики доступны только в Grafana: откройте dashboard **Hermes Overview**.
 Он показывает gateway, host resources, backup freshness, API/tool error rate,
 latency, usage и стоимость по provider/model.
+
+#### Метрики моделей и провайдеров
+
+Экспортёр читает `~/.hermes/ops/metrics.db` и публикует по каждому маршруту
+(`provider`/`model`):
+
+- `hermes_api_calls_total{status}`, `hermes_api_success_total`,
+  `hermes_api_errors_total{class}` — класс ошибки выводится из `status_code`
+  и причины: `rate_limit`, `timeout`, `server`, `auth`, `client`, `network`,
+  `other`.
+- `hermes_api_duration_ms_bucket{le,status}` (+ `_sum`, `_count`) — гистограмма
+  времени ответа; p95 считается через `histogram_quantile`.
+- `hermes_api_finish_total{reason}` — нормализованный finish reason успешных
+  ответов: `stop`, `length` (обрезка), `tool_calls`, `content_filter`,
+  `unknown`, `other`.
+- `hermes_api_first_attempt_success_total` — успехи без записанной ошибки того
+  же логического вызова (`session_id` + `api_call_count`). Hermes не передаёт
+  `retry_count` в `post_api_request`; без корреляции метрика равна
+  `hermes_api_success_total`.
+- `hermes_api_empty_success_total` — успешные ответы с usage, но без output
+  tokens.
+- `hermes_api_model_mismatch_total{requested,served}` — провайдер отдал другую
+  модель, чем запрошена.
+- `hermes_api_fallback_total{from_*,to_*}` и
+  `hermes_api_last_fallback_timestamp_seconds` — переключения маршрута
+  helper'ом `api-retry-loop.sh`.
+- `hermes_tool_calls_by_model_total{model,status}` — tool calls по модели
+  активной сессии (через `sessions`), прокси качества tool use.
+
+Счётчики монотонны: `hermes-observability-prune` перед удалением строк
+сворачивает их в таблицы `*_rollup` по тем же измерениям (включая bucket
+латентности), а экспортёр суммирует live-строки и rollup. Retention поэтому не
+создаёт ложных counter reset для `rate()`/`increase()`. Метки времени
+`hermes_api_last_*_timestamp_seconds` берутся только из живых строк.
+
+Prometheus загружает versioned правила `observability/rules/hermes.rules.yml`:
+recording rules `hermes_route:*` (availability 1h/24h, first-attempt success,
+p95, output tok/s, truncation, ошибки по классам) и алерты `HermesRoute*`,
+`HermesModelMismatch`. Alertmanager не развёрнут: алерты видны в Prometheus и
+Grafana, доставка в Telegram остаётся за health-check timer. `check.sh`
+прогоняет `promtool check rules`, если promtool установлен.
+
+В Grafana панель **Route scorecard** сводит availability, first-attempt
+success, p95, tok/s, доли обрезок и пустых ответов и стоимость успешного
+вызова; ниже — ошибки по классам, p95, finish reasons, fallbacks, ошибки tool
+calls по модели и расхождение requested/served. Метрики измеряют надёжность и
+форму ответа, не правильность содержания.
 
 Панели **Profile requests** показывают обращения к основному `default` и
 именованным профилям. Одно обращение — одна сохранённая запись `role=user`
@@ -1533,6 +1580,8 @@ sudo /usr/local/lib/hermes-ops/api-retry-loop.sh
 `hermes chat` от сервисного пользователя с заданными `provider` и `model`.
 Ключи загружает сам Hermes из своего окружения; Dashboard для этого не нужен.
 Основная модель и настройки cron при таком запросе не меняются.
+Каждое переключение на fallback-маршрут записывается в `metrics.db`
+(таблица `route_fallbacks`) и видно в Grafana как `hermes_api_fallback_total`.
 
 `max_attempts` ограничивает число запусков CLI, `wait_seconds` задаёт паузу
 между неудачами, `timeout_seconds` ограничивает каждый запуск. Внутри одного

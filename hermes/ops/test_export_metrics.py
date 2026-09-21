@@ -9,8 +9,10 @@ import math
 import os
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -22,6 +24,89 @@ assert SPEC is not None
 assert SPEC.loader is not None
 metrics = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(metrics)
+
+PRUNE_SPEC = importlib.util.spec_from_file_location(
+    "prune_observability", Path(__file__).with_name("prune-observability.py"))
+assert PRUNE_SPEC is not None and PRUNE_SPEC.loader is not None
+prune = importlib.util.module_from_spec(PRUNE_SPEC)
+PRUNE_SPEC.loader.exec_module(prune)
+
+
+def load_plugin():
+    """Import the observability plugin so tests use the real SQLite schema."""
+    if "ops_observability" not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            "ops_observability", Path(__file__).with_name("plugin") / "ops-observability" / "__init__.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+    return sys.modules["ops_observability"]
+
+
+T0 = datetime(2026, 9, 21, 10, 0, tzinfo=timezone.utc)
+
+
+def at(seconds: int) -> str:
+    return (T0 + timedelta(seconds=seconds)).isoformat(timespec="milliseconds")
+
+
+def epoch(seconds: int) -> float:
+    return (T0 + timedelta(seconds=seconds)).timestamp()
+
+
+API_COLUMNS = ("ts", "session_id", "provider", "model", "status", "duration_ms", "input_tokens", "output_tokens",
+               "cache_read_tokens", "total_tokens", "cost_usd", "finish_reason", "status_code", "retry_count",
+               "requested_model", "call_index")
+# (offset s, session, provider, model, status, ms, in, out, cache, total, cost, finish/reason, code, retries, requested, idx)
+API_ROWS = [
+    (0, "s1", "provider-a", "model-a", "ok", 300, 10, 5, 1, 15, 0.25, "stop", 0, 0, "model-a", 1),
+    (10, "s1", "provider-a", "model-a", "error", 100, 0, 0, 0, 0, 0, "rate limit", 429, 1, "model-a", 2),
+    (20, "s1", "provider-a", "model-a", "ok", 1500, 20, 10, 0, 30, 0.5, "length", 0, 0, "model-a", 2),
+    (30, "s2", "provider-a", "model-a", "error", 0, 0, 0, 0, 0, 0, "upstream error", 503, 2, "model-a", 1),
+    (40, "s2", "provider-a", "model-a", "error", 30000, 0, 0, 0, 0, 0, "Read timed out", 0, 0, "model-a", 1),
+    (50, "s3", "provider-a", "model-a", "ok", 400, 7, 0, 0, 7, 0, "stop", 0, 0, "model-a", 0),
+    (60, "s3", "provider-a", "model-b", "ok", 700, 1, 1, 0, 2, 0, "tool_calls", 0, 0, "model-a", 3),
+]
+
+
+def seed_activity(root: Path, offset: int = 0) -> None:
+    """Populate every table with the fixture that the export tests assert on."""
+    with closing(sqlite3.connect(root / "ops" / "metrics.db")) as connection, connection:
+        connection.executemany(
+            f"INSERT INTO api_calls ({', '.join(API_COLUMNS)}) VALUES ({', '.join('?' * len(API_COLUMNS))})",
+            [(at(offset + row[0]), *row[1:]) for row in API_ROWS],
+        )
+        connection.executemany("INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?)", [
+            (at(offset - 5), "s1", "model-a", "telegram", "start", 0, 0, 0),
+            (at(offset - 5), "s3", "model-b", "telegram", "start", 0, 0, 0),
+            (at(offset + 70), "s1", "model-a", "telegram", "end", 1, 0, 0),
+            (at(offset + 71), "s1", "model-a", "telegram", "end", 1, 0, 0),
+            (at(offset + 72), "s2", "model-a", "telegram", "end", 0, 0, 1),
+            (at(offset + 73), "s2", "model-a", "telegram", "end", 0, 1, 0),
+        ])
+        connection.executemany("INSERT INTO tool_calls VALUES (?,?,?,?,?,?)", [
+            (at(offset + 1), "s1", "", "terminal", "ok", 10), (at(offset + 2), "s1", "", "terminal", "ok", 30),
+            (at(offset + 3), "s3", "", "browser", "error", 5), (at(offset + 4), "s9", "", "browser", "ok", 1),
+        ])
+        connection.executemany("INSERT INTO commands VALUES (?,?,?,?,?)",
+                               [(at(offset + 5), "s1", "telegram", "telegram", "status")] * 2)
+        connection.executemany("INSERT INTO approvals VALUES (?,?,?,?,?,?,?)", [
+            (at(offset + 6), "s1", "", "telegram", "request", "", "k"),
+            (at(offset + 7), "s1", "", "telegram", "response", "allow", "k"),
+        ])
+        connection.execute("INSERT INTO route_fallbacks VALUES (?,?,?,?,?)",
+                           (at(offset + 80), "provider-a", "model-a", "provider-b", "model-n"))
+
+
+def samples(text: str) -> dict[str, float]:
+    """Prometheus sample lines as {series: value}, ignoring comments."""
+    result = {}
+    for line in text.splitlines():
+        if line and not line.startswith("#"):
+            series, value = line.rsplit(" ", 1)
+            result[series] = float(value)
+    return result
 
 
 class ExportMetricsTests(unittest.TestCase):
@@ -166,19 +251,17 @@ class ExportMetricsTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"HERMES_METRICS_MODE": value}):
                 self.assertEqual(metrics.metrics_file_mode(), expected)
 
+    def export(self) -> dict[str, float]:
+        with mock.patch.object(metrics, "gateway_process_metrics", return_value=(0, 0)):
+            self.assertEqual(metrics.main(), 0)
+        return samples((self.root / "output" / "hermes.prom").read_text(encoding="utf-8"))
+
     def test_main_exports_all_aggregates_and_private_textfile(self) -> None:
-        query_rows = [
-            [("provider-a", "model-a", "ok", 2, 10, 5, 1, 15, 0.25, 20)],
-            [("provider-a", "model-a", 1, 1800000000.0)],
-            [("provider-a", "model-a", 2, 0, 3, 1800000000.0, 1799999900.0)],
-            [("terminal", "ok", 2, 10, 20)], [("status", 2)],
-            [("model-a", "telegram", "completed", 2), ("model-a", "telegram", "interrupted", 1),
-             ("model-a", "telegram", "failed", 1)], [("allow", 1)],
-        ]
+        load_plugin()._db().close()
+        seed_activity(self.root)
         disk = SimpleNamespace(total=100, free=25)
         filesystem = SimpleNamespace(f_files=100, f_ffree=75)
-        with mock.patch.object(metrics, "rows", side_effect=query_rows), \
-                mock.patch.object(metrics.shutil, "disk_usage", return_value=disk), \
+        with mock.patch.object(metrics.shutil, "disk_usage", return_value=disk), \
                 mock.patch.object(metrics.os, "statvfs", return_value=filesystem), \
                 mock.patch.object(metrics.os, "getloadavg", return_value=(1, 2, 3)), \
                 mock.patch.object(metrics, "memory_ratio", return_value=0.5), \
@@ -188,22 +271,117 @@ class ExportMetricsTests(unittest.TestCase):
 
         target = self.root / "output" / "hermes.prom"
         rendered = target.read_text(encoding="utf-8")
+        values = samples(rendered)
         for line in ('hermes_gateway_up 1.0', 'hermes_host_disk_used_ratio 0.75',
                      'hermes_gateway_process_cpu_seconds_total 2.0',
                      'hermes_gateway_process_resident_memory_bytes 4194304',
-                     'hermes_host_inode_used_ratio 0.25', 'hermes_host_memory_available_ratio 0.5',
-                     'hermes_api_rate_limits_total{model="model-a",provider="provider-a"} 1',
-                     'hermes_api_last_rate_limit_timestamp_seconds{model="model-a",provider="provider-a"} 1800000000.0',
-                     'hermes_api_success_total{model="model-a",provider="provider-a"} 2',
-                     'hermes_api_retries_total{model="model-a",provider="provider-a"} 3',
-                     'hermes_commands_total{command="status"} 2',
-                     'hermes_cost_usd_total{model="model-a",provider="provider-a",status="ok"} 0.25',
-                     'hermes_approval_responses_total{choice="allow"} 1'):
+                     'hermes_host_inode_used_ratio 0.25', 'hermes_host_memory_available_ratio 0.5'):
             self.assertIn(line + "\n", rendered)
-        for outcome in ("completed", "interrupted", "failed"):
-            self.assertIn(f'outcome="{outcome}"', rendered)
+        route = 'model="model-a",provider="provider-a"'
+        expected = {
+            f'hermes_api_calls_total{{{route},status="ok"}}': 3,
+            f'hermes_input_tokens_total{{{route},status="ok"}}': 37,
+            f'hermes_output_tokens_total{{{route},status="ok"}}': 15,
+            f'hermes_cache_read_tokens_total{{{route},status="ok"}}': 1,
+            f'hermes_tokens_total{{{route},status="ok"}}': 52,
+            f'hermes_cost_usd_total{{{route},status="ok"}}': 0.75,
+            f'hermes_api_duration_ms_total{{{route},status="ok"}}': 2200,
+            f'hermes_api_calls_total{{{route},status="error"}}': 3,
+            f'hermes_api_duration_ms_total{{{route},status="error"}}': 30100,
+            f'hermes_api_rate_limits_total{{{route}}}': 1,
+            f'hermes_api_last_rate_limit_timestamp_seconds{{{route}}}': epoch(10),
+            f'hermes_api_success_total{{{route}}}': 3,
+            f'hermes_api_first_attempt_success_total{{{route}}}': 2,
+            f'hermes_api_empty_success_total{{{route}}}': 1,
+            f'hermes_api_retries_total{{{route}}}': 3,
+            f'hermes_api_last_success_timestamp_seconds{{{route}}}': epoch(50),
+            f'hermes_api_last_error_timestamp_seconds{{{route}}}': epoch(40),
+            f'hermes_api_errors_total{{class="rate_limit",{route}}}': 1,
+            f'hermes_api_errors_total{{class="server",{route}}}': 1,
+            f'hermes_api_errors_total{{class="timeout",{route}}}': 1,
+            f'hermes_api_finish_total{{{route},reason="stop"}}': 2,
+            f'hermes_api_finish_total{{{route},reason="length"}}': 1,
+            'hermes_api_finish_total{model="model-b",provider="provider-a",reason="tool_calls"}': 1,
+            'hermes_api_first_attempt_success_total{model="model-b",provider="provider-a"}': 1,
+            'hermes_api_model_mismatch_total{provider="provider-a",requested="model-a",served="model-b"}': 1,
+            'hermes_api_fallback_total{from_model="model-a",from_provider="provider-a",to_model="model-n",to_provider="provider-b"}': 1,
+            'hermes_api_last_fallback_timestamp_seconds{from_model="model-a",from_provider="provider-a",to_model="model-n",to_provider="provider-b"}': epoch(80),
+            'hermes_tool_calls_total{status="ok",tool="terminal"}': 2,
+            'hermes_tool_duration_ms_average{status="ok",tool="terminal"}': 20,
+            'hermes_tool_duration_ms_total{status="ok",tool="terminal"}': 40,
+            'hermes_tool_calls_by_model_total{model="model-a",status="ok"}': 2,
+            'hermes_tool_calls_by_model_total{model="model-b",status="error"}': 1,
+            'hermes_tool_calls_by_model_total{model="unknown",status="ok"}': 1,
+            'hermes_commands_total{command="status"}': 2,
+            'hermes_turns_total{model="model-a",outcome="completed",platform="telegram"}': 2,
+            'hermes_turns_total{model="model-a",outcome="interrupted",platform="telegram"}': 1,
+            'hermes_turns_total{model="model-a",outcome="failed",platform="telegram"}': 1,
+            'hermes_approval_responses_total{choice="allow"}': 1,
+        }
+        for series, value in expected.items():
+            self.assertAlmostEqual(values.get(series), value, msg=series)
+        self.assertNotIn(f'hermes_api_errors_total{{{route}}}', values, "errors must carry an error class")
         self.assertEqual(target.stat().st_mode & 0o777, 0o600)
         self.assertEqual(list(target.parent.iterdir()), [target])
+
+    def test_latency_histogram_is_cumulative_and_ends_at_count(self) -> None:
+        load_plugin()._db().close()
+        seed_activity(self.root)
+        values = self.export()
+        route = 'model="model-a",provider="provider-a"'
+        ok = {le: values[f'hermes_api_duration_ms_bucket{{le="{le}",{route},status="ok"}}']
+              for le in (*map(str, metrics.DURATION_BUCKETS_MS), "+Inf")}
+        self.assertEqual([ok[le] for le in ("250", "500", "1000", "2000", "300000", "+Inf")], [0, 2, 2, 3, 3, 3])
+        self.assertEqual(values[f'hermes_api_duration_ms_count{{{route},status="ok"}}'], 3)
+        self.assertEqual(values[f'hermes_api_duration_ms_sum{{{route},status="ok"}}'], 2200)
+        error = {le: values[f'hermes_api_duration_ms_bucket{{le="{le}",{route},status="error"}}']
+                 for le in ("250", "20000", "30000", "+Inf")}
+        self.assertEqual(error, {"250": 2, "20000": 2, "30000": 3, "+Inf": 3})
+        self.assertEqual(metrics.DURATION_BUCKETS_MS, prune.DURATION_BUCKETS_MS)
+
+    def test_counters_survive_pruning_through_rollups(self) -> None:
+        """Retention must never lower a counter; Prometheus would read a reset."""
+        load_plugin()._db().close()
+        seed_activity(self.root)
+        seed_activity(self.root, offset=7 * 86400)
+        before = self.export()
+        database = self.root / "ops" / "metrics.db"
+        # Two runs: the second exercises the upsert path of an existing rollup.
+        prune.prune_database(database, 1, now=T0 + timedelta(days=2))
+        middle = self.export()
+        prune.prune_database(database, 1, now=T0 + timedelta(days=30))
+        after = self.export()
+        with closing(sqlite3.connect(database)) as connection:
+            for table in prune.TABLES:
+                self.assertEqual(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone(), (0,), table)
+
+        def counters(values: dict[str, float]) -> dict[str, float]:
+            prefixes = ("hermes_api_", "hermes_input_", "hermes_output_", "hermes_cache_", "hermes_tokens_",
+                        "hermes_cost_", "hermes_tool_", "hermes_commands_", "hermes_turns_", "hermes_approval_")
+            return {series: value for series, value in values.items()
+                    if series.startswith(prefixes) and "_timestamp_seconds" not in series}
+
+        self.assertGreater(len(counters(before)), 40)
+        for name, stage in (("middle", middle), ("after", after)):
+            self.assertEqual(set(counters(before)), set(counters(stage)), name)
+            for series, value in counters(before).items():
+                self.assertAlmostEqual(stage[series], value, msg=f"{name}: {series}")
+        route = 'model="model-a",provider="provider-a"'
+        self.assertEqual(after[f'hermes_api_last_success_timestamp_seconds{{{route}}}'], 0)
+        self.assertEqual(middle[f'hermes_api_last_success_timestamp_seconds{{{route}}}'], epoch(7 * 86400 + 50))
+
+    def test_missing_rollup_tables_and_legacy_schema_do_not_break_export(self) -> None:
+        database = self.root / "ops" / "metrics.db"
+        database.parent.mkdir()
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute("CREATE TABLE api_calls(ts,provider,model,status,duration_ms,retry_count)")
+            connection.execute("INSERT INTO api_calls VALUES(?,?,?,?,?,?)", (at(0), "p", "m", "ok", 5, 0))
+        values = self.export()
+        # Columns added later are missing here, so the API queries fail closed
+        # while host metrics and other tables still export.
+        self.assertNotIn('hermes_api_success_total{model="m",provider="p"}', values)
+        self.assertIn("hermes_gateway_up", values)
+        self.assertIn("hermes_metrics_database_bytes", values)
 
     def test_home_falls_back_to_user_home(self) -> None:
         with mock.patch.dict(os.environ, {"HERMES_HOME": " "}), \
@@ -300,27 +478,28 @@ class ExportMetricsTests(unittest.TestCase):
         database.parent.mkdir()
         with closing(sqlite3.connect(database)) as connection, connection:
             connection.executescript("""
-                CREATE TABLE sessions(model,platform,completed,failed,interrupted,event);
-                CREATE TABLE commands(command);
-                CREATE TABLE approvals(choice,event);
-                CREATE TABLE tool_calls(tool_name,status,duration_ms);
+                CREATE TABLE sessions(model,platform,completed,failed,interrupted,event,ts,session_id);
+                CREATE TABLE commands(command,ts);
+                CREATE TABLE approvals(choice,event,ts);
+                CREATE TABLE tool_calls(tool_name,status,duration_ms,ts,session_id);
                 CREATE TABLE api_calls(ts,provider,model,status,input_tokens,output_tokens,
-                    cache_read_tokens,total_tokens,cost_usd,duration_ms,finish_reason,status_code,retry_count);
+                    cache_read_tokens,total_tokens,cost_usd,duration_ms,finish_reason,status_code,retry_count,
+                    session_id,requested_model,call_index);
             """)
             for name in (None, "", "unknown"):
                 for completed, failed, interrupted in ((1,0,0), (1,0,1), (0,0,1), (0,1,1), (0,1,0), (0,0,0)):
-                    connection.execute("INSERT INTO sessions VALUES(?,?,?,?,?,'end')",
+                    connection.execute("INSERT INTO sessions VALUES(?,?,?,?,?,'end','2026-09-21T10:00:00+00:00','s')",
                                        (name, name, completed, failed, interrupted))
-                connection.execute("INSERT INTO commands VALUES(?)", (name,))
-                connection.execute("INSERT INTO approvals VALUES(?,'response')", (name,))
-                connection.execute("INSERT INTO tool_calls VALUES(?,?,?)", (name, name, 10))
+                connection.execute("INSERT INTO commands VALUES(?,'2026-09-21T10:00:00+00:00')", (name,))
+                connection.execute("INSERT INTO approvals VALUES(?,'response','2026-09-21T10:00:00+00:00')", (name,))
+                connection.execute("INSERT INTO tool_calls VALUES(?,?,?,'2026-09-21T10:00:00+00:00','s')", (name, name, 10))
                 connection.execute(
-                    "INSERT INTO api_calls VALUES(?,?,?, ?,1,2,3,6,0.5,10,?,?,?)",
-                    ("2026-09-21T10:00:00+00:00", name, name, name, "", 0, 0),
+                    "INSERT INTO api_calls VALUES(?,?,?, ?,1,2,3,6,0.5,10,?,?,?, ?,?,0)",
+                    ("2026-09-21T10:00:00+00:00", name, name, name, "", 0, 0, name, name),
                 )
             connection.execute(
-                "INSERT INTO api_calls VALUES(?,?,?, ?,0,0,0,0,0,10,?,?,?)",
-                ("2026-09-21T10:01:00+00:00", "rate-provider", "rate-model", "rate limited", 429, 1, 0),
+                "INSERT INTO api_calls VALUES(?,?,?, ?,0,0,0,0,0,10,?,?,?, 's',?,0)",
+                ("2026-09-21T10:01:00+00:00", "rate-provider", "rate-model", "rate limited", 429, 1, 0, "rate-model"),
             )
         with mock.patch.object(metrics, "gateway_process_metrics", return_value=(0, 0)):
             self.assertEqual(metrics.main(), 0)
