@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const nonempty = value => value && Object.keys(value).length > 0;
 const safeName = value => typeof value === 'string' && value.trim() &&
-  !['.', '..'].includes(value.trim()) && !/[\\/\x00-\x1f\x7f]/.test(value);
+  !['.', '..'].includes(value.trim()) && !/[\\/\\\x00-\x1f\x7f]/.test(value);
 
 export function correctWorkspacePresets(value) {
   if (!Array.isArray(value?.presets)) return value;
@@ -63,16 +63,114 @@ function createInput(body) {
   return result;
 }
 
-// Classify one MCP request. Returns the handled operation, or null when the
-// request is not ours and must be passed through to the original fetch.
 function classifyMcpRequest(path, method) {
-  if (path === '/api/mcp/discover' && method === 'POST') return 'discover';
-  if (/^\/api\/mcp\/[^/]+\/logs$/.test(path) && method === 'GET') return 'logs';
-  if (path === '/api/mcp' && ['GET', 'POST'].includes(method)) return 'collection';
+  const isCollection = path === '/api/mcp/servers' || path === '/api/mcp';
+  if (isCollection && (method === 'GET' || method === 'POST')) return 'collection';
   if (path === '/api/mcp/configure' && method === 'PUT') return 'configure';
   if (path === '/api/mcp/test' && method === 'POST') return 'test';
-  if (/^\/api\/mcp\/[^/]+$/.test(path) && method === 'DELETE') return 'deletion';
+  if (path.startsWith('/api/mcp/servers/')) {
+    if (path.endsWith('/enabled')) return 'configure';
+    if (path.endsWith('/test')) return 'test';
+    if (method === 'DELETE') return 'deletion';
+    if (method === 'PUT' || method === 'PATCH') return 'edit';
+  }
+  if (/^\/api\/mcp\/[^/]+$/.test(path)) {
+    if (method === 'DELETE') return 'deletion';
+    if (method === 'PUT' || method === 'PATCH') return 'edit';
+  }
+  if (path.startsWith('/api/mcp/')) {
+    if (method !== 'GET') return 'discover';
+    if (path.endsWith('/logs')) return 'logs';
+  }
   return null;
+}
+
+function buildRequestProfile(input, init) {
+  const url = new URL(input instanceof Request ? input.url : input);
+  const method = (init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
+  const path = url.pathname;
+  const profile = url.searchParams.get('profile') || '';
+  return { url, method, path, profile };
+}
+
+async function buildRequestBody(method, init, input) {
+  if (method === 'GET' || method === 'DELETE') return {};
+  try {
+    const raw = init.body ?? (input instanceof Request ? await input.clone().text() : '{}');
+    const body = JSON.parse(raw || '{}');
+    if (!object(body) || !safeName(body.name)) throw new Error('Invalid payload');
+    return body;
+  } catch {
+    throw new Error('Invalid MCP payload or server name.');
+  }
+}
+
+function buildFetchHeaders(init, input, payload) {
+  const headers = new Headers(init.headers || (input instanceof Request ? input.headers : undefined));
+  headers.delete('content-length');
+  if (payload) headers.set('content-type', 'application/json');
+  return headers;
+}
+
+function prepareNativeFetch(fetchImpl, init, input, url, method, headers, payload) {
+  return fetchImpl(url, {
+    ...init,
+    method,
+    headers,
+    signal: init.signal || (input instanceof Request ? input.signal : undefined),
+    body: payload ? JSON.stringify(payload) : undefined,
+  });
+}
+
+function parseResponseBody(response) {
+  return response.json().catch(() => null);
+}
+
+function stripOutputHeaders(headers) {
+  const outputHeaders = new Headers(headers);
+  for (const key of ['content-length', 'content-encoding', 'etag']) outputHeaders.delete(key);
+  outputHeaders.set('cache-control', 'no-store');
+  return outputHeaders;
+}
+
+function buildErrorResponse(status, message) {
+  return Response.json({ ok: false, error: message }, { status, headers: { 'cache-control': 'no-store' } });
+}
+
+function handleSuccessfulResponse(rendered, outputHeaders) {
+  return Response.json(rendered, { headers: outputHeaders });
+}
+
+function handleRenderFailure() {
+  return Response.json({ ok: false, error: 'Unexpected native Hermes MCP response.' }, { status: 502, headers: { 'cache-control': 'no-store' } });
+}
+
+function manageObservations(method, kind, key, observations, test, profile) {
+  if (method === 'GET') return;
+  const previous = observations.get(key);
+  observations.delete(key);
+  if (test && previous) {
+    observations.set(key, { profile, fingerprint: previous.fingerprint });
+  }
+}
+
+async function processResponse(fetchImpl, response, testedEntry, key, observations, now, render) {
+  const value = await parseResponseBody(response);
+  const outputHeaders = stripOutputHeaders(response.headers);
+  if (!response.ok) return buildErrorResponse(response.status,
+    `Hermes MCP request failed (HTTP ${response.status}). Check authorization, server name and native field requirements.`);
+  try {
+    if (!object(value)) throw new Error('Invalid MCP response');
+    const rendered = render(value);
+    if (testedEntry && observations.get(key) === testedEntry) {
+      testedEntry.result = { status: rendered.status,
+        toolCount: rendered.discoveredTools.length, error: rendered.error };
+      testedEntry.testedAt = now();
+    }
+    return handleSuccessfulResponse(rendered, outputHeaders);
+  } catch {
+    return handleRenderFailure();
+  }
 }
 
 export function createMcpAdapter({ dashboardUrl, fetchImpl, now = Date.now, probeTtlMs = 300_000 }) {
@@ -81,6 +179,7 @@ export function createMcpAdapter({ dashboardUrl, fetchImpl, now = Date.now, prob
   // Every list still reaches the protected native API. No credentials on disk.
   const observations = new Map();
   const keyFor = (profile, name) => JSON.stringify([profile, name]);
+
   function listView(servers, profile) {
     const present = new Set(servers.map(server => keyFor(profile, server?.name)));
     for (const [key, entry] of observations) {
@@ -105,49 +204,54 @@ export function createMcpAdapter({ dashboardUrl, fetchImpl, now = Date.now, prob
       return view;
     });
   }
-  // Classify one MCP request. Returns the handled operation, or null when the
-  // request is not ours and must be passed through to the original fetch.
-  // (Defined at module scope; kept out of this closure.)
 
-  // Rewrite the upstream path and pick the response renderer for one operation.
-  // Each branch returns either an early refusal Response or the request plan.
-  function planMcpRequest(kind, url, body, profile, method) {
-    if (kind === 'collection') {
-      url.pathname = '/api/mcp/servers';
-      if (method === 'POST') {
-        let payload;
-        try { payload = createInput(body); } catch {
-          return { refusal: unsupported('Native create supports URL/command, stdio env and bearer/automatic OAuth. Custom headers, OAuth client settings, disabled creation and tool filters must be configured in the official Dashboard.') };
-        }
-        return { payload, render: serverView };
+  function planCollection(url, body, method, profile) {
+    url.pathname = '/api/mcp/servers';
+    if (method === 'POST') {
+      let payload;
+      try { payload = createInput(body); } catch {
+        return { refusal: unsupported('Native create supports URL/command, stdio env and bearer/automatic OAuth. Custom headers, OAuth client settings, disabled creation and tool filters must be configured in the official Dashboard.') };
       }
-      return { render: value => {
-        if (!Array.isArray(value.servers)) throw new Error('Invalid MCP list');
-        return { servers: listView(value.servers, profile) };
-      } };
+      return { payload, render: serverView };
     }
-    if (kind === 'configure') {
-      if (typeof body.enabled !== 'boolean' || Object.keys(body).some(key => !['name', 'enabled'].includes(key))) {
-        return { refusal: unsupported('Native Workspace configuration supports the enabled toggle only. Change tool selection in the official Dashboard.') };
-      }
+    return { render: value => {
+      if (!Array.isArray(value.servers)) throw new Error('Invalid MCP list');
+      return { servers: listView(value.servers, profile) };
+    } };
+  }
+
+  function planConfigure(url, body) {
+    if (typeof body.enabled !== 'boolean' || Object.keys(body).some(key => !['name', 'enabled'].includes(key))) {
+      return { refusal: unsupported('Native Workspace configuration supports the enabled toggle only. Change tool selection in the official Dashboard.') };
+    }
+    if (url.pathname === '/api/mcp/configure') {
       url.pathname = `/api/mcp/servers/${encodeURIComponent(body.name)}/enabled`;
-      return { payload: { enabled: body.enabled } };
     }
-    if (kind === 'test') {
-      if (Object.keys(body).some(key => key !== 'name')) {
-        return { refusal: unsupported('Save the server first, then test it by name. Unsaved inputs are not tested against an existing server.') };
-      }
+    return { payload: { enabled: body.enabled } };
+  }
+
+  function planTest(url, body) {
+    if (Object.keys(body).some(key => key !== 'name')) {
+      return { refusal: unsupported('Save the server first, then test it by name. Unsaved inputs are not tested against an existing server.') };
+    }
+    if (url.pathname === '/api/mcp/test') {
       url.pathname = `/api/mcp/servers/${encodeURIComponent(body.name)}/test`;
-      return { render: value => {
-        if (typeof value.ok !== 'boolean' || (value.ok && (!Array.isArray(value.tools) ||
-            value.tools.some(tool => !object(tool) || typeof tool.name !== 'string')))) {
-          throw new Error('Invalid native discovery result');
-        }
-        return { ok: value.ok, status: value.ok ? 'connected' : 'failed',
-          discoveredTools: value.ok ? value.tools : [],
-          ...(value.ok ? {} : { error: 'Native MCP test failed. Check server connectivity and OAuth in the official Dashboard.' }) };
-      } };
     }
+    return { render: value => {
+      if (typeof value.ok !== 'boolean' || (value.ok && (!Array.isArray(value.tools) ||
+          value.tools.some(tool => !object(tool) || typeof tool.name !== 'string')))) {
+        throw new Error('Invalid native discovery result');
+      }
+      return { ok: value.ok, status: value.ok ? 'connected' : 'failed',
+        discoveredTools: value.ok ? value.tools : [],
+        ...(value.ok ? {} : { error: 'Native MCP test failed. Check server connectivity and OAuth in the official Dashboard.' }) };
+    } };
+  }
+
+  function planMcpRequest(kind, url, body, profile, method) {
+    if (kind === 'collection') return planCollection(url, body, method, profile);
+    if (kind === 'configure') return planConfigure(url, body);
+    if (kind === 'test') return planTest(url, body);
     url.pathname = `/api/mcp/servers/${url.pathname.slice('/api/mcp/'.length)}`;
     return {};
   }
@@ -169,60 +273,28 @@ export function createMcpAdapter({ dashboardUrl, fetchImpl, now = Date.now, prob
     }
     if (!kind) return fetchImpl(input, init);
 
-    let body = {};
+    let body;
     try {
-      if (method !== 'GET' && method !== 'DELETE') {
-        body = JSON.parse(init.body ?? (input instanceof Request ? await input.clone().text() : '{}'));
-        if (!object(body) || !safeName(body.name)) throw new Error('Invalid payload');
-      }
+      body = await buildRequestBody(method, init, input);
       if (kind === 'deletion' && !safeName(decodeURIComponent(path.slice('/api/mcp/'.length)))) throw new Error('Invalid name');
     } catch {
       return unsupported('Invalid MCP payload or server name.');
     }
 
-    const plan = planMcpRequest(kind, url, body, profile, method);
-    if (plan.refusal) return plan.refusal;
-    const payload = plan.payload;
-    const render = plan.render || (value => value);
+    const planResult = planMcpRequest(kind, url, body, profile, method);
+    if (planResult.refusal) return planResult.refusal;
+    const payload = planResult.payload;
+    const render = planResult.render || (value => value);
     const deletion = kind === 'deletion';
     const test = kind === 'test';
 
     const key = keyFor(profile, deletion ? decodeURIComponent(path.slice('/api/mcp/'.length)) : body.name);
-    let testedEntry;
-    if (method !== 'GET') {
-      const previous = observations.get(key);
-      observations.delete(key);
-      if (test && previous) {
-        testedEntry = { profile, fingerprint: previous.fingerprint };
-        observations.set(key, testedEntry);
-      }
-    }
-    const headers = new Headers(init.headers || (input instanceof Request ? input.headers : undefined));
-    headers.delete('content-length');
-    if (payload) headers.set('content-type', 'application/json');
-    const response = await fetchImpl(url, { ...init, method, headers,
-      signal: init.signal || (input instanceof Request ? input.signal : undefined),
-      body: payload ? JSON.stringify(payload) : undefined });
-    // Do not reflect native validation input, URLs or provider errors containing secrets.
-    const value = await response.json().catch(() => null);
-    const outputHeaders = new Headers(response.headers);
-    for (const key of ['content-length', 'content-encoding', 'etag']) outputHeaders.delete(key);
-    outputHeaders.set('cache-control', 'no-store');
-    if (!response.ok) return Response.json({ ok: false,
-      error: `Hermes MCP request failed (HTTP ${response.status}). Check authorization, server name and native field requirements.` },
-    { status: response.status, headers: outputHeaders });
-    try {
-      if (!object(value)) throw new Error('Invalid MCP response');
-      const rendered = render(value);
-      // A delete/edit or a newer Test must win over a late result.
-      if (testedEntry && observations.get(key) === testedEntry) {
-        testedEntry.result = { status: rendered.status,
-          toolCount: rendered.discoveredTools.length, error: rendered.error };
-        testedEntry.testedAt = now();
-      }
-      return Response.json(rendered, { headers: outputHeaders });
-    } catch {
-      return Response.json({ ok: false, error: 'Unexpected native Hermes MCP response.' }, { status: 502 });
-    }
+    manageObservations(method, kind, key, observations, test, profile);
+    const testedEntry = observations.get(key);
+
+    const headers = buildFetchHeaders(init, input, payload);
+    const response = await prepareNativeFetch(fetchImpl, init, input, url, method, headers, payload);
+
+    return processResponse(fetchImpl, response, testedEntry, key, observations, now, render);
   };
 }
