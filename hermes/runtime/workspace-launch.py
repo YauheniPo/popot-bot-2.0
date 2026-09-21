@@ -28,13 +28,17 @@ def managed_entry(source, bridge):
 
 
 def write_managed_entry(source_dir):
-    root = source_dir.resolve()
+    # Keep the caller's lexical path for the generated-entry contract.  The
+    # resolved path is used separately for containment checks because macOS
+    # canonicalizes paths such as /var to /private/var.
+    root = Path(source_dir)
+    resolved_root = root.resolve()
     content = managed_entry((root / 'server-entry.js').read_text(),
                             Path(__file__).with_name('workspace-dashboard-bridge.mjs'))
     target = root / '.hermes-managed-server.mjs'
     # The leaf name is fixed, but confirm the resolved path still sits directly
     # inside the resolved source directory before it is handed to Node.
-    if target.resolve().parent != root:
+    if target.resolve().parent != resolved_root:
         raise ValueError('Managed entry must stay inside the Workspace source directory')
     # Atomic replacement does not follow an existing leaf symlink. No secrets
     # are written here; credentials remain in the launch environment/cookies.

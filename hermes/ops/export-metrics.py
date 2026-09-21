@@ -355,6 +355,53 @@ def main() -> int:
                 metric("hermes_api_duration_ms_total", duration_ms, tags),
             ]
         )
+    lines.extend([
+        '# HELP hermes_api_rate_limits_total API requests rejected by provider rate limiting, grouped by provider and model.',
+        '# TYPE hermes_api_rate_limits_total counter',
+        '# HELP hermes_api_last_rate_limit_timestamp_seconds Unix timestamp of the latest provider rate-limit response.',
+        '# TYPE hermes_api_last_rate_limit_timestamp_seconds gauge',
+    ])
+    for provider, model, rate_limits, last_rate_limit in rows(
+        database,
+        "SELECT COALESCE(provider,'unknown'),COALESCE(model,'unknown'),COUNT(*),"
+        "COALESCE(MAX(CAST(strftime('%s',ts) AS REAL)),0) "
+        "FROM api_calls WHERE status_code=429 "
+        "OR lower(COALESCE(finish_reason,'')) LIKE '%rate%limit%' "
+        "OR lower(COALESCE(finish_reason,'')) LIKE '%too many requests%' "
+        "GROUP BY metric_label(provider),metric_label(model)",
+    ):
+        tags = {"provider": provider, "model": model}
+        lines.append(metric("hermes_api_rate_limits_total", rate_limits, tags))
+        lines.append(metric("hermes_api_last_rate_limit_timestamp_seconds", last_rate_limit, tags))
+    lines.extend([
+        '# HELP hermes_api_success_total Successful model API responses by provider and model.',
+        '# TYPE hermes_api_success_total counter',
+        '# HELP hermes_api_errors_total Failed model API responses by provider and model.',
+        '# TYPE hermes_api_errors_total counter',
+        '# HELP hermes_api_retries_total Provider retry attempts recorded for model API requests.',
+        '# TYPE hermes_api_retries_total counter',
+        '# HELP hermes_api_last_success_timestamp_seconds Unix timestamp of the latest successful model response.',
+        '# TYPE hermes_api_last_success_timestamp_seconds gauge',
+        '# HELP hermes_api_last_error_timestamp_seconds Unix timestamp of the latest failed model response.',
+        '# TYPE hermes_api_last_error_timestamp_seconds gauge',
+    ])
+    for provider, model, successes, errors, retries, last_success, last_error in rows(
+        database,
+        "SELECT COALESCE(provider,'unknown'),COALESCE(model,'unknown'),"
+        "SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END),"
+        "SUM(CASE WHEN status='ok' THEN 0 ELSE 1 END),COALESCE(SUM(retry_count),0),"
+        "COALESCE(MAX(CASE WHEN status='ok' THEN CAST(strftime('%s',ts) AS REAL) ELSE 0 END),0),"
+        "COALESCE(MAX(CASE WHEN status!='ok' THEN CAST(strftime('%s',ts) AS REAL) ELSE 0 END),0) "
+        "FROM api_calls GROUP BY metric_label(provider),metric_label(model)",
+    ):
+        tags = {"provider": provider, "model": model}
+        lines.extend([
+            metric("hermes_api_success_total", successes, tags),
+            metric("hermes_api_errors_total", errors, tags),
+            metric("hermes_api_retries_total", retries, tags),
+            metric("hermes_api_last_success_timestamp_seconds", last_success, tags),
+            metric("hermes_api_last_error_timestamp_seconds", last_error, tags),
+        ])
     for tool, status, calls, average_ms, duration_ms in rows(
         database,
         "SELECT COALESCE(tool_name,'unknown'),status,COUNT(*),COALESCE(AVG(duration_ms),0),COALESCE(SUM(duration_ms),0) "

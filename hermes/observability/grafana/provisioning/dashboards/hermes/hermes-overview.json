@@ -201,6 +201,82 @@
       "targets": [{"expr": "hermes_profile_history_readable", "legendFormat": "{{profile}}", "instant": true, "refId": "A"}],
       "title": "Profile usage collection",
       "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Provider/model pairs that returned rate-limit responses. Use this panel to identify unstable routes over the selected Grafana range.",
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 70},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "sum", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (provider, model) (increase(hermes_api_rate_limits_total[$__range]))", "legendFormat": "{{provider}} / {{model}}", "refId": "A"}],
+      "title": "Provider rate limits — selected range",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Latest rate-limit event timestamp per provider/model. Zero means no observed rate limit.",
+      "fieldConfig": {"defaults": {"unit": "dateTimeAsLocal", "mappings": [{"type": "value", "options": {"0": {"text": "No rate limits"}}}]}, "overrides": []},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 70},
+      "options": {"colorMode": "value", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "hermes_api_last_rate_limit_timestamp_seconds * 1000", "legendFormat": "{{provider}} / {{model}}", "instant": true, "refId": "A"}],
+      "title": "Last provider rate limit",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Input and output token throughput by provider and model. Total token metrics remain available in the panel above.",
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 79},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"expr": "sum by (provider, model) (rate(hermes_input_tokens_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}} input", "refId": "A"},
+        {"expr": "sum by (provider, model) (rate(hermes_output_tokens_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}} output", "refId": "B"}
+      ],
+      "title": "Token throughput by provider and model",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Successful responses divided by all responses in the selected range. Provider and model stay visible in the legend.",
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 88},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "min", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (provider, model) (rate(hermes_api_success_total[$__rate_interval])) / clamp_min(sum by (provider, model) (rate(hermes_api_success_total[$__rate_interval]) + rate(hermes_api_errors_total[$__rate_interval])), 1e-9)", "legendFormat": "{{provider}} / {{model}} availability", "refId": "A"}],
+      "title": "Model availability",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Average time spent waiting for a provider response, including stream completion as reported by the Hermes API hook.",
+      "fieldConfig": {"defaults": {"unit": "ms", "min": 0}, "overrides": []},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 88},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (provider, model) (rate(hermes_api_duration_ms_total[$__rate_interval])) / clamp_min(sum by (provider, model) (rate(hermes_api_calls_total[$__rate_interval])), 1e-9)", "legendFormat": "{{provider}} / {{model}} latency", "refId": "A"}],
+      "title": "Model response latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Retry activity by provider and model. Spikes indicate recovery work and unstable availability.",
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 97},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "sum", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (provider, model) (rate(hermes_api_retries_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}} retries", "refId": "A"}],
+      "title": "API recovery attempts",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Latest successful and failed response timestamps by provider/model; useful for finding long periods of unavailability.",
+      "fieldConfig": {"defaults": {"unit": "dateTimeAsLocal", "mappings": [{"type": "value", "options": {"0": {"text": "No event"}}}]}, "overrides": []},
+      "gridPos": {"h": 7, "w": 24, "x": 0, "y": 106},
+      "options": {"colorMode": "value", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [
+        {"expr": "hermes_api_last_success_timestamp_seconds * 1000", "legendFormat": "{{provider}} / {{model}} last success", "instant": true, "refId": "A"},
+        {"expr": "hermes_api_last_error_timestamp_seconds * 1000", "legendFormat": "{{provider}} / {{model}} last error", "instant": true, "refId": "B"}
+      ],
+      "title": "Last model availability events",
+      "type": "stat"
     }
   ],
   "refresh": "30s",

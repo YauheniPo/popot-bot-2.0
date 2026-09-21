@@ -169,6 +169,8 @@ class ExportMetricsTests(unittest.TestCase):
     def test_main_exports_all_aggregates_and_private_textfile(self) -> None:
         query_rows = [
             [("provider-a", "model-a", "ok", 2, 10, 5, 1, 15, 0.25, 20)],
+            [("provider-a", "model-a", 1, 1800000000.0)],
+            [("provider-a", "model-a", 2, 0, 3, 1800000000.0, 1799999900.0)],
             [("terminal", "ok", 2, 10, 20)], [("status", 2)],
             [("model-a", "telegram", "completed", 2), ("model-a", "telegram", "interrupted", 1),
              ("model-a", "telegram", "failed", 1)], [("allow", 1)],
@@ -190,6 +192,10 @@ class ExportMetricsTests(unittest.TestCase):
                      'hermes_gateway_process_cpu_seconds_total 2.0',
                      'hermes_gateway_process_resident_memory_bytes 4194304',
                      'hermes_host_inode_used_ratio 0.25', 'hermes_host_memory_available_ratio 0.5',
+                     'hermes_api_rate_limits_total{model="model-a",provider="provider-a"} 1',
+                     'hermes_api_last_rate_limit_timestamp_seconds{model="model-a",provider="provider-a"} 1800000000.0',
+                     'hermes_api_success_total{model="model-a",provider="provider-a"} 2',
+                     'hermes_api_retries_total{model="model-a",provider="provider-a"} 3',
                      'hermes_commands_total{command="status"} 2',
                      'hermes_cost_usd_total{model="model-a",provider="provider-a",status="ok"} 0.25',
                      'hermes_approval_responses_total{choice="allow"} 1'):
@@ -298,8 +304,8 @@ class ExportMetricsTests(unittest.TestCase):
                 CREATE TABLE commands(command);
                 CREATE TABLE approvals(choice,event);
                 CREATE TABLE tool_calls(tool_name,status,duration_ms);
-                CREATE TABLE api_calls(provider,model,status,input_tokens,output_tokens,
-                    cache_read_tokens,total_tokens,cost_usd,duration_ms);
+                CREATE TABLE api_calls(ts,provider,model,status,input_tokens,output_tokens,
+                    cache_read_tokens,total_tokens,cost_usd,duration_ms,finish_reason,status_code,retry_count);
             """)
             for name in (None, "", "unknown"):
                 for completed, failed, interrupted in ((1,0,0), (1,0,1), (0,0,1), (0,1,1), (0,1,0), (0,0,0)):
@@ -308,7 +314,14 @@ class ExportMetricsTests(unittest.TestCase):
                 connection.execute("INSERT INTO commands VALUES(?)", (name,))
                 connection.execute("INSERT INTO approvals VALUES(?,'response')", (name,))
                 connection.execute("INSERT INTO tool_calls VALUES(?,?,?)", (name, name, 10))
-                connection.execute("INSERT INTO api_calls VALUES(?,?,?,1,2,3,6,0.5,10)", (name,name,name))
+                connection.execute(
+                    "INSERT INTO api_calls VALUES(?,?,?, ?,1,2,3,6,0.5,10,?,?,?)",
+                    ("2026-09-21T10:00:00+00:00", name, name, name, "", 0, 0),
+                )
+            connection.execute(
+                "INSERT INTO api_calls VALUES(?,?,?, ?,0,0,0,0,0,10,?,?,?)",
+                ("2026-09-21T10:01:00+00:00", "rate-provider", "rate-model", "rate limited", 429, 1, 0),
+            )
         with mock.patch.object(metrics, "gateway_process_metrics", return_value=(0, 0)):
             self.assertEqual(metrics.main(), 0)
         output = (self.root / "output" / "hermes.prom").read_text()
