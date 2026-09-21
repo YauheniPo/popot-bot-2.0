@@ -60,6 +60,43 @@ function isAllowedMemoryPath(input, parts, leaf, instruction) {
   return HOME_PATH_RULES.some(rule => rule(parts, leaf, instruction, input));
 }
 
+function shouldDescend(prefix, name, walkedRoots) {
+  if (prefix.startsWith('profiles/') && prefix !== 'profiles/' &&
+      !(prefix.split('/').length === 3 && name === 'memories')) return false;
+  if (prefix === 'swarm/' && name !== 'worktrees') return false;
+  return Boolean(prefix) || walkedRoots.has(name);
+}
+
+function walkDirectory(directory, prefix, depth, walkedRoots, excluded, results, resolveMemoryFilePath) {
+  if (!fs.existsSync(directory) || fs.lstatSync(directory).isSymbolicLink()) return;
+  if (depth > 20) throw new Error('Instruction tree exceeds editor depth limit');
+  let visited = 0;
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    if (++visited > 30_000) throw new Error('Instruction tree exceeds editor scan limit');
+    if (entry.name.startsWith('.') || excluded.has(entry.name) || entry.isSymbolicLink()) continue;
+    if (entry.isDirectory()) {
+      if (shouldDescend(prefix, entry.name, walkedRoots)) {
+        walkDirectory(path.join(directory, entry.name), prefix + entry.name + '/', depth + 1, walkedRoots, excluded, results, resolveMemoryFilePath);
+      }
+    } else {
+      try {
+        const { stat } = resolveMemoryFilePath(prefix + entry.name);
+        results.push({ path: prefix + entry.name, name: entry.name, size: stat.size, modified: stat.mtime.toISOString() });
+      } catch { /* Unlisted files, links and oversized files are not editor targets. */ }
+    }
+  }
+}
+
+function validateSymlinkPath(root, components, external) {
+  let fullPath = root;
+  if (fs.lstatSync(root).isSymbolicLink()) throw new Error('Symlink root not allowed');
+  for (const component of external ? components.slice(1) : components) {
+    fullPath = path.join(fullPath, component);
+    if (fs.lstatSync(fullPath).isSymbolicLink()) throw new Error('Symlink path not allowed');
+  }
+  return fullPath;
+}
+
 export function createMemoryFiles({ home, workspace, parseConfig }) {
   const roots = { home: path.resolve(home), workspace: path.resolve(workspace) };
 
@@ -74,12 +111,7 @@ export function createMemoryFiles({ home, workspace, parseConfig }) {
     const instruction = agentName.test(leaf);
     if (!isAllowedMemoryPath(input, parts, leaf, instruction)) throw new Error('Path not allowed');
     const root = external ? roots.workspace : roots.home;
-    let fullPath = root;
-    if (fs.lstatSync(root).isSymbolicLink()) throw new Error('Symlink root not allowed');
-    for (const component of external ? parts.slice(1) : parts) {
-      fullPath = path.join(fullPath, component);
-      if (fs.lstatSync(fullPath).isSymbolicLink()) throw new Error('Symlink path not allowed');
-    }
+    const fullPath = validateSymlinkPath(root, parts, external);
     const stat = fs.lstatSync(fullPath);
     if (!stat.isFile() || stat.nlink !== 1) throw new Error('File type not allowed');
     if (stat.size > maxBytes) throw new Error('File larger than 512 KiB is not allowed');
@@ -98,42 +130,15 @@ export function createMemoryFiles({ home, workspace, parseConfig }) {
 
   function listMemoryFiles() {
     const results = [];
-    let visited = 0;
     // Only these top-level trees are ever walked, and profile directories are
     // limited to their instruction and native-memory subtrees.
     const walkedRoots = new Set(['memory', 'memories', 'profiles', 'swarm']);
     const excluded = new Set(['.git', 'node_modules', '__pycache__', '.pytest_cache']);
 
-    function shouldDescend(prefix, name, walkedRoots) {
-  if (prefix.startsWith('profiles/') && prefix !== 'profiles/' &&
-      !(prefix.split('/').length === 3 && name === 'memories')) return false;
-  if (prefix === 'swarm/' && name !== 'worktrees') return false;
-  return Boolean(prefix) || walkedRoots.has(name);
-}
-
-function walk(directory, prefix, depth, walkedRoots, excluded, results, resolveMemoryFilePath) {
-  if (!fs.existsSync(directory) || fs.lstatSync(directory).isSymbolicLink()) return;
-  if (depth > 20) throw new Error('Instruction tree exceeds editor depth limit');
-  let visited = 0;
-  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-    if (++visited > 30_000) throw new Error('Instruction tree exceeds editor scan limit');
-    if (entry.name.startsWith('.') || excluded.has(entry.name) || entry.isSymbolicLink()) continue;
-    if (entry.isDirectory()) {
-      if (shouldDescend(prefix, entry.name, walkedRoots)) {
-        walk(path.join(directory, entry.name), prefix + entry.name + '/', depth + 1, walkedRoots, excluded, results, resolveMemoryFilePath);
-      }
-    } else {
-      try {
-        const { stat } = resolveMemoryFilePath(prefix + entry.name);
-        results.push({ path: prefix + entry.name, name: entry.name, size: stat.size, modified: stat.mtime.toISOString() });
-      } catch { /* Unlisted files, links and oversized files are not editor targets. */ }
-    }
+    walkDirectory(roots.home, '', 0, walkedRoots, excluded, results, resolveMemoryFilePath);
+    walkDirectory(roots.workspace, 'workspace/', 0, walkedRoots, excluded, results, resolveMemoryFilePath);
+    return results.sort((a, b) => a.path.localeCompare(b.path));
   }
-}
-  walk(roots.home, '', 0, walkedRoots, excluded, results, resolveMemoryFilePath);
-  walk(roots.workspace, 'workspace/', 0, walkedRoots, excluded, results, resolveMemoryFilePath);
-  return results.sort((a, b) => a.path.localeCompare(b.path));
-}
 
   function writeMemoryFile(input, content, expectedVersion) {
     const { fullPath, stat } = resolveMemoryFilePath(input);
