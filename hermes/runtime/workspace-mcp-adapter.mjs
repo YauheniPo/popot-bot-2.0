@@ -64,19 +64,24 @@ function createInput(body) {
 }
 
 function classifyMcpRequest(path, method) {
-  if (path === '/api/mcp/servers' && method === 'GET') return 'collection';
-  if (path === '/api/mcp/servers' && method === 'POST') return 'collection';
-  if (path === '/api/mcp' && (method === 'GET' || method === 'POST')) return 'collection';
+  const isCollection = path === '/api/mcp/servers' || path === '/api/mcp';
+  if (isCollection && (method === 'GET' || method === 'POST')) return 'collection';
   if (path === '/api/mcp/configure' && method === 'PUT') return 'configure';
   if (path === '/api/mcp/test' && method === 'POST') return 'test';
-  if (path.startsWith('/api/mcp/servers/') && path.endsWith('/enabled')) return 'configure';
-  if (path.startsWith('/api/mcp/servers/') && path.endsWith('/test')) return 'test';
-  if (path.startsWith('/api/mcp/servers/') && method === 'DELETE') return 'deletion';
-  if (path.startsWith('/api/mcp/servers/') && (method === 'PUT' || method === 'PATCH')) return 'edit';
-  if (/^\/api\/mcp\/[^/]+$/.test(path) && method === 'DELETE') return 'deletion';
-  if (/^\/api\/mcp\/[^/]+$/.test(path) && (method === 'PUT' || method === 'PATCH')) return 'edit';
-  if (path.startsWith('/api/mcp/') && method !== 'GET') return 'discover';
-  if (path.startsWith('/api/mcp/') && path.endsWith('/logs')) return 'logs';
+  if (path.startsWith('/api/mcp/servers/')) {
+    if (path.endsWith('/enabled')) return 'configure';
+    if (path.endsWith('/test')) return 'test';
+    if (method === 'DELETE') return 'deletion';
+    if (method === 'PUT' || method === 'PATCH') return 'edit';
+  }
+  if (/^\/api\/mcp\/[^/]+$/.test(path)) {
+    if (method === 'DELETE') return 'deletion';
+    if (method === 'PUT' || method === 'PATCH') return 'edit';
+  }
+  if (path.startsWith('/api/mcp/')) {
+    if (method !== 'GET') return 'discover';
+    if (path.endsWith('/logs')) return 'logs';
+  }
   return null;
 }
 
@@ -200,47 +205,53 @@ export function createMcpAdapter({ dashboardUrl, fetchImpl, now = Date.now, prob
     });
   }
 
+  function planCollection(url, body, method, profile) {
+    url.pathname = '/api/mcp/servers';
+    if (method === 'POST') {
+      let payload;
+      try { payload = createInput(body); } catch {
+        return { refusal: unsupported('Native create supports URL/command, stdio env and bearer/automatic OAuth. Custom headers, OAuth client settings, disabled creation and tool filters must be configured in the official Dashboard.') };
+      }
+      return { payload, render: serverView };
+    }
+    return { render: value => {
+      if (!Array.isArray(value.servers)) throw new Error('Invalid MCP list');
+      return { servers: listView(value.servers, profile) };
+    } };
+  }
+
+  function planConfigure(url, body) {
+    if (typeof body.enabled !== 'boolean' || Object.keys(body).some(key => !['name', 'enabled'].includes(key))) {
+      return { refusal: unsupported('Native Workspace configuration supports the enabled toggle only. Change tool selection in the official Dashboard.') };
+    }
+    if (url.pathname === '/api/mcp/configure') {
+      url.pathname = `/api/mcp/servers/${encodeURIComponent(body.name)}/enabled`;
+    }
+    return { payload: { enabled: body.enabled } };
+  }
+
+  function planTest(url, body) {
+    if (Object.keys(body).some(key => key !== 'name')) {
+      return { refusal: unsupported('Save the server first, then test it by name. Unsaved inputs are not tested against an existing server.') };
+    }
+    if (url.pathname === '/api/mcp/test') {
+      url.pathname = `/api/mcp/servers/${encodeURIComponent(body.name)}/test`;
+    }
+    return { render: value => {
+      if (typeof value.ok !== 'boolean' || (value.ok && (!Array.isArray(value.tools) ||
+          value.tools.some(tool => !object(tool) || typeof tool.name !== 'string')))) {
+        throw new Error('Invalid native discovery result');
+      }
+      return { ok: value.ok, status: value.ok ? 'connected' : 'failed',
+        discoveredTools: value.ok ? value.tools : [],
+        ...(value.ok ? {} : { error: 'Native MCP test failed. Check server connectivity and OAuth in the official Dashboard.' }) };
+    } };
+  }
+
   function planMcpRequest(kind, url, body, profile, method) {
-    if (kind === 'collection') {
-      url.pathname = '/api/mcp/servers';
-      if (method === 'POST') {
-        let payload;
-        try { payload = createInput(body); } catch {
-          return { refusal: unsupported('Native create supports URL/command, stdio env and bearer/automatic OAuth. Custom headers, OAuth client settings, disabled creation and tool filters must be configured in the official Dashboard.') };
-        }
-        return { payload, render: serverView };
-      }
-      return { render: value => {
-        if (!Array.isArray(value.servers)) throw new Error('Invalid MCP list');
-        return { servers: listView(value.servers, profile) };
-      } };
-    }
-    if (kind === 'configure') {
-      if (typeof body.enabled !== 'boolean' || Object.keys(body).some(key => !['name', 'enabled'].includes(key))) {
-        return { refusal: unsupported('Native Workspace configuration supports the enabled toggle only. Change tool selection in the official Dashboard.') };
-      }
-      if (url.pathname === '/api/mcp/configure') {
-        url.pathname = `/api/mcp/servers/${encodeURIComponent(body.name)}/enabled`;
-      }
-      return { payload: { enabled: body.enabled } };
-    }
-    if (kind === 'test') {
-      if (Object.keys(body).some(key => key !== 'name')) {
-        return { refusal: unsupported('Save the server first, then test it by name. Unsaved inputs are not tested against an existing server.') };
-      }
-      if (url.pathname === '/api/mcp/test') {
-        url.pathname = `/api/mcp/servers/${encodeURIComponent(body.name)}/test`;
-      }
-      return { render: value => {
-        if (typeof value.ok !== 'boolean' || (value.ok && (!Array.isArray(value.tools) ||
-            value.tools.some(tool => !object(tool) || typeof tool.name !== 'string')))) {
-          throw new Error('Invalid native discovery result');
-        }
-        return { ok: value.ok, status: value.ok ? 'connected' : 'failed',
-          discoveredTools: value.ok ? value.tools : [],
-          ...(value.ok ? {} : { error: 'Native MCP test failed. Check server connectivity and OAuth in the official Dashboard.' }) };
-      } };
-    }
+    if (kind === 'collection') return planCollection(url, body, method, profile);
+    if (kind === 'configure') return planConfigure(url, body);
+    if (kind === 'test') return planTest(url, body);
     url.pathname = `/api/mcp/servers/${url.pathname.slice('/api/mcp/'.length)}`;
     return {};
   }
