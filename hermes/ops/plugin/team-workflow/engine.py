@@ -263,6 +263,11 @@ class Engine:
                     or result['schema_valid'] is not True):
                 raise ValueError('Native stage did not complete')
             payload = json.loads(result['summary'])
+            # Enforce SCHEMA maxItems bounds immediately after parsing (defense in depth)
+            for key in ('evidence', 'findings', 'changed_files'):
+                items = payload.get(key, [])
+                if not isinstance(items, list) or len(items) > 12:
+                    raise ValueError(f'{key} exceeds maxItems=12 from SCHEMA')
             self._validate(payload, job['stage'])
         except (KeyError, IndexError, TypeError, ValueError):
             job.update(status='blocked', reason='Stage failed or returned invalid/unverified evidence; inspect native result')

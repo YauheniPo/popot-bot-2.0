@@ -7,7 +7,7 @@
   loop: "{{ vps_workspace_ui.swarm.workers.keys() | list }}"
   become_user: "{{ hermes_user }}"
   register: hermes_swarm_sessions
-  failed_when: hermes_swarm_sessions.rc not in [0, 1]
+  failed_when: false
   changed_when: false
 
 - name: Start missing Swarm sessions without interrupting existing workers

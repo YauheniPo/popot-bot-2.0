@@ -22,7 +22,7 @@ from review_execution import observable_execution_report, safe_label, technical_
 LABEL = "ObservableMessagesReview"
 PREFIX = "observable"
 MAX_REPORT_BYTES = 1024 * 1024
-MAX_CHUNK_CHARS = 48_000
+MAX_CHUNK_CHARS = 32_000
 MAX_FINDINGS = 5
 RATE_LIMIT_WAIT_BUDGET = 120  # Per chunk, shared by primary and fallback retries.
 NON_RETRYABLE = {"http_400", "http_401", "http_403", "http_404",

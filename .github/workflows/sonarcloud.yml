@@ -68,6 +68,12 @@ jobs:
             https://github.com/outsourc-e/hermes-workspace.git "$upstream"
           git -C "$upstream" fetch --quiet --depth 1 origin "$WORKSPACE_REVISION"
           git -C "$upstream" checkout --quiet --detach FETCH_HEAD
+          # Verify the checked-out commit matches the pinned revision for supply-chain integrity
+          actual_rev=$(git -C "$upstream" rev-parse HEAD)
+          if [ "$actual_rev" != "$WORKSPACE_REVISION" ]; then
+            echo "::error::Workspace upstream revision mismatch: expected $WORKSPACE_REVISION, got $actual_rev"
+            exit 1
+          fi
           # The adapter tests transpile upstream TypeScript with the version the
           # pinned checkout expects; install it in place of a full pnpm install.
           npm install --prefix "$upstream" --no-save --no-audit --no-fund typescript@5
