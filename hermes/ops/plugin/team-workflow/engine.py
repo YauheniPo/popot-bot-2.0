@@ -263,6 +263,8 @@ class Engine:
                     or result['schema_valid'] is not True):
                 raise ValueError('Native stage did not complete')
             payload = json.loads(result['summary'])
+            if not isinstance(payload, dict):
+                raise ValueError('Payload must be an object')
             # Enforce SCHEMA maxItems bounds immediately after parsing (defense in depth)
             for key in ('evidence', 'findings', 'changed_files'):
                 items = payload.get(key, [])

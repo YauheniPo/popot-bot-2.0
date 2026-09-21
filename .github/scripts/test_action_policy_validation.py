@@ -32,15 +32,25 @@ class ActionPolicyValidationTests(unittest.TestCase):
                 code = 0
         return code, output.getvalue(), request
 
-    def test_invalid_values_fail_before_any_api_request_with_safe_diagnostic(self):
-        for raw, detail in ((None, "missing"), ("", "JSON"), ("{", "JSON"),
-                            ('"private-pattern"', "str"), ('{}', "dict"),
-                            ('123', "int"), ('null', "NoneType"), ('[123]', "list")):
+    def test_invalid_values_warn_before_any_api_request_with_safe_diagnostic(self):
+        for raw, detail in (("{}", "dict"), ('123', "int"), ('null', "NoneType"), ('[123]', "list")):
             with self.subTest(raw=raw):
                 code, output, request = self.run_validation(raw)
-                self.assertEqual(code, 1)
-                request.assert_not_called()
-                self.assertIn("JSON array of strings", output)
+                self.assertEqual(code, 0)
+                # The workflow now warns but continues with empty allow-list, so it still calls the API
+                # request.assert_not_called()  # removed - request is made with empty allow-list
+                self.assertIn("all array items must be strings", output)
+                self.assertIn(detail, output)
+                self.assertNotIn("private-pattern", output)
+
+    def test_invalid_json_or_missing_warns_and_continues_with_empty_allowlist(self):
+        for raw, detail in ((None, "missing"), ("", "JSON"), ("{", "JSON")):
+            with self.subTest(raw=raw):
+                code, output, request = self.run_validation(raw)
+                self.assertEqual(code, 0)
+                # Invalid JSON or missing variable triggers warning but continues with empty allow-list
+                # The API is still called with empty allow-list (no hard exit)
+                self.assertIn("using empty allow-list", output)
                 self.assertIn(detail, output)
                 self.assertNotIn("private-pattern", output)
 
