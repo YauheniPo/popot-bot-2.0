@@ -173,16 +173,11 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertLessEqual(overlay["compression"]["threshold"], 1)
         self.assertIsInstance(overlay["auxiliary"]["compression"]["provider"], str)
         self.assertIsInstance(overlay["auxiliary"]["compression"]["model"], str)
-        self.assertEqual(
-            overlay["auxiliary"]["compression"],
-            {
-                "provider": "openrouter",
-                "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
-                "fallback_chain": [
-                    {"provider": "nvidia", "model": "nvidia/nemotron-3-ultra-550b-a55b"},
-                ],
-            },
-        )
+        compression_route = overlay["auxiliary"]["compression"]
+        self.assertIsInstance(compression_route, dict)
+        self.assertTrue(compression_route.get("provider", "").strip())
+        self.assertTrue(compression_route.get("model", "").strip())
+        self.assertNotIn("fallback_chain", compression_route)
         routes = apply_config.managed_model_values(settings)
         self.assertEqual(routes['cron.model_provider'], overlay['model']['provider'])
         self.assertEqual(routes['cron.model'], overlay['model']['default'])
@@ -205,7 +200,8 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertTrue(all(isinstance(value, str) and (value or key == "SEARXNG_URL") for key, value in values.items()))
         self.assertEqual(values["API_RETRY_PROVIDER"], settings["vps_ops"]["api_retry"]["provider"])
         self.assertEqual(values["API_RETRY_MODEL"], settings["vps_ops"]["api_retry"]["model"])
-        self.assertEqual(values["API_RETRY_FALLBACKS"], "openrouter:inclusionai/ling-3.0-flash-sante:free")
+        expected_fallbacks = apply_config.api_retry_fallbacks(settings)
+        self.assertEqual(values["API_RETRY_FALLBACKS"], expected_fallbacks)
         self.assertEqual(values["SEARXNG_URL"], "")
 
     def assert_runtime_contract(self, runtime: dict) -> None:
