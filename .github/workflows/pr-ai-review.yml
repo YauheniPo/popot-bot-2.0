@@ -875,9 +875,9 @@ jobs:
       # Observable uses its own models so it does not compete with the Claude
       # Code SDK reviewer (which reads CLAUDE_REVIEW_MODEL directly) for the
       # same free-model rate limit on the shared provider key.
-      CLAUDE_REVIEW_PROVIDER: ${{ vars.OBSERVABLE_REVIEW_PROVIDER || env.CLAUDE_REVIEW_PROVIDER }}
+      CLAUDE_REVIEW_PROVIDER: ${{ vars.OBSERVABLE_REVIEW_PROVIDER || vars.CLAUDE_REVIEW_PROVIDER || 'openrouter' }}
       CLAUDE_REVIEW_MODEL: ${{ vars.OBSERVABLE_REVIEW_MODEL || 'inclusionai/ling-3.0-flash-fin:free' }}
-      CLAUDE_REVIEW_FALLBACK_PROVIDER: ${{ vars.OBSERVABLE_REVIEW_FALLBACK_PROVIDER || env.CLAUDE_REVIEW_FALLBACK_PROVIDER }}
+      CLAUDE_REVIEW_FALLBACK_PROVIDER: ${{ vars.OBSERVABLE_REVIEW_FALLBACK_PROVIDER || vars.CLAUDE_REVIEW_FALLBACK_PROVIDER || 'openrouter' }}
       CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.OBSERVABLE_REVIEW_FALLBACK_MODEL || 'inclusionai/ling-3.0-flash-sante:free' }}
       OBSERVABLE_REVIEW_MAX_TURNS: ${{ vars.OBSERVABLE_REVIEW_MAX_TURNS || '16' }}
       CLAUDE_REVIEW_MAX_TURNS: ${{ vars.OBSERVABLE_REVIEW_MAX_TURNS || '16' }}
