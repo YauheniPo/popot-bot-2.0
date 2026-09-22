@@ -184,6 +184,8 @@ class SshPreflightTests(unittest.TestCase):
             self.assertFalse(preflight.show_approval('file:///tmp/approval'))
             self.assertFalse(preflight.show_approval('https://login.tailscale.com.evil/a/test'))
             self.assertFalse(preflight.show_approval('https://login.tailscale.com:8443/a/test'))
+            self.assertFalse(preflight.show_approval('https://login.tailscale.com:not-a-port/a/test'))
+            self.assertFalse(preflight.show_approval('https://login.tailscale.com/other/test'))
             opener.assert_not_called()
 
     def test_interactive_approval_is_skipped_in_ci_and_without_a_terminal(self):
