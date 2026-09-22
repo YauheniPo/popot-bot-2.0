@@ -266,129 +266,82 @@
       "type": "timeseries"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "description": "Latest successful, failed and rate-limited response timestamps by provider/model; useful for finding long periods of unavailability. Empty cell means the event was never observed.",
-      "fieldConfig": {"defaults": {"unit": "dateTimeAsLocal", "mappings": [{"type": "value", "options": {"0": {"text": "No event"}}}]}, "overrides": []},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
+      "description": "Latest successful, failed and rate-limited response per provider/model over the retained history (not the time picker); useful for finding long periods of unavailability. Empty cell means the event was never observed.",
+      "fieldConfig": {"defaults": {}, "overrides": []},
       "gridPos": {"h": 10, "w": 24, "x": 0, "y": 106},
       "options": {"cellHeight": "lg", "showHeader": true, "sortBy": [{"displayName": "Last success", "desc": true}]},
-      "targets": [
-        {"expr": "hermes_api_last_success_timestamp_seconds * 1000", "format": "table", "instant": true, "refId": "A"},
-        {"expr": "hermes_api_last_error_timestamp_seconds * 1000", "format": "table", "instant": true, "refId": "B"},
-        {"expr": "hermes_api_last_rate_limit_timestamp_seconds * 1000", "format": "table", "instant": true, "refId": "C"}
-      ],
-      "transformations": [
-        {"id": "organize", "options": {"excludeByName": {"Time": true}}},
-        {"id": "merge", "options": {}},
-        {"id": "organize", "options": {"renameByName": {"Value #A": "Last success", "Value #B": "Last error", "Value #C": "Last rate limit"}}}
-      ],
+      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "SELECT provider AS \"Provider\", model AS \"Model\", MAX(CASE WHEN status = 'ok' THEN ts END) AS \"Last success\", MAX(CASE WHEN status != 'ok' THEN ts END) AS \"Last error\", MAX(CASE WHEN (status_code = 429 OR lower(finish_reason) LIKE '%rate%limit%' OR lower(finish_reason) LIKE '%too many requests%') THEN ts END) AS \"Last rate limit\" FROM api_calls GROUP BY provider, model ORDER BY 3 DESC", "rawQueryText": "SELECT provider AS \"Provider\", model AS \"Model\", MAX(CASE WHEN status = 'ok' THEN ts END) AS \"Last success\", MAX(CASE WHEN status != 'ok' THEN ts END) AS \"Last error\", MAX(CASE WHEN (status_code = 429 OR lower(finish_reason) LIKE '%rate%limit%' OR lower(finish_reason) LIKE '%too many requests%') THEN ts END) AS \"Last rate limit\" FROM api_calls GROUP BY provider, model ORDER BY 3 DESC", "queryType": "table", "timeColumns": ["Last success", "Last error", "Last rate limit"], "refId": "A"}],
       "title": "Model/provider — latest availability events",
       "type": "table"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "description": "Route scorecard for the selected range. Availability and first-attempt success show stability, p95 and output tok/s show speed, truncation and empty-response shares are quality proxies. Routes without traffic in the range have no ratio values instead of a misleading 0; errors include every class.",
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
+      "description": "Route scorecard for the selected range, computed per call from the SQLite snapshot. Availability and first-attempt success show stability, p95 and output tok/s show speed, truncated and empty shares are quality proxies. First-attempt success links a success to error rows of the same session and api_call_count; without that correlation it equals availability of successes.",
       "fieldConfig": {"defaults": {"unit": "short"}, "overrides": [{"matcher": {"id": "byName", "options": "Availability"}, "properties": [{"id": "unit", "value": "percentunit"}]}, {"matcher": {"id": "byName", "options": "First-attempt success"}, "properties": [{"id": "unit", "value": "percentunit"}]}, {"matcher": {"id": "byName", "options": "p95 response time"}, "properties": [{"id": "unit", "value": "ms"}]}, {"matcher": {"id": "byName", "options": "Truncated"}, "properties": [{"id": "unit", "value": "percentunit"}]}, {"matcher": {"id": "byName", "options": "Empty responses"}, "properties": [{"id": "unit", "value": "percentunit"}]}, {"matcher": {"id": "byName", "options": "Cost per success"}, "properties": [{"id": "unit", "value": "currencyUSD"}]}]},
       "gridPos": {"h": 10, "w": 24, "x": 0, "y": 116},
       "options": {"cellHeight": "lg", "showHeader": true, "sortBy": [{"displayName": "Availability", "desc": true}]},
-      "targets": [
-        {"expr": "sum by (provider, model) (increase(hermes_api_success_total[$__range])) / (sum by (provider, model) (increase(hermes_api_calls_total[$__range])) > 0)", "format": "table", "instant": true, "refId": "A"},
-        {"expr": "sum by (provider, model) (increase(hermes_api_first_attempt_success_total[$__range])) / (sum by (provider, model) (increase(hermes_api_success_total[$__range])) > 0)", "format": "table", "instant": true, "refId": "B"},
-        {"expr": "histogram_quantile(0.95, sum by (provider, model, le) (increase(hermes_api_duration_ms_bucket{status=\"ok\"}[$__range])))", "format": "table", "instant": true, "refId": "C"},
-        {"expr": "1000 * sum by (provider, model) (increase(hermes_output_tokens_total{status=\"ok\"}[$__range])) / (sum by (provider, model) (increase(hermes_api_duration_ms_total{status=\"ok\"}[$__range])) > 0)", "format": "table", "instant": true, "refId": "D"},
-        {"expr": "sum by (provider, model) (increase(hermes_api_finish_total{reason=\"length\"}[$__range])) / (sum by (provider, model) (increase(hermes_api_success_total[$__range])) > 0)", "format": "table", "instant": true, "refId": "E"},
-        {"expr": "sum by (provider, model) (increase(hermes_api_empty_success_total[$__range])) / (sum by (provider, model) (increase(hermes_api_success_total[$__range])) > 0)", "format": "table", "instant": true, "refId": "F"},
-        {"expr": "sum by (provider, model) (increase(hermes_cost_usd_total{status=\"ok\"}[$__range])) / (sum by (provider, model) (increase(hermes_api_success_total[$__range])) > 0)", "format": "table", "instant": true, "refId": "G"},
-        {"expr": "sum by (provider, model) (increase(hermes_api_success_total[$__range]))", "format": "table", "instant": true, "refId": "H"},
-        {"expr": "sum by (provider, model) (increase(hermes_api_errors_total[$__range]))", "format": "table", "instant": true, "refId": "I"},
-        {"expr": "sum by (provider, model) (increase(hermes_api_rate_limits_total[$__range]))", "format": "table", "instant": true, "refId": "J"},
-        {"expr": "sum by (provider, model) (increase(hermes_api_retries_total[$__range]))", "format": "table", "instant": true, "refId": "K"}
-      ],
-      "transformations": [
-        {"id": "organize", "options": {"excludeByName": {"Time": true}}},
-        {"id": "merge", "options": {}},
-        {"id": "organize", "options": {"renameByName": {"Value #A": "Availability", "Value #B": "First-attempt success", "Value #C": "p95 response time", "Value #D": "Output tok/s", "Value #E": "Truncated", "Value #F": "Empty responses", "Value #G": "Cost per success", "Value #H": "Successes", "Value #I": "Errors", "Value #J": "Rate limits", "Value #K": "Retries"}}}
-      ],
+      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "WITH calls AS ( SELECT a.provider, a.model, a.status, a.duration_ms, a.input_tokens, a.output_tokens, a.total_tokens, a.cost_usd, a.finish_reason, a.status_code, a.retry_count, CASE WHEN a.status = 'ok' AND (COALESCE(a.call_index, 0) = 0 OR NOT EXISTS ( SELECT 1 FROM api_calls e WHERE e.status != 'ok' AND e.session_id = a.session_id AND e.call_index = a.call_index AND e.ts <= a.ts)) THEN 1 ELSE 0 END AS first_attempt, ROW_NUMBER() OVER (PARTITION BY a.provider, a.model, a.status ORDER BY a.duration_ms) AS rn, COUNT(*) OVER (PARTITION BY a.provider, a.model, a.status) AS cnt FROM api_calls a WHERE ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch')) SELECT provider AS \"Provider\", model AS \"Model\", 1.0 * SUM(status = 'ok') / COUNT(*) AS \"Availability\", 1.0 * SUM(first_attempt) / NULLIF(SUM(status = 'ok'), 0) AS \"First-attempt success\", MIN(CASE WHEN status = 'ok' AND rn >= 0.95 * cnt THEN duration_ms END) AS \"p95 response time\", 1000.0 * SUM(CASE WHEN status = 'ok' THEN output_tokens END) / NULLIF(SUM(CASE WHEN status = 'ok' THEN duration_ms END), 0) AS \"Output tok/s\", 1.0 * SUM(status = 'ok' AND lower(COALESCE(finish_reason, '')) IN ('length', 'max_tokens')) / NULLIF(SUM(status = 'ok'), 0) AS \"Truncated\", 1.0 * SUM(status = 'ok' AND COALESCE(output_tokens, 0) = 0 AND (COALESCE(input_tokens, 0) > 0 OR COALESCE(total_tokens, 0) > 0)) / NULLIF(SUM(status = 'ok'), 0) AS \"Empty responses\", SUM(CASE WHEN status = 'ok' THEN cost_usd END) / NULLIF(SUM(status = 'ok'), 0) AS \"Cost per success\", SUM(status = 'ok') AS \"Successes\", SUM(status != 'ok') AS \"Errors\", SUM((status_code = 429 OR lower(finish_reason) LIKE '%rate%limit%' OR lower(finish_reason) LIKE '%too many requests%')) AS \"Rate limits\", SUM(COALESCE(retry_count, 0)) AS \"Retries\" FROM calls GROUP BY provider, model ORDER BY 3 DESC", "rawQueryText": "WITH calls AS ( SELECT a.provider, a.model, a.status, a.duration_ms, a.input_tokens, a.output_tokens, a.total_tokens, a.cost_usd, a.finish_reason, a.status_code, a.retry_count, CASE WHEN a.status = 'ok' AND (COALESCE(a.call_index, 0) = 0 OR NOT EXISTS ( SELECT 1 FROM api_calls e WHERE e.status != 'ok' AND e.session_id = a.session_id AND e.call_index = a.call_index AND e.ts <= a.ts)) THEN 1 ELSE 0 END AS first_attempt, ROW_NUMBER() OVER (PARTITION BY a.provider, a.model, a.status ORDER BY a.duration_ms) AS rn, COUNT(*) OVER (PARTITION BY a.provider, a.model, a.status) AS cnt FROM api_calls a WHERE ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch')) SELECT provider AS \"Provider\", model AS \"Model\", 1.0 * SUM(status = 'ok') / COUNT(*) AS \"Availability\", 1.0 * SUM(first_attempt) / NULLIF(SUM(status = 'ok'), 0) AS \"First-attempt success\", MIN(CASE WHEN status = 'ok' AND rn >= 0.95 * cnt THEN duration_ms END) AS \"p95 response time\", 1000.0 * SUM(CASE WHEN status = 'ok' THEN output_tokens END) / NULLIF(SUM(CASE WHEN status = 'ok' THEN duration_ms END), 0) AS \"Output tok/s\", 1.0 * SUM(status = 'ok' AND lower(COALESCE(finish_reason, '')) IN ('length', 'max_tokens')) / NULLIF(SUM(status = 'ok'), 0) AS \"Truncated\", 1.0 * SUM(status = 'ok' AND COALESCE(output_tokens, 0) = 0 AND (COALESCE(input_tokens, 0) > 0 OR COALESCE(total_tokens, 0) > 0)) / NULLIF(SUM(status = 'ok'), 0) AS \"Empty responses\", SUM(CASE WHEN status = 'ok' THEN cost_usd END) / NULLIF(SUM(status = 'ok'), 0) AS \"Cost per success\", SUM(status = 'ok') AS \"Successes\", SUM(status != 'ok') AS \"Errors\", SUM((status_code = 429 OR lower(finish_reason) LIKE '%rate%limit%' OR lower(finish_reason) LIKE '%too many requests%')) AS \"Rate limits\", SUM(COALESCE(retry_count, 0)) AS \"Retries\" FROM calls GROUP BY provider, model ORDER BY 3 DESC", "queryType": "table", "timeColumns": [], "refId": "A"}],
       "title": "Route scorecard — selected range",
       "type": "table"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "description": "Failed API responses by error class. rate_limit and server point at the provider; auth and client point at configuration or request shape; timeout and network at connectivity.",
-      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}, "overrides": []},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
+      "description": "Failed API responses per interval by error class. rate_limit and server point at the provider; auth and client at configuration or request shape; timeout and network at connectivity.",
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "displayName": "${__field.labels.route}", "custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}, "overrides": []},
       "gridPos": {"h": 9, "w": 12, "x": 0, "y": 126},
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "sum", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [{"expr": "sum by (provider, model, class) (increase(hermes_api_errors_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}} · {{class}}", "refId": "A"}],
+      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "SELECT (CAST(strftime('%s', ts) AS INTEGER) / MAX($__interval_ms / 1000, 60)) * MAX($__interval_ms / 1000, 60) AS time, provider || ' / ' || model || ' · ' || CASE WHEN (status_code = 429 OR lower(finish_reason) LIKE '%rate%limit%' OR lower(finish_reason) LIKE '%too many requests%') THEN 'rate_limit' WHEN status_code IN (408, 504) OR lower(finish_reason) LIKE '%timeout%' OR lower(finish_reason) LIKE '%timed out%' THEN 'timeout' WHEN status_code >= 500 THEN 'server' WHEN status_code IN (401, 403) THEN 'auth' WHEN status_code >= 400 THEN 'client' WHEN lower(finish_reason) LIKE '%connect%' OR lower(finish_reason) LIKE '%network%' OR lower(finish_reason) LIKE '%dns%' OR lower(finish_reason) LIKE '%reset%' OR lower(finish_reason) LIKE '%ssl%' THEN 'network' ELSE 'other' END AS route, COUNT(*) AS errors FROM api_calls WHERE status != 'ok' AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2 ORDER BY 1", "rawQueryText": "SELECT (CAST(strftime('%s', ts) AS INTEGER) / MAX($__interval_ms / 1000, 60)) * MAX($__interval_ms / 1000, 60) AS time, provider || ' / ' || model || ' · ' || CASE WHEN (status_code = 429 OR lower(finish_reason) LIKE '%rate%limit%' OR lower(finish_reason) LIKE '%too many requests%') THEN 'rate_limit' WHEN status_code IN (408, 504) OR lower(finish_reason) LIKE '%timeout%' OR lower(finish_reason) LIKE '%timed out%' THEN 'timeout' WHEN status_code >= 500 THEN 'server' WHEN status_code IN (401, 403) THEN 'auth' WHEN status_code >= 400 THEN 'client' WHEN lower(finish_reason) LIKE '%connect%' OR lower(finish_reason) LIKE '%network%' OR lower(finish_reason) LIKE '%dns%' OR lower(finish_reason) LIKE '%reset%' OR lower(finish_reason) LIKE '%ssl%' THEN 'network' ELSE 'other' END AS route, COUNT(*) AS errors FROM api_calls WHERE status != 'ok' AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2 ORDER BY 1", "queryType": "time series", "timeColumns": ["time"], "refId": "A"}],
       "title": "API errors by class",
       "type": "timeseries"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "description": "95th percentile of successful response time per route, from the exporter's latency histogram. The average hides slow tails; compare this with the scorecard.",
-      "fieldConfig": {"defaults": {"unit": "ms", "min": 0}, "overrides": []},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
+      "description": "95th percentile of successful response time per route and interval, computed from individual calls. The average hides slow tails; compare with the scorecard.",
+      "fieldConfig": {"defaults": {"unit": "ms", "min": 0, "displayName": "${__field.labels.route} p95"}, "overrides": []},
       "gridPos": {"h": 9, "w": 12, "x": 12, "y": 126},
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [{"expr": "histogram_quantile(0.95, sum by (provider, model, le) (rate(hermes_api_duration_ms_bucket{status=\"ok\"}[$__rate_interval])))", "legendFormat": "{{provider}} / {{model}} p95", "refId": "A"}],
+      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "WITH ok AS ( SELECT (CAST(strftime('%s', ts) AS INTEGER) / MAX($__interval_ms / 1000, 60)) * MAX($__interval_ms / 1000, 60) AS time, provider || ' / ' || model AS route, duration_ms FROM api_calls WHERE status = 'ok' AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch')), ranked AS ( SELECT time, route, duration_ms, ROW_NUMBER() OVER (PARTITION BY time, route ORDER BY duration_ms) AS rn, COUNT(*) OVER (PARTITION BY time, route) AS cnt FROM ok) SELECT time, route, MIN(CASE WHEN rn >= 0.95 * cnt THEN duration_ms END) AS p95_ms FROM ranked GROUP BY time, route ORDER BY time", "rawQueryText": "WITH ok AS ( SELECT (CAST(strftime('%s', ts) AS INTEGER) / MAX($__interval_ms / 1000, 60)) * MAX($__interval_ms / 1000, 60) AS time, provider || ' / ' || model AS route, duration_ms FROM api_calls WHERE status = 'ok' AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch')), ranked AS ( SELECT time, route, duration_ms, ROW_NUMBER() OVER (PARTITION BY time, route ORDER BY duration_ms) AS rn, COUNT(*) OVER (PARTITION BY time, route) AS cnt FROM ok) SELECT time, route, MIN(CASE WHEN rn >= 0.95 * cnt THEN duration_ms END) AS p95_ms FROM ranked GROUP BY time, route ORDER BY time", "queryType": "time series", "timeColumns": ["time"], "refId": "A"}],
       "title": "Model response latency — p95",
       "type": "timeseries"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "description": "Successful responses by normalized finish reason. A growing 'length' share means truncated answers; 'content_filter' means provider refusals; 'unknown' means the provider reported no reason.",
-      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}, "overrides": []},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
+      "description": "Successful responses per interval by normalized finish reason. A growing 'length' share means truncated answers; 'content_filter' means provider refusals; 'unknown' means the provider reported no reason.",
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "displayName": "${__field.labels.route}", "custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}, "overrides": []},
       "gridPos": {"h": 9, "w": 12, "x": 0, "y": 135},
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "sum", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [{"expr": "sum by (provider, model, reason) (increase(hermes_api_finish_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}} · {{reason}}", "refId": "A"}],
+      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "SELECT (CAST(strftime('%s', ts) AS INTEGER) / MAX($__interval_ms / 1000, 60)) * MAX($__interval_ms / 1000, 60) AS time, provider || ' / ' || model || ' · ' || CASE lower(COALESCE(finish_reason, '')) WHEN 'stop' THEN 'stop' WHEN 'end_turn' THEN 'stop' WHEN 'stop_sequence' THEN 'stop' WHEN 'length' THEN 'length' WHEN 'max_tokens' THEN 'length' WHEN 'tool_calls' THEN 'tool_calls' WHEN 'tool_use' THEN 'tool_calls' WHEN 'function_call' THEN 'tool_calls' WHEN 'content_filter' THEN 'content_filter' WHEN '' THEN 'unknown' ELSE 'other' END AS route, COUNT(*) AS responses FROM api_calls WHERE status = 'ok' AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2 ORDER BY 1", "rawQueryText": "SELECT (CAST(strftime('%s', ts) AS INTEGER) / MAX($__interval_ms / 1000, 60)) * MAX($__interval_ms / 1000, 60) AS time, provider || ' / ' || model || ' · ' || CASE lower(COALESCE(finish_reason, '')) WHEN 'stop' THEN 'stop' WHEN 'end_turn' THEN 'stop' WHEN 'stop_sequence' THEN 'stop' WHEN 'length' THEN 'length' WHEN 'max_tokens' THEN 'length' WHEN 'tool_calls' THEN 'tool_calls' WHEN 'tool_use' THEN 'tool_calls' WHEN 'function_call' THEN 'tool_calls' WHEN 'content_filter' THEN 'content_filter' WHEN '' THEN 'unknown' ELSE 'other' END AS route, COUNT(*) AS responses FROM api_calls WHERE status = 'ok' AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2 ORDER BY 1", "queryType": "time series", "timeColumns": ["time"], "refId": "A"}],
       "title": "Finish reasons",
       "type": "timeseries"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
       "description": "Route switches made by the API retry helper in the selected range, with the latest switch time. Frequent switches away from a route mean it failed when it was needed.",
-      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": [{"matcher": {"id": "byName", "options": "Last switch"}, "properties": [{"id": "unit", "value": "dateTimeAsLocal"}]}]},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
       "gridPos": {"h": 9, "w": 12, "x": 12, "y": 135},
       "options": {"cellHeight": "lg", "showHeader": true, "sortBy": [{"displayName": "Switches", "desc": true}]},
-      "targets": [
-        {"expr": "sum by (from_provider, from_model, to_provider, to_model) (increase(hermes_api_fallback_total[$__range]))", "format": "table", "instant": true, "refId": "A"},
-        {"expr": "max by (from_provider, from_model, to_provider, to_model) (hermes_api_last_fallback_timestamp_seconds) * 1000", "format": "table", "instant": true, "refId": "B"}
-      ],
-      "transformations": [
-        {"id": "organize", "options": {"excludeByName": {"Time": true}}},
-        {"id": "merge", "options": {}},
-        {"id": "organize", "options": {"renameByName": {"Value #A": "Switches", "Value #B": "Last switch"}}}
-      ],
+      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "SELECT from_provider || ' / ' || from_model AS \"From\", to_provider || ' / ' || to_model AS \"To\", COUNT(*) AS \"Switches\", MAX(ts) AS \"Last switch\" FROM route_fallbacks WHERE ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2 ORDER BY 3 DESC", "rawQueryText": "SELECT from_provider || ' / ' || from_model AS \"From\", to_provider || ' / ' || to_model AS \"To\", COUNT(*) AS \"Switches\", MAX(ts) AS \"Last switch\" FROM route_fallbacks WHERE ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2 ORDER BY 3 DESC", "queryType": "table", "timeColumns": ["Last switch"], "refId": "A"}],
       "title": "Route fallbacks — selected range",
       "type": "table"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "description": "Share of failed tool calls by the model active in the session. Malformed arguments and wrong tool choices surface here before they show in user-visible errors.",
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
+      "description": "Share of failed tool calls by the model active in the session (latest session start before the call). Malformed arguments and wrong tool choices surface here before they show as user-visible errors.",
       "fieldConfig": {"defaults": {"unit": "short"}, "overrides": [{"matcher": {"id": "byName", "options": "Failed share"}, "properties": [{"id": "unit", "value": "percentunit"}]}]},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 144},
       "options": {"cellHeight": "lg", "showHeader": true, "sortBy": [{"displayName": "Failed share", "desc": true}]},
-      "targets": [
-        {"expr": "sum by (model) (increase(hermes_tool_calls_by_model_total{status!=\"ok\"}[$__range])) / (sum by (model) (increase(hermes_tool_calls_by_model_total[$__range])) > 0)", "format": "table", "instant": true, "refId": "A"},
-        {"expr": "sum by (model) (increase(hermes_tool_calls_by_model_total[$__range]))", "format": "table", "instant": true, "refId": "B"}
-      ],
-      "transformations": [
-        {"id": "organize", "options": {"excludeByName": {"Time": true}}},
-        {"id": "merge", "options": {}},
-        {"id": "organize", "options": {"renameByName": {"Value #A": "Failed share", "Value #B": "Tool calls"}}}
-      ],
+      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "WITH calls AS ( SELECT t.status, COALESCE((SELECT s.model FROM sessions s WHERE s.session_id = t.session_id AND s.event = 'start' AND s.ts <= t.ts ORDER BY s.ts DESC LIMIT 1), 'unknown') AS model FROM tool_calls t WHERE ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch')) SELECT model AS \"Model\", 1.0 * SUM(status != 'ok') / COUNT(*) AS \"Failed share\", COUNT(*) AS \"Tool calls\" FROM calls GROUP BY model ORDER BY 2 DESC, 1", "rawQueryText": "WITH calls AS ( SELECT t.status, COALESCE((SELECT s.model FROM sessions s WHERE s.session_id = t.session_id AND s.event = 'start' AND s.ts <= t.ts ORDER BY s.ts DESC LIMIT 1), 'unknown') AS model FROM tool_calls t WHERE ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch')) SELECT model AS \"Model\", 1.0 * SUM(status != 'ok') / COUNT(*) AS \"Failed share\", COUNT(*) AS \"Tool calls\" FROM calls GROUP BY model ORDER BY 2 DESC, 1", "queryType": "table", "timeColumns": [], "refId": "A"}],
       "title": "Tool call failures by model — selected range",
       "type": "table"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
       "description": "Responses served by a different model than requested. Any row means the provider silently rerouted the request; check the route before trusting its scorecard.",
       "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 144},
       "options": {"cellHeight": "lg", "showHeader": true, "sortBy": [{"displayName": "Responses", "desc": true}]},
-      "targets": [{"expr": "sum by (provider, requested, served) (increase(hermes_api_model_mismatch_total[$__range]))", "format": "table", "instant": true, "refId": "A"}],
-      "transformations": [
-        {"id": "organize", "options": {"excludeByName": {"Time": true}}},
-        {"id": "merge", "options": {}},
-        {"id": "organize", "options": {"renameByName": {"Value #A": "Responses"}}}
-      ],
+      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "SELECT provider AS \"Provider\", requested_model AS \"Requested\", model AS \"Served\", COUNT(*) AS \"Responses\", MAX(ts) AS \"Last seen\" FROM api_calls WHERE COALESCE(requested_model, '') != '' AND requested_model != model AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2, 3 ORDER BY 4 DESC", "rawQueryText": "SELECT provider AS \"Provider\", requested_model AS \"Requested\", model AS \"Served\", COUNT(*) AS \"Responses\", MAX(ts) AS \"Last seen\" FROM api_calls WHERE COALESCE(requested_model, '') != '' AND requested_model != model AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2, 3 ORDER BY 4 DESC", "queryType": "table", "timeColumns": ["Last seen"], "refId": "A"}],
       "title": "Requested vs served model — selected range",
       "type": "table"
     }
