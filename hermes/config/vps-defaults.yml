@@ -80,7 +80,7 @@ vps_hermes:
       # Use a separate provider for emergency fallback with NVIDIA_API_KEY.
       fallback_providers:
         - provider: openrouter
-          model: inclusionai/ling-3.0-flash-sante:free
+          model: inclusionai/ling-3.0-flash-fin:free
       user_char_limit: 3000
       memory_char_limit: 4000
       # Compact long sessions after 70% of the active model context is used.
@@ -90,11 +90,8 @@ vps_hermes:
       # managed fallback route only for this compression request.
       auxiliary:
         compression:
-          provider: openrouter
-          model: nvidia/nemotron-3-ultra-550b-a55b:free
-          fallback_chain:
-            - provider: nvidia
-              model: nvidia/nemotron-3-ultra-550b-a55b
+          provider: nvidia
+          model: nvidia/nemotron-3-super-120b-a12b
       # The runtime derives cron's default route from model above; do not
       # duplicate it here. Explicit per-job pins still take precedence.
       cron:
@@ -364,7 +361,7 @@ vps_ops:
   # values from the root-owned /etc/hermes-ops.conf rendered at deployment.
   api_retry:
     provider: nvidia
-    model: deepseek-ai/deepseek-v4-pro-0813
+    model: nvidia/nemotron-3-super-120b-a12b
     message: Hello
     max_attempts: 10
     wait_seconds: 30

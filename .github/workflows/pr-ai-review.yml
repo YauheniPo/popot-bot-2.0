@@ -13,9 +13,9 @@ env:
   PR_REVIEWER: ${{ vars.PR_REVIEWER || '0' }}
   # Both agent reviewers share CLAUDE_REVIEW_*; Direct API has its own route.
   DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'openrouter' }}
-  DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'inclusionai/ling-3.0-flash-sante:free' }}
-  DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'deepseek-v4.1-flash' }}
-  DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'ollama-cloud' }}
+  DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'inclusionai/ling-3.0-flash-fin:free' }}
+  DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'nvidia/nemotron-3-ultra-550b-a55b:free' }}
+  DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'openrouter' }}
   CLAUDE_REVIEW_PROVIDER: ${{ vars.CLAUDE_REVIEW_PROVIDER || 'openrouter' }}
   CLAUDE_REVIEW_MODEL: ${{ vars.CLAUDE_REVIEW_MODEL || 'nvidia/nemotron-3-ultra-550b-a55b:free' }}
   CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.CLAUDE_REVIEW_FALLBACK_MODEL || 'inclusionai/ling-3.0-flash-fin:free' }}
@@ -875,8 +875,8 @@ jobs:
       # Observable uses its own models so it does not compete with the Claude
       # Code SDK reviewer (which reads CLAUDE_REVIEW_MODEL directly) for the
       # same free-model rate limit on the shared provider key.
-      CLAUDE_REVIEW_MODEL: ${{ vars.OBSERVABLE_REVIEW_MODEL || 'nex-agi/nex-n2.5-mini:free' }}
-      CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.OBSERVABLE_REVIEW_FALLBACK_MODEL || 'kimi-k2.7-code' }}
+      CLAUDE_REVIEW_MODEL: ${{ vars.OBSERVABLE_REVIEW_MODEL || 'inclusionai/ling-3.0-flash-fin:free' }}
+      CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.OBSERVABLE_REVIEW_FALLBACK_MODEL || 'inclusionai/ling-3.0-flash-sante:free' }}
       OBSERVABLE_REVIEW_MAX_TURNS: ${{ vars.OBSERVABLE_REVIEW_MAX_TURNS || '16' }}
       CLAUDE_REVIEW_MAX_TURNS: ${{ vars.OBSERVABLE_REVIEW_MAX_TURNS || '16' }}
       CLAUDE_REVIEW_ATTEMPT_TIMEOUT_SECONDS: ${{ vars.CLAUDE_REVIEW_ATTEMPT_TIMEOUT_SECONDS || '600' }}
