@@ -122,6 +122,40 @@ test('native test result becomes connected/failed with discovered tools', async 
   }
 });
 
+test('canonical enabled, test and edit routes are classified independently', async () => {
+  const calls = [];
+  const fetch = createMcpAdapter({ dashboardUrl, fetchImpl: async (url, init) => {
+    calls.push([new URL(url).pathname, init.method]);
+    return Response.json(init.method === 'POST' ? { ok: true, tools: [] } : { ok: true });
+  }});
+  await fetch(`${dashboardUrl}/api/mcp/servers/fixture/enabled`, {
+    method: 'PUT', body: JSON.stringify({ enabled: true, name: 'fixture' })
+  });
+  await fetch(`${dashboardUrl}/api/mcp/servers/fixture/test`, {
+    method: 'POST', body: JSON.stringify({ name: 'fixture' })
+  });
+  await fetch(`${dashboardUrl}/api/mcp/servers/fixture`, {
+    method: 'PATCH', body: JSON.stringify({ name: 'fixture' })
+  });
+  assert.deepEqual(calls, [
+    ['/api/mcp/servers/fixture/enabled', 'PUT'],
+    ['/api/mcp/servers/fixture/test', 'POST'],
+    ['/api/mcp/servers/fixture', 'PATCH'],
+  ]);
+});
+
+test('MCP Request input supplies the JSON body when init has no body', async () => {
+  const fetch = createMcpAdapter({ dashboardUrl, fetchImpl: async (url, init) => {
+    assert.equal(new URL(url).pathname, '/api/mcp/servers/fixture/test');
+    assert.equal(init.method, 'POST');
+    return Response.json({ ok: true, tools: [] });
+  }});
+  const request = new Request(`${dashboardUrl}/api/mcp/test`, {
+    method: 'POST', body: JSON.stringify({ name: 'fixture' })
+  });
+  assert.equal((await fetch(request)).status, 200);
+});
+
 test('rejects unsupported operations and unsafe names before any mutation', async () => {
   const fetch = createMcpAdapter({ dashboardUrl, fetchImpl: async () => { assert.fail('Must not contact backend'); } });
   for (const [path, value, method] of [
