@@ -78,7 +78,7 @@ function addMemoryEntry(entry, prefix, results, resolveMemoryFilePath) {
   } catch { /* Unlisted files, links and oversized files are not editor targets. */ }
 }
 
-function walkDirectoryEntry(entry, directory, prefix, depth, walkedRoots, excluded, results, resolveMemoryFilePath) {
+function walkDirectoryEntry({ entry, directory, prefix, depth, walkedRoots, excluded, results, resolveMemoryFilePath }) {
   if (shouldSkipEntry(entry, excluded)) return;
   if (entry.isDirectory()) {
     if (shouldDescend(prefix, entry.name, walkedRoots)) {
@@ -96,7 +96,7 @@ function walkDirectory(directory, prefix, depth, walkedRoots, excluded, results,
   let visited = 0;
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
     if (++visited > 30_000) throw new Error('Instruction tree exceeds editor scan limit');
-    walkDirectoryEntry(entry, directory, prefix, depth, walkedRoots, excluded, results, resolveMemoryFilePath);
+    walkDirectoryEntry({ entry, directory, prefix, depth, walkedRoots, excluded, results, resolveMemoryFilePath });
   }
 }
 
