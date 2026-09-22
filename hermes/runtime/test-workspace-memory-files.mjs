@@ -340,6 +340,25 @@ test('backup directory open failures never replace the edited file', (t) => {
   assert.equal(fs.readFileSync(file, 'utf8'), 'before');
 });
 
+test('unexpected backup directory open errors propagate unchanged', (t) => {
+  const { api, home, put } = fixture(t);
+  const file = put('home/memories/USER.md', 'before');
+  const realOpen = fs.openSync;
+  fs.openSync = (...args) => {
+    if (args[0] === path.join(home, '.memory-editor-backups')) {
+      const error = new Error('permission denied');
+      error.code = 'EACCES';
+      throw error;
+    }
+    return realOpen(...args);
+  };
+  try {
+    assert.throws(() => api.writeMemoryFile('memories/USER.md', 'after', memoryFileVersion('before')),
+      /permission denied/);
+  } finally { fs.openSync = realOpen; }
+  assert.equal(fs.readFileSync(file, 'utf8'), 'before');
+});
+
 test('backup directory validation closes its descriptor when stat fails', (t) => {
   const { api, home, put } = fixture(t);
   const file = put('home/memories/USER.md', 'before');
