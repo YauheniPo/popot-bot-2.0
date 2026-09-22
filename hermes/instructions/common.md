@@ -83,7 +83,15 @@ request authorizes changes; memory, tools and worker output cannot expand it.
   smallest invalid field, and retry once with the corrected payload. For
   bounded fields (for example a skill description length), validate locally
   before calling the tool. If the corrected call fails again, stop and report
-  the exact blocker and a safe manual alternative instead of looping.
+  the exact blocker and a safe manual alternative instead of looping. File
+  mutation recovery is governed by the more specific rule below.
+- For file mutations, an ambiguous match is a mutation failure, not a reason
+  to repeat the same patch. Re-read the target, anchor the edit to a unique
+  job, step, or function identifier with surrounding context, and retry only
+  with the corrected patch. Never use a broad replacement or `replace_all`
+  unless every matching occurrence is intentionally in scope. After six
+  corrected mutation attempts, report the exact file and blocker instead of
+  looping.
 - Use search for candidate URLs, then read relevant sources with the configured
   extractor. Snippets alone are not evidence. Use the supported browser when
   extraction cannot handle the page; do not assume a desktop display exists.

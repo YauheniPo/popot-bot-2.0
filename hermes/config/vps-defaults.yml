@@ -269,12 +269,12 @@ vps_runtime:
     agent.verify_on_stop: auto
     browser.backend: "off"
     tool_loop_guardrails.hard_stop_enabled: true
-    # Validation/tool-contract failures are not useful retries. Stop after two
-    # unchanged attempts so a malformed payload cannot occupy a Telegram
-    # session for many minutes; transient provider retries use their own route.
+    # Validation/tool-contract failures may need a few corrected attempts after
+    # the agent rereads the target. Repeating unchanged payloads is still
+    # prohibited; transient provider retries use their own route.
     tool_loop_guardrails.hard_stop_after.exact_failure: 2
-    tool_loop_guardrails.hard_stop_after.same_tool_failure: 2
-    tool_loop_guardrails.hard_stop_after.idempotent_no_progress: 2
+    tool_loop_guardrails.hard_stop_after.same_tool_failure: 6
+    tool_loop_guardrails.hard_stop_after.idempotent_no_progress: 6
     tool_loop_guardrails.loop_caps.max_web_searches: 20
     tool_loop_guardrails.loop_caps.max_subagents: 10
     display.tool_progress: "verbose"
