@@ -156,6 +156,16 @@ test('MCP Request input supplies the JSON body when init has no body', async () 
   assert.equal((await fetch(request)).status, 200);
 });
 
+test('MCP init body takes precedence and empty JSON falls back safely', async () => {
+  const fetch = createMcpAdapter({ dashboardUrl, fetchImpl: async (_url, init) => {
+    assert.equal(init.method, 'POST');
+    return Response.json({ ok: true, tools: [] });
+  }});
+  const request = new Request(`${dashboardUrl}/api/mcp/test`, { method: 'POST', body: '{}' });
+  assert.equal((await fetch(request, { body: JSON.stringify({ name: 'fixture' }) })).status, 200);
+  assert.equal((await fetch(`${dashboardUrl}/api/mcp/test`, { method: 'POST', body: '' })).status, 422);
+});
+
 test('rejects unsupported operations and unsafe names before any mutation', async () => {
   const fetch = createMcpAdapter({ dashboardUrl, fetchImpl: async () => { assert.fail('Must not contact backend'); } });
   for (const [path, value, method] of [
