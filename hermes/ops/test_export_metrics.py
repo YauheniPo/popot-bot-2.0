@@ -351,6 +351,20 @@ class ExportMetricsTests(unittest.TestCase):
             self.assertEqual(metrics.analytics_file_mode(), 0o640)
         self.assertIn("hermes_analytics_snapshot_timestamp_seconds 0", lines)
 
+    def test_analytics_snapshot_cleans_up_temporary_file_after_copy_failure(self) -> None:
+        database = self.root / "ops" / "metrics.db"
+        target = self.root / "shared" / "metrics.db"
+        database.parent.mkdir()
+        target.parent.mkdir()
+        database.touch()
+        with (
+            mock.patch.dict(os.environ, {"HERMES_ANALYTICS_FILE": str(target)}),
+            mock.patch.object(metrics.sqlite3, "connect", side_effect=sqlite3.OperationalError("busy")),
+        ):
+            lines = metrics.analytics_snapshot(database)
+        self.assertIn("hermes_analytics_snapshot_timestamp_seconds 0", lines)
+        self.assertEqual(list(target.parent.iterdir()), [])
+
     def test_counters_survive_pruning_through_rollups(self) -> None:
         """Retention must never lower a counter; Prometheus would read a reset."""
         load_plugin()._db().close()
