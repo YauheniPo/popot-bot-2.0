@@ -175,6 +175,17 @@ class SshPreflightTests(unittest.TestCase):
         self.assertEqual(opened, [['/usr/bin/xdg-open', 'https://login.tailscale.com/a/test123']])
         tty.return_value.write.assert_called_once()
 
+    def test_interactive_approval_rejects_untrusted_url(self):
+        from unittest.mock import patch
+        with patch.dict('os.environ', {'CI': ''}, clear=False), \
+             patch('builtins.open', unittest.mock.mock_open()), \
+             patch.object(preflight.shutil, 'which', return_value='/usr/bin/xdg-open'), \
+             patch.object(preflight.subprocess, 'run') as opener:
+            self.assertFalse(preflight.show_approval('file:///tmp/approval'))
+            self.assertFalse(preflight.show_approval('https://login.tailscale.com.evil/a/test'))
+            self.assertFalse(preflight.show_approval('https://login.tailscale.com:8443/a/test'))
+            opener.assert_not_called()
+
     def test_interactive_approval_is_skipped_in_ci_and_without_a_terminal(self):
         from unittest.mock import patch
         with patch.dict('os.environ', {'CI': 'true'}, clear=False):

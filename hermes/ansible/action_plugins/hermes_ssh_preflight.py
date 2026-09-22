@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sys
 import time
+from urllib.parse import urlparse
 
 from ansible.plugins.action import ActionBase
 
@@ -154,6 +155,15 @@ def retry_probe(run, attempts, report):
 
 def show_approval(url):
     """Open only a Tailscale URL on an interactive controller, not on the VPS."""
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except (TypeError, ValueError):
+        return False
+    if (parsed.scheme != 'https' or parsed.hostname != 'login.tailscale.com'
+            or parsed.username or parsed.password or port
+            or not parsed.path.startswith('/a/')):
+        return False
     if os.environ.get('CI', '').lower() in {'1', 'true'}:
         return False
     try:
