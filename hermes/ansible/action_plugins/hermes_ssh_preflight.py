@@ -84,9 +84,11 @@ def stop_probe(proc, previous_sigterm):
     except ProcessLookupError:
         pass
     try:
-        proc.wait(timeout=2)
+        try:
+            proc.wait(timeout=2)
+        finally:
+            proc.stderr.close()
     finally:
-        proc.stderr.close()
         signal.signal(signal.SIGTERM, previous_sigterm)
 
 

@@ -123,6 +123,27 @@ class SshPreflightTests(unittest.TestCase):
             preflight.probe(command, 10, terminate, lambda _: None)
         self.assertEqual(signal.getsignal(signal.SIGTERM), previous)
 
+    def test_stop_probe_restores_sigterm_when_cleanup_raises(self):
+        import signal
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+
+        previous = signal.getsignal(signal.SIGTERM)
+        sentinel = lambda _signum, _frame: None
+        proc = SimpleNamespace(
+            pid=123,
+            wait=Mock(side_effect=subprocess.TimeoutExpired('ssh', 2)),
+            stderr=Mock(close=Mock(side_effect=OSError('closed'))),
+        )
+        signal.signal(signal.SIGTERM, sentinel)
+        try:
+            with patch.object(preflight.os, 'killpg'):
+                with self.assertRaises(OSError):
+                    preflight.stop_probe(proc, previous)
+            self.assertIs(signal.getsignal(signal.SIGTERM), previous)
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+
     def test_password_ssh_falls_back_to_bounded_native_ansible_auth(self):
         from types import SimpleNamespace
         from unittest.mock import Mock, patch
