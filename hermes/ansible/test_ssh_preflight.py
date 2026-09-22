@@ -149,7 +149,7 @@ class SshPreflightTests(unittest.TestCase):
         self.assertEqual(output.failure, 'denied')
         output = preflight.ProbeOutput()
         output.consume(b'tailscale: tailnet policy does not permit you to SSH to this node')
-        self.assertEqual(output.failure, 'denied')
+        self.assertEqual(output.failure, 'policy_denied')
 
     def test_probe_reports_heartbeats_while_waiting(self):
         # Advance the probe's own clock so a heartbeat is reached quickly

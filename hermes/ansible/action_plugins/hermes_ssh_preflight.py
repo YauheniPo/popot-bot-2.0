@@ -21,7 +21,7 @@ from ansible.plugins.action import ActionBase
 
 
 AUTH_URL = re.compile(rb'https://login[.]tailscale[.]com/a/[A-Za-z0-9]+(?=\s)')
-TERMINAL_FAILURES = {'host_key', 'denied', 'auth_required'}
+TERMINAL_FAILURES = {'host_key', 'denied', 'policy_denied', 'auth_required'}
 
 
 def cancel_probe(_signum, _frame):
@@ -59,8 +59,9 @@ class ProbeOutput:
         self.pending = (self.pending + chunk)[-8192:]
         if b'Host key verification failed' in self.pending or b'REMOTE HOST IDENTIFICATION HAS CHANGED' in self.pending:
             self.failure = 'host_key'
-        elif (b'Permission denied' in self.pending
-              or b'tailnet policy does not permit you to SSH' in self.pending):
+        elif b'tailnet policy does not permit you to SSH' in self.pending:
+            self.failure = 'policy_denied'
+        elif b'Permission denied' in self.pending:
             self.failure = 'denied'
         match = AUTH_URL.search(self.pending)
         if match and self.auth_url is None:
@@ -207,6 +208,7 @@ def ssh_command(connection, context):
 _OUTCOME_MESSAGES = {
     'host_key': 'SSH host-key verification failed. Verify the VPS host key and known_hosts manually; verification was not disabled.',
     'denied': 'SSH access denied. Check Tailscale SSH policy/user. For ordinary password SSH over a tailnet, authorize with standard Ansible authentication instead.',
+    'policy_denied': 'Tailscale ACL denied this source device before authentication. Allow this device or its tag to reach the VPS on TCP 22, then rerun the playbook; no browser approval URL is generated for an ACL denial.',
     'auth_required': 'Tailscale SSH requires browser approval, but this controller has no interactive terminal. Authorize from an interactive terminal or configure a narrowly scoped CI SSH identity.',
     'auth_timeout': 'Tailscale browser approval was not completed within the bounded attempts. Rerun this playbook to receive a fresh approval link; do not close the approval tab before confirmation.',
     'timeout': 'SSH connection timed out. Check Tailscale connectivity, the VPS, destination address and SSH access policy.',
