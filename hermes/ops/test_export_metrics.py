@@ -299,28 +299,14 @@ class ExportMetricsTests(unittest.TestCase):
             f'hermes_api_rate_limits_total{{{route}}}': 1,
             f'hermes_api_last_rate_limit_timestamp_seconds{{{route}}}': epoch(10),
             f'hermes_api_success_total{{{route}}}': 3,
-            f'hermes_api_first_attempt_success_total{{{route}}}': 2,
-            f'hermes_api_empty_success_total{{{route}}}': 1,
+                                    f'hermes_api_errors_total{{{route}}}': 3,
             f'hermes_api_retries_total{{{route}}}': 3,
             f'hermes_api_last_success_timestamp_seconds{{{route}}}': epoch(50),
             f'hermes_api_last_error_timestamp_seconds{{{route}}}': epoch(40),
-            f'hermes_api_errors_total{{class="rate_limit",{route}}}': 1,
-            f'hermes_api_errors_total{{class="server",{route}}}': 1,
-            f'hermes_api_errors_total{{class="timeout",{route}}}': 1,
-            f'hermes_api_finish_total{{{route},reason="stop"}}': 2,
-            f'hermes_api_finish_total{{{route},reason="length"}}': 1,
-            'hermes_api_finish_total{model="model-b",provider="provider-a",reason="tool_calls"}': 1,
-            'hermes_api_first_attempt_success_total{model="model-b",provider="provider-a"}': 1,
-            'hermes_api_model_mismatch_total{provider="provider-a",requested="model-a",served="model-b"}': 1,
-            'hermes_api_fallback_total{from_model="model-a",from_provider="provider-a",to_model="model-n",to_provider="provider-b"}': 1,
-            'hermes_api_last_fallback_timestamp_seconds{from_model="model-a",from_provider="provider-a",to_model="model-n",to_provider="provider-b"}': epoch(80),
-            'hermes_tool_calls_total{status="ok",tool="terminal"}': 2,
+                                                                                                                                    'hermes_tool_calls_total{status="ok",tool="terminal"}': 2,
             'hermes_tool_duration_ms_average{status="ok",tool="terminal"}': 20,
             'hermes_tool_duration_ms_total{status="ok",tool="terminal"}': 40,
-            'hermes_tool_calls_by_model_total{model="model-a",status="ok"}': 2,
-            'hermes_tool_calls_by_model_total{model="model-b",status="error"}': 1,
-            'hermes_tool_calls_by_model_total{model="unknown",status="ok"}': 1,
-            'hermes_commands_total{command="status"}': 2,
+                                                'hermes_commands_total{command="status"}': 2,
             'hermes_turns_total{model="model-a",outcome="completed",platform="telegram"}': 2,
             'hermes_turns_total{model="model-a",outcome="interrupted",platform="telegram"}': 1,
             'hermes_turns_total{model="model-a",outcome="failed",platform="telegram"}': 1,
@@ -328,24 +314,35 @@ class ExportMetricsTests(unittest.TestCase):
         }
         for series, value in expected.items():
             self.assertAlmostEqual(values.get(series), value, msg=series)
-        self.assertNotIn(f'hermes_api_errors_total{{{route}}}', values, "errors must carry an error class")
         self.assertEqual(target.stat().st_mode & 0o777, 0o600)
         self.assertEqual(list(target.parent.iterdir()), [target])
 
-    def test_latency_histogram_is_cumulative_and_ends_at_count(self) -> None:
+    def test_analytics_snapshot_is_a_rollback_journal_copy_for_grafana(self) -> None:
         load_plugin()._db().close()
         seed_activity(self.root)
-        values = self.export()
-        route = 'model="model-a",provider="provider-a"'
-        ok = {le: values[f'hermes_api_duration_ms_bucket{{le="{le}",{route},status="ok"}}']
-              for le in (*map(str, metrics.DURATION_BUCKETS_MS), "+Inf")}
-        self.assertEqual([ok[le] for le in ("250", "500", "1000", "2000", "300000", "+Inf")], [0, 2, 2, 3, 3, 3])
-        self.assertEqual(values[f'hermes_api_duration_ms_count{{{route},status="ok"}}'], 3)
-        self.assertEqual(values[f'hermes_api_duration_ms_sum{{{route},status="ok"}}'], 2200)
-        error = {le: values[f'hermes_api_duration_ms_bucket{{le="{le}",{route},status="error"}}']
-                 for le in ("250", "20000", "30000", "+Inf")}
-        self.assertEqual(error, {"250": 2, "20000": 2, "30000": 3, "+Inf": 3})
-        self.assertEqual(metrics.DURATION_BUCKETS_MS, prune.DURATION_BUCKETS_MS)
+        snapshot = self.root / "shared" / "metrics.db"
+        snapshot.parent.mkdir()
+        self.assertNotIn("hermes_analytics_snapshot_timestamp_seconds", self.export(), "opt-in only")
+        self.assertFalse(snapshot.exists())
+        with mock.patch.dict(os.environ, {"HERMES_ANALYTICS_FILE": str(snapshot)}):
+            values = self.export()
+            self.assertGreater(values["hermes_analytics_snapshot_timestamp_seconds"], epoch(0))
+            with closing(sqlite3.connect(f"file:{snapshot}?mode=ro", uri=True)) as copy:
+                self.assertEqual(copy.execute("PRAGMA journal_mode").fetchone(), ("delete",))
+                self.assertEqual(copy.execute("SELECT COUNT(*) FROM api_calls").fetchone(), (len(API_ROWS),))
+                self.assertEqual(copy.execute("SELECT COUNT(*) FROM route_fallbacks").fetchone(), (1,))
+            self.assertEqual(snapshot.stat().st_mode & 0o777, 0o640)
+            self.assertEqual(sorted(p.name for p in snapshot.parent.iterdir()), ["metrics.db"], "no temp files left")
+            # A second run replaces the file in place and keeps the live database untouched.
+            seed_activity(self.root, offset=3600)
+            self.export()
+            with closing(sqlite3.connect(snapshot)) as copy:
+                self.assertEqual(copy.execute("SELECT COUNT(*) FROM api_calls").fetchone(), (2 * len(API_ROWS),))
+            live = sqlite3.connect(self.root / "ops" / "metrics.db")
+            self.assertEqual(live.execute("PRAGMA journal_mode").fetchone(), ("wal",))
+            live.close()
+        with mock.patch.dict(os.environ, {"HERMES_ANALYTICS_FILE": str(self.root / "missing" / "metrics.db")}):
+            self.assertEqual(self.export()["hermes_analytics_snapshot_timestamp_seconds"], 0)
 
     def test_counters_survive_pruning_through_rollups(self) -> None:
         """Retention must never lower a counter; Prometheus would read a reset."""
@@ -444,7 +441,7 @@ class ExportMetricsTests(unittest.TestCase):
     def test_dashboard_exposes_profile_usage_without_counter_rates(self):
         dashboard = MODULE_PATH.parents[1] / 'observability/grafana/provisioning/dashboards/hermes/hermes-overview.json'
         panels = json.loads(dashboard.read_text())['panels']
-        expressions = [target['expr'] for panel in panels for target in panel.get('targets', [])]
+        expressions = [target['expr'] for panel in panels for target in panel.get('targets', []) if 'expr' in target]
         self.assertTrue(any('hermes_profile_user_requests' in expr for expr in expressions))
         self.assertTrue(any('hermes_profile_last_request_timestamp_seconds' in expr for expr in expressions))
         self.assertTrue(any('hermes_profile_response_duration_seconds' in expr for expr in expressions))

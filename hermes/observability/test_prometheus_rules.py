@@ -49,7 +49,7 @@ class PrometheusRulesTests(unittest.TestCase):
         known = exported_metric_names() | recorded
         expressions = [rule["expr"] for rule in self.rules]
         panels = json.loads(DASHBOARD.read_text(encoding="utf-8"))["panels"]
-        expressions += [target["expr"] for panel in panels for target in panel.get("targets", [])]
+        expressions += [target["expr"] for panel in panels for target in panel.get("targets", []) if "expr" in target]
         referenced = {name for expr in expressions for name in METRIC_NAME.findall(expr)}
         self.assertTrue(referenced)
         self.assertEqual(referenced - known, set(), "unknown metric names in rules or dashboard")
