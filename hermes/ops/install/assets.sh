@@ -36,6 +36,8 @@ install_operations_assets() {
     install -d -o root -g grafana -m 0750 \
         /etc/grafana/provisioning/datasources \
         /etc/grafana/provisioning/dashboards/hermes
+    # The exporter (Hermes user) writes the SQLite snapshot here; Grafana reads it.
+    install -d -o "${HERMES_USER}" -g grafana -m 0750 /var/lib/hermes-observability
     render \
         "${SCRIPT_DIR}/templates/hermes-prometheus.yml" /etc/hermes-observability/prometheus.yml 0640
     chown root:prometheus /etc/hermes-observability/prometheus.yml
@@ -46,6 +48,8 @@ install_operations_assets() {
         "${SCRIPT_DIR}/templates/grafana-hermes-prometheus.yml" /etc/grafana/provisioning/datasources/hermes-prometheus.yml 0640
     chown root:grafana /etc/grafana/provisioning/datasources/hermes-prometheus.yml
     chmod 0640 /etc/grafana/provisioning/datasources/hermes-prometheus.yml
+    install -o root -g grafana -m 0640 \
+        "${SCRIPT_DIR}/../observability/grafana/provisioning/datasources/sqlite.yml" /etc/grafana/provisioning/datasources/hermes-sqlite.yml
     install -o root -g grafana -m 0640 \
         "${SCRIPT_DIR}/../observability/grafana/provisioning/dashboards/dashboards.yml" /etc/grafana/provisioning/dashboards/dashboards.yml
     install -o root -g grafana -m 0640 \

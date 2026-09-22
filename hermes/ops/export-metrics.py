@@ -59,54 +59,13 @@ def rows(database: Path, sql: str) -> Iterable[tuple]:
         return []
 
 
-# Latency histogram upper bounds in milliseconds; -1 encodes +Inf. Must match
-# prune-observability.py, which pre-buckets rows before deleting them.
-DURATION_BUCKETS_MS = (250, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000, 120000, 300000)
-
-FIRST_ATTEMPT_SQL = (
-    "CASE WHEN status='ok' AND (COALESCE(call_index,0)=0 OR NOT EXISTS ("
-    "SELECT 1 FROM api_calls e WHERE e.status!='ok' AND e.session_id=a.session_id "
-    "AND e.call_index=a.call_index AND e.ts<=a.ts)) THEN 1 ELSE 0 END"
-)
-EMPTY_SUCCESS_SQL = (
-    "CASE WHEN status='ok' AND COALESCE(output_tokens,0)=0 "
-    "AND (COALESCE(input_tokens,0)>0 OR COALESCE(total_tokens,0)>0) THEN 1 ELSE 0 END"
-)
-TOOL_MODEL_SQL = (
-    "COALESCE((SELECT s.model FROM sessions s WHERE s.session_id=t.session_id AND s.event='start' "
-    "AND s.ts<=t.ts ORDER BY s.ts DESC LIMIT 1),'')"
-)
 RATE_LIMIT_SQL = (
     "(status_code=429 OR lower(finish_reason) LIKE '%rate%limit%' OR lower(finish_reason) LIKE '%too many requests%')"
 )
-# Error rows keep the provider reason in finish_reason. Classes are derived at
-# export time, so the rollup only needs the raw status_code and reason.
-ERROR_CLASS_SQL = (
-    f"CASE WHEN {RATE_LIMIT_SQL} THEN 'rate_limit' "
-    "WHEN status_code IN (408,504) OR lower(finish_reason) LIKE '%timeout%' OR lower(finish_reason) LIKE '%timed out%' THEN 'timeout' "
-    "WHEN status_code>=500 THEN 'server' "
-    "WHEN status_code IN (401,403) THEN 'auth' "
-    "WHEN status_code>=400 THEN 'client' "
-    "WHEN lower(finish_reason) LIKE '%connect%' OR lower(finish_reason) LIKE '%network%' "
-    "OR lower(finish_reason) LIKE '%dns%' OR lower(finish_reason) LIKE '%reset%' OR lower(finish_reason) LIKE '%ssl%' THEN 'network' "
-    "ELSE 'other' END"
-)
-FINISH_REASON_SQL = (
-    "CASE lower(finish_reason) WHEN 'stop' THEN 'stop' WHEN 'end_turn' THEN 'stop' WHEN 'stop_sequence' THEN 'stop' "
-    "WHEN 'length' THEN 'length' WHEN 'max_tokens' THEN 'length' "
-    "WHEN 'tool_calls' THEN 'tool_calls' WHEN 'tool_use' THEN 'tool_calls' WHEN 'function_call' THEN 'tool_calls' "
-    "WHEN 'content_filter' THEN 'content_filter' WHEN '' THEN 'unknown' ELSE 'other' END"
-)
 API_CALL_COLUMNS = (
-    "provider", "model", "requested_model", "status", "status_code", "finish_reason", "duration_bucket",
-    "weight", "input_tokens", "output_tokens", "cache_read_tokens", "total_tokens", "cost_usd", "duration_ms",
-    "retry_count", "first_attempt", "empty_success",
+    "provider", "model", "status", "status_code", "finish_reason", "weight", "input_tokens", "output_tokens",
+    "cache_read_tokens", "total_tokens", "cost_usd", "duration_ms", "retry_count",
 )
-
-
-def duration_bucket_sql(column: str) -> str:
-    cases = " ".join(f"WHEN {column} <= {bound} THEN {bound}" for bound in DURATION_BUCKETS_MS)
-    return f"CASE {cases} ELSE -1 END"
 
 
 def existing_tables(database: Path) -> set[str]:
@@ -122,38 +81,30 @@ def with_rollup(tables: set[str], table: str, live: str, columns: tuple[str, ...
 
 def api_calls_source(tables: set[str]) -> str:
     live = (
-        "SELECT ts, COALESCE(provider,'') AS provider, COALESCE(model,'') AS model, "
-        "COALESCE(requested_model,'') AS requested_model, COALESCE(status,'') AS status, "
-        "COALESCE(status_code,0) AS status_code, COALESCE(finish_reason,'') AS finish_reason, "
-        f"{duration_bucket_sql('COALESCE(duration_ms,0)')} AS duration_bucket, 1 AS weight, "
+        "SELECT ts, COALESCE(provider,'') AS provider, COALESCE(model,'') AS model, COALESCE(status,'') AS status, "
+        "COALESCE(status_code,0) AS status_code, COALESCE(finish_reason,'') AS finish_reason, 1 AS weight, "
         "COALESCE(input_tokens,0) AS input_tokens, COALESCE(output_tokens,0) AS output_tokens, "
         "COALESCE(cache_read_tokens,0) AS cache_read_tokens, COALESCE(total_tokens,0) AS total_tokens, "
         "COALESCE(cost_usd,0) AS cost_usd, COALESCE(duration_ms,0) AS duration_ms, "
-        f"COALESCE(retry_count,0) AS retry_count, {FIRST_ATTEMPT_SQL} AS first_attempt, "
-        f"{EMPTY_SUCCESS_SQL} AS empty_success FROM api_calls a"
+        "COALESCE(retry_count,0) AS retry_count FROM api_calls"
     )
     return with_rollup(tables, "api_calls", live, API_CALL_COLUMNS)
 
 
 def api_metrics(database: Path) -> list[str]:
-    """Model/provider counters, timestamps and the latency histogram."""
+    """Route counters and timestamps for Prometheus alerts and long-range graphs.
+
+    Per-call analytics (latency percentiles, finish reasons, first-attempt
+    success, model mismatch, fallbacks) are queried by Grafana directly from
+    the SQLite snapshot written by analytics_snapshot().
+    """
     tables = existing_tables(database)
     if "api_calls" not in tables:
         return []
     source = api_calls_source(tables)
     epoch = "MAX(CAST(strftime('%s',ts) AS REAL))"
-    lines = [
-        "# HELP hermes_api_duration_ms Model API response time distribution by provider, model and status.",
-        "# TYPE hermes_api_duration_ms histogram",
-    ]
+    lines: list[str] = []
     route_status = "metric_label(provider), metric_label(model), metric_label(status)"
-    buckets: dict[tuple, dict[float, float]] = {}
-    for provider, model, status, bucket, weight in rows(
-        database,
-        f"WITH c AS ({source}) SELECT {route_status}, duration_bucket, SUM(weight) FROM c "
-        f"GROUP BY {route_status}, duration_bucket",
-    ):
-        buckets.setdefault((provider, model, status), {})[bucket] = weight
     for provider, model, status, calls, input_tokens, output_tokens, cache_tokens, total_tokens, cost, duration_ms in rows(
         database,
         f"WITH c AS ({source}) SELECT {route_status}, SUM(weight), SUM(input_tokens), SUM(output_tokens), "
@@ -169,14 +120,6 @@ def api_metrics(database: Path) -> list[str]:
             metric("hermes_cost_usd_total", cost, tags),
             metric("hermes_api_duration_ms_total", duration_ms, tags),
         ])
-        counts = buckets.get((provider, model, status), {})
-        cumulative = 0
-        for bound in DURATION_BUCKETS_MS:
-            cumulative += counts.get(bound, 0)
-            lines.append(metric("hermes_api_duration_ms_bucket", cumulative, {**tags, "le": str(bound)}))
-        lines.append(metric("hermes_api_duration_ms_bucket", calls, {**tags, "le": "+Inf"}))
-        lines.append(metric("hermes_api_duration_ms_sum", duration_ms, tags))
-        lines.append(metric("hermes_api_duration_ms_count", calls, tags))
     lines.extend([
         '# HELP hermes_api_rate_limits_total API requests rejected by provider rate limiting, grouped by provider and model.',
         '# TYPE hermes_api_rate_limits_total counter',
@@ -195,10 +138,8 @@ def api_metrics(database: Path) -> list[str]:
     lines.extend([
         '# HELP hermes_api_success_total Successful model API responses by provider and model.',
         '# TYPE hermes_api_success_total counter',
-        '# HELP hermes_api_first_attempt_success_total Successful responses with no recorded error for the same logical call; equals success when Hermes provides no call correlation.',
-        '# TYPE hermes_api_first_attempt_success_total counter',
-        '# HELP hermes_api_empty_success_total Successful responses with reported usage but zero output tokens.',
-        '# TYPE hermes_api_empty_success_total counter',
+        '# HELP hermes_api_errors_total Failed model API responses by provider and model.',
+        '# TYPE hermes_api_errors_total counter',
         '# HELP hermes_api_retries_total Provider retry attempts recorded for model API requests.',
         '# TYPE hermes_api_retries_total counter',
         '# HELP hermes_api_last_success_timestamp_seconds Unix timestamp of the latest successful model response.',
@@ -206,73 +147,23 @@ def api_metrics(database: Path) -> list[str]:
         '# HELP hermes_api_last_error_timestamp_seconds Unix timestamp of the latest failed model response.',
         '# TYPE hermes_api_last_error_timestamp_seconds gauge',
     ])
-    for provider, model, successes, first_attempt, empty, retries, last_success, last_error in rows(
+    for provider, model, successes, errors, retries, last_success, last_error in rows(
         database,
         f"WITH c AS ({source}) SELECT {route}, "
-        "SUM(CASE WHEN status='ok' THEN weight ELSE 0 END), SUM(first_attempt), SUM(empty_success), SUM(retry_count), "
-        f"COALESCE(MAX(CASE WHEN status='ok' THEN CAST(strftime('%s',ts) AS REAL) END),0), "
-        f"COALESCE(MAX(CASE WHEN status!='ok' THEN CAST(strftime('%s',ts) AS REAL) END),0) "
+        "SUM(CASE WHEN status='ok' THEN weight ELSE 0 END), SUM(CASE WHEN status!='ok' THEN weight ELSE 0 END), "
+        "SUM(retry_count), "
+        "COALESCE(MAX(CASE WHEN status='ok' THEN CAST(strftime('%s',ts) AS REAL) END),0), "
+        "COALESCE(MAX(CASE WHEN status!='ok' THEN CAST(strftime('%s',ts) AS REAL) END),0) "
         f"FROM c GROUP BY {route}",
     ):
         tags = {"provider": provider, "model": model}
         lines.extend([
             metric("hermes_api_success_total", successes, tags),
-            metric("hermes_api_first_attempt_success_total", first_attempt, tags),
-            metric("hermes_api_empty_success_total", empty, tags),
+            metric("hermes_api_errors_total", errors, tags),
             metric("hermes_api_retries_total", retries, tags),
             metric("hermes_api_last_success_timestamp_seconds", last_success, tags),
             metric("hermes_api_last_error_timestamp_seconds", last_error, tags),
         ])
-    lines.extend([
-        '# HELP hermes_api_errors_total Failed model API responses by provider, model and error class (rate_limit, timeout, server, auth, client, network, other).',
-        '# TYPE hermes_api_errors_total counter',
-    ])
-    for provider, model, error_class, errors in rows(
-        database,
-        f"WITH c AS ({source}) SELECT {route}, {ERROR_CLASS_SQL} AS class, SUM(weight) FROM c "
-        f"WHERE status!='ok' GROUP BY {route}, class",
-    ):
-        lines.append(metric("hermes_api_errors_total", errors, {"provider": provider, "model": model, "class": error_class}))
-    lines.extend([
-        '# HELP hermes_api_finish_total Successful responses by normalized finish reason (stop, length, tool_calls, content_filter, unknown, other).',
-        '# TYPE hermes_api_finish_total counter',
-    ])
-    for provider, model, reason, finishes in rows(
-        database,
-        f"WITH c AS ({source}) SELECT {route}, {FINISH_REASON_SQL} AS reason, SUM(weight) FROM c "
-        f"WHERE status='ok' GROUP BY {route}, reason",
-    ):
-        lines.append(metric("hermes_api_finish_total", finishes, {"provider": provider, "model": model, "reason": reason}))
-    lines.extend([
-        '# HELP hermes_api_model_mismatch_total Responses whose served model differs from the requested model.',
-        '# TYPE hermes_api_model_mismatch_total counter',
-    ])
-    for provider, requested, served, mismatches in rows(
-        database,
-        f"WITH c AS ({source}) SELECT metric_label(provider), metric_label(requested_model), metric_label(model), SUM(weight) "
-        "FROM c WHERE requested_model!='' AND requested_model!=model "
-        "GROUP BY metric_label(provider), metric_label(requested_model), metric_label(model)",
-    ):
-        lines.append(metric("hermes_api_model_mismatch_total", mismatches,
-                            {"provider": provider, "requested": requested, "served": served}))
-    if "route_fallbacks" in tables:
-        lines.extend([
-            '# HELP hermes_api_fallback_total Route switches made by the API retry helper, by source and target route.',
-            '# TYPE hermes_api_fallback_total counter',
-            '# HELP hermes_api_last_fallback_timestamp_seconds Unix timestamp of the latest route switch.',
-            '# TYPE hermes_api_last_fallback_timestamp_seconds gauge',
-        ])
-        keys = ("from_provider", "from_model", "to_provider", "to_model")
-        live = "SELECT ts, " + ", ".join(f"COALESCE({key},'') AS {key}" for key in keys) + ", 1 AS weight FROM route_fallbacks"
-        grouped = ", ".join(f"metric_label({key})" for key in keys)
-        for *labels, switches, last_switch in rows(
-            database,
-            f"WITH c AS ({with_rollup(tables, 'route_fallbacks', live, (*keys, 'weight'))}) "
-            f"SELECT {grouped}, SUM(weight), COALESCE({epoch},0) FROM c GROUP BY {grouped}",
-        ):
-            tags = dict(zip(keys, labels))
-            lines.append(metric("hermes_api_fallback_total", switches, tags))
-            lines.append(metric("hermes_api_last_fallback_timestamp_seconds", last_switch, tags))
     return lines
 
 
@@ -282,9 +173,9 @@ def activity_metrics(database: Path) -> list[str]:
     lines: list[str] = []
     tools = with_rollup(
         tables, "tool_calls",
-        "SELECT ts, COALESCE(tool_name,'') AS tool_name, COALESCE(status,'') AS status, "
-        f"{TOOL_MODEL_SQL} AS model, 1 AS weight, COALESCE(duration_ms,0) AS duration_ms FROM tool_calls t",
-        ("tool_name", "status", "model", "weight", "duration_ms"),
+        "SELECT ts, COALESCE(tool_name,'') AS tool_name, COALESCE(status,'') AS status, 1 AS weight, "
+        "COALESCE(duration_ms,0) AS duration_ms FROM tool_calls",
+        ("tool_name", "status", "weight", "duration_ms"),
     )
     for tool, status, calls, duration_ms in rows(
         database,
@@ -295,16 +186,6 @@ def activity_metrics(database: Path) -> list[str]:
         lines.append(metric("hermes_tool_calls_total", calls, tags))
         lines.append(metric("hermes_tool_duration_ms_average", duration_ms / calls if calls else 0, tags))
         lines.append(metric("hermes_tool_duration_ms_total", duration_ms, tags))
-    lines.extend([
-        '# HELP hermes_tool_calls_by_model_total Tool calls by the model active in the session and by status; a proxy for malformed tool use.',
-        '# TYPE hermes_tool_calls_by_model_total counter',
-    ])
-    for model, status, calls in rows(
-        database,
-        f"WITH c AS ({tools}) SELECT metric_label(model), metric_label(status), SUM(weight) "
-        "FROM c GROUP BY metric_label(model), metric_label(status)",
-    ):
-        lines.append(metric("hermes_tool_calls_by_model_total", calls, {"model": model, "status": status}))
     commands = with_rollup(
         tables, "commands", "SELECT ts, COALESCE(command,'') AS command, 1 AS weight FROM commands", ("command", "weight"),
     )
@@ -337,6 +218,51 @@ def activity_metrics(database: Path) -> list[str]:
         "GROUP BY metric_label(choice)",
     ):
         lines.append(metric("hermes_approval_responses_total", responses, {"choice": choice}))
+    return lines
+
+
+def analytics_file_mode() -> int:
+    """Snapshot mode: group-readable for Grafana by default, never wider than 0644."""
+    value = os.environ.get("HERMES_ANALYTICS_MODE", "0640").strip()
+    try:
+        mode = int(value, 8)
+    except ValueError:
+        return 0o640
+    return mode if mode in (0o600, 0o640, 0o644) else 0o640
+
+
+def analytics_snapshot(database: Path) -> list[str]:
+    """Publish a consistent, rollback-journal copy of metrics.db for Grafana.
+
+    Grafana runs as another user and must not read the live WAL database in
+    the private Hermes home. VACUUM INTO writes a compact copy in DELETE
+    journal mode, so a read-only directory is enough for the SQLite datasource;
+    the atomic rename keeps every query on a complete file.
+    """
+    configured = os.environ.get("HERMES_ANALYTICS_FILE", "").strip()
+    if not configured:
+        return []
+    target = Path(configured).expanduser()
+    lines = [
+        "# HELP hermes_analytics_snapshot_timestamp_seconds Unix time of the latest metrics.db snapshot for Grafana; 0 means the snapshot failed.",
+        "# TYPE hermes_analytics_snapshot_timestamp_seconds gauge",
+    ]
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        if not database.exists():
+            raise FileNotFoundError(database)
+        temporary.unlink(missing_ok=True)
+        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=3)
+        try:
+            connection.execute("VACUUM INTO ?", (str(temporary),))
+        finally:
+            connection.close()
+        os.chmod(temporary, analytics_file_mode())
+        temporary.replace(target)
+        lines.append(metric("hermes_analytics_snapshot_timestamp_seconds", time.time()))
+    except (OSError, sqlite3.Error):
+        temporary.unlink(missing_ok=True)
+        lines.append(metric("hermes_analytics_snapshot_timestamp_seconds", 0))
     return lines
 
 
@@ -619,6 +545,7 @@ def main() -> int:
     ]
     lines.extend(api_metrics(database))
     lines.extend(activity_metrics(database))
+    lines.extend(analytics_snapshot(database))
     audit = root / "logs" / "ops-audit.jsonl"
     lines.append(metric("hermes_audit_log_bytes", audit.stat().st_size if audit.exists() else 0))
     database_bytes = sum(

@@ -417,6 +417,8 @@ vps_observability:
     bind_address: 127.0.0.1
     port: 3000
     admin_user: hermes
+    # frser-sqlite-datasource: Grafana reads route analytics from the SQLite snapshot.
+    sqlite_plugin_version: 4.0.6
   prometheus:
     bind_address: 127.0.0.1
     port: 9090

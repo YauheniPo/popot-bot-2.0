@@ -56,11 +56,25 @@ install_observability_dependencies() {
     apt_get_retry update
     apt_get_retry install -y --no-install-recommends \
         grafana prometheus prometheus-node-exporter
+    install_grafana_sqlite_plugin
 
     chown root:root /etc/hermes-grafana.env
     chmod 0600 /etc/hermes-grafana.env
 
     return
+}
+
+install_grafana_sqlite_plugin() {
+    # Grafana reads route analytics straight from the SQLite snapshot; the
+    # datasource plugin is pinned in vps-defaults.yml and installed idempotently.
+    local plugin_version
+    plugin_version="$(managed_value vps_observability.grafana.sqlite_plugin_version)"
+    [[ "${plugin_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "invalid Grafana SQLite plugin version in vps-defaults.yml"
+    if grafana-cli plugins ls 2>/dev/null | grep -q "^frser-sqlite-datasource @ ${plugin_version}$"; then
+        return
+    fi
+    log "installing Grafana SQLite datasource plugin ${plugin_version}"
+    grafana-cli plugins install frser-sqlite-datasource "${plugin_version}"
 }
 
 install_grafana_password_file() {

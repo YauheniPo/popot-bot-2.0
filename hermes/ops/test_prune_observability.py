@@ -37,16 +37,6 @@ def create_schema(root: Path) -> Path:
 
 
 class PruneObservabilityTests(unittest.TestCase):
-    def test_upgrade_api_schema_adds_missing_columns(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            database = Path(temp) / "metrics.db"
-            connection = sqlite3.connect(database)
-            connection.execute("CREATE TABLE api_calls (ts TEXT)")
-            prune_observability._upgrade_api_schema(connection, {"api_calls"})
-            columns = {row[1] for row in connection.execute("PRAGMA table_info(api_calls)")}
-            connection.close()
-            self.assertEqual(columns, {"ts", "requested_model", "call_index"})
-
     def test_main_passes_only_the_canonical_managed_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -117,38 +107,33 @@ class PruneObservabilityTests(unittest.TestCase):
             try:
                 for table in prune_observability.TABLES:
                     self.assertEqual(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone(), (1,))
+                for table in prune_observability.ROLLUPS:
                     self.assertEqual(connection.execute(f"SELECT SUM(weight) FROM {table}_rollup").fetchone(), (1,))
             finally:
                 connection.close()
 
-    def test_rollups_accumulate_across_runs_and_keep_pre_bucketed_latency(self) -> None:
+    def test_rollups_accumulate_across_runs(self) -> None:
         now = datetime(2026, 8, 25, tzinfo=timezone.utc)
         with tempfile.TemporaryDirectory() as temporary_directory:
             database = create_schema(Path(temporary_directory))
             with sqlite3.connect(database) as connection:
                 connection.executemany(
-                    "INSERT INTO api_calls (ts, session_id, provider, model, status, duration_ms, output_tokens,"
-                    " input_tokens, total_tokens, retry_count, call_index) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                    [((now - timedelta(days=age)).isoformat(timespec="milliseconds"), "s", "p", "m", status, ms,
-                      out, 3, 3 + out, retries, index)
-                     for age, status, ms, out, retries, index in (
-                         (95, "ok", 300, 5, 0, 1), (94, "error", 100, 0, 1, 2), (94, "ok", 1500, 0, 0, 2),
-                         (92, "ok", 700, 2, 0, 3), (10, "ok", 50, 1, 0, 4))],
+                    "INSERT INTO api_calls (ts, provider, model, status, duration_ms, output_tokens, retry_count)"
+                    " VALUES (?,?,?,?,?,?,?)",
+                    [((now - timedelta(days=age)).isoformat(timespec="milliseconds"), "p", "m", status, ms, out, retries)
+                     for age, status, ms, out, retries in (
+                         (95, "ok", 300, 5, 0), (94, "error", 100, 0, 1), (94, "ok", 1500, 0, 0),
+                         (92, "ok", 700, 2, 0), (10, "ok", 50, 1, 0))],
                 )
             prune_observability.prune_database(database, 93, now=now)
             prune_observability.prune_database(database, 90, now=now)
             with sqlite3.connect(database) as connection:
                 rollup = connection.execute(
-                    "SELECT status, duration_bucket, weight, output_tokens, retry_count, first_attempt, empty_success "
-                    "FROM api_calls_rollup ORDER BY status, duration_bucket"
+                    "SELECT status, weight, output_tokens, duration_ms, retry_count FROM api_calls_rollup ORDER BY status"
                 ).fetchall()
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM api_calls").fetchone(), (1,))
-            self.assertEqual(rollup, [
-                ("error", 250, 1, 0, 1, 0, 0),
-                ("ok", 500, 1, 5, 0, 1, 0),    # first run
-                ("ok", 1000, 1, 2, 0, 1, 0),   # second run, new bucket
-                ("ok", 2000, 1, 0, 0, 0, 1),   # retried after the error of call 2; empty output
-            ])
+            # The second run merged into the rows created by the first one.
+            self.assertEqual(rollup, [("error", 1, 0, 100, 1), ("ok", 3, 7, 2500, 0)])
 
     def test_prune_rejects_symlink_database(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

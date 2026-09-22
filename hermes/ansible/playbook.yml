@@ -265,7 +265,8 @@
           - vps_observability.prometheus.storage_retention is match('^[1-9][0-9]*(ms|s|min|h|d|w)$')
           - vps_observability.prometheus.scrape_interval is match('^[1-9][0-9]*(ms|s|min|h|d|w)$')
           - vps_observability.prometheus.evaluation_interval is match('^[1-9][0-9]*(ms|s|min|h|d|w)$')
-        fail_msg: Invalid Prometheus duration in config/vps-defaults.yml.
+          - vps_observability.grafana.sqlite_plugin_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+        fail_msg: Invalid Prometheus duration or Grafana plugin version in config/vps-defaults.yml.
 
     - name: Inspect an existing Hermes service account home
       ansible.builtin.command:

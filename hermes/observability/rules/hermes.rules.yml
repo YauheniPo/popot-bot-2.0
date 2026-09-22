@@ -1,6 +1,7 @@
-# Route health rules for the Hermes Overview dashboard and Prometheus alerts.
+# Route health rules for Prometheus alerts and the Hermes Overview dashboard.
 # A route is one provider/model pair. Ratios divide by a guarded denominator so
-# idle routes produce no sample instead of a misleading zero.
+# idle routes produce no sample instead of a misleading zero. Per-call analytics
+# (percentiles, finish reasons, fallbacks) are served by the SQLite datasource.
 groups:
   - name: hermes-routes
     interval: 1m
@@ -17,24 +18,6 @@ groups:
         expr: >-
           sum by (provider, model) (increase(hermes_api_success_total[24h]))
           / (hermes_route:calls:increase24h > 0)
-      - record: hermes_route:first_attempt_success:ratio24h
-        expr: >-
-          sum by (provider, model) (increase(hermes_api_first_attempt_success_total[24h]))
-          / (sum by (provider, model) (increase(hermes_api_success_total[24h])) > 0)
-      - record: hermes_route:latency_p95_ms:1h
-        expr: >-
-          histogram_quantile(0.95,
-            sum by (provider, model, le) (increase(hermes_api_duration_ms_bucket{status="ok"}[1h])))
-      - record: hermes_route:output_tokens_per_second:1h
-        expr: >-
-          1000 * sum by (provider, model) (increase(hermes_output_tokens_total{status="ok"}[1h]))
-          / (sum by (provider, model) (increase(hermes_api_duration_ms_total{status="ok"}[1h])) > 0)
-      - record: hermes_route:truncation:ratio24h
-        expr: >-
-          sum by (provider, model) (increase(hermes_api_finish_total{reason="length"}[24h]))
-          / (sum by (provider, model) (increase(hermes_api_success_total[24h])) > 0)
-      - record: hermes_route:errors:increase1h
-        expr: sum by (provider, model, class) (increase(hermes_api_errors_total[1h]))
 
   # Alerts are evaluated by Prometheus and shown in Grafana; no Alertmanager is
   # deployed, so Telegram delivery remains the health-check timer's job.
@@ -63,16 +46,10 @@ groups:
           severity: warning
         annotations:
           summary: "{{ $labels.provider }}/{{ $labels.model }} hit {{ $value | humanize }} rate limits in 15 minutes"
-      - alert: HermesRouteEmptyResponses
-        expr: sum by (provider, model) (increase(hermes_api_empty_success_total[1h])) > 3
+      - alert: HermesAnalyticsSnapshotStale
+        expr: (time() - hermes_analytics_snapshot_timestamp_seconds) > 900
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "{{ $labels.provider }}/{{ $labels.model }} returned {{ $value | humanize }} empty successes in an hour"
-      - alert: HermesModelMismatch
-        expr: sum by (provider, requested, served) (increase(hermes_api_model_mismatch_total[1h])) > 0
-        labels:
-          severity: info
-        annotations:
-          summary: "{{ $labels.provider }} served {{ $labels.served }} instead of {{ $labels.requested }}"
+          summary: "The SQLite snapshot for Grafana route analytics has not been refreshed for 15 minutes"

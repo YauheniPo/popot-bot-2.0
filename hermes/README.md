@@ -583,47 +583,52 @@ latency, usage и стоимость по provider/model.
 
 #### Метрики моделей и провайдеров
 
-Экспортёр читает `~/.hermes/ops/metrics.db` и публикует по каждому маршруту
-(`provider`/`model`):
+Два источника данных в Grafana, у каждого своя роль:
 
-- `hermes_api_calls_total{status}`, `hermes_api_success_total`,
-  `hermes_api_errors_total{class}` — класс ошибки выводится из `status_code`
-  и причины: `rate_limit`, `timeout`, `server`, `auth`, `client`, `network`,
-  `other`.
-- `hermes_api_duration_ms_bucket{le,status}` (+ `_sum`, `_count`) — гистограмма
-  времени ответа; p95 считается через `histogram_quantile`.
-- `hermes_api_finish_total{reason}` — нормализованный finish reason успешных
-  ответов: `stop`, `length` (обрезка), `tool_calls`, `content_filter`,
-  `unknown`, `other`.
-- `hermes_api_first_attempt_success_total` — успехи без записанной ошибки того
-  же логического вызова (`session_id` + `api_call_count`). Hermes не передаёт
-  `retry_count` в `post_api_request`; без корреляции метрика равна
-  `hermes_api_success_total`.
-- `hermes_api_empty_success_total` — успешные ответы с usage, но без output
-  tokens.
-- `hermes_api_model_mismatch_total{requested,served}` — провайдер отдал другую
-  модель, чем запрошена.
-- `hermes_api_fallback_total{from_*,to_*}` и
-  `hermes_api_last_fallback_timestamp_seconds` — переключения маршрута
-  helper'ом `api-retry-loop.sh`.
-- `hermes_tool_calls_by_model_total{model,status}` — tool calls по модели
-  активной сессии (через `sessions`), прокси качества tool use.
+- **Prometheus** (`hermes-prometheus`) — счётчики и таймстемпы из textfile
+  exporter: `hermes_api_calls_total{status}`, `hermes_api_success_total`,
+  `hermes_api_errors_total`, `hermes_api_rate_limits_total`,
+  `hermes_api_retries_total`, tokens/cost, `hermes_api_last_*_timestamp_seconds`,
+  плюс host/gateway/backup. Это основа графиков `rate()` за 30 дней и алертов.
+- **SQLite** (`hermes-sqlite`, плагин `frser-sqlite-datasource`) — per-call
+  аналитика маршрутов прямо из событий `api_calls`, `tool_calls`, `sessions`,
+  `route_fallbacks`: точный p95, first-attempt success, finish reasons, пустые
+  ответы, requested vs served model, fallbacks, ошибки tool calls по модели.
+  Окно — time picker, история — retention SQLite (90 дней).
 
-Счётчики монотонны: `hermes-observability-prune` перед удалением строк
-сворачивает их в таблицы `*_rollup` по тем же измерениям (включая bucket
-латентности), а экспортёр суммирует live-строки и rollup. Retention поэтому не
-создаёт ложных counter reset для `rate()`/`increase()`. Метки времени
-`hermes_api_last_*_timestamp_seconds` берутся только из живых строк.
+Grafana не читает приватную WAL-базу в home Hermes. Экспортёр каждую минуту
+делает `VACUUM INTO` snapshot в rollback-режиме в
+`/var/lib/hermes-observability/metrics.db` (каталог `hermes:grafana`, файл
+`0640`; путь задаёт `HERMES_ANALYTICS_FILE` в `hermes-metrics.service`) и
+публикует `hermes_analytics_snapshot_timestamp_seconds`; `0` означает, что
+snapshot не обновился. Плагин открывает файл на каждый запрос в режиме
+`query_only`, поэтому атомарная замена snapshot безопасна. Версия плагина
+задаётся `vps_observability.grafana.sqlite_plugin_version` и устанавливается
+`grafana-cli` при deploy; в Docker-стеке — `GF_INSTALL_PLUGINS` в compose.
+
+Плагин записывает в `api_calls` `requested_model` и `call_index`
+(`api_call_count` Hermes). First-attempt success связывает успех с error-строками
+того же логического вызова по `session_id` + `call_index`; Hermes не передаёт
+`retry_count` в `post_api_request`, без корреляции успех считается первой
+попыткой. Модель для tool calls берётся из последнего `session start` этой сессии.
+
+Счётчики Prometheus монотонны: `hermes-observability-prune` перед удалением
+строк сворачивает их в таблицы `*_rollup` по измерениям экспортёра, а экспортёр
+суммирует live-строки и rollup. Retention поэтому не создаёт ложных counter
+reset для `rate()`/`increase()`. SQLite-панели rollup не используют и видят
+только сохранённые строки.
 
 Prometheus загружает versioned правила `observability/rules/hermes.rules.yml`:
-recording rules `hermes_route:*` (availability 1h/24h, first-attempt success,
-p95, output tok/s, truncation, ошибки по классам) и алерты `HermesRoute*`,
-`HermesModelMismatch`. Alertmanager не развёрнут: алерты видны в Prometheus и
-Grafana, доставка в Telegram остаётся за health-check timer. `check.sh`
-прогоняет `promtool check rules`, если promtool установлен.
+recording rules `hermes_route:calls:*` и `hermes_route:availability:*` (1h/24h)
+и алерты `HermesRouteAvailabilityLow`, `HermesRouteNoRecentSuccess`,
+`HermesRouteRateLimitBurst`, `HermesAnalyticsSnapshotStale`. Alertmanager не
+развёрнут: алерты видны в Prometheus и Grafana, доставка в Telegram остаётся за
+health-check timer. `check.sh` прогоняет `promtool check rules`, если promtool
+установлен; тест `observability/test_dashboard_sql.py` исполняет каждый SQL
+дашборда на реальной схеме плагина.
 
 В Grafana панель **Route scorecard** сводит availability, first-attempt
-success, p95, tok/s, доли обрезок и пустых ответов и стоимость успешного
+success, p95, output tok/s, доли обрезок и пустых ответов и стоимость успешного
 вызова; ниже — ошибки по классам, p95, finish reasons, fallbacks, ошибки tool
 calls по модели и расхождение requested/served. Метрики измеряют надёжность и
 форму ответа, не правильность содержания.
