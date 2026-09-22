@@ -1,0 +1,13 @@
+apiVersion: 1
+
+# Per-call route analytics. The exporter publishes a rollback-journal snapshot
+# of the private metrics.db here every minute; Grafana only needs read access.
+datasources:
+  - name: Hermes SQLite
+    uid: hermes-sqlite
+    type: frser-sqlite-datasource
+    access: proxy
+    isDefault: false
+    editable: false
+    jsonData:
+      path: /var/lib/hermes-observability/metrics.db

@@ -7,6 +7,9 @@ import { createHash, randomUUID } from 'node:crypto';
 const agentName = /^agents(?:\.[a-z0-9_-]+)?\.md$/i;
 const excluded = new Set(['node_modules', 'hermes-agent', 'backups', 'operator-state']);
 const maxBytes = 512 * 1024;
+const directoryFlags = fs.constants.O_RDONLY |
+  (fs.constants.O_DIRECTORY || 0) |
+  (fs.constants.O_NOFOLLOW || 0);
 // Config key holding the character limit for each describable memory kind.
 const limitKeys = { memory: 'memory_char_limit', user: 'user_char_limit' };
 const limitKeyFor = (kind) => limitKeys[kind] || null;
@@ -100,6 +103,33 @@ function walkDirectory(directory, prefix, depth, walkedRoots, excluded, results,
   }
 }
 
+// Open the backup directory itself and use its descriptor as the anchor for
+// the backup write.  Checking a pathname and then reopening it leaves a race
+// in which a writable local user can replace the directory with a symlink.
+// Linux exposes an opened directory through /proc/self/fd; that keeps the
+// subsequent child creation attached to the already-validated inode.
+function openBackupDirectory(backupDir) {
+  fs.mkdirSync(backupDir, { mode: 0o700, recursive: true });
+  let fd;
+  try {
+    fd = fs.openSync(backupDir, directoryFlags);
+  } catch (error) {
+    if (error?.code === 'ELOOP' || error?.code === 'ENOTDIR') {
+      throw new Error('Backup symlink not allowed');
+    }
+    throw error;
+  }
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isDirectory()) throw new Error('Backup directory not allowed');
+    fs.fchmodSync(fd, 0o700);
+    return { fd, path: process.platform === 'linux' ? `/proc/self/fd/${fd}` : backupDir };
+  } catch (error) {
+    fs.closeSync(fd);
+    throw error;
+  }
+}
+
 function validateSymlinkPath(root, components, external) {
   let fullPath = root;
   if (fs.lstatSync(root).isSymbolicLink()) throw new Error('Symlink root not allowed');
@@ -161,11 +191,13 @@ export function createMemoryFiles({ home, workspace, parseConfig }) {
     if (memoryFileVersion(previous) !== expectedVersion) throw new Error('File changed; reload before saving');
     if (previous === content) return;
     const backupDir = path.join(roots.home, '.memory-editor-backups');
-    fs.mkdirSync(backupDir, { mode: 0o700, recursive: true });
-    if (fs.lstatSync(backupDir).isSymbolicLink()) throw new Error('Backup symlink not allowed');
-    fs.chmodSync(backupDir, 0o700);
-    fs.writeFileSync(path.join(backupDir, randomUUID() + '.json'),
-      JSON.stringify({ path: input, content: previous }), { flag: 'wx', mode: 0o600 });
+    const backup = openBackupDirectory(backupDir);
+    try {
+      fs.writeFileSync(path.join(backup.path, randomUUID() + '.json'),
+        JSON.stringify({ path: input, content: previous }), { flag: 'wx', mode: 0o600 });
+    } finally {
+      fs.closeSync(backup.fd);
+    }
     const temporary = path.join(path.dirname(fullPath), '.memory-edit-' + randomUUID());
     try {
       fs.writeFileSync(temporary, content, { flag: 'wx', mode: stat.mode & 0o777 });
