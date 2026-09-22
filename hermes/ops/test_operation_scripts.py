@@ -26,6 +26,12 @@ class OperationScriptTests(unittest.TestCase):
         self.assertIn('grafana cli plugins "$@"', packages)
         self.assertIn('grafana-cli plugins "$@"', packages)
 
+    def test_grafana_snapshot_directory_preserves_read_access_after_atomic_replace(self):
+        assets = (OPS_DIR / 'install' / 'assets.sh').read_text(encoding='utf-8')
+        self.assertIn('install -d -o "${HERMES_USER}" -g grafana -m 2750 /var/lib/hermes-observability', assets)
+        self.assertIn('chown "${HERMES_USER}:grafana" /var/lib/hermes-observability/metrics.db', assets)
+        self.assertIn('chmod 0640 /var/lib/hermes-observability/metrics.db', assets)
+
     def write_executable(self, path: Path, content: str) -> None:
         path.write_text(content, encoding="utf-8")
         path.chmod(0o755)

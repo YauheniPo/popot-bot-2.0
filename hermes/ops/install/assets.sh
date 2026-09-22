@@ -37,7 +37,15 @@ install_operations_assets() {
         /etc/grafana/provisioning/datasources \
         /etc/grafana/provisioning/dashboards/hermes
     # The exporter (Hermes user) writes the SQLite snapshot here; Grafana reads it.
-    install -d -o "${HERMES_USER}" -g grafana -m 0750 /var/lib/hermes-observability
+    # The exporter runs as Hermes while Grafana reads the snapshot.  Set the
+    # setgid bit so atomically replaced snapshots inherit the Grafana group;
+    # otherwise SQLite reports the misleading error 14 "out of memory" when
+    # the Grafana plugin cannot read the database.
+    install -d -o "${HERMES_USER}" -g grafana -m 2750 /var/lib/hermes-observability
+    if [[ -e /var/lib/hermes-observability/metrics.db ]]; then
+        chown "${HERMES_USER}:grafana" /var/lib/hermes-observability/metrics.db
+        chmod 0640 /var/lib/hermes-observability/metrics.db
+    fi
     render \
         "${SCRIPT_DIR}/templates/hermes-prometheus.yml" /etc/hermes-observability/prometheus.yml 0640
     chown root:prometheus /etc/hermes-observability/prometheus.yml
