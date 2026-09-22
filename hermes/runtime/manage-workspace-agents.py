@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manage only the repository-owned block in workspace/AGENTS.md."""
+"""Reconcile shared and environment instructions without replacing personal notes."""
 
 from __future__ import annotations
 
@@ -55,6 +55,42 @@ def reconcile(existing: str, managed_source: str, *, present: bool) -> str:
     if personal:
         parts.append(personal)
     return "\n\n".join(parts).rstrip() + "\n" if parts else ""
+
+
+def _remove_layer(existing: str, name: str) -> str:
+    begin, end = f"<!-- BEGIN {name} -->", f"<!-- END {name} -->"
+    if existing.count(begin) != existing.count(end) or existing.count(begin) > 1:
+        raise ManagedBlockError(f"AGENTS.md has malformed or duplicate {name} markers")
+    if begin not in existing:
+        return existing
+    start = existing.index(begin)
+    finish = existing.index(end)
+    if finish < start:
+        raise ManagedBlockError(f"AGENTS.md has reversed {name} markers")
+    return existing[:start] + existing[finish + len(end):]
+
+
+def reconcile_layers(existing: str, common: str, environment: str, *, legacy_sources=()) -> str:
+    """Replace owned layers and exact legacy prefixes, never infer ownership by heading."""
+    names = ("HERMES MANAGED COMMON", "HERMES MANAGED ENVIRONMENT")
+    for source in (common, environment):
+        if not source.strip() or "<!-- BEGIN " in source or "<!-- END " in source:
+            raise ManagedBlockError("instruction sources must be non-empty and contain no managed markers")
+    # The previous VPS version owned this entire marked section.
+    personal = reconcile(existing, "", present=False)
+    for name in names:
+        personal = _remove_layer(personal, name)
+    personal = personal.strip()
+    for legacy in legacy_sources:
+        legacy = legacy.strip()
+        if legacy and (personal == legacy or personal.startswith(legacy + "\n")):
+            personal = personal[len(legacy):].strip()
+            break
+    blocks = [f"<!-- BEGIN {name} -->\n{source.strip()}\n<!-- END {name} -->"
+              for name, source in zip(names, (common, environment))]
+    if personal:
+        blocks.append(personal)
+    return "\n\n".join(blocks) + "\n"
 
 
 def _destination(path: Path) -> Path:
@@ -132,22 +168,44 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target", type=Path, required=True,
                         help="destination with no symlinks in the file or parent directories")
     parser.add_argument("--managed-source", type=Path, required=True)
+    parser.add_argument("--common-source", type=Path,
+                        help="shared instructions; managed-source supplies the environment layer")
+    parser.add_argument("--legacy-source", type=Path, action="append", default=[],
+                        help="known unmarked legacy text eligible for exact-prefix migration")
     parser.add_argument("--backup-copy", type=Path,
                         help="backup destination with the same no-symlink restriction")
-    parser.add_argument("--state", choices=("present", "absent"), required=True)
+    parser.add_argument("--state", choices=("present", "absent"), default="present",
+                        help="legacy single-block mode only; shared layers are always installed")
     return parser
 
 
+def _destination_pair(target: Path, backup_copy: Path | None) -> tuple[Path, Path | None]:
+    """Validate both destinations, replacing None when no backup copy is wanted."""
+    return _destination(target), _destination(backup_copy) if backup_copy is not None else None
+
+
+def _reconcile_instructions(args: argparse.Namespace, existing: str, managed_source: str) -> str:
+    """Return the reconciled content for the requested instruction mode."""
+    if args.common_source is None:
+        if args.legacy_source:
+            raise ManagedBlockError("--legacy-source requires --common-source")
+        return reconcile(existing, managed_source, present=args.state == "present")
+    if args.state != "present":
+        raise ManagedBlockError("shared instructions cannot be disabled via --state")
+    return reconcile_layers(
+        existing, args.common_source.read_text(encoding="utf-8"), managed_source,
+        legacy_sources=[path.read_text(encoding="utf-8") for path in args.legacy_source],
+    )
+
+
 def update_instructions(args: argparse.Namespace) -> int:
-    args.target = _destination(args.target)
-    if args.backup_copy is not None:
-        args.backup_copy = _destination(args.backup_copy)
+    args.target, args.backup_copy = _destination_pair(args.target, args.backup_copy)
     # Validate and read BOTH destinations before changing either one.
     target_content = read_optional(args.target)
     backup_content = read_optional(args.backup_copy) if args.backup_copy is not None else None
     managed_source = args.managed_source.read_text(encoding="utf-8")
     existing = target_content if target_content is not None else (backup_content or "")
-    updated = reconcile(existing, managed_source, present=args.state == "present")
+    updated = _reconcile_instructions(args, existing, managed_source)
     changed = False
     if updated != existing or (updated and target_content is None):
         write_atomic(args.target, updated)

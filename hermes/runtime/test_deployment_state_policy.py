@@ -19,10 +19,68 @@ HERMES_ROOT = Path(__file__).resolve().parents[1]
 
 class DeploymentStatePolicyTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("ansible-playbook"), "ansible-playbook is required")
+    def test_shared_instructions_survive_host_admin_disable_and_repeated_deploy(self):
+        play = yaml.safe_load((HERMES_ROOT / "ansible/playbook.yml").read_text())[0]
+        def walk(tasks):
+            for task in tasks:
+                yield task
+                yield from walk(task.get("block", []))
+        tasks = {task.get("name"): task for task in walk(play["pre_tasks"] + play["tasks"])}
+        names = ["Copy repository-owned Hermes workspace instructions",
+                 "Copy shared Hermes instructions for every VPS capability mode",
+                 "Reconcile shared Hermes and VPS environment instructions"]
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            bundle = root / "bundle"
+            (bundle / "runtime").mkdir(parents=True)
+            shutil.copyfile(HERMES_ROOT / "runtime/manage-workspace-agents.py", bundle / "runtime/manage-workspace-agents.py")
+            shutil.copyfile(HERMES_ROOT / "ansible/AGENTS.md", root / "AGENTS.md")
+            target = root / "workspace/AGENTS.md"
+            target.parent.mkdir()
+            target.write_text("<!-- BEGIN ANSIBLE MANAGED HOST ADMINISTRATION -->\nOld policy\n<!-- END ANSIBLE MANAGED HOST ADMINISTRATION -->\n\nPersonal note\n")
+            selected = []
+            for name in names:
+                task = dict(tasks[name])
+                if "ansible.builtin.copy" in task:
+                    opts = dict(task["ansible.builtin.copy"])
+                    opts.update(owner=getpass.getuser(), group=grp.getgrgid(os.getgid()).gr_name)
+                    if "src" in opts:
+                        opts["src"] = str(HERMES_ROOT / "instructions/common.md")
+                    task["ansible.builtin.copy"] = opts
+                selected.append(task)
+            for enabled in (False, True, False, False):
+                vars_ = dict(hermes_bundle_dir=str(bundle), hermes_workspace=str(target.parent),
+                             hermes_home=str(root / "home"), hermes_host_admin_enabled=enabled)
+                check = root / "check.yml"
+                check.write_text(yaml.safe_dump([dict(hosts="localhost", gather_facts=False,
+                                                     vars=vars_, tasks=selected)]))
+                result = subprocess.run(["ansible-playbook", "-i", "localhost,", "-c", "local", str(check)],
+                    env={**os.environ, "ANSIBLE_CONFIG": str(HERMES_ROOT / "ansible/ansible.cfg")},
+                    capture_output=True, text=True, timeout=60)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                content = target.read_text()
+                self.assertIn((HERMES_ROOT / "instructions/common.md").read_text().strip(), content)
+                self.assertIn("Host administration: " + ("enabled" if enabled else "disabled"), content)
+                self.assertIn("Personal note", content)
+                self.assertNotIn("Old policy", content)
+                self.assertEqual(content, (root / "home/operator-state/workspace-AGENTS.md").read_text())
+            self.assertIn("changed=0", result.stdout)
+
+    def test_language_policy_does_not_request_internal_thinking_trace(self) -> None:
+        settings = yaml.safe_load((HERMES_ROOT / "config" / "vps-defaults.yml").read_text())
+        instruction = settings["vps_agent_policy"]["response_language_instruction"]
+        self.assertTrue(instruction.strip())
+        self.assertNotRegex(instruction.lower(), r"always think|thinking trace|chain.of.thought")
+
+    @unittest.skipUnless(shutil.which("ansible-playbook"), "ansible-playbook is required")
     def test_devops_instructions_preserve_notes_and_update_idempotently(self) -> None:
         playbook = yaml.safe_load((HERMES_ROOT / "ansible" / "playbook.yml").read_text())
+        def tasks_in(block):
+            for task in block:
+                yield task
+                yield from tasks_in(task.get("block", []))
         task = next(
-            (task for task in playbook[0]["tasks"]
+            (task for task in tasks_in(playbook[0]["tasks"])
              if task.get("name") == "Publish managed Azure DevOps and SonarQube instructions"),
             None,
         )
@@ -137,13 +195,15 @@ class DeploymentStatePolicyTests(unittest.TestCase):
         scheduled_backup = (HERMES_ROOT / "ops" / "backup.sh").read_text()
 
         self.assertIn("runtime/manage-workspace-agents.py", playbook)
-        self.assertIn("Reconcile repository-owned host-administration instructions", playbook)
+        self.assertIn("Reconcile shared Hermes and VPS environment instructions", playbook)
         self.assertIn("operator-state/workspace-AGENTS.md", playbook)
         self.assertIn("operator-state", scheduled_backup)
         self.assertIn("workspace/AGENTS.md", scheduled_backup)
         self.assertIn("Hermes workspace must be a non-empty absolute safe path", scheduled_backup)
         self.assertIn("Hermes backup run-as user does not exist", scheduled_backup)
         self.assertIn('rm -f -- "${operator_state_agents}"', scheduled_backup)
+        self.assertIn("personal-state mirror helper unavailable; continuing with primary backup", scheduled_backup)
+        self.assertIn("personal-state mirror failed; continuing with primary backup", scheduled_backup)
 
     def test_final_config_check_runs_before_gateway_install(self) -> None:
         services = (HERMES_ROOT / "ansible" / "tasks" / "services.yml").read_text()
@@ -210,6 +270,13 @@ class DeploymentStatePolicyTests(unittest.TestCase):
         self.assertIn("refusing to update without a verified backup", deploy_runtime)
         self.assertIn("state exists but its CLI is missing", deploy_runtime)
         self.assertNotIn("skipping backup of an unusable installation", deploy_runtime)
+
+    def test_personal_state_mirror_cannot_abort_mandatory_backup(self) -> None:
+        deploy_runtime = (HERMES_ROOT / "deploy" / "runtime.sh").read_text()
+
+        self.assertIn('if [[ -f "$SCRIPT_DIR/runtime/backup-personal-state.py" ]]; then', deploy_runtime)
+        self.assertIn('if ! run_as_hermes python3 "$SCRIPT_DIR/runtime/backup-personal-state.py" mirror', deploy_runtime)
+        self.assertIn("personal-state mirror failed; continuing with the mandatory backup", deploy_runtime)
 
 
 if __name__ == "__main__":

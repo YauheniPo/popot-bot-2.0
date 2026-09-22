@@ -1,7 +1,13 @@
 """Regression checks for the fast Hermes deployment paths."""
 
 from pathlib import Path
+import os
+import shutil
+import subprocess
+import tempfile
 import unittest
+
+import yaml
 
 
 ANSIBLE = Path(__file__).parent
@@ -46,9 +52,49 @@ class DeployOptimizationTests(unittest.TestCase):
                 self.assertIn("notify: restart Hermes gateway", task)
         self.assertNotIn("meta: flush_handlers", RUNTIME)
         self.assertIn("Mark planned Hermes gateway maintenance", SERVICES)
-        self.assertIn("Clear planned Hermes gateway maintenance marker", SERVICES)
+        self.assertIn("Clear planned Hermes gateway maintenance marker", PLAYBOOK)
         self.assertIn("gateway-maintenance", STARTUP_NOTIFY)
         self.assertIn("gateway-maintenance", HEALTH_CHECK)
+
+    def test_maintenance_encloses_backup_install_and_final_service_checks(self) -> None:
+        play = yaml.safe_load(PLAYBOOK)[0]
+        deployment = next(task for task in play["tasks"]
+                          if task.get("name") == "Deploy Hermes with bounded maintenance coverage")
+        tasks = deployment["block"]
+        names = [task.get("name") for task in tasks]
+        marker = names.index("Mark maintenance before stopping an existing gateway")
+        for name in ("Create and verify the mandatory config-only deployment backup",
+                     "Install or update Hermes to the pinned commit",
+                     "Stop the gateway before restoring a backup",
+                     "Complete Hermes deployment and report its result"):
+            self.assertLess(marker, names.index(name))
+        cleanup = deployment["always"][-1]
+        self.assertEqual(cleanup["name"], "Clear planned Hermes gateway maintenance marker")
+        self.assertEqual(cleanup["ansible.builtin.file"]["state"], "absent")
+        self.assertNotIn("Clear planned Hermes gateway maintenance marker", SERVICES)
+
+    @unittest.skipUnless(shutil.which("ansible-playbook"), "Ansible is required")
+    def test_maintenance_cleanup_runs_on_success_and_failure(self) -> None:
+        deployment = next(task for task in yaml.safe_load(PLAYBOOK)[0]["tasks"]
+                          if task.get("name") == "Deploy Hermes with bounded maintenance coverage")
+        for fail in (False, True):
+            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "ops").mkdir()
+                marker = root / "ops" / "gateway-maintenance"
+                marker.touch()
+                stage = ({"ansible.builtin.fail": {"msg": "simulated deployment failure"}}
+                         if fail else {"ansible.builtin.debug": {"msg": "simulated success"}})
+                play = [{"hosts": "localhost", "gather_facts": False,
+                         "vars": {"hermes_home": str(root), "hermes_enable_ops": True},
+                         "tasks": [{"block": [stage], "always": deployment["always"]}]}]
+                path = root / "check.yml"
+                path.write_text(yaml.safe_dump(play))
+                result = subprocess.run(["ansible-playbook", "-i", "localhost,", "-c", "local", str(path)],
+                                        capture_output=True, text=True, timeout=30,
+                                        env={**os.environ, "ANSIBLE_CONFIG": str(ANSIBLE / "ansible.cfg")})
+                self.assertEqual(result.returncode != 0, fail, result.stdout + result.stderr)
+                self.assertFalse(marker.exists(), result.stdout + result.stderr)
 
     def test_pinned_external_engineering_skills_preserve_existing_directories(self) -> None:
         self.assertIn("Install pinned Matt Pocock engineering skills for Hermes", RUNTIME)

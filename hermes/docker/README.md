@@ -10,6 +10,16 @@ CLI в изолированном container. Telegram gateway запускает
 host mounts, devices, privileged mode или доступ к macOS. Изменения вне
 `/opt/data` намеренно исчезают при `--build --force-recreate`.
 
+Правила Hermes общие с VPS: [instructions/common.md](../instructions/common.md).
+[AGENTS.md](AGENTS.md) здесь содержит только ограничения контейнера. При каждом
+старте bootstrap собирает их в два managed-блока `/opt/data/workspace/AGENTS.md`
+тем же helper, что и Ansible. Личные дополнения вне блоков сохраняются;
+обновлённые исходники попадают в image после rebuild, не просто restart.
+Старый неизменённый текст мигрирует автоматически, личный хвост сохраняется.
+Изменённые старые инструкции не удаляются по догадке: проверьте их вручную
+на повторы/противоречия. Маркер `.hermes-host-admin-instructions` больше не
+используется как основание для перезаписи файла. Права итогового файла — `0600`.
+
 Каждый shell-блок ниже запускается одним вызовом **из корня repository** и сам
 переходит в `hermes/docker`; после выполнения ваш каталог в терминале не
 изменится.
@@ -29,7 +39,7 @@ scripts) и `hermes/observability` (Prometheus/Grafana provisioning) — опи�
 | `/opt/hermes-local` | Внутри container, ephemeral | Наши bootstrap и observability assets, скопированные Dockerfile |
 | `/opt/data` | Volume `hermes_local_test_data` | Постоянное Hermes state: config, home, sessions, plugins, logs, ops и workspace |
 | `/opt/data/workspace` | Внутри persistent `/opt/data` | Репозитории и рабочие файлы агента; bootstrap кладёт сюда `AGENTS.md` |
-| `hermes_local_test_metrics` | Docker named volume, не container | Файл `hermes.prom`, которым обмениваются metrics collector и provider |
+| `hermes_local_test_metrics` | Docker named volume, не container | Файл `hermes.prom` для metrics provider и SQLite snapshot `metrics.db`, который Grafana читает read-only |
 | `hermes_local_test_prometheus` | Docker named volume, не container | Локальная Prometheus time-series база |
 | `hermes_local_test_grafana` | Docker named volume, не container | Grafana database, пользователи и dashboards state |
 
@@ -132,6 +142,9 @@ scripts) и `hermes/observability` (Prometheus/Grafana provisioning) — опи�
    Grafana во внутренней monitoring-сети. Metrics provider использует образ
    node-exporter только для выдачи Hermes textfile metrics и не читает macOS.
    Порт Prometheus наружу не публикуется.
+   При первом старте Grafana скачивает плагин `frser-sqlite-datasource`
+   (`GF_INSTALL_PLUGINS`, версия совпадает с `vps-defaults.yml`) с grafana.com;
+   без доступа в интернет SQLite-панели останутся пустыми.
 
 ## Проверка
 

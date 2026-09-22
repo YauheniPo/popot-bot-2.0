@@ -1,0 +1,55 @@
+# Route health rules for Prometheus alerts and the Hermes Overview dashboard.
+# A route is one provider/model pair. Ratios divide by a guarded denominator so
+# idle routes produce no sample instead of a misleading zero. Per-call analytics
+# (percentiles, finish reasons, fallbacks) are served by the SQLite datasource.
+groups:
+  - name: hermes-routes
+    interval: 1m
+    rules:
+      - record: hermes_route:calls:increase1h
+        expr: sum by (provider, model) (increase(hermes_api_calls_total[1h]))
+      - record: hermes_route:calls:increase24h
+        expr: sum by (provider, model) (increase(hermes_api_calls_total[24h]))
+      - record: hermes_route:availability:ratio1h
+        expr: >-
+          sum by (provider, model) (increase(hermes_api_success_total[1h]))
+          / (hermes_route:calls:increase1h > 0)
+      - record: hermes_route:availability:ratio24h
+        expr: >-
+          sum by (provider, model) (increase(hermes_api_success_total[24h]))
+          / (hermes_route:calls:increase24h > 0)
+
+  # Alerts are evaluated by Prometheus and shown in Grafana; no Alertmanager is
+  # deployed, so Telegram delivery remains the health-check timer's job.
+  - name: hermes-route-alerts
+    rules:
+      - alert: HermesRouteAvailabilityLow
+        expr: hermes_route:availability:ratio1h < 0.9 and hermes_route:calls:increase1h >= 5
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.provider }}/{{ $labels.model }} availability {{ $value | humanizePercentage }} over the last hour"
+      - alert: HermesRouteNoRecentSuccess
+        expr: >-
+          (time() - hermes_api_last_success_timestamp_seconds) > 21600
+          and on (provider, model) sum by (provider, model) (increase(hermes_api_calls_total[6h])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.provider }}/{{ $labels.model }} was called in the last 6h without a single success"
+      - alert: HermesRouteRateLimitBurst
+        expr: sum by (provider, model) (increase(hermes_api_rate_limits_total[15m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.provider }}/{{ $labels.model }} hit {{ $value | humanize }} rate limits in 15 minutes"
+      - alert: HermesAnalyticsSnapshotStale
+        expr: (time() - hermes_analytics_snapshot_timestamp_seconds) > 900
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The SQLite snapshot for Grafana route analytics has not been refreshed for 15 minutes"

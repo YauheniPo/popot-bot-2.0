@@ -1,0 +1,31 @@
+---
+- name: Ensure the Swarm repository exists without updating existing work
+  ansible.builtin.git:
+    repo: "https://github.com/{{ vps_github.access_probe_repository }}.git"
+    dest: "{{ vps_workspace_ui.swarm.repository_dir }}"
+    update: false
+  become_user: "{{ hermes_user }}"
+  environment:
+    HOME: "{{ hermes_user_home }}"
+    PATH: "{{ hermes_user_home }}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+    GIT_TERMINAL_PROMPT: "0"
+
+- name: Provision Swarm profiles and independent worktrees
+  ansible.builtin.command:
+    argv:
+      - "{{ hermes_home }}/hermes-agent/venv/bin/python"
+      - "{{ hermes_bundle_dir }}/runtime/workspace-swarm.py"
+      - --home
+      - "{{ hermes_home }}"
+      - --user-home
+      - "{{ hermes_user_home }}"
+      - --repo
+      - "{{ vps_workspace_ui.swarm.repository_dir }}"
+      - --hermes-bin
+      - "{{ hermes_bin }}"
+      - --settings
+      - "-"
+    stdin: "{{ {'vps_workspace_ui': {'swarm': vps_workspace_ui.swarm}} | to_json }}"
+  become_user: "{{ hermes_user }}"
+  register: hermes_swarm_provision
+  changed_when: "'0 change(s)' not in hermes_swarm_provision.stdout"

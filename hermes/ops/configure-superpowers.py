@@ -11,7 +11,7 @@ from typing import Any
 
 import yaml
 
-from hermes_config_io import load_config, write_config
+from hermes_config_io import load_config, validated_config_path, write_config
 
 
 def configure(data: dict[str, Any]) -> bool:
@@ -48,7 +48,7 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument(
         "--config", required=True, type=Path,
-        help="must resolve to $HERMES_HOME/config.yaml (falls back to ~/.hermes); no other location is accepted",
+        help="must be $HERMES_HOME/config.yaml (falls back to ~/.hermes); config symlinks are not accepted",
     )
     return result
 
@@ -63,12 +63,10 @@ def main() -> int:
         # manual invocation without HERMES_HOME set still behaves sensibly
         # instead of hard-failing.
         hermes_home = os.environ.get("HERMES_HOME", "").strip()
-        expected_config = (
+        home = (
             Path(hermes_home).expanduser() if hermes_home else Path.home() / ".hermes"
-        ) / "config.yaml"
-        expected_config = expected_config.resolve()
-        if args.config.resolve() != expected_config:
-            raise ValueError(f"--config must be {expected_config}")
+        )
+        expected_config = validated_config_path(args.config, home)
         data = load_config(expected_config)
         changed = configure(data)
         if changed:

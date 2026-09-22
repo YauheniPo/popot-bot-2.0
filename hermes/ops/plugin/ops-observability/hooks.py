@@ -8,6 +8,17 @@ from .billing import _price, _usage_values
 from .privacy import _command_program, _id, _number, _safe_args
 from .storage import _audit, _execute, _now
 
+_API_CALL_COLUMNS = (
+    "ts", "request_id", "session_id", "turn_id", "provider", "model", "platform", "status",
+    "duration_ms", "input_tokens", "output_tokens", "cache_read_tokens", "total_tokens", "cost_usd",
+    "cost_source", "finish_reason", "status_code", "retry_count", "requested_model", "call_index",
+)
+_INSERT_API_CALL = (
+    f"INSERT INTO api_calls ({', '.join(_API_CALL_COLUMNS)}) "
+    f"VALUES ({', '.join('?' for _ in _API_CALL_COLUMNS)})"
+)
+
+
 def _pre_tool_call(tool_name: str = "", args: Any = None, task_id: str = "", turn_id: str = "", **kwargs: Any) -> None:
     _audit("tool.start", tool=_id(tool_name), session_id=_id(task_id), turn_id=_id(turn_id), args=_safe_args(args))
 
@@ -51,19 +62,22 @@ def _post_api_request(**kwargs: Any) -> None:
         duration_ms = _number(kwargs.get("api_duration_ms"))
     elif duration_ms and duration_ms < 10_000:
         duration_ms *= 1000
+    # Hermes does not report retry_count on success; call_index (api_call_count)
+    # links the final success to any error rows of the same logical call.
     values = (
         _now(), _id(kwargs.get("api_request_id")), _id(kwargs.get("session_id")),
         _id(kwargs.get("turn_id")), provider, model, _id(kwargs.get("platform")), "ok",
         duration_ms, input_tokens, output_tokens, cache_tokens, total_tokens, cost, source,
         _id(kwargs.get("finish_reason")), 0, 0,
+        _id(kwargs.get("model")), int(_number(kwargs.get("api_call_count"))),
     )
-    _execute("INSERT INTO api_calls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", values)
+    _execute(_INSERT_API_CALL, values)
     _audit(
         "api.end", request_id=values[1], session_id=values[2], turn_id=values[3],
-        provider=provider, model=model, platform=values[6], status="ok",
+        provider=provider, model=model, requested_model=values[18], platform=values[6], status="ok",
         duration_ms=duration_ms, input_tokens=input_tokens, output_tokens=output_tokens,
         cache_read_tokens=cache_tokens, total_tokens=total_tokens, cost_usd=round(cost, 8),
-        cost_source=source,
+        cost_source=source, finish_reason=values[15],
     )
 
 
@@ -77,8 +91,9 @@ def _api_request_error(**kwargs: Any) -> None:
         _id(kwargs.get("platform")), "error", duration_ms, 0, 0, 0, 0, 0.0,
         "unavailable", _id(kwargs.get("reason")), int(_number(kwargs.get("status_code"))),
         int(_number(kwargs.get("retry_count"))),
+        _id(kwargs.get("model")), int(_number(kwargs.get("api_call_count"))),
     )
-    _execute("INSERT INTO api_calls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", values)
+    _execute(_INSERT_API_CALL, values)
     _audit(
         "api.error", request_id=values[1], session_id=values[2], turn_id=values[3],
         provider=values[4], model=values[5], platform=values[6], status_code=values[16],

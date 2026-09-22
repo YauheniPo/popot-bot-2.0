@@ -48,6 +48,18 @@ def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
     return min(max(value, minimum), maximum)
 
 
+# Columns added after the first release; existing databases gain them in place.
+API_CALLS_ADDED_COLUMNS = {"requested_model": "TEXT", "call_index": "INTEGER DEFAULT 0"}
+
+
+def _ensure_columns(connection: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    existing = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+    for name, definition in columns.items():
+        if name not in existing:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+    connection.commit()
+
+
 def _db() -> sqlite3.Connection:
     """Create the schema (if missing) and return a connection. Call once at register()."""
     ops_dir, db_path, audit_path = _paths()
@@ -63,10 +75,16 @@ def _db() -> sqlite3.Connection:
           output_tokens INTEGER DEFAULT 0, cache_read_tokens INTEGER DEFAULT 0,
           total_tokens INTEGER DEFAULT 0, cost_usd REAL DEFAULT 0,
           cost_source TEXT DEFAULT 'unavailable', finish_reason TEXT,
-          status_code INTEGER DEFAULT 0, retry_count INTEGER DEFAULT 0
+          status_code INTEGER DEFAULT 0, retry_count INTEGER DEFAULT 0,
+          requested_model TEXT, call_index INTEGER DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_api_calls_ts ON api_calls(ts);
         CREATE INDEX IF NOT EXISTS idx_api_calls_model ON api_calls(provider, model);
+        CREATE TABLE IF NOT EXISTS route_fallbacks (
+          ts TEXT NOT NULL, from_provider TEXT, from_model TEXT,
+          to_provider TEXT, to_model TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_route_fallbacks_ts ON route_fallbacks(ts);
         CREATE TABLE IF NOT EXISTS tool_calls (
           ts TEXT NOT NULL, session_id TEXT, turn_id TEXT, tool_name TEXT,
           status TEXT, duration_ms REAL DEFAULT 0
@@ -91,6 +109,7 @@ def _db() -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_commands_ts ON commands(ts);
         """
     )
+    _ensure_columns(connection, "api_calls", API_CALLS_ADDED_COLUMNS)
     try:
         os.chmod(db_path, 0o600)
     except OSError:

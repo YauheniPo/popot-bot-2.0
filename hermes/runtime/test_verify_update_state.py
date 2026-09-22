@@ -8,6 +8,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 
@@ -121,6 +122,79 @@ class VerifyUpdateStateTests(unittest.TestCase):
 
         verify_update_state.verify_backup(backup_path, snapshot)
 
+    def test_gateway_lock_disappearing_after_inventory_does_not_abort_snapshot(self) -> None:
+        for relative in ("gateway.lock", "profiles/custom/gateway.lock"):
+            with self.subTest(path=relative):
+                lock = self.home / relative
+                lock.parent.mkdir(parents=True, exist_ok=True)
+                lock.write_text("temporary process lock")
+                discover = verify_update_state.discover_backup_files
+
+                def discover_then_release(home):
+                    paths = discover(home)
+                    lock.unlink()
+                    return paths
+
+                with mock.patch.object(verify_update_state, "discover_backup_files",
+                                       side_effect=discover_then_release):
+                    snapshot = verify_update_state.create_snapshot(self.home)
+
+                self.assertNotIn(relative, snapshot["files"])
+                self.assertNotIn(relative, snapshot["file_hashes"])
+                self.assertIn("SOUL.md", snapshot["files"])
+                backup_path = self.root / "backup.zip"
+                create_backup(self.home, backup_path)
+                verify_update_state.verify_backup(backup_path, snapshot)
+
+    def test_disappearing_personal_file_still_aborts_snapshot(self) -> None:
+        personal = self.home / "SOUL.md"
+        discover = verify_update_state.discover_backup_files
+
+        def discover_then_remove(home):
+            paths = discover(home)
+            personal.unlink()
+            return paths
+
+        with mock.patch.object(verify_update_state, "discover_backup_files",
+                               side_effect=discover_then_remove):
+            with self.assertRaises(FileNotFoundError):
+                verify_update_state.create_snapshot(self.home)
+
+    def test_unrelated_lock_files_remain_in_backup_inventory(self) -> None:
+        dependency_lock = self.home / "skills/custom-review/package.lock"
+        dependency_lock.write_text("persistent dependency state")
+        snapshot = verify_update_state.create_snapshot(self.home)
+        self.assertIn("skills/custom-review/package.lock", snapshot["files"])
+
+    def test_worktree_git_files_are_not_required_but_working_files_are(self) -> None:
+        worktrees = ["swarm/worktrees/builder", "swarm/worktrees/researcher",
+                     "swarm/worktrees/reviewer", "skills/custom-worktree"]
+        for relative in worktrees:
+            directory = self.home / relative
+            directory.mkdir(parents=True)
+            (directory / ".git").write_text("gitdir: /external/repo/.git/worktrees/worker\n")
+            (directory / "uncommitted.py").write_text("# preserve local changes\n")
+            (directory / ".gitignore").write_text("*.pyc\n")
+
+        snapshot = verify_update_state.create_snapshot(self.home)
+        archive = self.root / "worktree-backup.zip"
+        # Model the native archive independently: .git files are omitted even
+        # when our verifier mistakenly expects them (the reported regression).
+        with zipfile.ZipFile(archive, "w") as backup:
+            for path in verify_update_state.discover_backup_files(self.home):
+                if path.name != ".git":
+                    backup.write(path, path.relative_to(self.home).as_posix())
+        verify_update_state.verify_backup(archive, snapshot)
+        for relative in worktrees:
+            self.assertNotIn(f"{relative}/.git", snapshot["files"])
+            self.assertNotIn(f"{relative}/.git", snapshot["file_hashes"])
+            self.assertIn(f"{relative}/uncommitted.py", snapshot["files"])
+            self.assertIn(f"{relative}/.gitignore", snapshot["files"])
+
+        create_backup(self.home, archive, omit="swarm/worktrees/builder/uncommitted.py")
+        with self.assertRaisesRegex(verify_update_state.VerificationError, "missing"):
+            verify_update_state.verify_backup(archive, snapshot)
+
     def test_backup_missing_a_board_fails_closed(self) -> None:
         snapshot = verify_update_state.create_snapshot(self.home)
         backup_path = self.root / "backup.zip"
@@ -144,6 +218,21 @@ class VerifyUpdateStateTests(unittest.TestCase):
 
         with self.assertRaisesRegex(verify_update_state.VerificationError, "live Hermes files"):
             verify_update_state.verify_backup(backup_path, snapshot)
+
+    def test_full_deployment_backup_verifies_profile_memory_and_workspace_manifest(self) -> None:
+        required = ["profiles/custom/SOUL.md", "profiles/custom/memories/MEMORY.md",
+                    "swarm/swarm.yaml", "operator-state/workspace-instructions.json"]
+        for name in required:
+            path = self.home / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("personal state")
+        snapshot = verify_update_state.create_snapshot(self.home)
+        backup_path = self.root / "backup.zip"
+        for missing in required:
+            with self.subTest(missing=missing):
+                create_backup(self.home, backup_path, omit=missing)
+                with self.assertRaisesRegex(verify_update_state.VerificationError, "missing"):
+                    verify_update_state.verify_backup(backup_path, snapshot)
 
     def test_corrupt_database_inside_backup_fails_closed(self) -> None:
         snapshot = verify_update_state.create_snapshot(self.home)

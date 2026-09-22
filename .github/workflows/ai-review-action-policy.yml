@@ -47,11 +47,15 @@ jobs:
 
           try:
               allowed = json.loads(os.environ["ACTIONS_ALLOWED_PATTERNS"])
-          except (KeyError, json.JSONDecodeError):
+          except KeyError:
+              print("::warning title=CI Action policy mirror::ACTIONS_ALLOWED_PATTERNS variable is missing; using empty allow-list")
+              allowed = []
+          except json.JSONDecodeError:
+              print("::warning title=CI Action policy mirror::ACTIONS_ALLOWED_PATTERNS value is not valid JSON; using empty allow-list")
               allowed = []
           if not isinstance(allowed, list) or not all(isinstance(item, str) for item in allowed):
-              print("::error title=CI Action policy mirror is unavailable::ACTIONS_ALLOWED_PATTERNS must contain a JSON array.")
-              sys.exit(1)
+              print(f"::warning title=CI Action policy mirror::ACTIONS_ALLOWED_PATTERNS received type {type(allowed).__name__} (all array items must be strings); using empty allow-list")
+              allowed = []
 
           repository = os.environ["REPOSITORY"]
           tree = api(f"/repos/{repository}/git/trees/{os.environ['HEAD_SHA']}?recursive=1")

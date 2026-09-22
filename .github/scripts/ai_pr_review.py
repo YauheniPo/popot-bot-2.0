@@ -87,6 +87,7 @@ OLLAMA_URL = CHAT_COMPLETIONS_URL
 ACTIVE_PROVIDER = "ollama-cloud"
 ACTIVE_ROUTE = "primary"
 GITHUB_API_URL = "https://api.github.com"
+FREE_DAILY_QUOTA_ROUTES: set[tuple[str, str]] = set()
 REVIEW_RULES_PATH = Path(".github/REVIEWER.md")
 SONAR_CONTEXT_PATH = Path("sonar-review-context.json")
 REVIEWER_LABEL = "DirectAPI"
@@ -266,11 +267,13 @@ class RequestError(RuntimeError):
         status: int | None = None,
         retry_after_seconds: float | None = None,
         reason: str = "transport_error",
+        quota: str = "",
     ) -> None:
         super().__init__(message)
         self.status = status
         self.retry_after_seconds = retry_after_seconds
         self.reason = reason
+        self.quota = quota
 
 
 class ReviewResponseError(RuntimeError):
@@ -451,6 +454,12 @@ def _http_failure(error: urllib.error.HTTPError, model_request: bool) -> Request
         retry_after = _retry_after_seconds(error.headers, details)
     # Model error bodies can echo the request. Retain only compatibility hints
     # needed by existing schema/reasoning negotiation, never arbitrary prose.
+    quota = ""
+    if error.code == 429 and any(
+        marker in details.lower()
+        for marker in ("free_daily", "free-models-per-day", "free models per day")
+    ):
+        quota = "free_daily"
     if model_request:
         lowered = details.lower()
         hints = [phrase for phrase in (PARAMETER_ROUTING_ERROR, MANDATORY_REASONING_ERROR)
@@ -461,7 +470,31 @@ def _http_failure(error: urllib.error.HTTPError, model_request: bool) -> Request
             hints.append("response_format not supported")
         details = "; ".join(hints) or "provider rejected request"
     return RequestError(f"HTTP {error.code}: {details[:500]}", status=error.code,
-                        retry_after_seconds=retry_after)
+                        retry_after_seconds=retry_after, quota=quota)
+
+
+def _free_daily_route(provider: str, model: object) -> tuple[str, str] | None:
+    if provider != "openrouter" or not isinstance(model, str) or not model.endswith(":free"):
+        return None
+    return provider, model
+
+
+def _free_daily_route_disabled(provider: str, model: object) -> bool:
+    route = _free_daily_route(provider, model)
+    return route is not None and route in FREE_DAILY_QUOTA_ROUTES
+
+
+def _mark_free_daily_quota(error: RequestError, provider: str, model: object) -> None:
+    if error.quota == "free_daily":
+        route = _free_daily_route(provider, model)
+        if route is not None:
+            FREE_DAILY_QUOTA_ROUTES.add(route)
+            print(
+                f"  circuit breaker: disabling {route[0]} free route for model {safe_label(route[1])} "
+                "for the remainder of this review",
+                file=sys.stderr,
+                flush=True,
+            )
 
 
 def _open_response(request, timeout, progress=None):
@@ -853,6 +886,7 @@ def _request_review_json(
     try:
         response = request_json(OLLAMA_URL, "POST", headers, body, timeout=timeout)
     except RequestError as error:
+        _mark_free_daily_quota(error, ACTIVE_PROVIDER, body.get("model"))
         if report and attempt:
             outcome = f"http_{error.status}" if error.status is not None else error.reason
             report.finish(attempt, outcome, time.monotonic() - started)
@@ -944,7 +978,17 @@ def _should_switch_primary_transport_to_fallback(
 
 
 def _retryable_request_error(error: RequestError) -> bool:
-    if error.reason in {"response_limit", "output_limit", "watchdog_already_active"}:
+    # A stream that closes before a stop marker is not useful to retry on the
+    # same model route: reasoning-only providers reproduce the same failure and
+    # consume several minutes. review_chunk() immediately tries the configured
+    # fallback route instead.
+    if error.reason in {
+        "response_limit",
+        "output_limit",
+        "stream_incomplete",
+        "watchdog_already_active",
+        "free_daily_quota",
+    }:
         return False
     return error.status is None or error.status in RETRYABLE_HTTP_STATUSES
 
@@ -1275,6 +1319,13 @@ percentage alone is context, not a finding.
     if primary_mode == ORDINARY_MODEL_MODE:
         body = ordinary_json_body(body, model)
     try:
+        if _free_daily_route_disabled(ACTIVE_PROVIDER, body.get("model")):
+            raise RequestError(
+                "OpenRouter free daily quota is exhausted for this review route",
+                status=429,
+                reason="free_daily_quota",
+                quota="free_daily",
+            )
         # Hold back a slot so an exhausted primary still leaves the fallback
         # model time to answer inside the workflow job timeout.
         with REVIEW_DEADLINE.reserved(FALLBACK_RESERVE_SECONDS):

@@ -187,6 +187,71 @@ class ObservableReviewTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertFalse(pauses)
 
+    def test_known_free_quota_skips_fallback_retry_after_incomplete_result(self):
+        report, calls, pauses, code, output = self.attempts([
+            observer.runner.RateLimitFailure({"scope": "platform", "quota": "free_daily"}),
+            observer.runner.ReviewFailure("provider_incomplete_result"),
+        ], models=("primary:free", "backup"), fallback_provider="ollama-cloud")
+        self.assertEqual(code, 1)
+        self.assertEqual(len(calls), 2)
+        self.assertFalse(pauses)
+        self.assertEqual(report["attempts"][-1]["retry_decision"], "quota_known_incomplete_skip")
+        self.assertIn("quota_known_incomplete_skip", output)
+
+    def test_incomplete_retry_uses_short_prompt(self):
+        prompts = []
+        state = {"free_daily": False, "blocked_providers": set()}
+
+        def attempt(*args, **kwargs):
+            prompts.append(args[2])
+            report["attempts"].append({
+                "outcome": "provider_incomplete_result" if len(prompts) == 1 else "all_attempts_failed"
+            })
+            return False
+
+        report = {"status": "failed", "attempts": []}
+        routes = [{"provider": "ollama-cloud", "role": "fallback", "model": "backup",
+                   "key": "k", "endpoint": "https://example.test"}]
+        with mock.patch.object(observer, "routes", return_value=routes), \
+                mock.patch.object(observer, "_single_attempt", side_effect=attempt), \
+                mock.patch.object(observer, "_retry_after_attempt", return_value=True):
+            observer.review_attempts(Path("."), "full review prompt", set(), report,
+                                     Path("report.json"), "a" * 40, "b" * 40, state=state)
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("reread the full diff", prompts[1])
+
+    def test_free_daily_quota_state_is_shared_between_chunks(self):
+        report = {"status": "failed", "attempts": []}
+        chunks = [
+            {"index": 1, "prompt": "p", "diff": "+a\n"},
+            {"index": 2, "prompt": "p", "diff": "+b\n"},
+        ]
+        observed_states = []
+
+        def fake_attempt(workspace, prompt, files, chunk_report, report_path, base, head, index, state):
+            observed_states.append(state)
+            if index == 1:
+                state["free_daily"] = True
+            chunk_report.update(status="success", result={"summary": "checked", "findings": []})
+            return 0
+
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(observer, "review_attempts", side_effect=fake_attempt):
+            root = Path(directory)
+            self.assertEqual(
+                observer.review_chunks(root, chunks, set(), report, root / "report.json", "a" * 40, "b" * 40),
+                0,
+            )
+
+        self.assertEqual(len(observed_states), 2)
+        self.assertTrue(observed_states[1]["free_daily"])
+        self.assertEqual(
+            observer._route_skip_reason(
+                {"provider": "openrouter", "model": "primary:free"}, observed_states[1]
+            ),
+            "free_daily_quota",
+        )
+
     def test_rate_limit_wait_can_be_cancelled(self):
         with mock.patch.object(observer.time, "sleep", side_effect=KeyboardInterrupt), redirect_stdout(io.StringIO()):
             with self.assertRaises(KeyboardInterrupt):
@@ -257,7 +322,7 @@ class ObservableReviewTests(unittest.TestCase):
                 root = Path(directory)
                 report = {"status":"failed", "attempts":[]}
                 chunks = [{"index": i, "prompt":"p", "diff":"+a\n"} for i in range(1, 5)]
-                def attempt(workspace, prompt, files, chunk_report, report_path, base, head, index):
+                def attempt(workspace, prompt, files, chunk_report, report_path, base, head, index, state):
                     if first_success and index == 1:
                         chunk_report.update(status="success", result={"summary":"Checked first chunk", "findings":[]})
                         return 0
@@ -265,12 +330,16 @@ class ObservableReviewTests(unittest.TestCase):
                     return 1
                 with mock.patch.object(observer, "review_attempts", side_effect=attempt) as run, redirect_stdout(io.StringIO()):
                     code = observer.review_chunks(root, chunks, set(), report, root/"report.json", "a"*40, "b"*40)
-                self.assertEqual(code, 1)
+                self.assertEqual(code, 0 if first_success else 1)
                 self.assertEqual(run.call_count, 1 + first_success)
                 self.assertEqual(report["completed_chunks"], int(first_success))
                 self.assertEqual(report["skipped_chunks"], 3 - first_success)
                 self.assertEqual(report["reason"], "rate_limited")
-                self.assertNotIn("result", report)
+                if first_success:
+                    self.assertEqual(report["status"], "partial")
+                    self.assertIn("result", report)
+                else:
+                    self.assertNotIn("result", report)
                 details = observer.diagnostics(report)
                 self.assertIn("not a clean review", details)
                 self.assertIn(f"Validated chunks: {int(first_success)}/4", details)
@@ -407,6 +476,21 @@ class ObservableReviewTests(unittest.TestCase):
             self.assertIn("### Technical metadata", summary_path.read_text())
             self.assertIn("<details>\n<summary>Execution history</summary>\n\n", summary_path.read_text())
 
+    def test_run_writes_review_status_output(self):
+        # The workflow reads review_status from GITHUB_OUTPUT to decide whether
+        # the corroborating reviewer produced a result, so the write must happen
+        # even when the review itself fails.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report_path = root / "report.json"
+            output_path = root / "github_output"
+            with mock.patch.dict(os.environ, {"BASE_SHA": "a"*40, "HEAD_SHA": "b"*40, "GITHUB_OUTPUT": str(output_path)}, clear=True), \
+                    mock.patch.object(observer, "_confine_report_path", return_value=report_path), \
+                    mock.patch.object(observer, "prepare_prompt", side_effect=observer.runner.ReviewFailure("empty_or_oversized_diff")), \
+                    redirect_stdout(io.StringIO()):
+                observer.run(report_path)
+            self.assertEqual(output_path.read_text(), "review_status=failed\n")
+
     def test_confine_report_path_rejects_escape(self):
         with mock.patch.object(observer.os, "environ", {}, create=True):
             outside = Path("/definitely-outside-workspace/report.json")
@@ -415,9 +499,9 @@ class ObservableReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with mock.patch.object(observer.os, "environ", {"RUNNER_TEMP": str(root)}, create=True), \
-                    mock.patch.object(observer, "Path", wraps=Path):
+                mock.patch.object(observer, "Path", wraps=Path):
                 inside = root / "inside.json"
-                self.assertEqual(observer._confine_report_path(inside), inside)
+                self.assertEqual(observer._confine_report_path(inside), inside.resolve())
 
     def test_confine_report_path_resolves_symlink(self):
         # realpath must resolve a symlink to its target before the base check,
@@ -630,7 +714,7 @@ class ObservableReviewTests(unittest.TestCase):
             {"index": 1, "total": 2, "prompt": "p1", "diff": "+a\n"},
             {"index": 2, "total": 2, "prompt": "p2", "diff": "+b\n"},
         ]
-        def fake_attempts(workspace, prompt, files, chunk_report, report_path, base, head, chunk_index):
+        def fake_attempts(workspace, prompt, files, chunk_report, report_path, base, head, chunk_index, state):
             chunk_report.update(status="success",
                 result={"summary": "ok", "findings": findings, "thread_verdicts": []})
             return 0
@@ -649,7 +733,7 @@ class ObservableReviewTests(unittest.TestCase):
     def test_review_chunks_fails_when_a_chunk_fails(self):
         report = {"status": "failed", "attempts": []}
         chunks = [{"index": 1, "total": 1, "prompt": "p", "diff": "+a\n"}]
-        def fake_attempts(workspace, prompt, files, chunk_report, report_path, base, head, chunk_index):
+        def fake_attempts(workspace, prompt, files, chunk_report, report_path, base, head, chunk_index, state):
             chunk_report.update(status="failed", reason="all_attempts_failed")
             return 1
         with tempfile.TemporaryDirectory() as directory:
@@ -662,6 +746,57 @@ class ObservableReviewTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(report["status"], "failed")
         self.assertEqual(report["reason"], "all_attempts_failed")
+
+    def test_review_chunks_publishes_successful_chunks_as_partial(self):
+        report = {"status": "failed", "attempts": []}
+        chunks = [
+            {"index": 1, "total": 2, "prompt": "p1", "diff": "+a\n"},
+            {"index": 2, "total": 2, "prompt": "p2", "diff": "+b\n"},
+        ]
+
+        def fake_attempts(workspace, prompt, files, chunk_report, report_path, base, head, chunk_index, state):
+            if chunk_index == 1:
+                chunk_report.update(status="success", result={"summary": "ok", "findings": [], "thread_verdicts": []})
+                return 0
+            chunk_report.update(status="failed", reason="all_attempts_failed")
+            return 1
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / observer.runner.REVIEW_DIFF_PATH).write_text("placeholder\n")
+            with mock.patch.object(observer, "review_attempts", side_effect=fake_attempts), \
+                    redirect_stdout(io.StringIO()):
+                code = observer.review_chunks(root, chunks, {"a.py"}, report,
+                                              root / "report.json", "a"*40, "b"*40)
+        self.assertEqual(code, 0)
+        self.assertEqual(report["status"], "partial")
+        self.assertEqual(report["completed_chunks"], 1)
+        self.assertEqual(report["failed_chunks"], 1)
+        self.assertEqual(report["skipped_chunks"], 0)
+        self.assertIn("result", report)
+
+    def test_review_chunks_does_not_publish_empty_partial_result(self):
+        report = {"status": "failed", "attempts": []}
+        chunks = [{"index": 1, "total": 2, "prompt": "p1", "diff": "+a\n"},
+                  {"index": 2, "total": 2, "prompt": "p2", "diff": "+b\n"}]
+
+        def fake_attempts(workspace, prompt, files, chunk_report, report_path, base, head, chunk_index, state):
+            if chunk_index == 1:
+                chunk_report.update(status="success", result={"summary": "", "findings": [], "thread_verdicts": []})
+                return 0
+            chunk_report.update(status="failed", reason="all_attempts_failed")
+            return 1
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / observer.runner.REVIEW_DIFF_PATH).write_text("placeholder\n")
+            with mock.patch.object(observer, "review_attempts", side_effect=fake_attempts), \
+                    redirect_stdout(io.StringIO()):
+                code = observer.review_chunks(root, chunks, {"a.py"}, report,
+                                              root / "report.json", "a"*40, "b"*40)
+        self.assertEqual(code, 1)
+        self.assertEqual(report["status"], "failed")
+        self.assertNotIn("result", report)
 
     def test_publish_one_finding_keeps_metadata_in_summary_only(self):
         finding = context.ReviewFinding("P2", "app.py", "RIGHT", 1, "t", "i", "f")

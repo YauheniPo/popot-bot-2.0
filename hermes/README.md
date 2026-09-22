@@ -377,10 +377,11 @@ GitHub permissions и messenger tokens подключаются отдельно
 | [`ops/templates/hermes-ops.conf`](ops/templates/hermes-ops.conf) | Шаблон root-owned ops config, который каждый deploy рендерит из `vps-defaults.yml` |
 | [`ops/templates/model-prices.json`](ops/templates/model-prices.json) | Fallback-цены моделей за 1M tokens |
 | [`docker/`](docker) | Локальный Docker image c GitHub CLI, Compose, bootstrap и ignored `local.env` для provider, Telegram и GitHub credentials |
+| [`instructions/common.md`](instructions/common.md) | Единый источник общих правил Hermes для VPS и Docker: безопасность, workflow, память, проверки и общение |
 | [`docker/AGENTS.md`](docker/AGENTS.md) | Поведение Hermes в local container: `sudo` только внутри container, без доступа к Docker host или macOS |
 | [`ansible/playbook.yml`](ansible/playbook.yml) | Порядок provision/restore; network, runtime и services вынесены в [`ansible/tasks/`](ansible/tasks) |
 | [`ansible/tasks/github.yml`](ansible/tasks/github.yml) | Git/GitHub packages, identity, credential helper, private-repository probe и managed workflow instructions |
-| [`ansible/AGENTS.md`](ansible/AGENTS.md) | Поведение Hermes на выделенном VPS: полный `sudo`, запрет удаления и обращения с secrets |
+| [`ansible/AGENTS.md`](ansible/AGENTS.md) | Только особенности VPS: возможности host administration, Ansible, systemd и источники интеграций |
 | [`ansible/inventory.ini`](ansible/inventory.ini) | Нейтральный inventory-алиас; адрес VPS и SSH-пользователь загружаются из зашифрованного Vault |
 | [`ansible/group_vars/all/vars.yml`](ansible/group_vars/all/vars.yml) | Публичные IaC defaults без credentials |
 | [`ansible/group_vars/all/vault.yml.example`](ansible/group_vars/all/vault.yml.example) | Шаблон private API keys и tokens; рабочий файл — `ansible/group_vars/all/vault.yml`, он шифруется и игнорируется Git; команды находятся в [`VAULT.md`](ansible/group_vars/all/VAULT.md) |
@@ -418,7 +419,10 @@ GitHub permissions и messenger tokens подключаются отдельно
   deploy с code-server), закреплённая версия browser package и безопасная локальная
   browser/IDE topology;
 - `vps_agent_policy` — только repository-owned блоки поведения, без замены
-  личного `SOUL.md`;
+  личного `SOUL.md`; языковое правило задаёт язык ответов и объяснений по
+  последнему сообщению пользователя (или его явному выбору), не внутреннего
+  reasoning. Личная часть хранится в `$HERMES_HOME/SOUL.md` вне маркеров
+  `ANSIBLE MANAGED RESPONSE LANGUAGE` и сохраняется при deploy;
 - `vps_github` — identity, write boundaries и Git defaults;
 - `vps_services` — application-owned units, которые верхний deploy
   перезапускает после установки всех файлов и config.
@@ -436,7 +440,7 @@ Secrets в этот файл добавлять нельзя: они остаю�
 | `/home/hermes/.hermes/.env` | `hermes`, mode `0600` | API keys и messenger tokens, доставленные из Ansible Vault либо мастером Hermes |
 | `/home/hermes/.local/bin/hermes` | `hermes` | Hermes CLI launcher, вызываемый systemd и из SSH |
 | `/home/hermes/workspace` | `hermes` | Репозитории и рабочие файлы агента |
-| `/home/hermes/workspace/AGENTS.md` | `hermes` | Личные инструкции Hermes плюс отдельные Ansible-managed блоки host administration и имён Vault variables |
+| `/home/hermes/workspace/AGENTS.md` | `hermes` | Общие правила + возможности окружения + managed-интеграции + личные дополнения |
 | `/home/hermes/.hermes/operator-state/workspace-AGENTS.md` | `hermes`, mode `0600` | Restorable mirror workspace-инструкций, включаемый в full backup |
 | `/home/hermes/hermes-backups` | `hermes` | Local quick/full zip archives |
 | `/opt/hermes-bootstrap` | `root` | Временный versioned bundle, который Ansible копирует на VPS для deploy и ops installation |
@@ -539,7 +543,7 @@ Hermes работает как отдельный пользователь `herm
 | `hermes-prometheus.service` | Собирает локальные metrics, хранит 30 дней, слушает `127.0.0.1:9090` | постоянно |
 | `grafana-server.service` | Versioned Hermes dashboard на `127.0.0.1:3000` | постоянно |
 | `hermes-backup.timer` | Делает daily quick и первый/еженедельный full backup | 1 день |
-| `hermes-observability-prune.timer` | Удаляет строки локальной SQLite старше 90 дней | 1 день |
+| `hermes-observability-prune.timer` | Сворачивает строки локальной SQLite старше 90 дней в rollup-счётчики и удаляет их | 1 день |
 | `hermes-startup-notify.service` | После запуска gateway вне окна deploy отправляет VPS, default model и время в alert target; во время deploy уведомление подавляется, ошибка доставки не влияет на gateway | на каждый старт вне окна deploy |
 | `ops-observability` | Считает вызовы моделей/tools/команд, токены, ошибки, latency и стоимость | по событиям |
 | audit rotation | Ограничивает основной log и 2 ротации размером 5 MiB каждая | при записи и ежедневно |
@@ -548,6 +552,15 @@ Health check отправляет сообщения через `hermes send`, �
 проверка каждые пять минут не расходует токены. Alert отправляется только при
 появлении новой проблемы и при восстановлении; одинаковые сообщения не
 повторяются. Если доставка не сработала, следующая проверка повторит попытку.
+
+Проверка load различает превышение порога и ошибку самой проверки: отсутствие
+данных CPU/load или сбой `awk` дают проблему `load-check`, а не ложный healthy.
+Ansible создаёт maintenance-маркер до остановки существующего gateway для backup,
+обновляет его перед настройкой служб и удаляет в общем `always` после этапов
+deploy, включая обработанные ошибки. Пока маркер свежий, health/startup-уведомления
+подавляются; сохранённое health-state не переписывается. Если контроллер оборван
+или VPS недоступен, cleanup не гарантирован: защита истекает через 900 секунд
+после последнего обновления маркера. Долгий deploy может выйти за это окно.
 
 Telegram должен быть настроен в gateway. Для проверки можно специально
 запустить службы вручную:
@@ -568,6 +581,96 @@ root-owned файла намеренно не сохраняются.
 Он показывает gateway, host resources, backup freshness, API/tool error rate,
 latency, usage и стоимость по provider/model.
 
+#### Метрики моделей и провайдеров
+
+Два источника данных в Grafana, у каждого своя роль:
+
+- **Prometheus** (`hermes-prometheus`) — счётчики и таймстемпы из textfile
+  exporter: `hermes_api_calls_total{status}`, `hermes_api_success_total`,
+  `hermes_api_errors_total`, `hermes_api_rate_limits_total`,
+  `hermes_api_retries_total`, tokens/cost, `hermes_api_last_*_timestamp_seconds`,
+  плюс host/gateway/backup. Это основа графиков `rate()` за 30 дней и алертов.
+- **SQLite** (`hermes-sqlite`, плагин `frser-sqlite-datasource`) — per-call
+  аналитика маршрутов прямо из событий `api_calls`, `tool_calls`, `sessions`,
+  `route_fallbacks`: точный p95, first-attempt success, finish reasons, пустые
+  ответы, requested vs served model, fallbacks, ошибки tool calls по модели.
+  Окно — time picker, история — retention SQLite (90 дней).
+
+Grafana не читает приватную WAL-базу в home Hermes. Экспортёр каждую минуту
+делает `VACUUM INTO` snapshot в rollback-режиме в
+`/var/lib/hermes-observability/metrics.db` (каталог `hermes:grafana`, файл
+`0640`; путь задаёт `HERMES_ANALYTICS_FILE` в `hermes-metrics.service`) и
+публикует `hermes_analytics_snapshot_timestamp_seconds`; `0` означает, что
+snapshot не обновился. Плагин открывает файл на каждый запрос в режиме
+`query_only`, поэтому атомарная замена snapshot безопасна. Версия плагина
+задаётся `vps_observability.grafana.sqlite_plugin_version` и устанавливается
+`grafana-cli` при deploy; в Docker-стеке — `GF_INSTALL_PLUGINS` в compose.
+
+Плагин записывает в `api_calls` `requested_model` и `call_index`
+(`api_call_count` Hermes). First-attempt success связывает успех с error-строками
+того же логического вызова по `session_id` + `call_index`; Hermes не передаёт
+`retry_count` в `post_api_request`, без корреляции успех считается первой
+попыткой. Модель для tool calls берётся из последнего `session start` этой сессии.
+
+Счётчики Prometheus монотонны: `hermes-observability-prune` перед удалением
+строк сворачивает их в таблицы `*_rollup` по измерениям экспортёра, а экспортёр
+суммирует live-строки и rollup. Retention поэтому не создаёт ложных counter
+reset для `rate()`/`increase()`. SQLite-панели rollup не используют и видят
+только сохранённые строки.
+
+Prometheus загружает versioned правила `observability/rules/hermes.rules.yml`:
+recording rules `hermes_route:calls:*` и `hermes_route:availability:*` (1h/24h)
+и алерты `HermesRouteAvailabilityLow`, `HermesRouteNoRecentSuccess`,
+`HermesRouteRateLimitBurst`, `HermesAnalyticsSnapshotStale`. Alertmanager не
+развёрнут: алерты видны в Prometheus и Grafana, доставка в Telegram остаётся за
+health-check timer. `check.sh` прогоняет `promtool check rules`, если promtool
+установлен; тест `observability/test_dashboard_sql.py` исполняет каждый SQL
+дашборда на реальной схеме плагина.
+
+В Grafana панель **Route scorecard** сводит availability, first-attempt
+success, p95, output tok/s, доли обрезок и пустых ответов и стоимость успешного
+вызова; ниже — ошибки по классам, p95, finish reasons, fallbacks, ошибки tool
+calls по модели и расхождение requested/served. Метрики измеряют надёжность и
+форму ответа, не правильность содержания.
+
+Панели **Profile requests** показывают обращения к основному `default` и
+именованным профилям. Одно обращение — одна сохранённая запись `role=user`
+в `state.db` соответствующего профиля, а не запуск tmux, tool call или запрос
+к LLM. Служебные compression summaries исключены; записанные smoke-check
+prompts считаются обращениями. Не дошедшие до записи задания не учитываются.
+Экспортёр читает только агрегаты и timestamps, не текст сообщений.
+
+- `hermes_profile_user_requests{profile,window}` — количество за последние
+  `1h`, `24h`, `7d` и всю **сохранённую** историю (`retained`). Это gauge:
+  удаление/импорт/восстановление истории меняет значения; `rate`/`increase`
+  к нему неприменимы, это не пожизненный счётчик.
+- `hermes_profile_last_request_timestamp_seconds{profile}` — последнее
+  сохранённое обращение, Unix seconds; `0` означает пустую историю.
+- `hermes_profile_last_activity_timestamp_seconds{profile}` — последнее
+  наблюдаемое событие профиля, включая ответ assistant, Unix seconds.
+- `hermes_profile_response_duration_seconds{profile,window}` — суммарное
+  приблизительное время от user-сообщения до следующего assistant-ответа за
+  `1h`, `24h`, `7d` и `retained`. Это время работы диалога, а не CPU-время
+  процесса; если ответ не был записан, интервал не учитывается.
+- `hermes_profile_last_request_duration_seconds{profile}` — длительность
+  последнего завершённого вызова профиля от timestamp user до timestamp
+  assistant.
+- `hermes_profile_last_request_start_timestamp_seconds{profile}` и
+  `hermes_profile_last_request_end_timestamp_seconds{profile}` — границы
+  последнего завершённого вызова в Unix seconds.
+- `hermes_profile_history_readable{profile}` — успешность чтения. При отсутствии,
+  повреждении БД или timeout возвращается `0`, а usage-серии не публикуются:
+  неизвестная активность не подменяется нулём.
+
+Все обычные каталоги `profiles/*` с `config.yaml` обнаруживаются автоматически;
+symlink-профили не обходятся. График показывает скользящее часовое окно,
+снимки — день/неделю/retained, время последнего запроса, последнюю активность и
+длительность ответов по профилям. Для time-series Grafana показывает значения
+`Last`, `Max` и `Mean` в таблице легенды и пересчитывает видимый диапазон при
+изменении time picker. История графика
+появляется с момента начала сбора Prometheus; ранние поминутные события не
+восстанавливаются. Новых публичных endpoint и labels с prompt/session ID нет.
+
 Команда `/ops` (включая `summary`, `models`, `health`, `costs`) и инструмент
 `ops_metrics` удалены намеренно; панель метрик внутри Hermes также удалена.
 Для просмотра метрик используйте Grafana, а для локальной диагностики и
@@ -580,6 +683,12 @@ Prometheus textfile создаётся в
 `/home/hermes/.hermes/ops/metrics/hermes.prom`. Полная установка автоматически
 поднимает для него отдельный node exporter, Prometheus и Grafana, но каждый
 слушает только loopback. Поэтому новый публичный порт не появляется.
+
+Экспортёр группирует события по итоговым нормализованным меткам Prometheus.
+Для `hermes_turns_total` сохранён приоритет `completed` → `interrupted` → `failed`:
+разные комбинации флагов с одинаковым outcome суммируются в одну серию.
+`NULL`, пустые и `unknown` значения также не создают дубли; средняя latency
+рассчитывается по исходным событиям, а не как среднее уже усреднённых групп.
 
 Запись событий выполняется асинхронно: фоновый worker объединяет до 64 записей
 в одну SQLite transaction, обычно не дольше 50 ms. Очередь ограничена 512
@@ -768,6 +877,30 @@ gateway остановленным для безопасного ручного 
 timers Ansible перезапускает включённый gateway последней изменяющей операцией,
 а затем проверяет, что service находится в состоянии `active`.
 
+В конфигурации также включён [Hermes Workspace](workspace-ui/README.md):
+отдельная приватная панель/Office поверх существующего gateway и общего
+Hermes home. Перед первым deploy добавьте `API_SERVER_KEY` и
+`HERMES_WORKSPACE_PASSWORD` в Vault; оба значения — строки минимум по 4 символа
+(длинные случайные значения безопаснее; минимум 4 символа — только технический
+нижний порог, а не рекомендация. Для production используйте отдельные
+высокоэнтропийные значения, например `openssl rand -hex 32`: хеширование
+API-значения через SHA-256 не увеличивает стойкость короткого исходного
+секрета). API-значение
+преобразуется в SHA-256
+для внутренней авторизации; пароль Workspace используется как введён.
+Для Sessions/Skills/Jobs сначала войдите в официальный Dashboard на
+`https://<VPS-Tailscale-hostname>/login` (443), затем в Workspace на том же
+hostname с портом **3002**. Managed bridge передаёт текущую Dashboard-сессию
+и её обновлённые cookies; Gateway API token не заменяет этот вход.
+Настройки модели, изменённые через UI, теперь сохраняются при повторном deploy
+с включённым Workspace. Подробности владения настройками — в инструкции выше.
+
+Для сложных задач из Telegram настроена [политика нативного делегирования](workspace-ui/README.md#задачи-из-telegram-и-субагенты):
+исследователь, разработчик, проверяющий и диагност; до двух исполнителей в одном
+вызове, без вложенного делегирования, с бюджетами времени и шагов. Главный Hermes
+должен проверить результаты и вернуть единый итог в исходный чат. Это не создаёт
+постоянных агентов в `/swarm` и не делает Office монитором всех Telegram-сессий.
+
 Запускайте управляемое обновление с Ansible controller:
 
 ```bash
@@ -825,6 +958,37 @@ ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventory.ini \
 
 Флаг `--ask-pass` нужен при SSH-входе по паролю. При настроенном
 `ansible_ssh_private_key_file` запускайте ту же команду без него.
+
+При подключении через **Tailscale SSH** `--ask-pass` тоже не нужен:
+
+```bash
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventory.ini \
+  ansible/playbook.yml --ask-vault-pass
+```
+
+Перед сбором фактов playbook проверяет SSH отдельным подключением без
+повторного использования старого SSH control socket. Для адресов tailnet
+(`100.64.0.0/10`, Tailscale IPv6 или `*.ts.net`) выполняются максимум две
+попытки по 60 секунд, с сообщением о состоянии каждые 10 секунд.
+Если Tailscale требует check-mode авторизацию, ссылка выводится прямо в
+интерактивный терминал controller и автоматически открывается браузер
+(на macOS — `open`, на Linux — `xdg-open`, если доступен). Ссылка не попадает
+в результат задачи или CI-лог; пароль и Vault-секреты не передаются в команду SSH.
+
+Если вкладка закрыта без подтверждения, по истечении таймаута процесс SSH
+завершается и создаётся новое подключение с новым запросом авторизации.
+После двух неудачных попыток deploy прекращается **до изменения VPS** с
+понятной ошибкой. Закрытие вкладки само по себе не определяется — повтор
+происходит по таймауту. После подтверждения playbook продолжает работу сам.
+Сбор фактов выполняется отдельной задачей с общим лимитом 60 секунд; нумерация
+прогресса начинается с проверки подключения, а не с последнего шага.
+
+В CI/без интерактивного терминала запрос browser approval сразу завершает
+проверку ошибкой. Для автоматического deploy нужна отдельно разрешённая
+SSH-идентичность; playbook не отключает check mode, ACL или проверку host key.
+Для обычного SSH по публичному адресу эта browser-проверка пропускается.
+При обычном password SSH через tailnet пароль обрабатывает сам Ansible,
+а не проверочный subprocess; используйте `--ask-pass` как раньше.
 
 #### Ручной production deploy из Azure DevOps
 
@@ -951,6 +1115,31 @@ State разделён по владельцам. Vault полностью уп�
 остальную часть `AGENTS.md`, `SOUL.md`, memory, sessions, profiles и custom
 skills. Поэтому новый deploy применяет исправленные настройки из кода, но не
 стирает накопленную персонализацию агента.
+
+`workspace/AGENTS.md` в Memory-редакторе Workspace — тот же живой файл, а не
+отдельная копия настроек. Общий блок берётся из `instructions/common.md`,
+окружение VPS — из `ansible/AGENTS.md` с явным текущим статусом host administration;
+GitHub — из `ansible/tasks/github.yml`, DevOps, SearXNG и delegation — из
+соответствующих `ansible/templates/*-*.md.j2`, имена Vault variables — из
+`ansible/playbook.yml`.
+Карта исходников есть в разделах **Instruction ownership** и **Integration sources and wiki**.
+Общие правила меняйте только в `instructions/common.md`, особенности окружения —
+в `ansible/AGENTS.md` или `docker/AGENTS.md`, интеграции — в их исходниках;
+не копируйте весь live-файл обратно в исходный фрагмент, иначе появятся вложенные
+managed-блоки и дубли. Правки через UI внутри маркеров следующий deploy заменит,
+правки снаружи сохранит. При пустом `vps_web.searxng_url` инструкции явно сообщают,
+что endpoint не настроен, и не предлагают нерабочую команду с адресом `/search`.
+
+Оба способа установки используют `runtime/manage-workspace-agents.py`: общий
+блок `HERMES MANAGED COMMON` и блок окружения `HERMES MANAGED ENVIRONMENT`
+обновляются без дублирования. Общие правила остаются при `host_admin: false`;
+блок окружения явно запрещает администрирование хоста. Это инструкции, не замена
+системным ограничениям прав. Docker обновляет блоки при каждом старте контейнера
+из файлов image; для новых исходников нужен rebuild. Старый VPS managed-блок
+заменяется; старый Docker-текст мигрирует только при точном совпадении с известным
+префиксом (`runtime/legacy/container-instructions.md` — замороженные данные миграции,
+не источник активной политики). Неузнанный изменённый текст сохраняется для ручной
+проверки; старый marker-файл не разрешает перезапись личных инструкций.
 
 Устаревшие ключи удаляются только через явный `vps_runtime.unset`; deploy не
 угадывает, что неизвестный ключ можно безопасно стереть. После всех изменений
@@ -1093,7 +1282,7 @@ Vault и прогоните playbook: непустой ключ включает
 `web.extract_backend: firecrawl` (`config/vps-defaults.yml`). Отдельной ручной
 настройки не требуется, без ключа остаётся `auto`. Порядок работы — поиск,
 извлечение, браузер — репозиторий ставит в managed-блок `workspace/AGENTS.md`
-разделом «Web research» из `ansible/AGENTS.md`; личные правила под свои задачи
+разделом «Skills and research» из `instructions/common.md`; личные правила под свои задачи
 дописывайте в том же файле вне managed-маркеров, deploy их сохраняет.
 
 Для собственного SearXNG задайте `vps_web.searxng_url` в
@@ -1283,12 +1472,25 @@ sudo -u hermes -H /home/hermes/.local/bin/hermes checkpoints prune
 
 ### Резервное копирование
 
-Перед любым deploy уже установленного Hermes полный backup обязателен. Проверка
+Перед полным deploy (`full`) уже установленного Hermes полный backup обязателен;
+быстрые `config-only` и `runtime-only` не создают такой архив перед каждым запуском. Проверка
 требует ZIP CRC, присутствия всех файлов, которые штатный full backup обязан
 сохранить (включая `SOUL.md`, custom skills, sessions, profiles и зеркальную
-копию workspace `AGENTS.md`), а для всех Kanban DB — SQLite integrity и
+копию workspace `AGENTS.md` и дополнительных инструкций), а для всех Kanban DB — SQLite integrity и
 неизменные counts по статусам. При source update дополнительно сравниваются
-личные файлы и Kanban до/после установки. Systemd создаёт ещё и scheduled backup:
+личные файлы и Kanban до/после установки.
+
+Временный `gateway.lock` не входит в проверяемый список файлов: он может
+исчезнуть при остановке процесса между обходом каталогов и чтением хеша.
+Исчезновение личных файлов по-прежнему останавливает deploy; остальные
+`*.lock` не исключаются автоматически.
+
+Git metadata `.git` также исключается из проверки и как каталог, и как
+служебный файл worktree (в том числе у Swarm workers). Рабочие файлы,
+незакоммиченные изменения и `.gitignore` остаются в проверяемом списке.
+Hermes backup не заменяет резервную копию Git history и настройку worktrees.
+
+Systemd создаёт ещё и scheduled backup:
 
 ```text
 /home/hermes/hermes-backups
@@ -1301,6 +1503,55 @@ sudo -u hermes -H /home/hermes/.local/bin/hermes checkpoints prune
 Health check отдельно сообщает, если любой backup старше 26 часов или полный
 старше 8 дней. Пороги, день недели и retention меняются в `vps_ops` файла
 [`config/vps-defaults.yml`](config/vps-defaults.yml) и применяются deploy.
+
+Retention deploy-архивов ограничен числом групп, а scheduled quick snapshots —
+возрастом, не количеством: несколько запусков в сутки могут оставить больше
+14 снимков за 14 дней. Ручные snapshots и записи с неизвестным/повреждённым
+manifest автоматически не удаляются. Очистка выполняется после успешного backup
+или на этапе retention deploy; прерванные прогоны могут временно превысить лимит.
+Ограничение числа архивов не ограничивает их общий размер в байтах.
+
+Расширенный **scheduled quick backup** дополнительно сохраняет `SOUL.md`,
+`AGENTS.md`/`AGENTS.*.md`, `memories/**`, `external_memory_providers.json`,
+`swarm/swarm.yaml`, а также личные инструкции, memory, `config.yaml`, `.env`
+и `auth.json` каждого существующего профиля, включая маркер `.managed-swarm`.
+Для managed Swarm ссылки `.env`/`auth.json` на глобальные credentials не копируются:
+сохраняется глобальный файл, а ссылки восстанавливает Ansible Swarm deployment.
+Тяжёлые profile sessions, исходники, skills и caches не добавляются в quick;
+для них нужен full backup с учётом штатных исключений Hermes.
+Ручной `hermes backup --quick` остаётся штатным,
+без нашего расширения; для расширенного снимка используйте backup service.
+
+Перед scheduled/full-deploy backup все `AGENTS.md` и `AGENTS.*.md` под
+`hermes_workspace` (включая вложенные проекты) зеркалируются в приватный
+`operator-state/workspace-instructions.json`. `.git`, dependencies, caches,
+backup-каталоги и symlink-каталоги не обходятся; ссылки вместо самих инструкций
+отклоняются. Удалённые инструкции исчезают из нового зеркала, но restore
+не удаляет другие файлы в целевом workspace. Произвольные пути вне workspace,
+внешние skills и данные других сервисов этим зеркалом **не покрываются**.
+
+Scheduled full проверяет ZIP CRC и наличие ожидаемых личных файлов/профилей
+до публикации архива. Quick проверяет manifest и наличие/размер файлов до
+публикации; при ошибке прежние снимки не удаляются. Формат quick остаётся
+штатным, совместимым с `/snapshot restore <ID>` в интерактивном Hermes CLI;
+для внешних workspace-инструкций после такого restore дополнительно выполните
+от имени `hermes`:
+
+```bash
+python3 /usr/local/lib/hermes-ops/backup-personal-state.py restore \
+  --hermes-home /home/hermes/.hermes --workspace /home/hermes/workspace
+```
+
+Выполняйте restore при остановленных gateway/Workspace/workers, предварительно
+сохранив текущие данные. При восстановлении полного ZIP через Ansible дополнительные
+workspace-инструкции восстанавливаются автоматически из выбранного архива.
+Пути выше — стандартные; при кастомном home/workspace используйте свои значения.
+
+Backup не меняет правила redeploy: Vault перезаписывает managed `.env`, Ansible
+обновляет managed ключи конфигурации и блоки инструкций. Личные записи вне этих
+блоков сохраняются. Browser localStorage и внешние Docker volumes не входят в
+Hermes backup. Архивы содержат секреты: права `0600` — не шифрование; храните
+выгруженные копии в зашифрованном хранилище.
 
 Также включается `updates.pre_update_backup: full`: перед будущими обновлениями
 Hermes создаёт полный архив `HERMES_HOME` с настройками, авторизацией, сессиями,
@@ -1339,6 +1590,8 @@ sudo /usr/local/lib/hermes-ops/api-retry-loop.sh
 `hermes chat` от сервисного пользователя с заданными `provider` и `model`.
 Ключи загружает сам Hermes из своего окружения; Dashboard для этого не нужен.
 Основная модель и настройки cron при таком запросе не меняются.
+Каждое переключение на fallback-маршрут записывается в `metrics.db`
+(таблица `route_fallbacks`) и видно в Grafana как `hermes_api_fallback_total`.
 
 `max_attempts` ограничивает число запусков CLI, `wait_seconds` задаёт паузу
 между неудачами, `timeout_seconds` ограничивает каждый запуск. Внутри одного
@@ -1472,22 +1725,24 @@ server и настройка custom provider не требуются.
    `/model ollama-cloud:<model-id>` с точным ID из каталога.
 
 Для постоянного выбора через Ansible задайте нужные model IDs в
-`vps_hermes.config.managed_overlay`. Чат, compression, cron и fallback имеют
-отдельные настройки: смена модели чата не меняет остальные назначения.
+`vps_hermes.config.managed_overlay.model` (`provider` и `default`). Deploy
+применяет эту пару к главному агенту, делегированию, cron по умолчанию и
+Swarm-профилям. Compression и fallback сохраняют отдельные маршруты.
+Подробнее: [единая модель агентов](workspace-ui/README.md#единая-модель-агентов-и-swarm).
 
 ### Надёжные cron-задачи
 
-Для cron provider и модель задаются отдельно в `cron.model_provider` и
-`cron.model` внутри managed overlay. Задачи без собственного pin используют
-эти значения, поэтому не зависят от переключения основной модели чата и не
+Для cron deploy формирует `cron.model_provider` и `cron.model` из общей
+модели `vps_hermes.config.managed_overlay.model`. Задачи без собственного pin используют
+эти значения, поэтому не зависят от временного переключения модели чата и не
 получают `drift_skip` при
 изменении интерактивного provider. Личный pin конкретной задачи имеет
 приоритет над этой конфигурацией. Если выбранный provider недоступен или не
 авторизован, preflight переведёт задачу в `blocked_config` без скрытого запуска
 на другой модели.
 
-Для другой модели измените только эти два значения в
-`vps_hermes.config.managed_overlay` и примените Ansible-деплой. Для разовой
+Для другой общей модели измените `provider/default` в
+`vps_hermes.config.managed_overlay.model` и примените Ansible-деплой. Для разовой
 задачи задайте pin явно, заменив placeholders на provider и model ID из каталога:
 
 ```text
@@ -1574,6 +1829,36 @@ searches и 10 subagents. Для Telegram включён подробный tool
 background process приходит только итог, а сессия автоматически сбрасывается
 после 48 часов простоя. Метрики, health checks, backups и `hermes-ops-report` работают без
 LLM; автоматический анализ запускается только по вашему запросу.
+
+#### Активность в `/status`
+
+`Agent Running` показывает только основной агент, обрабатывающий сообщение.
+Значение `No` не означает, что завершились запущенные им фоновые команды.
+Дополнительные поля разделяют эти состояния:
+
+```text
+Agent Running: No
+Work: background active (main agent idle)
+Subagents: 0 active
+Background processes: 1 running
+• proc_5f83c682dac3 — 7m 43s; agent notification on exit: enabled
+```
+
+`Work` различает ответ агента, его запуск, фоновую работу и простой. Если
+получить данные не удалось, отображается `unavailable` / `unknown`, а не ноль.
+Показываются только процессы этого чата/топика; процессы с известной привязкой
+к предыдущей сессии после `/new` исключаются. Для старых записей без ID
+родительской сессии используется привязка к чату. Список ограничен пятью
+процессами с указанием общего количества. Команды, логи и секреты не выводятся.
+
+`agent notification on exit: enabled` означает установленный у процесса
+`notify_on_complete=true`: Hermes должен уведомить агента о завершении.
+Это не подтверждение доставки будущего ответа. Для поллера, после которого
+нужен анализ результата, агенту следует задавать `terminal(background=true,
+notify_on_complete=true)`. Настройка `display.background_process_notifications:
+result` сама по себе не включает продолжение агентом. Статус не меняет эти
+настройки и не потребляет результат процесса. Время в строке — возраст процесса,
+а не время последнего успешного запроса: `running` не доказывает прогресс поллера.
 
 [Fallback Providers](https://hermes-agent.nousresearch.com/docs/user-guide/features/fallback-providers)
 
@@ -1803,6 +2088,16 @@ ssh -L 9119:127.0.0.1:9119 user@server
 
 Затем откройте `http://127.0.0.1:9119`. Не публикуйте dashboard или API напрямую
 в интернет. Для API обязательно задайте сильный `API_SERVER_KEY`.
+
+Файловый менеджер официального Dashboard может создавать, редактировать и
+удалять файлы в настроенном `vps_deploy.identity.workspace` от пользователя
+Hermes. Systemd разрешает запись только в Hermes home и эту рабочую папку;
+`ProtectSystem=strict` и `ProtectHome=read-only` остаются включёнными.
+Это не даёт запись во весь домашний каталог или произвольные пути, выбранные
+в UI, и не отменяет обычные права файлов. Для старой установки с ошибкой
+`Read-only file system` примените deploy с обновлённым unit: изменение вступает
+в силу после перезапуска `hermes-dashboard.service`. Удаление — реальное,
+не способ просто скрыть файл из списка; заранее сохраняйте нужные данные.
 
 ### 10. Grafana и исторические метрики
 

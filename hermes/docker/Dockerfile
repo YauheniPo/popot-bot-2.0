@@ -23,6 +23,10 @@ COPY --chmod=0555 hermes/docker/start-local.sh /opt/hermes-local/start-local.sh
 COPY --chmod=0555 hermes/docker/export-vps-config.py /opt/hermes-local/export-vps-config.py
 COPY --chmod=0555 hermes/ops/export-metrics.py /opt/hermes-local/export-metrics.py
 COPY --chmod=0644 hermes/docker/AGENTS.md /opt/hermes-local/container-admin-AGENTS.md
+COPY --chmod=0644 hermes/instructions/common.md /opt/hermes-local/common-AGENTS.md
+COPY --chmod=0555 hermes/runtime/manage-workspace-agents.py /opt/hermes-local/manage-workspace-agents.py
+# Frozen migration input, not a second source of active rules.
+COPY --chmod=0644 hermes/runtime/legacy/container-instructions.md /opt/hermes-local/legacy-container-AGENTS.md
 
 # Version the plugins under test into the image. The bootstrap hook copies them
 # into the isolated Hermes data volume on every container start.

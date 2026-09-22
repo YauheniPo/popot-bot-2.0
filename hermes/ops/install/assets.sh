@@ -15,6 +15,8 @@ install_operations_assets() {
         "${SCRIPT_DIR}/status-report.py" \
         "${SCRIPT_DIR}/startup-notify.sh" \
         "${SCRIPT_DIR}/api-retry-loop.sh" \
+        "${SCRIPT_DIR}/../runtime/backup-personal-state.py" \
+        "${SCRIPT_DIR}/../runtime/manage-workspace-agents.py" \
         /usr/local/lib/hermes-ops/
     ln -sfn /usr/local/lib/hermes-ops/ops-report.py /usr/local/bin/hermes-ops-report
 
@@ -29,19 +31,33 @@ install_operations_assets() {
         "/etc/systemd/system/${gateway_service}.d/observability.conf" 0644
 
     log "installing Prometheus configuration and Grafana dashboards"
-    install -d -o root -g prometheus -m 0750 /etc/hermes-observability
+    install -d -o root -g prometheus -m 0750 /etc/hermes-observability /etc/hermes-observability/rules
     install -d -o prometheus -g prometheus -m 0750 /var/lib/hermes-prometheus
     install -d -o root -g grafana -m 0750 \
         /etc/grafana/provisioning/datasources \
         /etc/grafana/provisioning/dashboards/hermes
+    # The exporter (Hermes user) writes the SQLite snapshot here; Grafana reads it.
+    # The exporter runs as Hermes while Grafana reads the snapshot.  Set the
+    # setgid bit so atomically replaced snapshots inherit the Grafana group;
+    # otherwise SQLite reports the misleading error 14 "out of memory" when
+    # the Grafana plugin cannot read the database.
+    install -d -o "${HERMES_USER}" -g grafana -m 2750 /var/lib/hermes-observability
+    if [[ -e /var/lib/hermes-observability/metrics.db ]]; then
+        chown "${HERMES_USER}:grafana" /var/lib/hermes-observability/metrics.db
+        chmod 0640 /var/lib/hermes-observability/metrics.db
+    fi
     render \
         "${SCRIPT_DIR}/templates/hermes-prometheus.yml" /etc/hermes-observability/prometheus.yml 0640
     chown root:prometheus /etc/hermes-observability/prometheus.yml
     chmod 0640 /etc/hermes-observability/prometheus.yml
+    install -o root -g prometheus -m 0640 \
+        "${SCRIPT_DIR}/../observability/rules/hermes.rules.yml" /etc/hermes-observability/rules/hermes.rules.yml
     render \
         "${SCRIPT_DIR}/templates/grafana-hermes-prometheus.yml" /etc/grafana/provisioning/datasources/hermes-prometheus.yml 0640
     chown root:grafana /etc/grafana/provisioning/datasources/hermes-prometheus.yml
     chmod 0640 /etc/grafana/provisioning/datasources/hermes-prometheus.yml
+    install -o root -g grafana -m 0640 \
+        "${SCRIPT_DIR}/../observability/grafana/provisioning/datasources/sqlite.yml" /etc/grafana/provisioning/datasources/hermes-sqlite.yml
     install -o root -g grafana -m 0640 \
         "${SCRIPT_DIR}/../observability/grafana/provisioning/dashboards/dashboards.yml" /etc/grafana/provisioning/dashboards/dashboards.yml
     install -o root -g grafana -m 0640 \

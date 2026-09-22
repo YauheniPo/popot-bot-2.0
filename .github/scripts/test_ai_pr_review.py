@@ -25,6 +25,20 @@ SPEC.loader.exec_module(reviewer)
 
 
 class AnnotatedDiffTest(unittest.TestCase):
+    def test_free_daily_quota_disables_the_same_openrouter_route(self):
+        reviewer.FREE_DAILY_QUOTA_ROUTES.clear()
+        error = urllib.error.HTTPError(
+            "https://example.test", 429, "quota", {},
+            io.BytesIO(b'{"error":{"message":"free-models-per-day"}}'),
+        )
+        caught = reviewer._http_failure(error, model_request=True)
+        self.assertEqual(caught.quota, "free_daily")
+        reviewer._mark_free_daily_quota(caught, "openrouter", "reviewer:free")
+        self.assertTrue(reviewer._free_daily_route_disabled("openrouter", "reviewer:free"))
+        self.assertFalse(reviewer._free_daily_route_disabled("openrouter", "paid-model"))
+        self.assertFalse(reviewer._free_daily_route_disabled("ollama-cloud", "reviewer:free"))
+        reviewer.FREE_DAILY_QUOTA_ROUTES.clear()
+
     def test_live_transport_enables_stream_and_preserves_strict_completion(self):
         events = [{"choices": [{"delta": {"content": '{"summary":"ok","findings":[]}'}}]},
                   {"choices": [{"delta": {}, "finish_reason": "stop"}]}]
@@ -96,7 +110,7 @@ class AnnotatedDiffTest(unittest.TestCase):
         self.assertEqual(request.call_count, 2)
 
     def test_response_limits_are_not_retried_with_the_same_budget(self):
-        for reason in ("response_limit", "output_limit", "watchdog_already_active"):
+        for reason in ("response_limit", "output_limit", "stream_incomplete", "watchdog_already_active"):
             self.assertFalse(reviewer._retryable_request_error(reviewer.RequestError(reason, reason=reason)))
 
     def test_ollama_review_budget_is_sized_for_large_reviews(self) -> None:
@@ -789,6 +803,28 @@ class OllamaCloudRequestTest(unittest.TestCase):
         )
         self.assertEqual(retry_body["response_format"]["type"], "json_schema")
         self.assertTrue(retry_body["provider"]["require_parameters"])
+
+    def test_short_circuits_a_route_whose_free_daily_quota_is_spent(self) -> None:
+        # Once a route is marked exhausted the circuit breaker must fail the
+        # chunk before any request, instead of spending another round trip on a
+        # route the provider has already refused for the day.
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        reviewer.FREE_DAILY_QUOTA_ROUTES.clear()
+        reviewer.FREE_DAILY_QUOTA_ROUTES.add(("openrouter", "review-model:free"))
+        try:
+            with (
+                mock.patch.object(reviewer, "ACTIVE_PROVIDER", "openrouter"),
+                mock.patch.object(reviewer, "request_json") as request,
+                mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+                mock.patch("builtins.print"),
+            ):
+                with self.assertRaises(reviewer.RequestError) as caught:
+                    reviewer.review_chunk("api-key", "review-model:free", (), chunk, 1, 1)
+        finally:
+            reviewer.FREE_DAILY_QUOTA_ROUTES.clear()
+        self.assertEqual(caught.exception.reason, "free_daily_quota")
+        self.assertEqual(caught.exception.quota, "free_daily")
+        request.assert_not_called()
 
     def test_requests_ordinary_json_for_selected_ordinary_model(self) -> None:
         response = {

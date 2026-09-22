@@ -71,8 +71,8 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertEqual(set(aggregate["needs"]), {"direct-api-review", "claude-code-plugin-review", "observable-claude-review"})
         for selector, direct, claude, observable, expected in (
             ("0", "true", "true", "true", 0), ("0", "true", "false", "true", 1),
-            ("0", "false", "true", "true", 1), ("0", "true", "true", "false", 1),
-            ("1", "true", "", "", 0), ("2", "", "true", "true", 0), ("9", "true", "true", "true", 1),
+            ("0", "false", "true", "true", 1), ("0", "true", "true", "false", 0),
+            ("1", "true", "", "", 0), ("2", "", "true", "false", 0), ("9", "true", "true", "true", 1),
         ):
             with self.subTest(selector=selector, direct=direct, claude=claude, observable=observable), tempfile.TemporaryDirectory() as directory:
                 summary = Path(directory) / "summary.md"
@@ -897,6 +897,18 @@ class NousReviewTest(unittest.TestCase):
         self.assertIn("Azure DevOps started this review; GitHub Actions executed it", launcher)
         self.assertIn("Published review", launcher)
         self.assertIn("No new actionable findings", launcher)
+        self.assertNotIn("Review-report artifact", launcher)
+        self.assertNotIn("${run_url}/artifacts", launcher)
+        # The GitHub REST endpoint and Azure artifact upload are still needed.
+        self.assertIn("${api}/actions/runs/${run_id}/artifacts", launcher)
+        self.assertIn("##vso[artifact.upload", launcher)
+
+    def test_github_review_report_has_no_broken_artifacts_page_link(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / ".github/workflows/manual-ai-review.yml").read_text()
+        self.assertNotIn("Review-report artifact", workflow)
+        self.assertNotIn("${run_url}/artifacts", workflow)
+        self.assertIn("actions/upload-artifact@", workflow)
 
 
 if __name__ == "__main__":

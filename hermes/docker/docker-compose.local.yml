@@ -93,6 +93,9 @@ services:
       HERMES_HOME: /opt/data
       HERMES_METRICS_FILE: /metrics/hermes.prom
       HERMES_METRICS_MODE: "0644"
+      # SQLite snapshot for the Grafana route analytics panels.
+      HERMES_ANALYTICS_FILE: /metrics/metrics.db
+      HERMES_ANALYTICS_MODE: "0644"
       # The sidecar cannot inspect another container's process namespace. Do
       # not export a false down state; the metric is explicitly unavailable.
       HERMES_GATEWAY_STATE: unavailable
@@ -152,6 +155,7 @@ services:
       - --web.listen-address=:9090
     volumes:
       - ../observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../observability/rules:/etc/prometheus/rules:ro
       - hermes_local_test_prometheus:/prometheus
     read_only: true
     tmpfs:
@@ -179,9 +183,13 @@ services:
       GF_SERVER_HTTP_ADDR: 0.0.0.0
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_USERS_ALLOW_SIGN_UP: "false"
+      # Same plugin and version as vps_observability.grafana.sqlite_plugin_version;
+      # downloaded from grafana.com on container start.
+      GF_INSTALL_PLUGINS: frser-sqlite-datasource 4.0.6
     volumes:
       - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - hermes_local_test_grafana:/var/lib/grafana
+      - hermes_local_test_metrics:/var/lib/hermes-observability:ro
     ports:
       - "127.0.0.1:3000:3000"
     read_only: true

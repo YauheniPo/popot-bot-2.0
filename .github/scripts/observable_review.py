@@ -115,11 +115,13 @@ def _chunk_prompt(policy: str, base: str, head: str, changed: str, chunk: str,
 Adapter instructions for {LABEL}:
 Perform a fresh independent review of base {base} to head {head}.
 {scope}
-First Read {runner.REVIEW_DIFF_PATH} ({len(chunk.splitlines())} lines); paginate with offset/limit.
+Read {runner.REVIEW_DIFF_PATH} ({len(chunk.splitlines())} lines) first; paginate only when
+the requested evidence is not in the current page. Do not reread pages already seen.
 Final JSON is rejected unless Read returned actual numbered lines from that diff.
 Inspect risky runtime, security, configuration and API changes first. Batch independent reads.
 Read callers and validators before alleging missing validation. No shell, execution or external tools.
-Grep uses literal strings. Read output is numbered and bounded; paginate rather than repeating a read.
+Grep uses literal strings. Read output is numbered and bounded; batch at most one targeted
+caller/validator read when the diff alone is insufficient.
 Discard findings that say behavior is equivalent, correct, harmless, or 'no fix needed'.
 Never claim complete coverage if time or context ran out; name unreviewed scope in summary.
 Return final JSON before your turn budget expires. Report at most five proven P1/P2 defects.
@@ -254,6 +256,18 @@ def _rate_limit_retry(attempt: dict, route: dict, state: dict) -> float | None:
 
 def _retry_after_attempt(attempt: dict, route: dict, state: dict) -> bool:
     print(f"[review] attempt_failed reason={attempt['outcome']} elapsed={attempt['seconds']}s", flush=True)
+    if (
+        state.get("free_daily")
+        and route.get("role") == "fallback"
+        and attempt.get("outcome") == "provider_incomplete_result"
+    ):
+        attempt["retry_decision"] = "quota_known_incomplete_skip"
+        print(
+            "[review] retry_skipped reason=quota_known_incomplete_skip "
+            "(free daily quota already exhausted; fallback retry is not useful)",
+            flush=True,
+        )
+        return False
     limited = attempt["outcome"] == "http_429"
     delay = _rate_limit_retry(attempt, route, state) if limited else 5
     if attempt["outcome"] in NON_RETRYABLE or attempt["number"] == 2 or delay is None:
@@ -266,6 +280,16 @@ def _retry_after_attempt(attempt: dict, route: dict, state: dict) -> bool:
     return True
 
 
+def _incomplete_retry_prompt(prompt: str) -> str:
+    return prompt + """
+
+Retry mode: the previous attempt ended before a complete JSON response. Do not
+reread the full diff or inspect additional files. Use only evidence already
+collected (read one diff page only if absolutely necessary), then return the
+required JSON immediately with findings=[] when evidence is insufficient.
+"""
+
+
 def _route_skip_reason(route: dict, state: dict) -> str | None:
     if state["free_daily"] and route["provider"] == "openrouter" and route["model"].endswith(":free"):
         return "free_daily_quota"
@@ -274,26 +298,63 @@ def _route_skip_reason(route: dict, state: dict) -> str | None:
     return None
 
 
+def _report_skipped_route(report: dict, route: dict, skip_reason: str) -> None:
+    report.setdefault("skipped_routes", []).append({"role": route["role"], "reason": skip_reason})
+    print(f"[review] route_skipped role={safe_label(route['role'])} reason={skip_reason}", flush=True)
+
+
+def _attempt_route(route: dict, prompt: str, workspace: Path, files: set[str], execution: Path,
+                   report: dict, base: str, head: str, limits: dict, chunk_index: int,
+                   state: dict, route_outcomes: dict) -> bool:
+    """Try one route at most twice; True once an attempt was validated.
+
+    ``route_outcomes`` records the last outcome per role so the caller can
+    distinguish an exhausted rate limit from a generic failure.
+    """
+    retry_prompt = prompt
+    for number in (1, 2):
+        if _single_attempt(route, number, retry_prompt, workspace, files, execution, report, base, head, limits, chunk_index):
+            return True
+        attempt = report["attempts"][-1]
+        route_outcomes[route["role"]] = attempt["outcome"]
+        if attempt["outcome"] == "provider_incomplete_result":
+            retry_prompt = _incomplete_retry_prompt(prompt)
+        if not _retry_after_attempt(attempt, route, state):
+            break
+    return False
+
+
 def review_attempts(workspace: Path, prompt: str, files: set[str], report: dict, report_path: Path,
-                    base: str, head: str, chunk_index: int = 1) -> int:
+                    base: str, head: str, chunk_index: int = 1,
+                    state: dict | None = None) -> int:
     limits = _review_limits()
     execution = report_path.with_suffix(".execution.json")
-    state = {"remaining": RATE_LIMIT_WAIT_BUDGET, "retries": 0, "free_daily": False, "blocked_providers": set()}
+    circuit_state = state if state is not None else {
+        "free_daily": False,
+        "blocked_providers": set(),
+    }
+    # Retry waits remain bounded per chunk; only circuit-breaker decisions are
+    # shared across the full review.
+    state = {
+        "remaining": RATE_LIMIT_WAIT_BUDGET,
+        "retries": 0,
+        "free_daily": circuit_state.get("free_daily", False),
+        "blocked_providers": set(circuit_state.get("blocked_providers", set())),
+    }
     route_outcomes = {}
     for route in routes():
         skip_reason = _route_skip_reason(route, state)
         if skip_reason:
-            report.setdefault("skipped_routes", []).append({"role": route["role"], "reason": skip_reason})
-            print(f"[review] route_skipped role={safe_label(route['role'])} reason={skip_reason}", flush=True)
+            _report_skipped_route(report, route, skip_reason)
             continue
-        for number in (1, 2):
-            if _single_attempt(route, number, prompt, workspace, files, execution, report, base, head, limits, chunk_index):
-                return 0
-            attempt = report["attempts"][-1]
-            route_outcomes[route["role"]] = attempt["outcome"]
-            if not _retry_after_attempt(attempt, route, state):
-                break
+        if _attempt_route(route, prompt, workspace, files, execution, report, base, head,
+                          limits, chunk_index, state, route_outcomes):
+            circuit_state["free_daily"] = state["free_daily"]
+            circuit_state["blocked_providers"] = state["blocked_providers"]
+            return 0
     outcomes = set(route_outcomes.values())
+    circuit_state["free_daily"] = state["free_daily"]
+    circuit_state["blocked_providers"] = state["blocked_providers"]
     rate_limited = "http_429" in outcomes and outcomes <= {"http_429"} | NON_RETRYABLE
     report.update(status="failed", reason="rate_limited" if rate_limited else "all_attempts_failed")
     print("::error::Observable review exhausted its attempts without a validated result; see the attempt table.", flush=True)
@@ -315,11 +376,18 @@ def review_chunks(workspace: Path, chunks: list[dict], files: set[str], report: 
     all_findings: list[dict] = []
     completed = True
     report.update(total_chunks=len(chunks), completed_chunks=0, failed_chunks=0, skipped_chunks=0)
+    # Keep provider circuit-breaker state across chunks. Without this, every
+    # chunk probes an already exhausted OpenRouter free route again before
+    # falling back, multiplying latency and 429 noise for the whole review.
+    route_state = {
+        "free_daily": False,
+        "blocked_providers": set(),
+    }
     for chunk in chunks:
         diff_path.write_text(chunk["diff"], encoding="utf-8")
         chunk_report: dict = {"status": "failed", "attempts": []}
         code = review_attempts(workspace, chunk["prompt"], files, chunk_report,
-                               report_path, base, head, chunk["index"])
+                               report_path, base, head, chunk["index"], route_state)
         report["attempts"].extend(chunk_report.get("attempts", []))
         report.setdefault("skipped_routes", []).extend(chunk_report.get("skipped_routes", []))
         if code != 0 or not chunk_report.get("result"):
@@ -339,16 +407,31 @@ def review_chunks(workspace: Path, chunks: list[dict], files: set[str], report: 
     report["skipped_chunks"] = max(
         0, len(chunks) - report["completed_chunks"] - report["failed_chunks"]
     )
-    if completed and chunks:
-        report.update(status="success", result={
+    # A provider can return structurally valid JSON with an empty summary.
+    # Do not publish that as a partial validated review: it contains no
+    # evidence that any chunk was actually reviewed.
+    if any(summary.strip() for summary in all_summaries):
+        report["result"] = {
             "summary": " ".join(all_summaries),
             "findings": all_findings[:MAX_FINDINGS],
             "thread_verdicts": [],
-        })
+        }
+    if completed and chunks:
+        report.update(status="success")
+        return 0
+    if report.get("result"):
+        report.update(
+            status="partial",
+            reason="rate_limited" if report.get("reason") == "rate_limited" else "all_attempts_failed",
+        )
+        print(
+            f"::warning::Observable review completed partially: "
+            f"{report['completed_chunks']}/{report['total_chunks']} chunks validated; "
+            "publishing the validated results.",
+            flush=True,
+        )
         return 0
     report.update(status="failed", reason="rate_limited" if report.get("reason") == "rate_limited" else "all_attempts_failed")
-    if all_summaries:
-        report["partial_result"] = {"summary": " ".join(all_summaries), "findings": all_findings[:MAX_FINDINGS]}
     print("::error::Observable review exhausted its attempts without a validated result; see the attempt table.", flush=True)
     return 1
 
@@ -372,6 +455,10 @@ def run(report_path: Path) -> int:
     finally:
         report_path.write_text(json.dumps(report), encoding="utf-8")
         report_path.chmod(0o600)
+        output_path = os.environ.get("GITHUB_OUTPUT")
+        if output_path:
+            with open(output_path, "a", encoding="utf-8") as target:
+                target.write(f"review_status={report.get('status', 'failed')}\n")
         summary = os.environ.get("GITHUB_STEP_SUMMARY")
         if summary:
             with open(summary, "a", encoding="utf-8") as target:
@@ -513,7 +600,7 @@ def publish(report_path: Path) -> None:
         return
     run_url = f"https://github.com/{repo}/actions/runs/{run_id}"
     lines = [diagnostics(report), "", f"[CI run]({run_url}) · [Reviewed revision](https://github.com/{repo}/commit/{head})", ""]
-    if report["status"] == "success":
+    if report["status"] in {"success", "partial"} and report.get("result"):
         lines.extend(_success_lines(report, repo, pr, token, base, head, run_id, run_attempt))
     lines.extend(["", marker])
     publisher._request_json(url, "POST", token, {"body": "\n".join(lines)})

@@ -1,0 +1,174 @@
+---
+# Companion only: never run the upstream all-in-one installer or startup.
+- name: Install Workspace terminal dependencies
+  ansible.builtin.apt:
+    # Pinned upstream Swarm explicitly invokes zsh; SHELL cannot override it.
+    # tmux is required to attach to and dispatch work to Swarm workers.
+    name: [zsh, tmux]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Verify Workspace terminal dependencies
+  ansible.builtin.command:
+    argv: "{{ item }}"
+  loop:
+    - [zsh, --version]
+    - [tmux, -V]
+  loop_control:
+    label: "{{ item | join(' ') }}"
+  become_user: "{{ hermes_user }}"
+  environment:
+    HOME: "{{ hermes_user_home }}"
+    PATH: "{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/bin:/usr/bin:/bin"
+  changed_when: false
+  timeout: 15
+
+- name: Verify Workspace Node runtime
+  ansible.builtin.command:
+    argv:
+      - "{{ hermes_home }}/node/bin/node"
+      - -e
+      - "if (Number(process.versions.node.split('.')[0]) < 22) process.exit(1)"
+  changed_when: false
+
+- name: Create Workspace source parent directory
+  ansible.builtin.file:
+    path: "{{ hermes_user_home }}/.local/share/hermes-workspace"
+    state: directory
+    owner: "{{ hermes_user }}"
+    group: "{{ hermes_user }}"
+    mode: "0700"
+
+- name: Install pinned Workspace companion source
+  ansible.builtin.git:
+    repo: https://github.com/outsourc-e/hermes-workspace.git
+    dest: "{{ hermes_user_home }}/.local/share/hermes-workspace/{{ vps_workspace_ui.revision }}"
+    version: "{{ vps_workspace_ui.revision }}"
+    force: false
+    update: true
+  become_user: "{{ hermes_user }}"
+  environment:
+    GIT_TERMINAL_PROMPT: "0"
+  register: hermes_workspace_source
+
+- name: Define the managed Workspace UI build identity
+  ansible.builtin.set_fact:
+    hermes_workspace_ui_build_hash: "{{ (lookup('ansible.builtin.file', '../runtime/workspace-mcp-ui.mjs') ~ lookup('ansible.builtin.file', '../runtime/workspace-model-policy.mjs') ~ lookup('ansible.builtin.file', '../runtime/workspace-swarm-runtime.mjs') ~ lookup('ansible.builtin.file', '../runtime/workspace-memory-ui.mjs') ~ lookup('ansible.builtin.file', '../runtime/workspace-memory-files.mjs') ~ lookup('ansible.builtin.file', '../runtime/workspace-profile-ui.mjs') ~ lookup('ansible.builtin.file', '../runtime/workspace-profile-prompts.mjs') ~ lookup('ansible.builtin.file', '../runtime/workspace-voice-ui.mjs') ~ lookup('ansible.builtin.file', '../runtime/workspace-background-runs.mjs') ~ lookup('ansible.builtin.template', 'templates/workspace-vite.config.mjs.j2')) | hash('sha256') }}"
+
+- name: Install the managed Workspace build wrapper
+  ansible.builtin.template:
+    src: templates/workspace-vite.config.mjs.j2
+    dest: "{{ hermes_user_home }}/.local/share/hermes-workspace/{{ vps_workspace_ui.revision }}/.hermes-vite.config.mjs"
+    owner: "{{ hermes_user }}"
+    group: "{{ hermes_user }}"
+    mode: "0600"
+
+- name: Inspect successful Workspace build marker
+  ansible.builtin.stat:
+    path: "{{ hermes_user_home }}/.local/share/hermes-workspace/{{ vps_workspace_ui.revision }}/.built-pnpm-{{ vps_workspace_ui.pnpm_version }}-{{ hermes_workspace_ui_build_hash }}"
+  register: hermes_workspace_build
+
+- name: Build the Workspace companion without starting another gateway
+  become_user: "{{ hermes_user }}"
+  environment:
+    HOME: "{{ hermes_user_home }}"
+    PATH: "{{ hermes_home }}/node/bin:/usr/local/bin:/usr/bin:/bin"
+    ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+    # No public multiplayer hub or provider credentials in the frontend build.
+    VITE_HERMESWORLD_ENABLED: "0"
+    VITE_PLAYGROUND_WS_URL: ""
+    VITE_PLAYGROUND_STATS_URL: ""
+  when: hermes_workspace_source.changed or not hermes_workspace_build.stat.exists
+  block:
+    - name: Install pinned Workspace build tooling
+      ansible.builtin.command:
+        argv:
+          - "{{ hermes_home }}/node/bin/npm"
+          - install
+          - --prefix
+          - "{{ hermes_user_home }}/.local/share/hermes-workspace-tools"
+          - "pnpm@{{ vps_workspace_ui.pnpm_version }}"
+      changed_when: true
+
+    - name: Install locked Workspace dependencies
+      ansible.builtin.command:
+        argv:
+          - "{{ hermes_user_home }}/.local/share/hermes-workspace-tools/node_modules/.bin/pnpm"
+          - install
+          - --frozen-lockfile
+        chdir: "{{ hermes_user_home }}/.local/share/hermes-workspace/{{ vps_workspace_ui.revision }}"
+      changed_when: true
+
+    - name: Build Workspace production assets
+      ansible.builtin.command:
+        argv:
+          - "{{ hermes_user_home }}/.local/share/hermes-workspace-tools/node_modules/.bin/pnpm"
+          - exec
+          - vite
+          - build
+          - --config
+          - .hermes-vite.config.mjs
+        chdir: "{{ hermes_user_home }}/.local/share/hermes-workspace/{{ vps_workspace_ui.revision }}"
+      changed_when: true
+      notify: restart Hermes Workspace
+
+    - name: Record successful Workspace build
+      ansible.builtin.copy:
+        content: "{{ vps_workspace_ui.revision }}\n"
+        dest: "{{ hermes_user_home }}/.local/share/hermes-workspace/{{ vps_workspace_ui.revision }}/.built-pnpm-{{ vps_workspace_ui.pnpm_version }}-{{ hermes_workspace_ui_build_hash }}"
+        mode: "0600"
+
+- name: Provision managed Swarm workers
+  ansible.builtin.import_tasks: workspace-swarm.yml
+  when: vps_workspace_ui.swarm.enabled | default(false) | bool
+
+- name: Install Workspace companion service
+  ansible.builtin.template:
+    src: templates/hermes-workspace.service.j2
+    dest: /etc/systemd/system/hermes-workspace.service
+    owner: root
+    group: root
+    # Only root (systemd, systemctl) reads a system unit; keep it off other
+    # users' read path instead of the conventional world-readable 0644.
+    mode: "0640"
+  notify: restart Hermes Workspace
+
+- name: Mark Workspace unit available and reload rotated shared credentials
+  ansible.builtin.set_fact:
+    hermes_workspace_service_available: true
+  changed_when: hermes_shared_environment.changed | default(false)
+  notify: restart Hermes Workspace
+
+- name: Apply Workspace changes before verifying readiness
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure the Workspace companion is started
+  ansible.builtin.systemd_service:
+    name: hermes-workspace.service
+    enabled: true
+    daemon_reload: true
+    state: started
+
+- name: Verify the shared Hermes API is reachable
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ vps_workspace_ui.api_port }}"
+    timeout: 30
+
+- name: Verify the Workspace login page is reachable
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ vps_workspace_ui.port }}/"
+    status_code: [200, 302, 303, 307]
+    follow_redirects: none
+  register: hermes_workspace_ready
+  retries: 10
+  delay: 3
+  until: hermes_workspace_ready is succeeded
+
+- name: Start managed Swarm workers after Workspace readiness
+  ansible.builtin.import_tasks: workspace-swarm-start.yml
+  when:
+    - vps_workspace_ui.swarm.enabled | default(false) | bool
+    - vps_workspace_ui.swarm.start_workers | default(false) | bool

@@ -30,3 +30,6 @@ venv/
 .mypy_cache/
 .ruff_cache/
 *.py[cod]
+
+# JavaScript coverage consumed by the SonarCloud scan workflow.
+hermes-runtime.lcov

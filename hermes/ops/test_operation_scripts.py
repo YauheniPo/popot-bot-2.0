@@ -6,10 +6,12 @@ import getpass
 import json
 import os
 import shlex
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 
@@ -17,6 +19,19 @@ OPS_DIR = Path(__file__).parent
 
 
 class OperationScriptTests(unittest.TestCase):
+    def test_grafana_plugin_installer_prefers_non_deprecated_cli(self):
+        packages = (OPS_DIR / 'install' / 'packages.sh').read_text(encoding='utf-8')
+        self.assertIn('grafana cli plugins --help', packages)
+        self.assertIn('grafana_plugins install frser-sqlite-datasource', packages)
+        self.assertIn('grafana cli plugins "$@"', packages)
+        self.assertIn('grafana-cli plugins "$@"', packages)
+
+    def test_grafana_snapshot_directory_preserves_read_access_after_atomic_replace(self):
+        assets = (OPS_DIR / 'install' / 'assets.sh').read_text(encoding='utf-8')
+        self.assertIn('install -d -o "${HERMES_USER}" -g grafana -m 2750 /var/lib/hermes-observability', assets)
+        self.assertIn('chown "${HERMES_USER}:grafana" /var/lib/hermes-observability/metrics.db', assets)
+        self.assertIn('chmod 0640 /var/lib/hermes-observability/metrics.db', assets)
+
     def write_executable(self, path: Path, content: str) -> None:
         path.write_text(content, encoding="utf-8")
         path.chmod(0o755)
@@ -82,6 +97,7 @@ os.execvp(sys.argv[4], sys.argv[4:])
             "HERMES_API_RETRY_MODEL": "vendor/test-model",
             "HERMES_API_RETRY_MESSAGE": "Hello", "HERMES_API_RETRY_MAX_ATTEMPTS": "2",
             "HERMES_API_RETRY_WAIT_SECONDS": "1", "HERMES_API_RETRY_TIMEOUT_SECONDS": "180",
+            "HERMES_API_RETRY_FALLBACKS": "",
         }
         settings.update(overrides or {})
         config = temporary / "hermes-ops.conf"
@@ -148,6 +164,40 @@ os.execvp(sys.argv[4], sys.argv[4:])
                     self.assertIn("timed out", result.stderr)
                 else:
                     self.assertEqual(sleeps.read_text().splitlines(), ["1"])
+
+    def test_api_retry_switches_to_fallback_for_the_rest_of_the_trigger(self):
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / ".hermes" / "ops").mkdir(parents=True)
+            result, calls, sleeps, _ = self.run_retry_helper(
+                Path(directory), [1, 1, 0],
+                overrides={"HERMES_API_RETRY_FALLBACKS": "backup-provider:vendor/backup-model",
+                           "HERMES_API_RETRY_MAX_ATTEMPTS": "3"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            database = Path(directory) / ".hermes" / "ops" / "metrics.db"
+            with closing(sqlite3.connect(database)) as connection:
+                self.assertEqual(connection.execute(
+                    "SELECT from_provider, from_model, to_provider, to_model FROM route_fallbacks").fetchall(),
+                    [("test-provider", "vendor/test-model", "backup-provider", "vendor/backup-model")])
+            self.assertEqual(database.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(
+                [(call["args"][2], call["args"][4]) for call in calls],
+                [("test-provider", "vendor/test-model"),
+                 ("backup-provider", "vendor/backup-model"),
+                 ("backup-provider", "vendor/backup-model")],
+            )
+            self.assertEqual(sleeps.read_text().splitlines(), ["1", "1"])
+
+    def test_api_retry_uses_fallback_after_a_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, calls, _, _ = self.run_retry_helper(
+                Path(directory), [124, 0],
+                overrides={"HERMES_API_RETRY_FALLBACKS": "backup-provider:vendor/backup-model",
+                           "HERMES_API_RETRY_MAX_ATTEMPTS": "2"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(calls[0]["args"][2], "test-provider")
+            self.assertEqual(calls[1]["args"][2], "backup-provider")
 
     def test_api_retry_stops_on_fixed_cli_usage_error(self):
         with tempfile.TemporaryDirectory() as directory:

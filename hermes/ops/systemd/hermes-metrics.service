@@ -9,12 +9,13 @@ Group=@HERMES_GROUP@
 Environment=HOME=@USER_HOME@
 Environment=HERMES_HOME=@HERMES_HOME@
 Environment=PATH=@USER_HOME@/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HERMES_ANALYTICS_FILE=/var/lib/hermes-observability/metrics.db
 EnvironmentFile=-/etc/hermes-ops.conf
 ExecStart=/usr/local/lib/hermes-ops/export-metrics.py
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=@HERMES_HOME@/ops
+ReadWritePaths=@HERMES_HOME@/ops /var/lib/hermes-observability
 ProtectControlGroups=true
 ProtectKernelModules=true
 ProtectKernelTunables=true

@@ -118,6 +118,30 @@ class ApplyEdgeTtsRetryTests(unittest.TestCase):
                 self.assertEqual(apply_edge_tts_retry.main(), 2)
             self.assertEqual(victim.read_text(encoding="utf-8"), apply_edge_tts_retry.OLD)
 
+    def test_main_rejects_symlink_even_when_destination_is_trusted(self):
+        for source, dangling in ((source, dangling) for source in ("cli", "env", "default")
+                                 for dangling in (False, True)):
+            with self.subTest(source=source, dangling=dangling), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp).resolve()
+                destination = root / "tts_tool.py"
+                if not dangling:
+                    destination.write_text(apply_edge_tts_retry.OLD, encoding="utf-8")
+                alias = root / "alias.py"
+                alias.symlink_to(destination)
+                argv = ["apply-edge-tts-retry.py"] + ([str(alias)] if source == "cli" else [])
+                environment = {"HERMES_HOME": str(root), "HOME": str(root)}
+                if source == "env":
+                    environment["HERMES_TTS_TOOL_PATH"] = str(alias)
+                with mock.patch.dict(os.environ, environment, clear=True), \
+                        mock.patch.object(apply_edge_tts_retry, "DEFAULT_TARGET", str(alias)), \
+                        mock.patch("sys.argv", argv), \
+                        contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(apply_edge_tts_retry.main(), 2)
+                if not dangling:
+                    self.assertEqual(destination.read_text(encoding="utf-8"), apply_edge_tts_retry.OLD)
+                else:
+                    self.assertFalse(destination.exists())
+
     def test_main_refuses_a_target_not_named_tts_tool_py(self) -> None:
         with mock.patch("sys.argv", ["apply-edge-tts-retry.py", "/tmp/not-tts-tool.py"]):
             exit_code = apply_edge_tts_retry.main()

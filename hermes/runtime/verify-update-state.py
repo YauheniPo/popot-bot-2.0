@@ -39,7 +39,10 @@ EXCLUDED_DIRECTORIES = {
     ".mypy_cache",
     ".ruff_cache",
 }
-EXCLUDED_FILE_NAMES = {".backup.lock", "gateway.pid", "cron.pid"}
+# Process locks can disappear between inventory and hashing as workers stop.
+# They are not restorable user state; do not broadly ignore missing files or *.lock.
+# Git worktrees use a .git file, not a directory; exclude Git metadata in both forms.
+EXCLUDED_FILE_NAMES = {".git", ".backup.lock", "gateway.lock", "gateway.pid", "cron.pid"}
 EXCLUDED_FILE_SUFFIXES = (".pyc", ".pyo", ".db-wal", ".db-shm", ".db-journal")
 
 

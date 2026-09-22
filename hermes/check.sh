@@ -89,6 +89,11 @@ if optional_tool pytest; then
     "$REPOSITORY_ROOT/hermes" "$REPOSITORY_ROOT/.github/scripts"
 fi
 
+if optional_tool promtool; then
+  log "checking Prometheus rules"
+  promtool check rules "$HERMES_DIR"/observability/rules/*.yml
+fi
+
 if optional_tool ansible-playbook; then
   log "checking Ansible syntax"
   mkdir -p "$CHECK_TEMP/ansible-local" "$CHECK_TEMP/ansible-remote"
