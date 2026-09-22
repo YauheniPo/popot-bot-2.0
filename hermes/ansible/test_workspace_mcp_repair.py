@@ -46,7 +46,7 @@ class WorkspaceMcpRepairTests(unittest.TestCase):
         config = {'model': {'default': 'custom'}, 'mcp_servers': {
             'fetch': {'command': 'npx', 'args': ['-y', '@modelcontextprotocol/server-fetch'], 'enabled': False},
             'github': {'command': 'npx', 'args': ['-y', '@modelcontextprotocol/server-everything'],
-                       'env': {'GITHUB_PERSONAL_ACCESS_TOKEN': 'old-fixture-secret'}, 'tools': ['read']},
+                       'tools': ['read']},
             'memory': {'command': 'custom-memory'},
         }}
         result = module.repair(config, {'MCP_GITHUB_API_KEY': 'new-fixture-secret'})
@@ -67,6 +67,14 @@ class WorkspaceMcpRepairTests(unittest.TestCase):
             config = {'mcp_servers': {'github': {'command': 'npx',
                 'args': ['-y', '@modelcontextprotocol/server-everything'], **extras}}}
             self.assertEqual(module.repair(config, {}), config)
+
+    def test_legacy_github_personal_token_does_not_authorize_preset_repair(self):
+        config = {'mcp_servers': {'github': {
+            'command': 'npx',
+            'args': ['-y', '@modelcontextprotocol/server-everything'],
+            'env': {'GITHUB_PERSONAL_ACCESS_TOKEN': 'legacy-fixture-token'},
+        }}}
+        self.assertEqual(module.repair(config, {'MCP_GITHUB_API_KEY': 'new-token'}), config)
 
     def test_cache_defaults_do_not_block_later_opt_in_preset_repair(self):
         config = {'mcp_servers': {

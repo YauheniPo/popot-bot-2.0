@@ -479,7 +479,10 @@
           - --workspace
           - "{{ hermes_workspace }}"
       changed_when: false
-      when: hermes_binary.stat.exists
+      when:
+        - hermes_binary.stat.exists
+        - not (vps_deploy.features.workspace_ui | default(false) | bool) or
+          hermes_workspace_credentials_valid | default(false) | bool
 
     - name: Read the installed Hermes commit
       ansible.builtin.command:
@@ -855,7 +858,8 @@
           ansible.builtin.set_fact:
             hermes_gateway_enabled: >-
               {{ (hermes_enable_gateway | bool) or
-                 (vps_deploy.features.workspace_ui | default(false) | bool) or
+                 ((vps_deploy.features.workspace_ui | default(false) | bool) and
+                  (hermes_workspace_credentials_valid | default(false) | bool)) or
                  ((hermes_auto_enable_gateway | bool) and
                   (hermes_manage_secret_env | bool) and
                   ((hermes_secret_env.TELEGRAM_BOT_TOKEN | default('', true) | string | length) > 0) and
@@ -955,7 +959,6 @@
           when:
             - hermes_backup_archive | length > 0
             - hermes_restorable_workspace_agents.stat.exists
-            - "'No workspace instruction manifest' in hermes_restored_instructions.stdout"
 
         - name: Reconcile shared Hermes and VPS environment instructions
           ansible.builtin.command:

@@ -24,6 +24,33 @@ PASSWORD_FIXTURE = 'ab' + 'cd'
 
 
 class WorkspaceDeploymentTests(unittest.TestCase):
+    @staticmethod
+    def _walk_tasks(tasks):
+        for task in tasks:
+            yield task
+            for section in ('block', 'rescue', 'always'):
+                yield from WorkspaceDeploymentTests._walk_tasks(task.get(section, []))
+
+    def test_workspace_restore_and_snapshot_are_credential_gated(self):
+        playbook = yaml.safe_load((ANSIBLE / 'playbook.yml').read_text())[0]
+        snapshot = next(task for task in self._walk_tasks(playbook['tasks'])
+                        if task['name'] == 'Snapshot all workspace instructions before deployment backup')
+        when = snapshot['when']
+        self.assertTrue(any('hermes_workspace_credentials_valid' in str(condition)
+                            for condition in when))
+
+        restore = next(task for task in self._walk_tasks(playbook['tasks'])
+                       if task['name'] == 'Restore workspace instructions from the imported Hermes backup')
+        self.assertFalse(any('No workspace instruction manifest' in str(condition)
+                             for condition in restore['when']))
+
+    def test_workspace_gateway_enablement_requires_valid_workspace_credentials(self):
+        playbook = yaml.safe_load((ANSIBLE / 'playbook.yml').read_text())[0]
+        decision = next(task for task in self._walk_tasks(playbook['tasks'])
+                        if task['name'] == 'Decide whether Telegram credentials enable the gateway')
+        expression = decision['ansible.builtin.set_fact']['hermes_gateway_enabled']
+        self.assertIn('hermes_workspace_credentials_valid', expression)
+
     def test_mcp_ui_build_wrapper_is_fingerprinted_and_preserves_upstream(self):
         tasks = yaml.safe_load((ANSIBLE / 'tasks/workspace-ui.yml').read_text())
         identity = next(task for task in tasks if task['name'] == 'Define the managed Workspace UI build identity')

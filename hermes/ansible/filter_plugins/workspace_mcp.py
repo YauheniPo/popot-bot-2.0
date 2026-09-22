@@ -86,9 +86,10 @@ def repair(config, vault):
             continue
         environment = server.get('env', {})
         # The runtime defaults may already have been added by an earlier deploy.
+        # A legacy personal token is deliberately not an allowed repair input.
+        # Leaving it in the preset would preserve a broader credential, while
+        # silently replacing a customized server would be unsafe.
         allowed_env = {'npm_config_cache', 'NPM_CONFIG_CACHE'}
-        if name == 'github':
-            allowed_env.add('GITHUB_PERSONAL_ACCESS_TOKEN')
         if not isinstance(environment, dict) or set(environment) - allowed_env:
             continue
         _repair_preset(server, name, vault)
