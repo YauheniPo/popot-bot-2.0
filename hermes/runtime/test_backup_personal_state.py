@@ -241,6 +241,35 @@ pathlib.Path(os.environ["HERMES_HOME"], "pruned").touch()
         self.assertTrue((self.home / "pruned").exists())
         self.assertEqual(archives[0].stat().st_mode & 0o777, 0o600)
 
+    def test_scheduled_shell_uses_native_backup_when_personal_helper_is_missing(self):
+        self.put(self.home, "SOUL.md")
+        repo = Path(__file__).resolve().parents[1]
+        installed = self.root / "installed"
+        installed.mkdir()
+        shutil.copy2(repo / "ops/backup.sh", installed / "backup.sh")
+        binaries = self.root / "bin"
+        flock = self.put(binaries, "flock", "#!/bin/sh\nexit 0\n")
+        flock.chmod(0o700)
+        cli = self.put(binaries, "hermes", f"#!{sys.executable}\n" + '''
+import pathlib, sys, zipfile
+home = pathlib.Path(__import__("os").environ["HERMES_HOME"])
+output = pathlib.Path(sys.argv[sys.argv.index("--output") + 1])
+with zipfile.ZipFile(output, "w") as archive:
+    archive.write(home / "SOUL.md", "SOUL.md")
+''')
+        cli.chmod(0o700)
+        pruner = self.put(installed, "prune-backups.py", "import os, pathlib; pathlib.Path(os.environ['HERMES_HOME'], 'pruned').touch()\n")
+        backups = self.root / "backups"
+        env = {**os.environ, "HOME": str(self.root), "HERMES_HOME": str(self.home),
+               "HERMES_WORKSPACE": str(self.workspace), "HERMES_BIN": str(cli),
+               "HERMES_BACKUP_DIR": str(backups), "HERMES_RUN_AS_USER": "",
+               "HERMES_BACKUP_PRUNER": str(pruner), "HERMES_PYTHON": str(self.root / "missing-python"),
+               "PATH": f"{binaries}:{os.environ['PATH']}"}
+        result = subprocess.run(["bash", str(installed / "backup.sh")], env=env,
+                                text=True, capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(list(backups.glob("scheduled-full-*.zip"))), 1)
+
     def test_full_backup_crc_failure_is_rejected(self):
         archive = self.root / "corrupt.zip"
         with zipfile.ZipFile(archive, "w") as backup:

@@ -17,9 +17,9 @@ env:
   DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'deepseek-v4.1-flash' }}
   DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'ollama-cloud' }}
   CLAUDE_REVIEW_PROVIDER: ${{ vars.CLAUDE_REVIEW_PROVIDER || 'openrouter' }}
-  CLAUDE_REVIEW_MODEL: ${{ vars.CLAUDE_REVIEW_MODEL || 'inclusionai/ling-3.0-flash-fin:free' }}
-  CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.CLAUDE_REVIEW_FALLBACK_MODEL || 'glm-5.3-flash' }}
-  CLAUDE_REVIEW_FALLBACK_PROVIDER: ${{ vars.CLAUDE_REVIEW_FALLBACK_PROVIDER || 'ollama-cloud' }}
+  CLAUDE_REVIEW_MODEL: ${{ vars.CLAUDE_REVIEW_MODEL || 'nvidia/nemotron-3-ultra-550b-a55b:free' }}
+  CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.CLAUDE_REVIEW_FALLBACK_MODEL || 'inclusionai/ling-3.0-flash-fin:free' }}
+  CLAUDE_REVIEW_FALLBACK_PROVIDER: ${{ vars.CLAUDE_REVIEW_FALLBACK_PROVIDER || 'openrouter' }}
   CLAUDE_REVIEW_BASE_URL: ${{ vars.CLAUDE_REVIEW_BASE_URL || '' }}
   # Override for claude-code-plugin step to use a model that satisfies the response contract
   CLAUDE_CODE_REVIEW_MODEL: 'inclusionai/ling-3.0-flash-fin:free'

@@ -75,12 +75,12 @@ vps_hermes:
         deadline_seconds: 1800
       model:
         # Single source: deploy also applies this route to existing profiles.
-        default: deepseek-v4.1-flash
-        provider: ollama-cloud
+        default: nvidia/nemotron-3-ultra-550b-a55b
+        provider: nvidia
       # Use a separate provider for emergency fallback with NVIDIA_API_KEY.
       fallback_providers:
-        - provider: nvidia
-          model: nvidia/nemotron-3-ultra-550b-a55b
+        - provider: openrouter
+          model: inclusionai/ling-3.0-flash-sante:free
       user_char_limit: 3000
       memory_char_limit: 4000
       # Compact long sessions after 70% of the active model context is used.

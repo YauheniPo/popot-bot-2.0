@@ -15,7 +15,7 @@ HERMES_FULL_BACKUP_KEEP="${HERMES_FULL_BACKUP_KEEP:-5}"
 HERMES_DEPLOYMENT_BACKUP_KEEP="${HERMES_DEPLOYMENT_BACKUP_KEEP:-10}"
 HERMES_BACKUP_PRUNER="${HERMES_BACKUP_PRUNER:-$(dirname "${BASH_SOURCE[0]}")/prune-backups.py}"
 PERSONAL_BACKUP_HELPER="$(dirname "${BASH_SOURCE[0]}")/backup-personal-state.py"
-HERMES_PYTHON="${HERMES_HOME}/hermes-agent/venv/bin/python"
+HERMES_PYTHON="${HERMES_PYTHON:-${HERMES_HOME}/hermes-agent/venv/bin/python}"
 
 run_backup_command() {
     if [[ "${EUID}" -eq 0 && -n "${HERMES_RUN_AS_USER}" ]]; then
@@ -64,11 +64,13 @@ flock -n 9 || exit 0
 # Personal-state mirroring is supplementary. A missing helper or a transient
 # mirror error must never prevent the primary Hermes archive from being made.
 if [[ -f "${PERSONAL_BACKUP_HELPER}" && -x "${HERMES_PYTHON}" ]]; then
+    personal_backup_available=true
     if ! run_backup_command "${HERMES_PYTHON}" "${PERSONAL_BACKUP_HELPER}" mirror \
         --hermes-home "${HERMES_HOME}" --workspace "${HERMES_WORKSPACE}"; then
         printf 'Warning: personal-state mirror failed; continuing with primary backup\n' >&2
     fi
 else
+    personal_backup_available=false
     printf 'Warning: personal-state mirror helper unavailable; continuing with primary backup\n' >&2
 fi
 
@@ -103,17 +105,25 @@ if [[ "$(date -u +%u)" == "${HERMES_FULL_BACKUP_DAY}" ]] ||
     backup_mode="full"
 fi
 if [[ "${backup_mode}" == "quick" ]]; then
-    run_backup_command "${HERMES_PYTHON}" "${PERSONAL_BACKUP_HELPER}" quick \
-        --hermes-home "${HERMES_HOME}"
+    if [[ "${personal_backup_available}" == true ]]; then
+        run_backup_command "${HERMES_PYTHON}" "${PERSONAL_BACKUP_HELPER}" quick \
+            --hermes-home "${HERMES_HOME}"
+    else
+        run_backup_command "${HERMES_BIN}" backup --quick
+    fi
 else
     backup_file="${HERMES_BACKUP_DIR}/scheduled-full-${timestamp}.zip"
     temporary_file="${backup_file%.zip}.partial.zip"
     trap 'rm -f -- "${temporary_file}"' EXIT
-    run_backup_command "${HERMES_PYTHON}" "${PERSONAL_BACKUP_HELPER}" inventory \
-        --hermes-home "${HERMES_HOME}"
+    if [[ "${personal_backup_available}" == true ]]; then
+        run_backup_command "${HERMES_PYTHON}" "${PERSONAL_BACKUP_HELPER}" inventory \
+            --hermes-home "${HERMES_HOME}"
+    fi
     run_backup_command "${HERMES_BIN}" backup --output "${temporary_file}"
-    run_backup_command "${HERMES_PYTHON}" "${PERSONAL_BACKUP_HELPER}" verify-full \
-        --hermes-home "${HERMES_HOME}" --archive "${temporary_file}"
+    if [[ "${personal_backup_available}" == true ]]; then
+        run_backup_command "${HERMES_PYTHON}" "${PERSONAL_BACKUP_HELPER}" verify-full \
+            --hermes-home "${HERMES_HOME}" --archive "${temporary_file}"
+    fi
 fi
 
 # Hermes --quick creates a consistent state snapshot in state-snapshots rather

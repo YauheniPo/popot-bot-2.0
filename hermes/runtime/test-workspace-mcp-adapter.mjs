@@ -99,6 +99,16 @@ test('toggles and deletes only the named native server, never replaces the whole
   ]);
 });
 
+test('preserves canonical native server paths without duplicating the servers segment', async () => {
+  const calls = [];
+  const fetch = createMcpAdapter({ dashboardUrl, fetchImpl: async (url, init) => {
+    calls.push([new URL(url).pathname, init.method]);
+    return Response.json({ ok: true, name: 'fixture', enabled: true });
+  }});
+  await fetch(`${dashboardUrl}/api/mcp/servers/fixture`, { method: 'DELETE' });
+  assert.deepEqual(calls, [['/api/mcp/servers/fixture', 'DELETE']]);
+});
+
 test('native test result becomes connected/failed with discovered tools', async () => {
   for (const ok of [true, false]) {
     const fetch = createMcpAdapter({ dashboardUrl, fetchImpl: async (url, init) => {

@@ -85,6 +85,14 @@ function classifyMcpRequest(path, method) {
   return null;
 }
 
+function serverPath(path) {
+  const canonicalPrefix = '/api/mcp/servers/';
+  const legacyPrefix = '/api/mcp/';
+  if (path.startsWith(canonicalPrefix)) return path.slice(canonicalPrefix.length);
+  if (path.startsWith(legacyPrefix)) return path.slice(legacyPrefix.length);
+  return '';
+}
+
 function buildRequestProfile(input, init) {
   const url = new URL(input instanceof Request ? input.url : input);
   const method = (init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
@@ -252,7 +260,7 @@ export function createMcpAdapter({ dashboardUrl, fetchImpl, now = Date.now, prob
     if (kind === 'collection') return planCollection(url, body, method, profile);
     if (kind === 'configure') return planConfigure(url, body);
     if (kind === 'test') return planTest(url, body);
-    url.pathname = `/api/mcp/servers/${url.pathname.slice('/api/mcp/'.length)}`;
+    url.pathname = `/api/mcp/servers/${serverPath(url.pathname)}`;
     return {};
   }
 
@@ -276,7 +284,7 @@ export function createMcpAdapter({ dashboardUrl, fetchImpl, now = Date.now, prob
     let body;
     try {
       body = await buildRequestBody(method, init, input);
-      if (kind === 'deletion' && !safeName(decodeURIComponent(path.slice('/api/mcp/'.length)))) throw new Error('Invalid name');
+      if (kind === 'deletion' && !safeName(decodeURIComponent(serverPath(path)))) throw new Error('Invalid name');
     } catch {
       return unsupported('Invalid MCP payload or server name.');
     }
@@ -288,7 +296,7 @@ export function createMcpAdapter({ dashboardUrl, fetchImpl, now = Date.now, prob
     const deletion = kind === 'deletion';
     const test = kind === 'test';
 
-    const key = keyFor(profile, deletion ? decodeURIComponent(path.slice('/api/mcp/'.length)) : body.name);
+    const key = keyFor(profile, deletion ? decodeURIComponent(serverPath(path)) : body.name);
     manageObservations(method, kind, key, observations, test, profile);
     const testedEntry = observations.get(key);
 
