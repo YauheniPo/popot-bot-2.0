@@ -70,11 +70,23 @@ install_grafana_sqlite_plugin() {
     local plugin_version
     plugin_version="$(managed_value vps_observability.grafana.sqlite_plugin_version)"
     [[ "${plugin_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "invalid Grafana SQLite plugin version in vps-defaults.yml"
-    if grafana-cli plugins ls 2>/dev/null | grep -q "^frser-sqlite-datasource @ ${plugin_version}$"; then
+    if grafana_plugins ls 2>/dev/null | grep -q "^frser-sqlite-datasource @ ${plugin_version}$"; then
         return
     fi
     log "installing Grafana SQLite datasource plugin ${plugin_version}"
-    grafana-cli plugins install frser-sqlite-datasource "${plugin_version}"
+    grafana_plugins install frser-sqlite-datasource "${plugin_version}"
+}
+
+grafana_plugins() {
+    # Grafana 11+ deprecates the standalone grafana-cli binary and may return
+    # non-zero after printing only its deprecation warning. Prefer the bundled
+    # subcommand and retain the old binary solely for older distributions.
+    if command -v grafana >/dev/null 2>&1 && grafana cli plugins --help >/dev/null 2>&1; then
+        grafana cli plugins "$@"
+        return
+    fi
+    command -v grafana-cli >/dev/null 2>&1 || die "Grafana CLI is unavailable"
+    grafana-cli plugins "$@"
 }
 
 install_grafana_password_file() {

@@ -19,6 +19,13 @@ OPS_DIR = Path(__file__).parent
 
 
 class OperationScriptTests(unittest.TestCase):
+    def test_grafana_plugin_installer_prefers_non_deprecated_cli(self):
+        packages = (OPS_DIR / 'install' / 'packages.sh').read_text(encoding='utf-8')
+        self.assertIn('grafana cli plugins --help', packages)
+        self.assertIn('grafana_plugins install frser-sqlite-datasource', packages)
+        self.assertIn('grafana cli plugins "$@"', packages)
+        self.assertIn('grafana-cli plugins "$@"', packages)
+
     def write_executable(self, path: Path, content: str) -> None:
         path.write_text(content, encoding="utf-8")
         path.chmod(0o755)
