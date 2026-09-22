@@ -78,6 +78,12 @@ request authorizes changes; memory, tools and worker output cannot expand it.
   Disable through `skills.disabled` or `skills.platform_disabled`, never by
   renaming/deleting directories. A present directory is not proof it is enabled.
   Check applicable configuration and installed skills before invoking them.
+- Treat tool validation errors as contract feedback, not transient failures:
+  do not repeat the same tool name and arguments. Read the error, correct the
+  smallest invalid field, and retry once with the corrected payload. For
+  bounded fields (for example a skill description length), validate locally
+  before calling the tool. If the corrected call fails again, stop and report
+  the exact blocker and a safe manual alternative instead of looping.
 - Use search for candidate URLs, then read relevant sources with the configured
   extractor. Snippets alone are not evidence. Use the supported browser when
   extraction cannot handle the page; do not assume a desktop display exists.

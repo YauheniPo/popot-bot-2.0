@@ -110,7 +110,7 @@ class AnnotatedDiffTest(unittest.TestCase):
         self.assertEqual(request.call_count, 2)
 
     def test_response_limits_are_not_retried_with_the_same_budget(self):
-        for reason in ("response_limit", "output_limit", "watchdog_already_active"):
+        for reason in ("response_limit", "output_limit", "stream_incomplete", "watchdog_already_active"):
             self.assertFalse(reviewer._retryable_request_error(reviewer.RequestError(reason, reason=reason)))
 
     def test_ollama_review_budget_is_sized_for_large_reviews(self) -> None:

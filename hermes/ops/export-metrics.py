@@ -9,6 +9,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Iterable
@@ -247,11 +248,16 @@ def analytics_snapshot(database: Path) -> list[str]:
         "# HELP hermes_analytics_snapshot_timestamp_seconds Unix time of the latest metrics.db snapshot for Grafana; 0 means the snapshot failed.",
         "# TYPE hermes_analytics_snapshot_timestamp_seconds gauge",
     ]
-    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    # Use a kernel-randomized name in the destination directory.  A PID-based
+    # name is predictable and could be replaced by a symlink before VACUUM
+    # INTO opens it.  The file is removed before SQLite creates the snapshot,
+    # while the random name remains in the same filesystem for atomic replace.
+    temporary: Path | None = None
     try:
         if not database.exists():
             raise FileNotFoundError(database)
-        temporary.unlink(missing_ok=True)
+        temporary = Path(tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)[1])
+        temporary.unlink()
         connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=3)
         try:
             connection.execute("VACUUM INTO ?", (str(temporary),))
@@ -261,7 +267,8 @@ def analytics_snapshot(database: Path) -> list[str]:
         temporary.replace(target)
         lines.append(metric("hermes_analytics_snapshot_timestamp_seconds", time.time()))
     except (OSError, sqlite3.Error):
-        temporary.unlink(missing_ok=True)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
         lines.append(metric("hermes_analytics_snapshot_timestamp_seconds", 0))
     return lines
 

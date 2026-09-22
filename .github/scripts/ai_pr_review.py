@@ -978,7 +978,17 @@ def _should_switch_primary_transport_to_fallback(
 
 
 def _retryable_request_error(error: RequestError) -> bool:
-    if error.reason in {"response_limit", "output_limit", "watchdog_already_active", "free_daily_quota"}:
+    # A stream that closes before a stop marker is not useful to retry on the
+    # same model route: reasoning-only providers reproduce the same failure and
+    # consume several minutes. review_chunk() immediately tries the configured
+    # fallback route instead.
+    if error.reason in {
+        "response_limit",
+        "output_limit",
+        "stream_incomplete",
+        "watchdog_already_active",
+        "free_daily_quota",
+    }:
         return False
     return error.status is None or error.status in RETRYABLE_HTTP_STATUSES
 
