@@ -84,9 +84,7 @@ function classifyMcpRequest(path, method) {
 function serverPath(path) {
   const canonicalPrefix = '/api/mcp/servers/';
   const legacyPrefix = '/api/mcp/';
-  if (path.startsWith(canonicalPrefix)) return path.slice(canonicalPrefix.length);
-  if (path.startsWith(legacyPrefix)) return path.slice(legacyPrefix.length);
-  return '';
+  return path.startsWith(canonicalPrefix) ? path.slice(canonicalPrefix.length) : path.slice(legacyPrefix.length);
 }
 
 function planConfigure(url, body) {
@@ -113,14 +111,6 @@ function planTest(url, body) {
       discoveredTools: value.ok ? value.tools : [],
       ...(value.ok ? {} : { error: 'Native MCP test failed. Check server connectivity and OAuth in the official Dashboard.' }) };
   } };
-}
-
-function buildRequestProfile(input, init) {
-  const url = new URL(input instanceof Request ? input.url : input);
-  const method = (init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
-  const path = url.pathname;
-  const profile = url.searchParams.get('profile') || '';
-  return { url, method, path, profile };
 }
 
 async function buildRequestBody(method, init, input) {

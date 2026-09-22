@@ -289,6 +289,19 @@ class ApplyConfigTests(unittest.TestCase):
                         "fallback_providers": chain,
                     })
 
+    def test_api_retry_fallbacks_rejects_malformed_managed_overlay(self) -> None:
+        base = {'vps_hermes': {'config': {'managed_overlay': {}}}}
+        cases = [
+            {'fallback_providers': 'not-a-list'},
+            {'fallback_providers': ['not-a-mapping']},
+            {'fallback_providers': [{'provider': 'Bad Provider', 'model': 'valid-model'}]},
+        ]
+        for overlay in cases:
+            with self.subTest(overlay=overlay), self.assertRaises(ValueError):
+                apply_config.api_retry_fallbacks({
+                    'vps_hermes': {'config': {'managed_overlay': overlay}}
+                })
+
     def test_disabled_skills_are_unique_and_never_essential(self) -> None:
         settings_path = MODULE_PATH.parent.parent / "config" / "vps-defaults.yml"
 

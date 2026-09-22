@@ -139,6 +139,12 @@ class ExportMetricsTests(unittest.TestCase):
                          'sample{a="first",z="a\\"b\\nc\\\\d"} 2')
         self.assertEqual(metrics.label(None), "unknown")
 
+    def test_api_metrics_is_empty_without_api_calls_table(self) -> None:
+        database = self.root / "ops" / "metrics.db"
+        database.parent.mkdir()
+        sqlite3.connect(database).close()
+        self.assertEqual(metrics.api_metrics(database), [])
+
     def test_long_labels_do_not_cut_an_escape_sequence_in_half(self):
         self.assertEqual(metrics.label("a" * 179 + '"tail'), "a" * 179)
         self.assertNotRegex(metrics.label("a" * 179 + "\\tail"), r"(?<!\\)\\$")

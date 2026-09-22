@@ -284,6 +284,12 @@ class TeamWorkflowTests(unittest.TestCase):
         self.assertEqual((fresh.stat().st_mode & 0o777), 0o700)
         self.assertEqual(engine.call('owner', 'list'), [])
 
+    def test_evidence_items_must_be_bounded_text(self):
+        for value in ("not-a-list", ["ok", "x" * 401], [None]):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    self.engine._validate_items({'evidence': value}, 'evidence')
+
     def test_policy_bounds_and_required_text_limits(self):
         for rounds in (6, -1, True, '2'):
             with self.subTest(rounds=rounds), self.assertRaisesRegex(ValueError, 'Invalid revision budget'):

@@ -37,6 +37,16 @@ def create_schema(root: Path) -> Path:
 
 
 class PruneObservabilityTests(unittest.TestCase):
+    def test_upgrade_api_schema_adds_missing_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            database = Path(temp) / "metrics.db"
+            connection = sqlite3.connect(database)
+            connection.execute("CREATE TABLE api_calls (ts TEXT)")
+            prune_observability._upgrade_api_schema(connection, {"api_calls"})
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(api_calls)")}
+            connection.close()
+            self.assertEqual(columns, {"ts", "requested_model", "call_index"})
+
     def test_main_passes_only_the_canonical_managed_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
