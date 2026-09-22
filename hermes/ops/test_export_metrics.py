@@ -344,6 +344,13 @@ class ExportMetricsTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HERMES_ANALYTICS_FILE": str(self.root / "missing" / "metrics.db")}):
             self.assertEqual(self.export()["hermes_analytics_snapshot_timestamp_seconds"], 0)
 
+    def test_analytics_snapshot_rejects_missing_database_and_invalid_mode(self) -> None:
+        target = self.root / "shared" / "metrics.db"
+        with mock.patch.dict(os.environ, {"HERMES_ANALYTICS_FILE": str(target), "HERMES_ANALYTICS_MODE": "not-octal"}):
+            lines = metrics.analytics_snapshot(self.root / "missing" / "metrics.db")
+        self.assertIn("hermes_analytics_snapshot_timestamp_seconds 0", lines)
+        self.assertEqual(metrics.analytics_file_mode(), 0o640)
+
     def test_counters_survive_pruning_through_rollups(self) -> None:
         """Retention must never lower a counter; Prometheus would read a reset."""
         load_plugin()._db().close()
