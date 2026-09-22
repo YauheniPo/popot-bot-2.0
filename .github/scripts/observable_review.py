@@ -407,7 +407,10 @@ def review_chunks(workspace: Path, chunks: list[dict], files: set[str], report: 
     report["skipped_chunks"] = max(
         0, len(chunks) - report["completed_chunks"] - report["failed_chunks"]
     )
-    if all_summaries:
+    # A provider can return structurally valid JSON with an empty summary.
+    # Do not publish that as a partial validated review: it contains no
+    # evidence that any chunk was actually reviewed.
+    if any(summary.strip() for summary in all_summaries):
         report["result"] = {
             "summary": " ".join(all_summaries),
             "findings": all_findings[:MAX_FINDINGS],

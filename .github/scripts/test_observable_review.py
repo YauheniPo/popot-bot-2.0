@@ -499,9 +499,9 @@ class ObservableReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with mock.patch.object(observer.os, "environ", {"RUNNER_TEMP": str(root)}, create=True), \
-                    mock.patch.object(observer, "Path", wraps=Path):
+                mock.patch.object(observer, "Path", wraps=Path):
                 inside = root / "inside.json"
-                self.assertEqual(observer._confine_report_path(inside), inside)
+                self.assertEqual(observer._confine_report_path(inside), inside.resolve())
 
     def test_confine_report_path_resolves_symlink(self):
         # realpath must resolve a symlink to its target before the base check,
@@ -774,6 +774,29 @@ class ObservableReviewTests(unittest.TestCase):
         self.assertEqual(report["failed_chunks"], 1)
         self.assertEqual(report["skipped_chunks"], 0)
         self.assertIn("result", report)
+
+    def test_review_chunks_does_not_publish_empty_partial_result(self):
+        report = {"status": "failed", "attempts": []}
+        chunks = [{"index": 1, "total": 2, "prompt": "p1", "diff": "+a\n"},
+                  {"index": 2, "total": 2, "prompt": "p2", "diff": "+b\n"}]
+
+        def fake_attempts(workspace, prompt, files, chunk_report, report_path, base, head, chunk_index, state):
+            if chunk_index == 1:
+                chunk_report.update(status="success", result={"summary": "", "findings": [], "thread_verdicts": []})
+                return 0
+            chunk_report.update(status="failed", reason="all_attempts_failed")
+            return 1
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / observer.runner.REVIEW_DIFF_PATH).write_text("placeholder\n")
+            with mock.patch.object(observer, "review_attempts", side_effect=fake_attempts), \
+                    redirect_stdout(io.StringIO()):
+                code = observer.review_chunks(root, chunks, {"a.py"}, report,
+                                              root / "report.json", "a"*40, "b"*40)
+        self.assertEqual(code, 1)
+        self.assertEqual(report["status"], "failed")
+        self.assertNotIn("result", report)
 
     def test_publish_one_finding_keeps_metadata_in_summary_only(self):
         finding = context.ReviewFinding("P2", "app.py", "RIGHT", 1, "t", "i", "f")
