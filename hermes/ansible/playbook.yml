@@ -48,10 +48,9 @@
               vps_vscode.host_port | int, vps_searxng.host_port | int] | unique | length) == 8
           - vps_workspace_ui.port | int not in (vps_tailscale.serve.services | map(attribute='port') | map('int') | list)
         fail_msg: >-
-          Workspace requires private Tailscale HTTPS, observability/dashboard,
-          managed Vault env and distinct ports. Add API_SERVER_KEY and
-          HERMES_WORKSPACE_PASSWORD (4+ characters each) to hermes_secret_env
-          in encrypted vault.yml, or disable vps_deploy.features.workspace_ui.
+          Workspace companion prerequisites are invalid. Verify managed
+          credentials, private Tailscale HTTPS and distinct ports, or disable
+          vps_deploy.features.workspace_ui.
       when: vps_deploy.features.workspace_ui | default(false) | bool
 
     - name: Check shared Workspace credentials without exposing values
@@ -68,9 +67,9 @@
       ansible.builtin.assert:
         that: hermes_workspace_credentials_valid | bool
         fail_msg: >-
-          Add independent API_SERVER_KEY and HERMES_WORKSPACE_PASSWORD secrets
-          (at least 4 characters each) to hermes_secret_env in encrypted
-          vault.yml, or disable vps_deploy.features.workspace_ui.
+          Required Workspace credentials are missing or too short in
+          hermes_secret_env, or vps_deploy.features.workspace_ui should be
+          disabled.
       when: vps_deploy.features.workspace_ui | default(false) | bool
 
     - name: Validate supported operating system

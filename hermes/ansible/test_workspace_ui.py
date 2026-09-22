@@ -49,11 +49,16 @@ class WorkspaceDeploymentTests(unittest.TestCase):
         index, repair = next((i, task) for i, task in enumerate(tasks)
                              if task['name'].startswith('Repair known Workspace MCP presets'))
         self.assertTrue(repair['no_log'])
+        self.assertIn('hermes_managed_config | length > 0', repair['when'])
         self.assertIn('hermes_repair_workspace_mcp_presets | default(false) | bool', repair['when'])
         self.assertIn('vps_deploy.features.workspace_ui | default(false) | bool', repair['when'])
         config_index = next(i for i, task in enumerate(tasks)
                             if task['name'] == 'Apply the managed Hermes model and voice configuration')
         self.assertLess(index, config_index)
+
+        cache = next(task for task in tasks
+                     if task['name'] == 'Default MCP package caches to the writable Hermes home')
+        self.assertIn('hermes_managed_config | length > 0', cache['when'])
 
     def test_bridge_update_triggers_workspace_restart_without_rebuilding_upstream(self):
         unit = (ANSIBLE / 'templates/hermes-workspace.service.j2').read_text()

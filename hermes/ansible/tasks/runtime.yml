@@ -185,6 +185,7 @@
   ansible.builtin.set_fact:
     hermes_existing_config: "{{ hermes_existing_config | hermes_repair_workspace_mcp(hermes_secret_env) }}"
   when:
+    - hermes_managed_config | length > 0
     - vps_deploy.features.workspace_ui | default(false) | bool
     - hermes_repair_workspace_mcp_presets | default(false) | bool
   no_log: true
@@ -196,6 +197,7 @@
   environment:
     PATH: "{{ hermes_home }}/bin:{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/bin:/usr/bin:/bin"
   when:
+    - hermes_managed_config | length > 0
     - vps_deploy.features.workspace_ui | default(false) | bool
     - hermes_repair_workspace_mcp_presets | default(false) | bool
     - hermes_existing_config.get('mcp_servers', {}).get('fetch', {}).get('command') == 'uvx'
@@ -205,7 +207,9 @@
 - name: Default MCP package caches to the writable Hermes home
   ansible.builtin.set_fact:
     hermes_existing_config: "{{ hermes_existing_config | hermes_mcp_stdio_runtime(hermes_home) }}"
-  when: vps_deploy.features.workspace_ui | default(false) | bool
+  when:
+    - hermes_managed_config | length > 0
+    - vps_deploy.features.workspace_ui | default(false) | bool
   no_log: true
 
 - name: Apply the managed Hermes model and voice configuration
