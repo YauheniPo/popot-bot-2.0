@@ -4,7 +4,7 @@ import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { test } from 'node:test';
-import { assertAllowedReadStat, createMemoryFiles, defaultHome, getMemoryWorkspaceRoot, memoryFileVersion, readConfiguredLimit } from './workspace-memory-files.mjs';
+import { assertAllowedReadStat, backupDirectoryPath, createMemoryFiles, defaultHome, getMemoryWorkspaceRoot, memoryFileVersion, readConfiguredLimit } from './workspace-memory-files.mjs';
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-memory-test-'));
@@ -374,6 +374,25 @@ test('backup directory validation closes its descriptor when stat fails', (t) =>
       /stat failed/);
   } finally { fs.fstatSync = realFstat; }
   assert.equal(fs.readFileSync(file, 'utf8'), 'before');
+});
+
+test('backup directory validation rejects a non-directory descriptor and supports non-Linux paths', (t) => {
+  const { api, home, put } = fixture(t);
+  const file = put('home/memories/USER.md', 'before');
+  const realFstat = fs.fstatSync;
+  let fstatCalls = 0;
+  fs.fstatSync = (fd) => {
+    fstatCalls += 1;
+    if (fstatCalls === 2) return { isDirectory: () => false };
+    return realFstat(fd);
+  };
+  try {
+    assert.throws(() => api.writeMemoryFile('memories/USER.md', 'after', memoryFileVersion('before')),
+      /Backup directory not allowed/);
+  } finally { fs.fstatSync = realFstat; }
+  assert.equal(fs.readFileSync(file, 'utf8'), 'before');
+  assert.equal(backupDirectoryPath(7, '/tmp/backups', 'darwin'), '/tmp/backups');
+  assert.equal(backupDirectoryPath(7, '/tmp/backups', 'linux'), '/proc/self/fd/7');
 });
 
 test('a concurrent change during save is detected and the temp file removed', (t) => {

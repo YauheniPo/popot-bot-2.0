@@ -8,8 +8,8 @@ const agentName = /^agents(?:\.[a-z0-9_-]+)?\.md$/i;
 const excluded = new Set(['node_modules', 'hermes-agent', 'backups', 'operator-state']);
 const maxBytes = 512 * 1024;
 const directoryFlags = fs.constants.O_RDONLY |
-  (fs.constants.O_DIRECTORY || 0) |
-  (fs.constants.O_NOFOLLOW || 0);
+  fs.constants.O_DIRECTORY |
+  fs.constants.O_NOFOLLOW;
 // Config key holding the character limit for each describable memory kind.
 const limitKeys = { memory: 'memory_char_limit', user: 'user_char_limit' };
 const limitKeyFor = (kind) => limitKeys[kind] || null;
@@ -123,11 +123,15 @@ function openBackupDirectory(backupDir) {
     const stat = fs.fstatSync(fd);
     if (!stat.isDirectory()) throw new Error('Backup directory not allowed');
     fs.fchmodSync(fd, 0o700);
-    return { fd, path: process.platform === 'linux' ? `/proc/self/fd/${fd}` : backupDir };
+    return { fd, path: backupDirectoryPath(fd, backupDir) };
   } catch (error) {
     fs.closeSync(fd);
     throw error;
   }
+}
+
+export function backupDirectoryPath(fd, backupDir, platform = process.platform) {
+  return platform === 'linux' ? `/proc/self/fd/${fd}` : backupDir;
 }
 
 function validateSymlinkPath(root, components, external) {
