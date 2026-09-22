@@ -164,6 +164,7 @@ test('MCP init body takes precedence and empty JSON falls back safely', async ()
   const request = new Request(`${dashboardUrl}/api/mcp/test`, { method: 'POST', body: '{}' });
   assert.equal((await fetch(request, { body: JSON.stringify({ name: 'fixture' }) })).status, 200);
   assert.equal((await fetch(`${dashboardUrl}/api/mcp/test`, { method: 'POST', body: '' })).status, 422);
+  assert.equal((await fetch(`${dashboardUrl}/api/mcp/test`, { method: 'POST' })).status, 422);
 });
 
 test('rejects unsupported operations and unsafe names before any mutation', async () => {
