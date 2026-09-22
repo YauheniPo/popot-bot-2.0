@@ -59,7 +59,8 @@ class ProbeOutput:
         self.pending = (self.pending + chunk)[-8192:]
         if b'Host key verification failed' in self.pending or b'REMOTE HOST IDENTIFICATION HAS CHANGED' in self.pending:
             self.failure = 'host_key'
-        elif b'Permission denied' in self.pending:
+        elif (b'Permission denied' in self.pending
+              or b'tailnet policy does not permit you to SSH' in self.pending):
             self.failure = 'denied'
         match = AUTH_URL.search(self.pending)
         if match and self.auth_url is None:
