@@ -12,6 +12,7 @@ from pathlib import Path
 
 
 TABLES = ("api_calls", "tool_calls", "sessions", "approvals", "commands", "route_fallbacks")
+ROW_COUNT_SQL = "COUNT(*)"
 
 # Pre-aggregated counters that survive row deletion. Prometheus counters are
 # computed as live rows plus these rollups, so pruning never lowers a counter.
@@ -25,7 +26,7 @@ ROLLUPS: dict[str, dict[str, dict[str, str]]] = {
             "status_code": "COALESCE(status_code,0)", "finish_reason": "COALESCE(finish_reason,'')",
         },
         "sums": {
-            "weight": "COUNT(*)", "input_tokens": "COALESCE(SUM(input_tokens),0)",
+            "weight": ROW_COUNT_SQL, "input_tokens": "COALESCE(SUM(input_tokens),0)",
             "output_tokens": "COALESCE(SUM(output_tokens),0)",
             "cache_read_tokens": "COALESCE(SUM(cache_read_tokens),0)",
             "total_tokens": "COALESCE(SUM(total_tokens),0)", "cost_usd": "COALESCE(SUM(cost_usd),0)",
@@ -34,7 +35,7 @@ ROLLUPS: dict[str, dict[str, dict[str, str]]] = {
     },
     "tool_calls": {
         "keys": {"tool_name": "COALESCE(tool_name,'')", "status": "COALESCE(status,'')"},
-        "sums": {"weight": "COUNT(*)", "duration_ms": "COALESCE(SUM(duration_ms),0)"},
+        "sums": {"weight": ROW_COUNT_SQL, "duration_ms": "COALESCE(SUM(duration_ms),0)"},
     },
     "sessions": {
         "keys": {
@@ -42,15 +43,15 @@ ROLLUPS: dict[str, dict[str, dict[str, str]]] = {
             "completed": "COALESCE(completed,0)", "failed": "COALESCE(failed,0)",
             "interrupted": "COALESCE(interrupted,0)",
         },
-        "sums": {"weight": "COUNT(*)"},
+        "sums": {"weight": ROW_COUNT_SQL},
     },
     "approvals": {
         "keys": {"event": "COALESCE(event,'')", "choice": "COALESCE(choice,'')"},
-        "sums": {"weight": "COUNT(*)"},
+        "sums": {"weight": ROW_COUNT_SQL},
     },
     "commands": {
         "keys": {"command": "COALESCE(command,'')"},
-        "sums": {"weight": "COUNT(*)"},
+        "sums": {"weight": ROW_COUNT_SQL},
     },
 }
 
