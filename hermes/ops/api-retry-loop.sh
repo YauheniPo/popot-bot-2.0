@@ -95,7 +95,8 @@ record_fallback() {
     # Metadata-only observability row for the Grafana route scorecard. Written
     # as the service user through the same runner; a failure never changes the
     # retry outcome and nothing is created when Hermes has no ops directory yet.
-    "${runner[@]}" python3 - "$HERMES_HOME/ops/metrics.db" "$1" "$2" "$3" "$4" <<'PY' || true
+    local from_provider="$1" from_model="$2" to_provider="$3" to_model="$4"
+    "${runner[@]}" python3 - "$HERMES_HOME/ops/metrics.db" "$from_provider" "$from_model" "$to_provider" "$to_model" <<'PY' || true
 import os, sqlite3, sys
 from datetime import datetime, timezone
 from pathlib import Path

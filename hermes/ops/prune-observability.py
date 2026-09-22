@@ -22,6 +22,7 @@ DURATION_BUCKETS_MS = (250, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000, 1
 # them too so a retention run never fails on a database the gateway has not
 # reopened since the upgrade.
 API_CALLS_ADDED_COLUMNS = {"requested_model": "TEXT", "call_index": "INTEGER DEFAULT 0"}
+ROW_COUNT_SQL = "COUNT(*)"
 
 
 def duration_bucket_sql(column: str) -> str:
@@ -62,7 +63,7 @@ ROLLUPS: dict[str, dict[str, Any]] = {
             "duration_bucket": duration_bucket_sql("COALESCE(duration_ms,0)"),
         },
         "sums": {
-            "weight": "COUNT(*)", "input_tokens": "COALESCE(SUM(input_tokens),0)",
+            "weight": ROW_COUNT_SQL, "input_tokens": "COALESCE(SUM(input_tokens),0)",
             "output_tokens": "COALESCE(SUM(output_tokens),0)",
             "cache_read_tokens": "COALESCE(SUM(cache_read_tokens),0)",
             "total_tokens": "COALESCE(SUM(total_tokens),0)", "cost_usd": "COALESCE(SUM(cost_usd),0)",
@@ -73,7 +74,7 @@ ROLLUPS: dict[str, dict[str, Any]] = {
     "tool_calls": {
         "alias": "t",
         "keys": {"tool_name": "COALESCE(tool_name,'')", "status": "COALESCE(status,'')", "model": TOOL_MODEL_SQL},
-        "sums": {"weight": "COUNT(*)", "duration_ms": "COALESCE(SUM(duration_ms),0)"},
+        "sums": {"weight": ROW_COUNT_SQL, "duration_ms": "COALESCE(SUM(duration_ms),0)"},
     },
     "sessions": {
         "alias": "a",
@@ -82,17 +83,17 @@ ROLLUPS: dict[str, dict[str, Any]] = {
             "completed": "COALESCE(completed,0)", "failed": "COALESCE(failed,0)",
             "interrupted": "COALESCE(interrupted,0)",
         },
-        "sums": {"weight": "COUNT(*)"},
+        "sums": {"weight": ROW_COUNT_SQL},
     },
     "approvals": {
         "alias": "a",
         "keys": {"event": "COALESCE(event,'')", "choice": "COALESCE(choice,'')"},
-        "sums": {"weight": "COUNT(*)"},
+        "sums": {"weight": ROW_COUNT_SQL},
     },
     "commands": {
         "alias": "a",
         "keys": {"command": "COALESCE(command,'')"},
-        "sums": {"weight": "COUNT(*)"},
+        "sums": {"weight": ROW_COUNT_SQL},
     },
     "route_fallbacks": {
         "alias": "a",
@@ -100,7 +101,7 @@ ROLLUPS: dict[str, dict[str, Any]] = {
             "from_provider": "COALESCE(from_provider,'')", "from_model": "COALESCE(from_model,'')",
             "to_provider": "COALESCE(to_provider,'')", "to_model": "COALESCE(to_model,'')",
         },
-        "sums": {"weight": "COUNT(*)"},
+        "sums": {"weight": ROW_COUNT_SQL},
     },
 }
 
@@ -140,6 +141,33 @@ def positive_integer(value: str) -> int:
     return parsed
 
 
+def _upgrade_api_schema(connection: sqlite3.Connection, existing: set[str]) -> None:
+    if "api_calls" not in existing:
+        return
+    present = {row[1] for row in connection.execute("PRAGMA table_info(api_calls)")}
+    for name, definition in API_CALLS_ADDED_COLUMNS.items():
+        if name not in present:
+            connection.execute(f"ALTER TABLE api_calls ADD COLUMN {name} {definition}")
+
+
+def _fold_expired_rows(connection: sqlite3.Connection, existing: set[str], cutoff: str) -> None:
+    for table in TABLES:
+        if table not in existing:
+            continue
+        connection.execute(rollup_create_sql(table))
+        connection.execute(rollup_upsert_sql(table), (cutoff,))
+
+
+def _delete_expired_rows(connection: sqlite3.Connection, existing: set[str], cutoff: str) -> int:
+    removed = 0
+    for table in TABLES:
+        if table not in existing:
+            continue
+        cursor = connection.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff,))
+        removed += max(cursor.rowcount, 0)
+    return removed
+
+
 def prune_database(database: Path, retention_days: int, *, now: datetime | None = None) -> int:
     if database.name != "metrics.db":
         raise ValueError(f"--database must point to a metrics.db file: {database}")
@@ -170,24 +198,11 @@ def prune_database(database: Path, retention_days: int, *, now: datetime | None 
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             )
         }
-        removed = 0
         with connection:
-            if "api_calls" in existing:
-                present = {row[1] for row in connection.execute("PRAGMA table_info(api_calls)")}
-                for name, definition in API_CALLS_ADDED_COLUMNS.items():
-                    if name not in present:
-                        connection.execute(f"ALTER TABLE api_calls ADD COLUMN {name} {definition}")
-            # Fold expiring rows into the rollups before any table loses rows:
-            # tool_calls resolves its model through sessions of the same batch.
-            for table in TABLES:
-                if table in existing:
-                    connection.execute(rollup_create_sql(table))
-                    connection.execute(rollup_upsert_sql(table), (cutoff,))
-            for table in TABLES:
-                if table not in existing:
-                    continue
-                cursor = connection.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff,))
-                removed += max(cursor.rowcount, 0)
+            _upgrade_api_schema(connection, existing)
+            # Fold expiring rows into rollups before deleting them.
+            _fold_expired_rows(connection, existing, cutoff)
+            removed = _delete_expired_rows(connection, existing, cutoff)
         connection.execute("PRAGMA wal_checkpoint(PASSIVE)")
         return removed
     finally:

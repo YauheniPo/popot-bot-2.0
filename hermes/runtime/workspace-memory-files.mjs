@@ -67,23 +67,36 @@ function shouldDescend(prefix, name, walkedRoots) {
   return Boolean(prefix) || walkedRoots.has(name);
 }
 
+function shouldSkipEntry(entry, excluded) {
+  return entry.name.startsWith('.') || excluded.has(entry.name) || entry.isSymbolicLink();
+}
+
+function addMemoryEntry(entry, prefix, results, resolveMemoryFilePath) {
+  try {
+    const { stat } = resolveMemoryFilePath(prefix + entry.name);
+    results.push({ path: prefix + entry.name, name: entry.name, size: stat.size, modified: stat.mtime.toISOString() });
+  } catch { /* Unlisted files, links and oversized files are not editor targets. */ }
+}
+
+function walkDirectoryEntry(entry, directory, prefix, depth, walkedRoots, excluded, results, resolveMemoryFilePath) {
+  if (shouldSkipEntry(entry, excluded)) return;
+  if (entry.isDirectory()) {
+    if (shouldDescend(prefix, entry.name, walkedRoots)) {
+      walkDirectory(path.join(directory, entry.name), prefix + entry.name + '/', depth + 1,
+        walkedRoots, excluded, results, resolveMemoryFilePath);
+    }
+    return;
+  }
+  addMemoryEntry(entry, prefix, results, resolveMemoryFilePath);
+}
+
 function walkDirectory(directory, prefix, depth, walkedRoots, excluded, results, resolveMemoryFilePath) {
   if (!fs.existsSync(directory) || fs.lstatSync(directory).isSymbolicLink()) return;
   if (depth > 20) throw new Error('Instruction tree exceeds editor depth limit');
   let visited = 0;
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
     if (++visited > 30_000) throw new Error('Instruction tree exceeds editor scan limit');
-    if (entry.name.startsWith('.') || excluded.has(entry.name) || entry.isSymbolicLink()) continue;
-    if (entry.isDirectory()) {
-      if (shouldDescend(prefix, entry.name, walkedRoots)) {
-        walkDirectory(path.join(directory, entry.name), prefix + entry.name + '/', depth + 1, walkedRoots, excluded, results, resolveMemoryFilePath);
-      }
-    } else {
-      try {
-        const { stat } = resolveMemoryFilePath(prefix + entry.name);
-        results.push({ path: prefix + entry.name, name: entry.name, size: stat.size, modified: stat.mtime.toISOString() });
-      } catch { /* Unlisted files, links and oversized files are not editor targets. */ }
-    }
+    walkDirectoryEntry(entry, directory, prefix, depth, walkedRoots, excluded, results, resolveMemoryFilePath);
   }
 }
 

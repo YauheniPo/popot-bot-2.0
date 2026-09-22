@@ -27,7 +27,8 @@ SPEC.loader.exec_module(metrics)
 
 PRUNE_SPEC = importlib.util.spec_from_file_location(
     "prune_observability", Path(__file__).with_name("prune-observability.py"))
-assert PRUNE_SPEC is not None and PRUNE_SPEC.loader is not None
+assert PRUNE_SPEC is not None
+assert PRUNE_SPEC.loader is not None
 prune = importlib.util.module_from_spec(PRUNE_SPEC)
 PRUNE_SPEC.loader.exec_module(prune)
 
@@ -37,7 +38,8 @@ def load_plugin():
     if "ops_observability" not in sys.modules:
         spec = importlib.util.spec_from_file_location(
             "ops_observability", Path(__file__).with_name("plugin") / "ops-observability" / "__init__.py")
-        assert spec is not None and spec.loader is not None
+        assert spec is not None
+        assert spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)

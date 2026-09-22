@@ -75,7 +75,7 @@ jobs:
             echo "apt-get update failed after 3 attempts" >&2
             exit 1
           fi
-          sudo apt-get install --yes ripgrep shellcheck
+          sudo apt-get install --yes prometheus ripgrep shellcheck
 
       - name: Run Hermes checks
         run: bash hermes/check.sh --require-tools

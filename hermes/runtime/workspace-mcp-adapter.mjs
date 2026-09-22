@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const nonempty = value => value && Object.keys(value).length > 0;
 const safeName = value => typeof value === 'string' && value.trim() &&
-  !['.', '..'].includes(value.trim()) && !/[\\/\\\x00-\x1f\x7f]/.test(value);
+  !['.', '..'].includes(value.trim()) && !/[\\/\x00-\x1f\x7f]/.test(value);
 
 export function correctWorkspacePresets(value) {
   if (!Array.isArray(value?.presets)) return value;
@@ -63,26 +63,22 @@ function createInput(body) {
   return result;
 }
 
+const MCP_REQUEST_RULES = [
+  (path, method) => ((path === '/api/mcp/servers' || path === '/api/mcp') && ['GET', 'POST'].includes(method)) && 'collection',
+  (path, method) => path === '/api/mcp/configure' && method === 'PUT' && 'configure',
+  (path, method) => path === '/api/mcp/test' && method === 'POST' && 'test',
+  (path, method) => path.startsWith('/api/mcp/servers/') && path.endsWith('/enabled') && 'configure',
+  (path, method) => path.startsWith('/api/mcp/servers/') && path.endsWith('/test') && 'test',
+  (path, method) => path.startsWith('/api/mcp/servers/') && method === 'DELETE' && 'deletion',
+  (path, method) => path.startsWith('/api/mcp/servers/') && ['PUT', 'PATCH'].includes(method) && 'edit',
+  (path, method) => /^\/api\/mcp\/[^/]+$/.test(path) && method === 'DELETE' && 'deletion',
+  (path, method) => /^\/api\/mcp\/[^/]+$/.test(path) && ['PUT', 'PATCH'].includes(method) && 'edit',
+  (path, method) => path.startsWith('/api/mcp/') && method !== 'GET' && 'discover',
+  (path, method) => path.startsWith('/api/mcp/') && path.endsWith('/logs') && 'logs',
+];
+
 function classifyMcpRequest(path, method) {
-  const isCollection = path === '/api/mcp/servers' || path === '/api/mcp';
-  if (isCollection && (method === 'GET' || method === 'POST')) return 'collection';
-  if (path === '/api/mcp/configure' && method === 'PUT') return 'configure';
-  if (path === '/api/mcp/test' && method === 'POST') return 'test';
-  if (path.startsWith('/api/mcp/servers/')) {
-    if (path.endsWith('/enabled')) return 'configure';
-    if (path.endsWith('/test')) return 'test';
-    if (method === 'DELETE') return 'deletion';
-    if (method === 'PUT' || method === 'PATCH') return 'edit';
-  }
-  if (/^\/api\/mcp\/[^/]+$/.test(path)) {
-    if (method === 'DELETE') return 'deletion';
-    if (method === 'PUT' || method === 'PATCH') return 'edit';
-  }
-  if (path.startsWith('/api/mcp/')) {
-    if (method !== 'GET') return 'discover';
-    if (path.endsWith('/logs')) return 'logs';
-  }
-  return null;
+  return MCP_REQUEST_RULES.map(rule => rule(path, method)).find(Boolean) || null;
 }
 
 function serverPath(path) {
@@ -91,6 +87,32 @@ function serverPath(path) {
   if (path.startsWith(canonicalPrefix)) return path.slice(canonicalPrefix.length);
   if (path.startsWith(legacyPrefix)) return path.slice(legacyPrefix.length);
   return '';
+}
+
+function planConfigure(url, body) {
+  if (typeof body.enabled !== 'boolean' || Object.keys(body).some(key => !['name', 'enabled'].includes(key))) {
+    return { refusal: unsupported('Native Workspace configuration supports the enabled toggle only. Change tool selection in the official Dashboard.') };
+  }
+  if (url.pathname === '/api/mcp/configure') {
+    url.pathname = `/api/mcp/servers/${encodeURIComponent(body.name)}/enabled`;
+  }
+  return { payload: { enabled: body.enabled } };
+}
+
+function planTest(url, body) {
+  if (Object.keys(body).some(key => key !== 'name')) {
+    return { refusal: unsupported('Save the server first, then test it by name. Unsaved inputs are not tested against an existing server.') };
+  }
+  if (url.pathname === '/api/mcp/test') {
+    url.pathname = `/api/mcp/servers/${encodeURIComponent(body.name)}/test`;
+  }
+  return { render: value => {
+    const validTools = Array.isArray(value.tools) && value.tools.every(tool => object(tool) && typeof tool.name === 'string');
+    if (typeof value.ok !== 'boolean' || (value.ok && !validTools)) throw new Error('Invalid native discovery result');
+    return { ok: value.ok, status: value.ok ? 'connected' : 'failed',
+      discoveredTools: value.ok ? value.tools : [],
+      ...(value.ok ? {} : { error: 'Native MCP test failed. Check server connectivity and OAuth in the official Dashboard.' }) };
+  } };
 }
 
 function buildRequestProfile(input, init) {
@@ -225,34 +247,6 @@ export function createMcpAdapter({ dashboardUrl, fetchImpl, now = Date.now, prob
     return { render: value => {
       if (!Array.isArray(value.servers)) throw new Error('Invalid MCP list');
       return { servers: listView(value.servers, profile) };
-    } };
-  }
-
-  function planConfigure(url, body) {
-    if (typeof body.enabled !== 'boolean' || Object.keys(body).some(key => !['name', 'enabled'].includes(key))) {
-      return { refusal: unsupported('Native Workspace configuration supports the enabled toggle only. Change tool selection in the official Dashboard.') };
-    }
-    if (url.pathname === '/api/mcp/configure') {
-      url.pathname = `/api/mcp/servers/${encodeURIComponent(body.name)}/enabled`;
-    }
-    return { payload: { enabled: body.enabled } };
-  }
-
-  function planTest(url, body) {
-    if (Object.keys(body).some(key => key !== 'name')) {
-      return { refusal: unsupported('Save the server first, then test it by name. Unsaved inputs are not tested against an existing server.') };
-    }
-    if (url.pathname === '/api/mcp/test') {
-      url.pathname = `/api/mcp/servers/${encodeURIComponent(body.name)}/test`;
-    }
-    return { render: value => {
-      if (typeof value.ok !== 'boolean' || (value.ok && (!Array.isArray(value.tools) ||
-          value.tools.some(tool => !object(tool) || typeof tool.name !== 'string')))) {
-        throw new Error('Invalid native discovery result');
-      }
-      return { ok: value.ok, status: value.ok ? 'connected' : 'failed',
-        discoveredTools: value.ok ? value.tools : [],
-        ...(value.ok ? {} : { error: 'Native MCP test failed. Check server connectivity and OAuth in the official Dashboard.' }) };
     } };
   }
 
