@@ -36,6 +36,42 @@ CI run · Reviewed revision
         self.assertEqual(parsed["outcome"], "success")
         self.assertEqual(parsed["provider_seconds"], 42.5)
 
+    def test_parse_published_blockquote_format(self):
+        # Real bot comments render the metadata as a blockquote with
+        # backtick-quoted values and a bolded result.
+        body = """## DirectAPI
+
+### Technical metadata
+> Connection: `nous` · API: `https://inference-api.nousresearch.com/v1/chat/completions`
+> Successful models: `inclusionai/ling-3.0-flash-sante:free`
+> Attempts: 1 · Validated: 1 · Retries: 0 · Fallback successes: 0
+> Provider time: 60.8s (retry waits, preflight, and GitHub API requests excluded).
+> Coverage: complete — 15/15 eligible changed files
+
+Summary: Reviewed the PR in 1 bounded chunk(s); found no new actionable issues.
+"""
+        parsed = metrics.parse_review(body)
+        self.assertEqual(parsed["reviewer"], "DirectAPI")
+        self.assertEqual(parsed["provider"], "nous")
+        self.assertEqual(parsed["model"], "inclusionai/ling-3.0-flash-sante:free")
+        self.assertEqual(parsed["attempts"], 1)
+        self.assertEqual(parsed["provider_seconds"], 60.8)
+        # Published reviews without an explicit Result line are successes.
+        self.assertEqual(parsed["outcome"], "success")
+
+    def test_parse_bulleted_result_line_strips_markdown(self):
+        body = ("ObservableMessagesReview\nTechnical metadata\n"
+                "Connection: nous · API: https://inference.example/v1\n"
+                "Successful models: model-a\n"
+                "Provider time: 10.7s\n\nResult: **success**\n")
+        parsed = metrics.parse_review(body)
+        self.assertEqual(parsed["outcome"], "success")
+
+    def test_parse_plain_metadata_without_result_defaults_to_success(self):
+        body = ("Technical metadata\nConnection: provider · API: https://example\n"
+                "Successful models: model-a\n")
+        self.assertEqual(metrics.parse_review(body)["outcome"], "success")
+
     def test_upsert_is_idempotent_and_creates_schema(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "metrics.db"
@@ -73,6 +109,8 @@ CI run · Reviewed revision
     def test_parse_review_rejects_incomplete_and_supports_unknown_reviewer(self):
         self.assertIsNone(metrics.parse_review("ordinary comment"))
         self.assertIsNone(metrics.parse_review("Technical metadata\nResult: failed"))
+        # A body carrying the full metadata block is a published review and
+        # defaults to success; the explicit failed Result overrides it.
         parsed = metrics.parse_review(
             "Technical metadata\nConnection: provider · API: https://example\n"
             "Successful models: model-a\nResult: failed\n"
