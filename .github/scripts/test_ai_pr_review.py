@@ -25,6 +25,49 @@ SPEC.loader.exec_module(reviewer)
 
 
 class AnnotatedDiffTest(unittest.TestCase):
+    def test_github_requests_use_plain_json_and_close_responses(self):
+        url = "https://api.github.com/repos/owner/repo/issues/48/comments"
+        for method, body, expected in (("GET", None, [{"id": 1}]),
+                                       ("POST", {"body": "review"}, {"id": 2})):
+            with self.subTest(method=method):
+                response = io.BytesIO(json.dumps(expected).encode())
+                with mock.patch.object(reviewer.urllib.request, "urlopen", return_value=response) as request, \
+                        mock.patch("sys.stderr", new_callable=io.StringIO) as log:
+                    result = reviewer.request_json(url, method, {}, body)
+                self.assertEqual(result, expected)
+                self.assertTrue(response.closed)
+                self.assertEqual(log.getvalue(), "")
+                sent = request.call_args.args[0]
+                self.assertEqual(sent.full_url, url)
+                self.assertEqual(sent.get_method(), method)
+                if body is None:
+                    self.assertIsNone(sent.data)
+                else:
+                    self.assertEqual(json.loads(sent.data), body)
+
+    def test_only_nous_accepts_stop_at_eof_and_review_validation_still_runs(self):
+        for provider, content in (("nous", '{"summary":"ok","findings":[]}'),
+                                  ("nous", '{"summary":'), ("nous", ""),
+                                  ("openrouter", '{"summary":"ok","findings":[]}')):
+            with self.subTest(provider=provider, content=content):
+                events = [{"choices": [{"delta": {"content": content}}]},
+                          {"choices": [{"finish_reason": "stop"}]}]
+                response = io.BytesIO(b"".join(b"data: " + json.dumps(e).encode() + b"\n\n" for e in events))
+                response.headers = {"Content-Type": "text/event-stream"}
+                with mock.patch.object(reviewer, "ACTIVE_PROVIDER", provider), \
+                        mock.patch.object(reviewer.urllib.request, "urlopen", return_value=response):
+                    if provider != "nous":
+                        with self.assertRaisesRegex(reviewer.RequestError, "stream_incomplete"):
+                            reviewer.request_json(reviewer.OLLAMA_URL, "POST", {}, {"model": "test"})
+                    else:
+                        result = reviewer.request_json(reviewer.OLLAMA_URL, "POST", {}, {"model": "test"})
+                        if content.endswith("}"):
+                            self.assertEqual(reviewer.parse_review_response(result)["findings"], [])
+                        else:
+                            with self.assertRaises(reviewer.ReviewResponseError):
+                                reviewer.parse_review_response(result)
+                self.assertTrue(response.closed)
+
     def test_free_daily_quota_disables_the_same_openrouter_route(self):
         reviewer.FREE_DAILY_QUOTA_ROUTES.clear()
         error = urllib.error.HTTPError(

@@ -76,6 +76,18 @@ class DashboardSqlTests(unittest.TestCase):
                 (at(1), "s1", "", "terminal", "ok", 10), (at(3), "s3", "", "browser", "error", 5), (at(4), "s9", "", "browser", "ok", 1)])
             connection.execute("INSERT INTO route_fallbacks VALUES (?,?,?,?,?)",
                                (at(80), "provider-a", "model-a", "provider-b", "model-n"))
+            connection.execute("""CREATE TABLE IF NOT EXISTS review_runs (
+                source_id TEXT PRIMARY KEY, pr_number INTEGER NOT NULL,
+                reviewer TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
+                outcome TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                validated_chunks INTEGER NOT NULL DEFAULT 0, total_chunks INTEGER NOT NULL DEFAULT 0,
+                retries INTEGER NOT NULL DEFAULT 0, fallback_successes INTEGER NOT NULL DEFAULT 0,
+                provider_seconds REAL NOT NULL DEFAULT 0, observed_at TEXT NOT NULL,
+                head_sha TEXT NOT NULL DEFAULT '', run_id TEXT NOT NULL DEFAULT ''
+            )""")
+            connection.execute("INSERT INTO review_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                               ("review:1", 43, "DirectAPI", "provider-a", "model-a", "success", 2, 8, 8, 1, 1,
+                                12.5, at(60), "abc", "run-1"))
 
     @classmethod
     def tearDownClass(cls) -> None:

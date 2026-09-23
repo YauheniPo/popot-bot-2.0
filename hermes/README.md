@@ -633,6 +633,20 @@ success, p95, output tok/s, доли обрезок и пустых ответо
 calls по модели и расхождение requested/served. Метрики измеряют надёжность и
 форму ответа, не правильность содержания.
 
+Для сравнения CI-ревьюеров используется таблица `review_runs`. После
+опубликованного GitHub review импортируйте только технические поля командой:
+
+```bash
+GITHUB_TOKEN="$(gh auth token)" \
+  /usr/local/lib/hermes-ops/extract-review-metrics.py --pr 43
+```
+
+Импорт идемпотентен и не сохраняет diff, prompts, findings или тексты
+комментариев. Панель **AI review runs — selected range** показывает reviewer,
+provider/model, результат, coverage чанков, retries и время провайдера; панель
+**AI review provider time** позволяет сравнивать скорость маршрутов во времени.
+Токен передаётся только через окружение и не записывается в конфигурацию Hermes.
+
 Панели **Profile requests** показывают обращения к основному `default` и
 именованным профилям. Одно обращение — одна сохранённая запись `role=user`
 в `state.db` соответствующего профиля, а не запуск tmux, tool call или запрос

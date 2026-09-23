@@ -500,9 +500,13 @@ def _mark_free_daily_quota(error: RequestError, provider: str, model: object) ->
 def _open_response(request, timeout, progress=None):
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return read_response(response, progress) if progress is not None else json.load(response)
+            if progress is not None:
+                return read_response(response, progress, allow_stop_at_eof=ACTIVE_PROVIDER == "nous")
+            return json.load(response)
     except urllib.error.HTTPError as error:
         # This read stays inside the model watchdog, including stalled error bodies.
+        if progress is not None:
+            progress.http_status = error.code
         raise _http_failure(error, progress is not None) from None
 
 

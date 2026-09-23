@@ -313,6 +313,37 @@ fallback equal to the failed primary does not grant another retry budget.
 Each probe attempt logs its model, attempt number, and timeout. Preflight calls
 may incur provider charges, even though they are excluded from the published
 review request totals.
+Direct JSON preflight requests `stream=true` and uses the same bounded response
+reader as the full review. Providers returning an ordinary JSON response remain
+supported. A successful small probe checks transport compatibility, not whether
+a full diff will finish within the provider's limits.
+
+Both direct preflight and review emit one `[direct-review] request_end` JSON
+record per request, including failures before the first heartbeat. It contains
+elapsed/idle time, HTTP status when available, response format, received byte
+and SSE event counts, content/reasoning character counts, and the observed
+`finish_reason`, `done_seen` and `eof_seen`. Prompts, model text, reasoning text,
+headers, credentials and raw provider errors are not logged; unknown finish
+reasons are recorded as `other`. The preceding attempt line identifies the model
+and, for full reviews, the route and diff chunk. `received` means transport
+completed; JSON and review validation still have to pass.
+
+For `stream_incomplete`, `eof_seen=true` with `done_seen=false` means the stream
+closed without `[DONE]`; `done_seen=true` with `finish_reason=none` means the
+terminal marker arrived without a completion reason. Normally even
+`finish_reason=stop` without `[DONE]` is rejected. Nous is the verified exception:
+its SSE route closes after `stop` without `[DONE]` (observed for both configured
+models in [run 35851663557](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/35851663557)).
+For Nous only, preflight and review accept a clean EOF after `stop`, then apply
+the existing JSON and review validation. Missing `stop`, read errors, timeouts,
+provider errors and invalid JSON still fail. Diagnostics retain `done_seen=false`
+and `eof_seen=true` for this completion path.
+`finish_reason=length` is an `output_limit`, including
+when the stream ends without `[DONE]`. These records distinguish observed wire
+events, but cannot prove why a remote connection ended. Incomplete streams are
+not retried on the same model; the configured fallback is tried instead.
+Timeout retries retain the existing bounded attempt and wait budgets.
+
 The direct adapter selects the fallback response format automatically, including
 an ordinary-JSON retry when a schema request is explicitly rejected as
 unsupported. No fallback-mode variable is required. The publisher validates
