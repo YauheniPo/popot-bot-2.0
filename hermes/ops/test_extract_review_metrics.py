@@ -87,6 +87,13 @@ CI run · Reviewed revision
             self.assertEqual(metrics.main(), 0)
         self.assertEqual(importer.call_args.args[1:3], (43, "secret"))
 
+    def test_main_rejects_missing_token(self):
+        with mock.patch.dict(metrics.os.environ, {}, clear=True), \
+             mock.patch("sys.argv", ["extract-review-metrics.py", "--pr", "43"]), \
+             self.assertRaises(SystemExit) as result:
+            metrics.main()
+        self.assertEqual(result.exception.code, 2)
+
     def test_script_entrypoint_runs(self):
         response = mock.Mock()
         response.__enter__ = lambda self: self
