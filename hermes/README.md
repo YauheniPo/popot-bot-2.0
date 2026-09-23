@@ -846,6 +846,25 @@ Tailscale-доступа временно задайте `lock_public_ssh: false
 
 ### Управляемое обновление и автоподъём
 
+Текущий pin — стабильный [Hermes 0.21.4 / v2026.9.21](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.9.21).
+Commit и SHA-256 installer берутся только из `vps_deploy.hermes_source`.
+Локальные gateway/Telegram-патчи адаптированы к разделённым upstream-модулям;
+Edge TTS retry оборачивает новый provider entry point, сохраняя остальные providers.
+Изменение pin в Git само по себе не обновляет работающий VPS — нужен deploy ниже.
+
+Перед следующим обновлением проверяйте патчи на чистом checkout выбранного
+upstream commit (не на установленном Hermes с личными данными):
+
+```bash
+HERMES_UPSTREAM_DIR=/path/to/hermes-agent python3.11 -m unittest \
+  hermes.runtime.test_hermes_upstream -v
+```
+
+Проверка сверяет commit/version/installer checksum, применяет gateway-патчи
+к временным копиям, компилирует результат и проверяет идемпотентность,
+маршрутизацию команд и приоритеты Telegram menu. Она не устанавливает Hermes,
+не обращается к VPS и не заменяет backup и post-deploy проверки.
+
 #### Режимы deploy
 
 По умолчанию playbook запускается в консервативном режиме `full`: он может

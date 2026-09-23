@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import ast
+import asyncio
 import contextlib
 import io
 import os
@@ -23,6 +25,39 @@ SPEC.loader.exec_module(apply_edge_tts_retry)
 
 
 class ApplyEdgeTtsRetryTests(unittest.TestCase):
+    def test_split_provider_import_is_wrapped_and_preserves_other_providers(self):
+        source = '''from tools.tts_tool_providers import (
+    _generate_edge_tts, _generate_elevenlabs, _generate_gemini_tts, _generate_minimax_tts,
+    _generate_mistral_tts, _generate_xai_tts, _resolve_minimax_tts_runtime)
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            target = Path(temp) / "tts_tool.py"
+            target.write_text(source)
+            self.assertEqual(apply_edge_tts_retry.patch_target(target), "installed Edge TTS transient retry")
+            patched = target.read_text()
+            self.assertIn("_generate_edge_tts as _upstream_generate_edge_tts", patched)
+            self.assertIn("_generate_mistral_tts, _generate_xai_tts, _resolve_minimax_tts_runtime", patched)
+            self.assertIn("already installed", apply_edge_tts_retry.patch_target(target))
+            self.assertEqual(target.read_text(), patched)
+            function = next(node for node in ast.parse(patched).body if isinstance(node, ast.AsyncFunctionDef))
+            namespace = {"Path": Path, "logger": mock.Mock(), "asyncio": asyncio}
+            exec(compile(ast.Module(body=[function], type_ignores=[]), "patched", "exec"), namespace)
+            no_audio = type("NoAudioReceived", (Exception,), {})
+            for errors, count in (([no_audio(), "audio"], 2), ([no_audio()] * 3, 3),
+                                  ([ValueError()], 1), ([asyncio.CancelledError()], 1)):
+                provider = mock.AsyncMock(side_effect=errors)
+                namespace["_upstream_generate_edge_tts"] = provider
+                with self.subTest(count=count), mock.patch.object(asyncio, "sleep", new_callable=mock.AsyncMock) as sleep:
+                    call = namespace["_generate_edge_tts"]("text", str(Path(temp) / "speech.mp3"), {"edge": {}})
+                    if isinstance(errors[-1], BaseException):
+                        expected_error = type(errors[-1])
+                        with self.assertRaises(expected_error):
+                            asyncio.run(call)
+                    else:
+                        self.assertEqual(asyncio.run(call), "audio")
+                    self.assertEqual(provider.await_count, count)
+                    self.assertEqual(sleep.await_count, count - 1)
+
     def test_main_reports_success_already_patched_and_changed_upstream(self) -> None:
         for source, message in (
             (apply_edge_tts_retry.OLD, "installed Edge TTS transient retry"),

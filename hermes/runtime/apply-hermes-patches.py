@@ -42,6 +42,9 @@ _PREFIX = "# Local Hermes:"
 _HERMES_CLI_COMMANDS_PATH = "hermes_cli/commands.py"
 _GATEWAY_SLASH_COMMANDS_PATH = "gateway/slash_commands.py"
 _GATEWAY_RUN_PATH = "gateway/run.py"
+_GATEWAY_BUSY_PATH = "gateway/run_busy.py"
+_GATEWAY_STATUS_PATH = "gateway/slash_commands_status.py"
+_COMMAND_PLATFORMS_PATH = "hermes_cli/commands_platforms.py"
 # Construct the retired spelling without advertising it as a supported slash
 # command. It is needed only to migrate files patched by earlier deployments.
 _RETIRED_MODEL_GLOBAL = "model" + chr(45) + "global"
@@ -314,11 +317,11 @@ _PATCHES: list[tuple[str, str, str, str]] = [
         _HERMES_CLI_COMMANDS_PATH,
         _PREFIX + " model_global CommandDef",
         '''    CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
-               args_hint="[model] [--provider name] [--global|--session] [--refresh]",
+               args_hint="[model] [--provider name] [--reasoning level] [--global|--session] [--refresh]",
                busy_policy="reject", busy_handler="model", desktop="hidden"),
 ''',
         '''    CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
-               args_hint="[model] [--provider name] [--global|--session] [--refresh]",
+               args_hint="[model] [--provider name] [--reasoning level] [--global|--session] [--refresh]",
                busy_policy="reject", busy_handler="model", desktop="hidden"),
     # Local Hermes: model_global CommandDef
     CommandDef("model_global", "Set the global default model for all topics/sessions", "Configuration",
@@ -339,10 +342,9 @@ _PATCHES: list[tuple[str, str, str, str]] = [
 ''',
     ),
     (
-        _GATEWAY_SLASH_COMMANDS_PATH,
+        "gateway/slash_commands_model.py",
         _PREFIX + " model_global handler",
         '''    async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
-        """Handle /model command — switch model.
 ''',
         '''    async def _handle_model_global_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model_global — switch model persistently for ALL topics/sessions.
@@ -370,45 +372,46 @@ _PATCHES: list[tuple[str, str, str, str]] = [
         return await self._handle_model_command(event)
 
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
-        """Handle /model command — switch model.
         # Local Hermes: model_global handler
 ''',
     ),
     (
-        _GATEWAY_RUN_PATH,
+        _GATEWAY_BUSY_PATH,
         _PREFIX + " model_global route",
-        '''        if canonical == "model":
-            return await self._handle_model_command(event)
+        '''        "approvals", "model", "codex-runtime", "personality", "suggestions", "save", "retry",
 ''',
-        '''        if canonical == "model":
-            return await self._handle_model_command(event)
-
-        if canonical == "model_global":
-            # Local Hermes: model_global route
-            return await self._handle_model_global_command(event)
+        '''        "approvals", "model", "codex-runtime", "personality", "suggestions", "save", "retry",
+        # Local Hermes: model_global route
+        "model_global",
 ''',
     ),
     (
-        # v0.21.0 merged the separate idle/busy restart routes into the shared
-        # _gateway_plain_command_handlers() map, so one dict entry now covers
-        # what used to need both a canonical route and a busy-map patch.
-        _GATEWAY_RUN_PATH,
+        # v0.21.4 derives the shared idle/busy handler map from command names.
+        # The custom canonical name needs both a name entry and a method alias.
+        _GATEWAY_BUSY_PATH,
         _PREFIX + " gw-restart route",
-        '''            "restart": self._handle_restart_command,
+        '''    _COMMAND_HANDLER_ALIASES = {"bg": "_handle_background_command", "sethome": "_handle_set_home_command"}
+    # Ordinary slash handlers shared by idle and busy dispatch.
+    _PLAIN_COMMANDS = (
 ''',
-        '''            "restart": self._handle_restart_command,
-            # Local Hermes: gw-restart route
-            "gw-restart": self._handle_restart_command,
+        '''    # Local Hermes: gw-restart route
+    _COMMAND_HANDLER_ALIASES = {
+        "bg": "_handle_background_command", "sethome": "_handle_set_home_command",
+        "gw-restart": "_handle_restart_command",
+    }
+    # Ordinary slash handlers shared by idle and busy dispatch.
+    _PLAIN_COMMANDS = (
+        "gw-restart",
 ''',
     ),
     (
-        _GATEWAY_SLASH_COMMANDS_PATH,
+        _GATEWAY_STATUS_PATH,
         _PREFIX + " status reasoning",
-        '''            t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),
-        ])
+        '''        lines += [t("gateway.status.tokens", tokens=fields["tokens"]),
+                  t("gateway.status.agent_running", state=state)]
 ''',
-        '''            t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),
-        ])
+        '''        lines += [t("gateway.status.tokens", tokens=fields["tokens"]),
+                  t("gateway.status.agent_running", state=state)]
         # Local Hermes: status subagent activity
         status_session_key = str(session_key or "")
         status_session_id = str(session_entry.session_id or "")
@@ -509,16 +512,17 @@ _PATCHES: list[tuple[str, str, str, str]] = [
         ])
         # Local Hermes: model info (global + topic)
         try:
+            from gateway.run import _load_gateway_config, _resolve_gateway_model
+
             # Global default = config.yaml model.default (single source of truth).
+            user_config = _load_gateway_config()
             global_model = _resolve_gateway_model(user_config) if user_config else _resolve_gateway_model()
             # Session override = /model <name> stored for this topic (if any).
             # The stored value is a full provider config mapping (model,
             # provider, api_key, base_url, ...), so read only the model name
             # out of it — rendering the mapping itself leaks the provider API
             # key into /status output. Upstream reads it the same way.
-            session_override = (getattr(self, "_session_model_overrides", None) or {}).get(
-                str(session_key or "")
-            )
+            session_override = self._session_model_override(str(session_key or ""))
             if isinstance(session_override, dict):
                 session_model = _clean_str(session_override.get("model") or "")
             else:
@@ -537,7 +541,7 @@ _PATCHES: list[tuple[str, str, str, str]] = [
 ''',
     ),
     (
-        _GATEWAY_SLASH_COMMANDS_PATH,
+        _GATEWAY_STATUS_PATH,
         _PREFIX + " portal info",
         '''            lines.append(f"**Topic model:** {topic_model}" + (" *(override)*" if session_model else ""))
         except Exception:
@@ -595,16 +599,12 @@ _PATCHES: list[tuple[str, str, str, str]] = [
         _PREFIX + " doctor handler",
         '''    async def _handle_version_command(self, event: MessageEvent) -> str:
         """Handle /version — show the running Hermes Agent version."""
-        from hermes_cli.slash_exec import CommandContext, execute_command
-
-        return execute_command("version", CommandContext(surface="gateway")).text
+        return _execute("version").text
 
 ''',
         '''    async def _handle_version_command(self, event: MessageEvent) -> str:
         """Handle /version — show the running Hermes Agent version."""
-        from hermes_cli.slash_exec import CommandContext, execute_command
-
-        return execute_command("version", CommandContext(surface="gateway")).text
+        return _execute("version").text
 
     async def _handle_doctor_command(self, event: MessageEvent) -> str:
         """Handle /doctor with the read-only Hermes diagnostic command."""
@@ -638,43 +638,49 @@ _PATCHES: list[tuple[str, str, str, str]] = [
 ''',
     ),
     (
-        _GATEWAY_RUN_PATH,
+        _GATEWAY_BUSY_PATH,
         _PREFIX + " doctor route",
-        # /version moved into _gateway_plain_command_handlers() in v0.21.0;
-        # /doctor rides the same shared map instead of its own route.
-        '''            "version": self._handle_version_command,
+        '''        "commands", "profile", "login", "update", "version",
 ''',
-        '''            "version": self._handle_version_command,
-            # Local Hermes: doctor route
-            "doctor": self._handle_doctor_command,
+        '''        "commands", "profile", "login", "update", "version",
+        # Local Hermes: doctor route
+        "doctor",
 ''',
     ),
     (
-        _HERMES_CLI_COMMANDS_PATH,
+        _COMMAND_PLATFORMS_PATH,
         _PREFIX + " telegram usage ranking",
-        # v0.21.0 moved menu ordering into _prioritize_telegram_menu_candidates
-        # and gave it native configured/default priority tiers. Only the final
-        # "everything else" tier needs our usage ordering now, so this patch is
-        # one line instead of a copy of the whole ranking function.
-        '''        if default_index is not None:
-            return (1, default_index, stable_index)
-        return (2, 0, stable_index)
+        # Leave every configured/default priority tier intact; rank by usage
+        # only after all upstream priority tiers have declined the candidate.
+        '''                return (tier, indexes[table], stable_index)
+        return (len(tiers), 0, stable_index)
 ''',
-        '''        if default_index is not None:
-            return (1, default_index, stable_index)
+        '''                return (tier, indexes[table], stable_index)
         # Local Hermes: telegram usage ranking
-        return (2, -_telegram_command_usage_count(final_name), stable_index)
+        return (len(tiers), -_telegram_command_usage_count(final_name), stable_index)
 ''',
     ),
     (
-        _HERMES_CLI_COMMANDS_PATH,
+        _COMMAND_PLATFORMS_PATH,
+        _PREFIX + " telegram usage config",
+        '''        "priority": priority}
+''',
+        '''        "priority": priority,
+        # Local Hermes: telegram usage config
+        "usage_ranking": menu_cfg.get("usage_ranking", {}),
+    }
+''',
+    ),
+    (
+        _COMMAND_PLATFORMS_PATH,
         _PREFIX + " telegram usage state",
         '''def _clamp_command_names(
-    entries: Sequence[tuple[str, ...]],
-    reserved: set[str],
-) -> list[tuple[str, ...]]:
+    entries: Sequence[tuple[str, ...]], reserved: set[str]) -> list[tuple[str, ...]]:
 ''',
-        '''def _telegram_usage_ranking_config() -> tuple[bool, int]:
+        '''import os
+
+
+def _telegram_usage_ranking_config() -> tuple[bool, int]:
     """Return whether dynamic Telegram menu ranking is enabled and its cadence."""
     raw_ranking = _telegram_command_menu_config().get("usage_ranking", {})
     if not isinstance(raw_ranking, Mapping):
@@ -782,9 +788,7 @@ def record_telegram_command_usage(raw_command: str) -> bool:
 
 
 def _clamp_command_names(
-    entries: list[tuple[str, ...]],
-    reserved: set[str],
-) -> list[tuple[str, ...]]:
+    entries: Sequence[tuple[str, ...]], reserved: set[str]) -> list[tuple[str, ...]]:
     # Local Hermes: telegram usage state
 ''',
     ),
@@ -797,7 +801,7 @@ def _clamp_command_names(
         """Persist authorized slash-command usage and coalesce menu refreshes."""
         command = text.lstrip().split(None, 1)[0].lstrip("/").split("@", 1)[0]
         try:
-            from hermes_cli.commands import record_telegram_command_usage
+            from hermes_cli.commands_platforms import record_telegram_command_usage
 
             should_refresh = record_telegram_command_usage(command)
         except Exception:
@@ -822,7 +826,7 @@ def _clamp_command_names(
                 BotCommandScopeChat,
                 BotCommandScopeDefault,
             )
-            from hermes_cli.commands import telegram_menu_commands, telegram_menu_max_commands
+            from hermes_cli.commands_platforms import telegram_menu_commands, telegram_menu_max_commands
 
             if not self._bot:
                 return
@@ -855,14 +859,10 @@ def _clamp_command_names(
     (
         "plugins/platforms/telegram/adapter.py",
         _PREFIX + " telegram usage record",
-        '''        event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
-        event.text = self._clean_bot_trigger_text(event.text)
-        await self._cache_replied_media(msg, event)
+        '''        event = await self._build_triggered_event(msg, update, MessageType.COMMAND)
 ''',
-        '''        event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
-        event.text = self._clean_bot_trigger_text(event.text)
+        '''        event = await self._build_triggered_event(msg, update, MessageType.COMMAND)
         self._record_telegram_command_usage(event.text)
-        await self._cache_replied_media(msg, event)
         # Local Hermes: telegram usage record
 ''',
     ),
@@ -889,8 +889,8 @@ def _migrate_installed_portal_info() -> int:
     marker = _PREFIX + " portal info"
     if marker not in source:
         return 0
-    portal_patch = next(new for path, patch_marker, _old, new in _PATCHES
-                        if path == _GATEWAY_SLASH_COMMANDS_PATH and patch_marker == marker)
+    portal_patch = next(new for _path, patch_marker, _old, new in _PATCHES
+                        if patch_marker == marker)
     replacement = portal_patch[portal_patch.index("        # Local Hermes: portal info"):]
     if replacement in source:
         return 0

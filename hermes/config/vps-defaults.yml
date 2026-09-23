@@ -16,13 +16,13 @@ vps_deploy:
     # Upstream branch passed to the installer; commit remains the exact pin.
     branch: main
     # Expected pyproject.toml version verified after installation.
-    version: "0.21.0"
+    version: "0.21.4"
     # Human-readable upstream release label shown in deployment logs.
-    release: v2026.8.31
+    release: v2026.9.21
     # Exact source revision; Ansible updates Hermes only when this differs.
-    commit: 29112bef099274229cadff79cdff7bf7b99c4b77
+    commit: d337b736aa1e8ebecfab043842d13e4a2d2f48a3
     # Expected checksum of install.sh downloaded from that exact commit.
-    installer_sha256: 85ef536d455e51ab67aa74d79272efd49fe717597dbaadfd3cca179a905f4706
+    installer_sha256: 00f9080c6452bf87f03ef2fffb4b2c23b9f43f946aaae956e4c547d17e310b22
   # Local directory for this repository's managed deployment files. It is not
   # part of the upstream Hermes Agent checkout.
   bundle:
