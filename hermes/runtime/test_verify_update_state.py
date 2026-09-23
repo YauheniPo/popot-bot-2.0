@@ -163,6 +163,11 @@ class VerifyUpdateStateTests(unittest.TestCase):
                 with self.assertRaisesRegex(verify_update_state.VerificationError, "missing live Hermes"):
                     verify_update_state.verify_backup(backup_path, snapshot)
 
+    def test_runtime_exclusions_keep_home_and_profile_container_paths(self) -> None:
+        for relative in (".", "profiles", "profiles/builder", "profiles/builder/cache"):
+            with self.subTest(path=relative):
+                self.assertFalse(verify_update_state._excluded_runtime_path(Path(relative)))
+
     def test_missing_file_diagnostic_is_bounded_without_accepting_incomplete_backup(self) -> None:
         snapshot = verify_update_state.create_snapshot(self.home)
         snapshot["files"] += [f"node/include/header-{index:05}.h" for index in range(10000)]
@@ -170,7 +175,7 @@ class VerifyUpdateStateTests(unittest.TestCase):
         create_backup(self.home, archive)
         with self.assertRaises(verify_update_state.VerificationError) as error:
             verify_update_state.verify_backup(archive, snapshot)
-        self.assertTrue("10000" in str(error.exception), "missing-file count must be reported")
+        self.assertIn("missing_count=10000;", str(error.exception)[:100])
         self.assertLess(len(str(error.exception)), 3000)
 
     def test_gateway_lock_disappearing_after_inventory_does_not_abort_snapshot(self) -> None:

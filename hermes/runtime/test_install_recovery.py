@@ -144,6 +144,13 @@ run_as_hermes() {{
                     self.assertEqual(result.returncode, 92 if fail_at == "installer" else 93, result.stderr)
                     self.assertFalse(marker.exists() and marker.read_text().strip() == "old")
 
+    def test_completion_marker_write_failure_propagates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / ".hermes-install-complete").mkdir()
+            result = self.run_shell(home, "set +e\nHERMES_COMMIT=pinned\nrecord_installation_completion")
+            self.assertNotEqual(result.returncode, 0)
+
     @unittest.skipUnless(shutil.which("ansible-playbook"), "Ansible is required")
     def test_completion_marker_tasks_with_real_ansible(self):
         tasks = yaml.safe_load((ROOT / "ansible/playbook.yml").read_text())[0]["tasks"]

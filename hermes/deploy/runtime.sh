@@ -252,6 +252,7 @@ install_hermes() {
 record_installation_completion() {
   run_as_hermes bash -c 'umask 077; printf "%s\n" "$2" > "$1"' bash \
     "$HERMES_USER_HOME/.hermes-install-complete" "$HERMES_COMMIT"
+  return
 }
 
 verify_updated_kanban_state() {
