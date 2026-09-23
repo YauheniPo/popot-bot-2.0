@@ -125,7 +125,11 @@ class VerifyUpdateStateTests(unittest.TestCase):
     def test_runtime_exclusions_preserve_durable_cache_and_nested_user_data(self) -> None:
         excluded = []
         retained = []
-        for prefix in ("", "profiles/builder/", "profiles/researcher/"):
+        # Profile names are not runtime path components after profiles/<name>/.
+        profile_names = ("builder", "researcher", "cache", "models", "runtimes", "node",
+                         "browser_profiles", "images", "audio", "videos", "documents",
+                         "screenshots", "citations")
+        for prefix in ("", *(f"profiles/{name}/" for name in profile_names)):
             excluded.extend(prefix + path for path in (
                 "node/bin/node", "models/download.bin", "runtimes/tool/bin",
                 "cache/model_catalog.json", "cache/delegation/live/task.log",
@@ -164,7 +168,8 @@ class VerifyUpdateStateTests(unittest.TestCase):
                     verify_update_state.verify_backup(backup_path, snapshot)
 
     def test_runtime_exclusions_keep_home_and_profile_container_paths(self) -> None:
-        for relative in (".", "profiles", "profiles/builder", "profiles/builder/cache"):
+        for relative in (".", "profiles", "profiles/builder", "profiles/builder/cache",
+                         "profiles/cache", "profiles/cache/cache", "profiles/browser_profiles/cache"):
             with self.subTest(path=relative):
                 self.assertFalse(verify_update_state._excluded_runtime_path(Path(relative)))
 

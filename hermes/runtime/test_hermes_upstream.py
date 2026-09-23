@@ -60,7 +60,9 @@ class HermesUpstreamTests(unittest.TestCase):
         spec.loader.exec_module(verifier)
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve() / ".hermes"
-            for prefix in ("", "profiles/builder/", "skills/custom/"):
+            profile_names = ("builder", "cache", "models", "runtimes", "node", "browser_profiles",
+                             "images", "audio", "videos", "documents", "screenshots", "citations")
+            for prefix in ("", "skills/custom/", *(f"profiles/{name}/" for name in profile_names)):
                 for relative in ("config.yaml", "SOUL.md", "hermes-agent/SKILL.md", "node/bin/node",
                                  "models/model", "runtimes/tool", "cache/catalog.json", "cache/delegation/task.log",
                                  "cache/images/photo", "cache/audio/message", "cache/videos/clip",

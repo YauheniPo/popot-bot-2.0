@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Adapt the checksum-verified upstream installer for a managed pinned update."""
 
-from pathlib import Path
 import sys
 
 
@@ -9,12 +8,17 @@ PATCHES = (
     (
         '            local autostash_ref=""\n',
         '''            local autostash_ref=""
-            # HERMES MANAGED: never overlook changes saved by an interrupted run.
-            if [ -n "$(git stash list --format=%gs --grep=hermes-install-autostash-)" ]; then
-                log_error "Pending installer stash: restore/reconcile it before retrying the managed update."
+            # HERMES MANAGED: only our own interrupted runs block a retry.
+            # Historical upstream stashes remain untouched, not auto-restored.
+            if [ -n "$(git stash list --format=%gs --grep=hermes-managed-install-autostash-)" ]; then
+                log_error "Pending managed installer stash: restore/reconcile it before retrying the managed update."
                 return 1
             fi
 ''',
+    ),
+    (
+        '                stash_name="hermes-install-autostash-$(date -u +%Y%m%d-%H%M%S)"\n',
+        '                stash_name="hermes-managed-install-autostash-$(date -u +%Y%m%d-%H%M%S)"\n',
     ),
     (
         '                    git reset -q\n',
@@ -56,8 +60,7 @@ PATCHES = (
 )
 
 
-def prepare(path: Path) -> None:
-    source = path.read_text()
+def prepare(source: str) -> str:
     # Validate every anchor before writing anything. A changed upstream layout
     # must stop the deployment, not silently retain unsafe update behavior.
     for old, new in PATCHES:
@@ -66,19 +69,19 @@ def prepare(path: Path) -> None:
         if source.count(old) != 1:
             raise ValueError("unsupported upstream installer layout")
         source = source.replace(old, new, 1)
-    path.write_text(source)
+    return source
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print("Usage: prepare-hermes-installer.py INSTALLER", file=sys.stderr)
+    if len(sys.argv) != 1:
+        print("Usage: prepare-hermes-installer.py < INSTALLER > PREPARED", file=sys.stderr)
         return 2
     try:
-        prepare(Path(sys.argv[1]))
+        prepared = prepare(sys.stdin.read())
+        sys.stdout.write(prepared)
     except (OSError, ValueError) as error:
         print(f"ERROR: cannot prepare pinned installer: {error}", file=sys.stderr)
         return 1
-    print("Managed installer prepared: pin before restoring local changes")
     return 0
 
 

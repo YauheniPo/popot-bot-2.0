@@ -146,7 +146,12 @@ download_installer() {
 }
 
 prepare_installer() {
-  python3 "$SCRIPT_DIR/runtime/prepare-hermes-installer.py" "$INSTALLER_FILE"
+  local prepared_installer
+  # The Python transformer accepts text, never a filesystem path. Keep the
+  # checksum-verified download intact if preparation fails.
+  prepared_installer="$(python3 "$SCRIPT_DIR/runtime/prepare-hermes-installer.py" < "$INSTALLER_FILE")" || return
+  printf '%s\n' "$prepared_installer" > "$INSTALLER_FILE" || return
+  log "Managed installer prepared: pin before restoring local changes"
   return
 }
 

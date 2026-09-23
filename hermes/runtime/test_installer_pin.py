@@ -24,7 +24,9 @@ FIXTURE = '''clone_repo() {
                     git reset -q
     fi
     if [ -n "$(git status --porcelain)" ]; then
-        git stash push --include-untracked -m hermes-install-autostash-test
+        local stash_name
+                stash_name="hermes-install-autostash-$(date -u +%Y%m%d-%H%M%S)"
+        git stash push --include-untracked -m "$stash_name"
         autostash_ref="stash@{0}"
     fi
             git remote set-branches origin "$BRANCH" 2>/dev/null || true
@@ -81,13 +83,17 @@ class InstallerPinTests(unittest.TestCase):
                                        env=self.env, text=True, stderr=subprocess.PIPE)
 
     def prepare(self):
-        return self.run_prepare([str(self.installer)])
+        result = self.run_prepare([])
+        if result.returncode == 0:
+            self.installer.write_text(result.stdout)
+        return result
 
     def run_prepare(self, arguments):
         # Run the real CLI in-process so CI coverage includes the preparer,
         # while checkout/stash behavior below still executes real Git/Bash.
         stdout, stderr = io.StringIO(), io.StringIO()
         with mock.patch.object(sys, "argv", [str(PREPARE), *arguments]), \
+                mock.patch.object(sys, "stdin", io.StringIO(self.installer.read_text())), \
                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             with self.assertRaises(SystemExit) as result:
                 runpy.run_path(str(PREPARE), run_name="__main__")
@@ -140,6 +146,7 @@ clone_repo
         result = self.run_install()
         self.assertNotEqual(result.returncode, 0)
         stash = self.git(self.repo, "rev-parse", "refs/stash").strip()
+        self.assertIn("hermes-managed-install-autostash-", self.git(self.repo, "stash", "list"))
         self.assertEqual(self.git(self.repo, "show", f"{stash}:gateway.py"), "conflicting personal edit\n")
         self.assertTrue(self.git(self.repo, "ls-files", "--unmerged"))
         result = self.run_install()
@@ -174,6 +181,25 @@ clone_repo
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.git(self.repo, "rev-parse", "refs/stash"), stash)
 
+    def test_historical_installer_stashes_and_user_wip_survive_pinned_recovery(self):
+        self.git(self.repo, "pull", "--ff-only")
+        for name in ("hermes-install-autostash-older", "personal WIP", "hermes-install-autostash-recent"):
+            (self.repo / "historical.txt").write_text(name)
+            self.git(self.repo, "stash", "push", "-u", "-m", name)
+        historical = self.git(self.repo, "stash", "list", "--format=%H %gs")
+        local = "new upstream\n" + "context\n" * 20 + "managed patch\n"
+        (self.repo / "gateway.py").write_text(local)
+        (self.repo / "personal.txt").write_text("current untracked file")
+        self.assertEqual(self.prepare().returncode, 0)
+        for _ in range(2):
+            result = self.run_install()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(self.git(self.repo, "rev-parse", "HEAD").strip(), self.pin)
+            self.assertEqual(self.git(self.repo, "stash", "list", "--format=%H %gs"), historical)
+            self.assertEqual((self.repo / "personal.txt").read_text(), "current untracked file")
+            self.assertEqual((self.repo / "gateway.py").read_text(), local.replace("new upstream", "old upstream"))
+            self.assertFalse((self.repo / "historical.txt").exists())
+
     def test_unmerged_index_without_installer_stash_is_not_reset(self):
         self.git(self.repo, "checkout", "-qb", "personal")
         (self.repo / "gateway.py").write_text("personal committed edit\n")
@@ -202,10 +228,38 @@ clone_repo
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(self.installer.read_text(), source)
 
-    def test_prepare_cli_rejects_missing_arguments_and_files(self):
-        for arguments, code in (([], 2), ([str(self.root / "missing.sh")], 1)):
+    def test_prepare_cli_rejects_all_path_arguments_without_reading_or_writing(self):
+        for arguments in ([str(self.installer)], ["../../target.sh"], ["--output", str(self.installer)]):
+            before = self.installer.read_bytes()
             result = self.run_prepare(arguments)
-            self.assertEqual(result.returncode, code)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stdout, "")
+            self.assertEqual(self.installer.read_bytes(), before)
+
+    def test_stream_output_contains_only_the_prepared_script(self):
+        result = self.run_prepare([])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stdout.startswith("clone_repo() {"))
+        self.assertIn("# HERMES MANAGED:", result.stdout)
+        self.assertEqual(self.installer.read_text(), self.source)
+
+    def test_shell_preparation_changes_file_only_on_success(self):
+        for source, expected in ((self.source, 0), ("unknown installer\n", 1)):
+            self.installer.write_text(source)
+            script = f'''set -euo pipefail
+source {shlex.quote(str(ROOT / 'deploy/runtime.sh'))}
+SCRIPT_DIR={shlex.quote(str(ROOT))}
+INSTALLER_FILE={shlex.quote(str(self.installer))}
+log() {{ :; }}
+prepare_installer
+'''
+            result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                                    timeout=10, env=self.env)
+            self.assertEqual(result.returncode, expected, result.stderr)
+            if expected:
+                self.assertEqual(self.installer.read_text(), source)
+            else:
+                self.assertIn("# HERMES MANAGED:", self.installer.read_text())
 
 
 @unittest.skipUnless(os.environ.get("HERMES_UPSTREAM_DIR"), "HERMES_UPSTREAM_DIR is not configured")
