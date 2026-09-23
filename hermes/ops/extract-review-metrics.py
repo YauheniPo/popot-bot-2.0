@@ -110,11 +110,14 @@ def upsert(database: Path, row: dict[str, Any]) -> None:
     columns = ("source_id", "pr_number", "reviewer", "provider", "model", "outcome", "attempts",
                "validated_chunks", "total_chunks", "retries", "fallback_successes", "provider_seconds",
                "observed_at", "head_sha", "run_id")
+    # The identifier list is a fixed module constant; never derive it from a
+    # review payload. Quoting it also makes that invariant explicit to readers.
+    quoted_columns = ",".join(f'"{column}"' for column in columns)
+    assignments = ",".join(f'"{column}"=excluded."{column}"' for column in columns[1:])
     with sqlite3.connect(database) as connection:
         connection.execute(
-            f"INSERT INTO review_runs ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)}) "
-            "ON CONFLICT(source_id) DO UPDATE SET "
-            + ",".join(f"{column}=excluded.{column}" for column in columns[1:]),
+            f"INSERT INTO review_runs ({quoted_columns}) VALUES ({','.join('?' for _ in columns)}) "
+            f"ON CONFLICT(source_id) DO UPDATE SET {assignments}",
             tuple(row.get(column, "") for column in columns),
         )
 
