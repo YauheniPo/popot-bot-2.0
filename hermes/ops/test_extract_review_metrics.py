@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import runpy
 import sqlite3
 import tempfile
 import unittest
@@ -85,6 +86,19 @@ CI run · Reviewed revision
              mock.patch("sys.argv", ["extract-review-metrics.py", "--pr", "43"]):
             self.assertEqual(metrics.main(), 0)
         self.assertEqual(importer.call_args.args[1:3], (43, "secret"))
+
+    def test_script_entrypoint_runs(self):
+        response = mock.Mock()
+        response.__enter__ = lambda self: self
+        response.__exit__ = mock.Mock(return_value=False)
+        response.read.return_value = b"[]"
+        with mock.patch.object(metrics, "import_pr", return_value=0), \
+             mock.patch.dict(metrics.os.environ, {"GITHUB_TOKEN": "secret"}), \
+             mock.patch("sys.argv", ["extract-review-metrics.py", "--pr", "43"]), \
+             mock.patch("urllib.request.urlopen", return_value=response):
+            with self.assertRaises(SystemExit) as result:
+                runpy.run_path(str(SCRIPT), run_name="__main__")
+        self.assertEqual(result.exception.code, 0)
 
 
 if __name__ == "__main__":
