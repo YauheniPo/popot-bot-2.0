@@ -103,7 +103,7 @@ run_as_hermes() {{
         stubs = "\n".join(f"{name}() {{ :; }}" for name in (
             "resolve_source_pin", "validate_inputs", "install_host_dependencies", "install_tailscale",
             "ensure_service_user", "resolve_user_paths", "resolve_managed_runtime", "enable_host_administration",
-            "download_installer", "quiesce_existing_gateway_for_update", "backup_existing_installation",
+            "download_installer", "prepare_installer", "quiesce_existing_gateway_for_update", "backup_existing_installation",
             "verify_updated_kanban_state", "apply_local_hermes_patches", "install_local_browser_automation",
             "configure_development_clis", "install_google_workspace_cli", "apply_recommended_defaults",
             "initialize_skills_hub", "resolve_gateway_choice", "install_operations_layer",

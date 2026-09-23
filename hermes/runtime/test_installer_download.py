@@ -19,7 +19,7 @@ INSTALLER = b"#!/bin/sh\necho fixture\n"
 
 @unittest.skipUnless(shutil.which("curl"), "curl is required")
 class InstallerDownloadTests(unittest.TestCase):
-    def run_download(self, statuses, *, checksum=None, retry_after="1"):
+    def run_download(self, statuses, *, checksum=None, retry_after="1", prepare_fails=False):
         requests = []
 
         class Handler(BaseHTTPRequestHandler):
@@ -85,6 +85,7 @@ INSTALLER_SHA256={checksum or hashlib.sha256(INSTALLER).hexdigest()}
 mktemp() {{ printf '%s\\n' {shlex.quote(str(target))}; touch {shlex.quote(str(target))}; }}
 {cleanup}
 {stubs}
+prepare_installer() {{ echo PREPARE; return {1 if prepare_fails else 0}; }}
 quiesce_existing_gateway_for_update() {{ echo GATEWAY_STOP; }}
 backup_existing_installation() {{ echo BACKUP; }}
 install_hermes() {{ echo INSTALL; exit 0; }}
@@ -107,6 +108,8 @@ main
         self.assertEqual(len(requests), 2)
         self.assertGreaterEqual(requests[1] - requests[0], 0.9)
         self.assertLess(result.stdout.index("Installer checksum verified"), result.stdout.index("GATEWAY_STOP"))
+        self.assertLess(result.stdout.index("Installer checksum verified"), result.stdout.index("PREPARE"))
+        self.assertLess(result.stdout.index("PREPARE"), result.stdout.index("GATEWAY_STOP"))
         self.assertLess(result.stdout.index("GATEWAY_STOP"), result.stdout.index("BACKUP"))
         self.assertLess(result.stdout.index("BACKUP"), result.stdout.index("INSTALL"))
 
@@ -118,6 +121,13 @@ main
         self.assertNotIn("BACKUP", result.stdout)
         self.assertIn("http_status=429", result.stderr)
         self.assertNotIn("untrusted error body", result.stderr)
+
+    def test_unsupported_installer_keeps_gateway_running(self):
+        result, _, _ = self.run_download([200], prepare_fails=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PREPARE", result.stdout)
+        self.assertNotIn("GATEWAY_STOP", result.stdout)
+        self.assertNotIn("BACKUP", result.stdout)
 
     def test_404_is_not_retried(self):
         result, requests, _ = self.run_download([404])

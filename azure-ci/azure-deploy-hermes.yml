@@ -270,7 +270,7 @@ stages:
 
                 - bash: |
                     set -euo pipefail
-                    mkdir -p "${ANSIBLE_LOCAL_TEMP}" "${ANSIBLE_REMOTE_TEMP}"
+                    mkdir -p "${ANSIBLE_LOCAL_TEMP}"
 
                     # --syntax-check only parses the playbook; it never runs
                     # pre_tasks or tasks, so it cannot catch a bad vault value
@@ -295,13 +295,12 @@ stages:
                     DEPLOY_MODE: ${{ parameters.deployMode }}
                     ANSIBLE_CONFIG: $(Build.SourcesDirectory)/hermes/ansible/ansible.cfg
                     ANSIBLE_LOCAL_TEMP: $(Agent.TempDirectory)/hermes-ansible-local
-                    ANSIBLE_REMOTE_TEMP: $(Agent.TempDirectory)/hermes-ansible-remote
                     HERMES_VAULT_FILE: $(hermesVault.secureFilePath)
                     HERMES_VAULT_PASSWORD_FILE: $(Agent.TempDirectory)/hermes-deploy-secrets/vault-password
 
                 - bash: |
                     set -euo pipefail
-                    mkdir -p "$ANSIBLE_LOCAL_TEMP" "$ANSIBLE_REMOTE_TEMP"
+                    mkdir -p "$ANSIBLE_LOCAL_TEMP"
                     # raw needs no remote Python and does not run deployment tasks.
                     # BatchMode does not prevent Tailscale's browser check from
                     # waiting, so bound the whole authentication probe as well.
@@ -321,7 +320,6 @@ stages:
                   env:
                     ANSIBLE_CONFIG: $(Build.SourcesDirectory)/hermes/ansible/ansible.cfg
                     ANSIBLE_LOCAL_TEMP: $(Agent.TempDirectory)/hermes-ansible-local
-                    ANSIBLE_REMOTE_TEMP: $(Agent.TempDirectory)/hermes-ansible-remote
                     # Tailscale SSH authenticates the node before SSH session login.
                     # Never silently fall back to a hosted-agent key or password.
                     ANSIBLE_SSH_COMMON_ARGS: -o UserKnownHostsFile=$(hermesKnownHosts.secureFilePath) -o StrictHostKeyChecking=yes -o PubkeyAuthentication=no -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o IdentityAgent=none -o BatchMode=yes -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2
@@ -330,7 +328,7 @@ stages:
 
                 - bash: |
                     set -euo pipefail
-                    mkdir -p "${ANSIBLE_LOCAL_TEMP}" "${ANSIBLE_REMOTE_TEMP}"
+                    mkdir -p "${ANSIBLE_LOCAL_TEMP}"
 
                     # REVIEWED: intentionally no --check/--diff dry run. The
                     # deployment runs through command/shell tasks (installer,
@@ -351,7 +349,6 @@ stages:
                     DEPLOY_MODE: ${{ parameters.deployMode }}
                     ANSIBLE_CONFIG: $(Build.SourcesDirectory)/hermes/ansible/ansible.cfg
                     ANSIBLE_LOCAL_TEMP: $(Agent.TempDirectory)/hermes-ansible-local
-                    ANSIBLE_REMOTE_TEMP: $(Agent.TempDirectory)/hermes-ansible-remote
                     ANSIBLE_SSH_COMMON_ARGS: -o UserKnownHostsFile=$(hermesKnownHosts.secureFilePath) -o StrictHostKeyChecking=yes -o PubkeyAuthentication=no -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o IdentityAgent=none -o BatchMode=yes -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2
                     HERMES_VAULT_FILE: $(hermesVault.secureFilePath)
                     HERMES_VAULT_PASSWORD_FILE: $(Agent.TempDirectory)/hermes-deploy-secrets/vault-password

@@ -407,6 +407,7 @@ main() {
   resolve_managed_runtime
   enable_host_administration
   download_installer
+  prepare_installer
   quiesce_existing_gateway_for_update
   backup_existing_installation
   install_hermes

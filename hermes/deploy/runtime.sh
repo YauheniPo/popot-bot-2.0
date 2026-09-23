@@ -145,6 +145,11 @@ download_installer() {
   return
 }
 
+prepare_installer() {
+  python3 "$SCRIPT_DIR/runtime/prepare-hermes-installer.py" "$INSTALLER_FILE"
+  return
+}
+
 backup_existing_installation() {
   if [[ ! -e "$HERMES_BIN" && ! -d "$HERMES_INSTALL_DIR" ]]; then
     if [[ -d "$HERMES_HOME" ]] &&

@@ -110,6 +110,14 @@ class DeploymentPipelineTests(unittest.TestCase):
     def deployment_steps(self):
         return self.pipeline["stages"][1]["jobs"][0]["strategy"]["runOnce"]["deploy"]["steps"]
 
+    def test_agent_temp_is_not_used_as_remote_vps_temp(self):
+        steps = [step for step in self.deployment_steps()
+                 if "ANSIBLE_LOCAL_TEMP" in step.get("env", {})]
+        self.assertEqual(len(steps), 3)
+        for step in steps:
+            self.assertNotIn("ANSIBLE_REMOTE_TEMP", step["env"])
+            self.assertNotIn("ANSIBLE_REMOTE_TEMP", step["bash"])
+
     def test_tailnet_join_is_protected_and_cleanup_runs_on_failure_or_cancel(self):
         steps = self.deployment_steps()
         files = [s["inputs"]["secureFile"] for s in steps if s.get("task") == "DownloadSecureFile@1"]
