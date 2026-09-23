@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 
-METADATA_RE = re.compile(r"Technical metadata\s*(.*?)(?:\n\s*Review scope|\n\s*CI run|\Z)", re.S | re.I)
+METADATA_RE = re.compile(r"Technical metadata", re.I)
 FIELD_RE = {
     "connection": re.compile(r"^Connection:\s*([^·\n]+)", re.M),
     "model": re.compile(r"^Successful models?:\s*([^\n]+)", re.M),
@@ -36,26 +36,22 @@ def parse_review(body: str, reviewer_hint: str = "") -> dict[str, Any] | None:
     match = METADATA_RE.search(body or "")
     if not match:
         return None
-    block = match.group(1)
+    block = re.split(r"\n\s*(?:Review scope|CI run)\b", body[match.end():], maxsplit=1, flags=re.I)[0]
     connection = FIELD_RE["connection"].search(block)
     model = FIELD_RE["model"].search(block)
     if not connection or not model:
         return None
     provider = connection.group(1).strip()
     model_name = model.group(1).strip().split(",", 1)[0]
-    reviewer = reviewer_hint.strip()
-    if not reviewer:
-        for candidate in ("DirectAPI", "ClaudeCodePlugin", "ObservableMessagesReview"):
-            if candidate.lower() in body.lower():
-                reviewer = candidate
-                break
-    if not reviewer:
-        reviewer = "unknown"
-
-    def number(name: str, default: int = 0) -> int:
-        found = FIELD_RE[name].search(block)
-        return int(found.group(1)) if found else default
-
+    reviewer = reviewer_hint.strip() or next(
+        (candidate for candidate in ("DirectAPI", "ClaudeCodePlugin", "ObservableMessagesReview")
+         if candidate.lower() in body.lower()),
+        "unknown",
+    )
+    numbers = {
+        name: int(found.group(1)) if (found := FIELD_RE[name].search(block)) else 0
+        for name in ("attempts", "validated_chunks", "retries", "fallback_successes")
+    }
     seconds = FIELD_RE["provider_seconds"].search(block)
     outcome = FIELD_RE["outcome"].search(block)
     scope = FIELD_RE["scope"].search(body)
@@ -63,11 +59,11 @@ def parse_review(body: str, reviewer_hint: str = "") -> dict[str, Any] | None:
         "reviewer": reviewer,
         "provider": provider,
         "model": model_name,
-        "attempts": number("attempts"),
-        "validated_chunks": number("validated_chunks"),
+        "attempts": numbers["attempts"],
+        "validated_chunks": numbers["validated_chunks"],
         "total_chunks": int(scope.group(2)) if scope else 0,
-        "retries": number("retries"),
-        "fallback_successes": number("fallback_successes"),
+        "retries": numbers["retries"],
+        "fallback_successes": numbers["fallback_successes"],
         "provider_seconds": float(seconds.group(1)) if seconds else 0.0,
         "outcome": outcome.group(1).strip().lower() if outcome else "unknown",
     }

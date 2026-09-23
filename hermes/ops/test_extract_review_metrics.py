@@ -10,7 +10,8 @@ from unittest import mock
 
 SCRIPT = Path(__file__).with_name("extract-review-metrics.py")
 SPEC = importlib.util.spec_from_file_location("extract_review_metrics", SCRIPT)
-assert SPEC and SPEC.loader
+assert SPEC is not None
+assert SPEC.loader is not None
 metrics = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(metrics)
 
@@ -58,6 +59,32 @@ CI run · Reviewed revision
             self.assertEqual(metrics.fetch_reviews("org/repo", 43, "secret"), [])
         request = urlopen.call_args.args[0]
         self.assertEqual(request.get_header("Authorization"), "Bearer secret")
+
+    def test_import_pr_skips_non_metadata_and_upserts_valid_records(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(metrics, "fetch_reviews", return_value=[
+            {"id": 1, "body": "not a review"},
+            {"id": 2, "body": "Technical metadata\nConnection: nous · API: https://example\n"
+                                "Successful models: model-a\nResult: success\n", "created_at": "now"},
+        ]):
+            count = metrics.import_pr("org/repo", 43, "secret", Path(directory) / "metrics.db")
+            self.assertEqual(count, 1)
+
+    def test_parse_review_rejects_incomplete_and_supports_unknown_reviewer(self):
+        self.assertIsNone(metrics.parse_review("ordinary comment"))
+        self.assertIsNone(metrics.parse_review("Technical metadata\nResult: failed"))
+        parsed = metrics.parse_review(
+            "Technical metadata\nConnection: provider · API: https://example\n"
+            "Successful models: model-a\nResult: failed\n"
+        )
+        self.assertEqual(parsed["reviewer"], "unknown")
+        self.assertEqual(parsed["outcome"], "failed")
+
+    def test_main_imports_requested_pr(self):
+        with mock.patch.object(metrics, "import_pr", return_value=2) as importer, \
+             mock.patch.dict(metrics.os.environ, {"GITHUB_TOKEN": "secret"}), \
+             mock.patch("sys.argv", ["extract-review-metrics.py", "--pr", "43"]):
+            self.assertEqual(metrics.main(), 0)
+        self.assertEqual(importer.call_args.args[1:3], (43, "secret"))
 
 
 if __name__ == "__main__":

@@ -10,7 +10,8 @@ from unittest import mock
 
 SCRIPT = Path(__file__).with_name("extract-review-metrics.py")
 SPEC = importlib.util.spec_from_file_location("extract_review_metrics", SCRIPT)
-assert SPEC and SPEC.loader
+assert SPEC is not None
+assert SPEC.loader is not None
 metrics = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(metrics)
 
