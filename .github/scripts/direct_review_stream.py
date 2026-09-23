@@ -157,36 +157,44 @@ def _apply_event(event, result, content, progress):
     return finish
 
 
-def read_completion(response, progress: Progress) -> dict:
+def _finish_reason_label(reason: object) -> str:
+    """Only known enum values may enter logs; provider strings can echo secrets."""
+    if reason is None:
+        return "none"
+    if reason in ("stop", "length", "tool_calls", "function_call", "content_filter"):
+        return reason
+    return "other"
+
+
+def read_completion(response, progress: Progress, *, allow_stop_at_eof: bool = False) -> dict:
     result, content, finish = {}, [], None
     try:
         for raw in _events(response, progress):
             progress.sse_events += 1
             if raw == b"[DONE]":
                 progress.done_seen = True
-                if finish != "stop":
-                    raise StreamFailure("output_limit" if finish == "length" else "stream_incomplete")
-                result["choices"] = [{"message": {"content": "".join(content)}, "finish_reason": finish}]
-                return result
+                break
             finish = _apply_event(json.loads(raw), result, content, progress) or finish
-            # Only known enum values may enter logs; provider strings can echo secrets.
-            progress.finish_reason = (
-                finish if finish in ("stop", "length", "tool_calls", "function_call", "content_filter")
-                else "none" if finish is None else "other"
-            )
+            progress.finish_reason = _finish_reason_label(finish)
     except (ValueError, KeyError, TypeError, AttributeError):
         raise StreamFailure("invalid_stream") from None
+    # Nous closes SSE after finish_reason=stop without a separate [DONE] event.
+    # Only a clean EOF qualifies: read errors, timeouts and provider errors still
+    # propagate. Callers must still validate the assembled JSON/review contract.
+    if finish == "stop" and (progress.done_seen or (allow_stop_at_eof and progress.eof_seen)):
+        result["choices"] = [{"message": {"content": "".join(content)}, "finish_reason": finish}]
+        return result
     raise StreamFailure("output_limit" if finish == "length" else "stream_incomplete")
 
 
-def read_response(response, progress: Progress) -> object:
+def read_response(response, progress: Progress, *, allow_stop_at_eof: bool = False) -> object:
     content_type = getattr(response, "headers", {}).get("Content-Type", "")
     status = getattr(response, "status", None)
     progress.http_status = status if type(status) is int and 100 <= status <= 599 else None
     progress.state = "waiting_for_content"
     if isinstance(content_type, str) and "text/event-stream" in content_type.lower():
         progress.response_format = "sse"
-        return read_completion(response, progress)
+        return read_completion(response, progress, allow_stop_at_eof=allow_stop_at_eof)
     # Keep compatibility with providers that ignore stream=true. Still bounded
     # by the same idle/absolute watchdog; no speculative "thinking" messages.
     progress.response_format = "json"

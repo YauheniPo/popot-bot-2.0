@@ -227,6 +227,13 @@ def _http_retry_delay(error, provider: str, kind: str, attempt: int, attempts: i
     return delay
 
 
+def _stream_retry_delay(error: StreamFailure, provider: str, kind: str, attempt: int, attempts: int) -> float:
+    """Only watchdog timeouts can retry; malformed or incomplete streams fail this route."""
+    if str(error) not in {"inactivity_timeout", "attempt_timeout"} or attempt == attempts - 1:
+        raise RuntimeError(f"{provider} {kind} probe failed: {error}") from None
+    return 15 * (attempt + 1)
+
+
 def _request_probe_response(request: urllib.request.Request, attempts: int, timeout: int,
                             provider: str, model: str, kind: str) -> object:
     result: object = None
@@ -240,12 +247,10 @@ def _request_probe_response(request: urllib.request.Request, attempts: int, time
             f"(timeout {timeout}s)", file=sys.stderr,
         )
         try:
-            result = _read_probe_response(request, timeout, kind)
+            result = _read_probe_response(request, timeout, kind, provider)
             break
         except StreamFailure as error:
-            # Match review behavior: incomplete/invalid streams must not establish readiness.
-            if str(error) not in {"inactivity_timeout", "attempt_timeout"} or attempt == attempts - 1:
-                raise RuntimeError(f"{provider} {kind} probe failed: {error}") from None
+            delay = _stream_retry_delay(error, provider, kind, attempt, attempts)
         except urllib.error.HTTPError as error:
             delay = _http_retry_delay(error, provider, kind, attempt, attempts, remaining)
         except (urllib.error.URLError, TimeoutError, ConnectionError, IncompleteRead):
@@ -264,7 +269,7 @@ def _request_probe_response(request: urllib.request.Request, attempts: int, time
     return result
 
 
-def _read_probe_response(request: urllib.request.Request, timeout: int, kind: str) -> object:
+def _read_probe_response(request: urllib.request.Request, timeout: int, kind: str, provider: str) -> object:
     if kind != "json":
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.load(response)
@@ -272,7 +277,7 @@ def _read_probe_response(request: urllib.request.Request, timeout: int, kind: st
     with watchdog(total=timeout, idle=timeout, heartbeat=15, log=sys.stderr) as progress:
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                return read_response(response, progress)
+                return read_response(response, progress, allow_stop_at_eof=provider == "nous")
         except urllib.error.HTTPError as error:
             progress.http_status = error.code
             raise

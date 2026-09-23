@@ -34,6 +34,11 @@ def run_blocked_watchdog(watchdog):
         time.sleep(2)
 
 
+def run_failed_watchdog(watchdog):
+    with watchdog:
+        raise ConnectionError("PRIVATE token and URL")
+
+
 def run_reasoning_watchdog(watchdog):
     with watchdog as progress:
         while True:
@@ -42,6 +47,37 @@ def run_reasoning_watchdog(watchdog):
 
 
 class StreamTest(unittest.TestCase):
+    def test_stop_at_eof_compatibility_preserves_metadata_and_diagnostics(self):
+        response = sse(delta(content='{"status":"ok"}'),
+                       {"id": "test", "model": "test", "choices": [{"finish_reason": "stop"}]},
+                       {"choices": [], "usage": {"completion_tokens": 5}})
+        response.headers = {"Content-Type": "text/event-stream"}
+        log = io.StringIO()
+        with stream.watchdog(total=1, idle=1, heartbeat=1, log=log) as progress:
+            result = stream.read_response(response, progress, allow_stop_at_eof=True)
+        self.assertEqual(result["choices"][0]["message"]["content"], '{"status":"ok"}')
+        self.assertEqual(result["usage"], {"completion_tokens": 5})
+        diagnostic = json.loads(log.getvalue().split("request_end ")[1])
+        self.assertEqual(diagnostic["outcome"], "received")
+        self.assertEqual(diagnostic["finish_reason"], "stop")
+        self.assertTrue(diagnostic["eof_seen"])
+        self.assertFalse(diagnostic["done_seen"])
+
+    def test_stop_at_eof_compatibility_still_rejects_failed_streams(self):
+        stop = {"choices": [{"finish_reason": "stop"}]}
+        for tail, reason in (
+            ((), "stream_incomplete"),
+            (({"choices": [{"finish_reason": "length"}]},), "output_limit"),
+            (({"choices": [{"finish_reason": "content_filter"}]},), "stream_incomplete"),
+            ((stop, {"error": {"message": "private"}}), "provider_stream_error"),
+            ((stop, "malformed"), "invalid_stream"),
+        ):
+            with self.subTest(tail=tail):
+                response = sse(delta(content="{}"), *tail)
+                progress = stream.Progress(io.StringIO())
+                with self.assertRaisesRegex(stream.StreamFailure, reason):
+                    stream.read_completion(response, progress, allow_stop_at_eof=True)
+
     def test_request_diagnostics_distinguish_stream_endings_without_content(self):
         stop = {"choices": [{"finish_reason": "stop"}]}
         for tail, reason, finish, done, eof in (
@@ -87,13 +123,13 @@ class StreamTest(unittest.TestCase):
 
     def test_request_diagnostics_cover_transport_failure_before_headers(self):
         log = io.StringIO()
+        watchdog = stream.watchdog(total=1, idle=1, heartbeat=1, log=log)
         with self.assertRaises(ConnectionError):
-            with stream.watchdog(total=1, idle=1, heartbeat=1, log=log):
-                raise ConnectionError("PRIVATE token and URL")
+            run_failed_watchdog(watchdog)
         diagnostic = json.loads(log.getvalue().split("request_end ")[1])
         self.assertEqual(diagnostic["outcome"], "transport_error")
         self.assertEqual(diagnostic["state"], "waiting_for_headers")
-        self.assertEqual(diagnostic["http_status"], None)
+        self.assertIsNone(diagnostic["http_status"])
         self.assertNotIn("PRIVATE", log.getvalue())
 
     def test_reassembles_content_but_never_logs_reasoning_or_text(self):

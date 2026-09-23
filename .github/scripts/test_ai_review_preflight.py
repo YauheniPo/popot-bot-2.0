@@ -35,18 +35,21 @@ class OllamaReviewTest(unittest.TestCase):
     def test_json_preflight_uses_review_stream_contract_and_closes_responses(self):
         content = b'data: {"choices":[{"delta":{"content":"{\\"status\\":\\"ok\\"}"}}]}\n\n'
         stop = b'data: {"choices":[{"finish_reason":"stop"}]}\n\n'
-        for tail, ready in ((stop + b'data: [DONE]\n\n', True), (stop, False),
-                            (b'data: [DONE]\n\n', False)):
-            with self.subTest(tail=tail):
+        for provider, tail, ready in (
+            ("nous", stop + b'data: [DONE]\n\n', True), ("nous", stop, True),
+            ("openrouter", stop, False), ("nous", b'data: [DONE]\n\n', False),
+            ("nous", b"", False),
+        ):
+            with self.subTest(provider=provider, tail=tail):
                 response = io.BytesIO(content + tail)
                 response.headers = {"Content-Type": "text/event-stream"}
                 with mock.patch.object(ai_review_preflight.urllib.request, "urlopen", return_value=response) as request, \
                         mock.patch("sys.stderr", new_callable=io.StringIO) as log:
                     if ready:
-                        ai_review_preflight.probe("PRIVATE", "json", "nous", "model")
+                        ai_review_preflight.probe("PRIVATE", "json", provider, "model")
                     else:
                         with self.assertRaisesRegex(RuntimeError, "stream_incomplete"):
-                            ai_review_preflight.probe("PRIVATE", "json", "nous", "model")
+                            ai_review_preflight.probe("PRIVATE", "json", provider, "model")
                 self.assertTrue(json.loads(request.call_args.args[0].data)["stream"])
                 self.assertEqual(request.call_count, 1)
                 self.assertTrue(response.closed)

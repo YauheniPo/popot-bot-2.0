@@ -330,8 +330,15 @@ completed; JSON and review validation still have to pass.
 
 For `stream_incomplete`, `eof_seen=true` with `done_seen=false` means the stream
 closed without `[DONE]`; `done_seen=true` with `finish_reason=none` means the
-terminal marker arrived without a completion reason. Even `finish_reason=stop`
-without `[DONE]` is rejected. `finish_reason=length` is an `output_limit`, including
+terminal marker arrived without a completion reason. Normally even
+`finish_reason=stop` without `[DONE]` is rejected. Nous is the verified exception:
+its SSE route closes after `stop` without `[DONE]` (observed for both configured
+models in [run 35851663557](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/35851663557)).
+For Nous only, preflight and review accept a clean EOF after `stop`, then apply
+the existing JSON and review validation. Missing `stop`, read errors, timeouts,
+provider errors and invalid JSON still fail. Diagnostics retain `done_seen=false`
+and `eof_seen=true` for this completion path.
+`finish_reason=length` is an `output_limit`, including
 when the stream ends without `[DONE]`. These records distinguish observed wire
 events, but cannot prove why a remote connection ended. Incomplete streams are
 not retried on the same model; the configured fallback is tried instead.
