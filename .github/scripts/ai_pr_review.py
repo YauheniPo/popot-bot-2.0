@@ -503,6 +503,8 @@ def _open_response(request, timeout, progress=None):
             return read_response(response, progress) if progress is not None else json.load(response)
     except urllib.error.HTTPError as error:
         # This read stays inside the model watchdog, including stalled error bodies.
+        if progress is not None:
+            progress.http_status = error.code
         raise _http_failure(error, progress is not None) from None
 
 

@@ -18,6 +18,41 @@ import ai_review_preflight
 
 
 class OllamaReviewTest(unittest.TestCase):
+    def test_stream_watchdog_timeout_keeps_bounded_preflight_retry(self):
+        first = io.BytesIO(b"")
+        second = io.BytesIO(b"")
+        expected = {"choices": [{"message": {"content": '{"status":"ok"}'}}]}
+        with mock.patch.object(ai_review_preflight.urllib.request, "urlopen", side_effect=[first, second]) as request, \
+                mock.patch.object(ai_review_preflight, "read_response", side_effect=[
+                    ai_review_preflight.StreamFailure("inactivity_timeout"), expected]), \
+                mock.patch.object(ai_review_preflight.time, "sleep") as sleep:
+            ai_review_preflight.probe("test-key", "json", attempts_override=2)
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once_with(15)
+        self.assertTrue(first.closed)
+        self.assertTrue(second.closed)
+
+    def test_json_preflight_uses_review_stream_contract_and_closes_responses(self):
+        content = b'data: {"choices":[{"delta":{"content":"{\\"status\\":\\"ok\\"}"}}]}\n\n'
+        stop = b'data: {"choices":[{"finish_reason":"stop"}]}\n\n'
+        for tail, ready in ((stop + b'data: [DONE]\n\n', True), (stop, False),
+                            (b'data: [DONE]\n\n', False)):
+            with self.subTest(tail=tail):
+                response = io.BytesIO(content + tail)
+                response.headers = {"Content-Type": "text/event-stream"}
+                with mock.patch.object(ai_review_preflight.urllib.request, "urlopen", return_value=response) as request, \
+                        mock.patch("sys.stderr", new_callable=io.StringIO) as log:
+                    if ready:
+                        ai_review_preflight.probe("PRIVATE", "json", "nous", "model")
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "stream_incomplete"):
+                            ai_review_preflight.probe("PRIVATE", "json", "nous", "model")
+                self.assertTrue(json.loads(request.call_args.args[0].data)["stream"])
+                self.assertEqual(request.call_count, 1)
+                self.assertTrue(response.closed)
+                self.assertIn("request_end", log.getvalue())
+                self.assertNotIn("PRIVATE", log.getvalue())
+
     def test_direct_failure_report_distinguishes_preflight_from_review_failure(self):
         root = Path(__file__).resolve().parents[2]
         workflow = yaml.safe_load((root / ".github/workflows/pr-ai-review.yml").read_text())

@@ -42,6 +42,60 @@ def run_reasoning_watchdog(watchdog):
 
 
 class StreamTest(unittest.TestCase):
+    def test_request_diagnostics_distinguish_stream_endings_without_content(self):
+        stop = {"choices": [{"finish_reason": "stop"}]}
+        for tail, reason, finish, done, eof in (
+            ((stop, "[DONE]"), None, "stop", True, False),
+            ((stop,), "stream_incomplete", "stop", False, True),
+            (("[DONE]",), "stream_incomplete", "none", True, False),
+            ((), "stream_incomplete", "none", False, True),
+            (({"choices": [{"finish_reason": "PRIVATE"}]}, "[DONE]"),
+             "stream_incomplete", "other", True, False),
+            (({"choices": [{"finish_reason": "length"}]},),
+             "output_limit", "length", False, True),
+            (({"error": {"message": "PRIVATE"}},),
+             "provider_stream_error", "none", False, False),
+        ):
+            with self.subTest(tail=tail):
+                log = io.StringIO()
+                response = sse(delta(reasoning_content="PRIVATE"), delta(content="SECRET"), *tail)
+                wire_bytes = len(response.getvalue())
+                response.headers = {"Content-Type": "text/event-stream; PRIVATE"}
+                response.status = 200
+                def read():
+                    with stream.watchdog(total=1, idle=1, heartbeat=1, log=log) as progress:
+                        return stream.read_response(response, progress)
+                if reason:
+                    with self.assertRaisesRegex(stream.StreamFailure, reason):
+                        read()
+                else:
+                    read()
+                line, = log.getvalue().splitlines()
+                diagnostic = json.loads(line.removeprefix("[direct-review] request_end "))
+                self.assertEqual(diagnostic["outcome"], reason or "received")
+                self.assertEqual(diagnostic["finish_reason"], finish)
+                self.assertEqual(diagnostic["done_seen"], done)
+                self.assertEqual(diagnostic["eof_seen"], eof)
+                self.assertEqual(diagnostic["http_status"], 200)
+                self.assertEqual(diagnostic["response_format"], "sse")
+                self.assertEqual(diagnostic["wire_bytes"], wire_bytes)
+                self.assertEqual(diagnostic["sse_events"], 2 + len(tail))
+                self.assertEqual(diagnostic["content_chars"], 6)
+                self.assertEqual(diagnostic["reasoning_chars"], 7)
+                self.assertNotIn("PRIVATE", line)
+                self.assertNotIn("SECRET", line)
+
+    def test_request_diagnostics_cover_transport_failure_before_headers(self):
+        log = io.StringIO()
+        with self.assertRaises(ConnectionError):
+            with stream.watchdog(total=1, idle=1, heartbeat=1, log=log):
+                raise ConnectionError("PRIVATE token and URL")
+        diagnostic = json.loads(log.getvalue().split("request_end ")[1])
+        self.assertEqual(diagnostic["outcome"], "transport_error")
+        self.assertEqual(diagnostic["state"], "waiting_for_headers")
+        self.assertEqual(diagnostic["http_status"], None)
+        self.assertNotIn("PRIVATE", log.getvalue())
+
     def test_reassembles_content_but_never_logs_reasoning_or_text(self):
         progress = stream.Progress(io.StringIO())
         response = sse(delta(reasoning_content="PRIVATE thinking"),
@@ -135,6 +189,7 @@ class StreamTest(unittest.TestCase):
         self.assertEqual(signal.getsignal(signal.SIGALRM), previous)
         self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0, 0))
         self.assertIn("provider_processing=unknown", log.getvalue())
+        self.assertIn('"outcome": "inactivity_timeout"', log.getvalue())
 
     def test_total_deadline_wins_even_when_provider_keeps_thinking(self):
         log = io.StringIO()

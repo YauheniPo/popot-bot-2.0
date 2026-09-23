@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 
 from claude_review_runner import _rate_limit_details
+from direct_review_stream import StreamFailure, read_response, watchdog
 from review_execution import safe_label
 
 MODEL = "moonshotai/kimi-k3"
@@ -147,6 +148,8 @@ def _probe_request(api_key: str, kind: str, provider: str, model: str) -> urllib
         "nvidia": NVIDIA_CHAT_COMPLETIONS_URL,
         "nous": NOUS_CHAT_COMPLETIONS_URL,
     }[provider]
+    if kind == "json":
+        body["stream"] = True
     if kind in {"tools", "claude"}:
         # Probe the same Anthropic route used by the Claude action, including
         # an operator-provided base URL. A chat response cannot prove tool support.
@@ -237,9 +240,12 @@ def _request_probe_response(request: urllib.request.Request, attempts: int, time
             f"(timeout {timeout}s)", file=sys.stderr,
         )
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                result = json.load(response)
+            result = _read_probe_response(request, timeout, kind)
             break
+        except StreamFailure as error:
+            # Match review behavior: incomplete/invalid streams must not establish readiness.
+            if str(error) not in {"inactivity_timeout", "attempt_timeout"} or attempt == attempts - 1:
+                raise RuntimeError(f"{provider} {kind} probe failed: {error}") from None
         except urllib.error.HTTPError as error:
             delay = _http_retry_delay(error, provider, kind, attempt, attempts, remaining)
         except (urllib.error.URLError, TimeoutError, ConnectionError, IncompleteRead):
@@ -256,6 +262,20 @@ def _request_probe_response(request: urllib.request.Request, attempts: int, time
         print(f"[preflight] retry_wait={delay}s; no provider request in flight", file=sys.stderr)
         time.sleep(delay)
     return result
+
+
+def _read_probe_response(request: urllib.request.Request, timeout: int, kind: str) -> object:
+    if kind != "json":
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.load(response)
+    # Exercise the exact review reader, including idle/absolute bounds and diagnostics.
+    with watchdog(total=timeout, idle=timeout, heartbeat=15, log=sys.stderr) as progress:
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return read_response(response, progress)
+        except urllib.error.HTTPError as error:
+            progress.http_status = error.code
+            raise
 
 
 def probe(api_key: str, kind: str, provider: str = "ollama-cloud", model: str = MODEL,

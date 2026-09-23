@@ -30,6 +30,27 @@ class Progress:
     events: int = 0
     content_chars: int = 0
     reasoning_chars: int = 0
+    http_status: int | None = None
+    response_format: str = "unknown"
+    wire_bytes: int = 0
+    sse_events: int = 0
+    finish_reason: str = "none"
+    done_seen: bool = False
+    eof_seen: bool = False
+
+    def request_end(self, outcome: str) -> None:
+        """One bounded record even when a request fails before its first heartbeat."""
+        now = time.monotonic()
+        diagnostic = {
+            "outcome": outcome, "elapsed_seconds": round(now - self.started, 3),
+            "idle_seconds": round(now - self.last_activity, 3), "state": self.state,
+            "http_status": self.http_status, "response_format": self.response_format,
+            "wire_bytes": self.wire_bytes, "sse_events": self.sse_events,
+            "content_chars": self.content_chars, "reasoning_chars": self.reasoning_chars,
+            "finish_reason": self.finish_reason, "done_seen": self.done_seen,
+            "eof_seen": self.eof_seen,
+        }
+        print("[direct-review] request_end " + json.dumps(diagnostic), file=self.log, flush=True)
 
     def record(self, *, content: str = "", reasoning: str = "") -> None:
         if not content and not reasoning:
@@ -70,25 +91,37 @@ def watchdog(*, total: float, idle: float, heartbeat: float, log: TextIO):
 
     signal.signal(signal.SIGALRM, check)
     interval = min(1.0, total, idle, heartbeat)
+    outcome = "transport_error"
     try:
         signal.setitimer(signal.ITIMER_REAL, interval, interval)
         yield progress
+        outcome = "received"
+    except StreamFailure as error:
+        outcome = str(error)
+        raise
+    except ValueError:
+        outcome = "invalid_json"
+        raise
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous)
+        if progress.http_status is not None and progress.http_status >= 400:
+            outcome = f"http_{progress.http_status}"
+        progress.request_end(outcome)
 
 
-def _events(response):
-    size, parts = 0, []
+def _events(response, progress):
+    parts = []
     for raw in iter(lambda: response.readline(MAX_RESPONSE_BYTES + 1), b""):
-        size += len(raw)
-        if size > MAX_RESPONSE_BYTES:
+        progress.wire_bytes += len(raw)
+        if progress.wire_bytes > MAX_RESPONSE_BYTES:
             raise StreamFailure("response_limit")
         if raw.startswith(b"data:"):
             parts.append(raw[5:].strip())
         elif not raw.strip() and parts:
             yield b"\n".join(parts)
             parts = []
+    progress.eof_seen = True
     if parts:
         yield b"\n".join(parts)
 
@@ -127,26 +160,38 @@ def _apply_event(event, result, content, progress):
 def read_completion(response, progress: Progress) -> dict:
     result, content, finish = {}, [], None
     try:
-        for raw in _events(response):
+        for raw in _events(response, progress):
+            progress.sse_events += 1
             if raw == b"[DONE]":
+                progress.done_seen = True
                 if finish != "stop":
                     raise StreamFailure("output_limit" if finish == "length" else "stream_incomplete")
                 result["choices"] = [{"message": {"content": "".join(content)}, "finish_reason": finish}]
                 return result
             finish = _apply_event(json.loads(raw), result, content, progress) or finish
+            # Only known enum values may enter logs; provider strings can echo secrets.
+            progress.finish_reason = (
+                finish if finish in ("stop", "length", "tool_calls", "function_call", "content_filter")
+                else "none" if finish is None else "other"
+            )
     except (ValueError, KeyError, TypeError, AttributeError):
         raise StreamFailure("invalid_stream") from None
-    raise StreamFailure("stream_incomplete")
+    raise StreamFailure("output_limit" if finish == "length" else "stream_incomplete")
 
 
 def read_response(response, progress: Progress) -> object:
     content_type = getattr(response, "headers", {}).get("Content-Type", "")
+    status = getattr(response, "status", None)
+    progress.http_status = status if type(status) is int and 100 <= status <= 599 else None
     progress.state = "waiting_for_content"
     if isinstance(content_type, str) and "text/event-stream" in content_type.lower():
+        progress.response_format = "sse"
         return read_completion(response, progress)
     # Keep compatibility with providers that ignore stream=true. Still bounded
     # by the same idle/absolute watchdog; no speculative "thinking" messages.
+    progress.response_format = "json"
     raw = response.read(MAX_RESPONSE_BYTES + 1)
+    progress.wire_bytes = len(raw.encode("utf-8") if isinstance(raw, str) else raw)
     if len(raw) > MAX_RESPONSE_BYTES:
         raise StreamFailure("response_limit")
     return json.loads(raw)
