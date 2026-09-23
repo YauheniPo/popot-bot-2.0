@@ -15,6 +15,9 @@
 #   6. Create protected variable group `hermes-deploy-secrets` with secret
 #      HERMES_VAULT_PASSWORD and HERMES_TAILSCALE_AUTH_KEY; apply the same
 #      pipeline permissions, main branch control and owner approval as files.
+#   7. Authorize this pipeline for `github.com_YauheniPo`. Branch control also
+#      checks deploySource: a main-only allowlist rejects feature-branch deploys.
+#      Do not remove checks to bypass that policy; see tailscale-deploy.md.
 #
 # The encrypted Vault file supplies ansible_host, ansible_user, and Hermes
 # secrets. Secure files are never copied into the repository checkout.
@@ -24,14 +27,20 @@
 trigger: none
 pr: none
 
+resources:
+  repositories:
+    # Select the deployment branch under Run pipeline > Resources. The pipeline
+    # definition itself stays on main; this checkout is data until approval.
+    - repository: deploySource
+      type: github
+      endpoint: github.com_YauheniPo
+      name: YauheniPo/popot-bot-2.0
+      ref: refs/heads/main
+
 pool:
   vmImage: ubuntu-latest
 
 parameters:
-  - name: deployBranch
-    displayName: Source branch to deploy (pipeline itself must run from main)
-    type: string
-    default: main
   - name: deployMode
     displayName: Ansible deployment mode
     type: string
@@ -40,10 +49,6 @@ parameters:
       - full
       - config-only
       - runtime-only
-  - name: confirmProduction
-    displayName: Confirm production deployment
-    type: boolean
-    default: false
 
 stages:
   - stage: ValidateRequest
@@ -52,8 +57,8 @@ stages:
       - job: ValidateTrustedSource
         displayName: Require trusted main pipeline
         variables:
-          # Keep all remote branches available even on agents with this knob enabled.
-          VSTS.FetchByCommitForFullClone: 'false'
+          deploymentSourceRef: $[ resources.repositories.deploySource.ref ]
+          deploymentSourceVersion: $[ resources.repositories.deploySource.version ]
         steps:
           # REVIEWED: this relative path is correct after the move to azure-ci/.
           # Azure Pipelines resolves a template path without a leading `/`
@@ -64,27 +69,27 @@ stages:
             parameters:
               errorMessage: Run the production deployment pipeline from main.
 
-          - bash: |
-              set -euo pipefail
-
-              if [[ "${CONFIRM_PRODUCTION,,}" != "true" ]]; then
-                echo "##vso[task.logissue type=error]Set 'Confirm production deployment' to true."
-                exit 1
-              fi
-            displayName: Validate production confirmation
-            env:
-              CONFIRM_PRODUCTION: ${{ parameters.confirmProduction }}
-
           - checkout: self
+            path: s/pipeline
             clean: true
             fetchDepth: 0
             fetchTags: false
             persistCredentials: false
 
-          - bash: python3 azure-ci/scripts/prepare-hermes-deploy.py
-            displayName: Freeze deployment branch and report commit before approval
+          - checkout: deploySource
+            path: s/deploy-source
+            clean: true
+            fetchDepth: 1
+            fetchTags: false
+            persistCredentials: false
+
+          # Run only the trusted helper from self/main, never from deploySource.
+          - bash: python3 "$(Pipeline.Workspace)/s/pipeline/azure-ci/scripts/prepare-hermes-deploy.py"
+            displayName: Freeze selected resource commit before approval
+            workingDirectory: $(Pipeline.Workspace)/s/deploy-source
             env:
-              DEPLOY_BRANCH: ${{ parameters.deployBranch }}
+              DEPLOY_BRANCH: $(deploymentSourceRef)
+              DEPLOY_COMMIT: $(deploymentSourceVersion)
               DEPLOY_MODE: ${{ parameters.deployMode }}
               DEPLOY_ARTIFACT_DIR: $(Build.ArtifactStagingDirectory)/hermes-deploy-source
 

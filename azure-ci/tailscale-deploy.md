@@ -219,9 +219,14 @@ git check-ignore -v azure-ci/hermes-vps-known-hosts
 логам и артефактам доверенными пользователями. Checks и разрешения задаются
 в ADO UI: одного YAML недостаточно.
 
-**Branch control проверяет ветку определения pipeline, а не `deployBranch`.**
-Код выбранной ветки получит production credentials после approval — одобряйте
-только проверенный SHA из Summary, а не просто знакомое имя ветки.
+**Branch control проверяет все связанные repository resources**, включая
+`deploySource`, а не только ветку определения pipeline. При allowlist только
+`refs/heads/main` deploy feature-ветки будет заблокирован, даже если она доступна
+в picker. Изменение списка разрешённых веток требует отдельного согласования;
+не удаляйте checks ради обхода этой политики.
+См. [Branch control в Azure](https://learn.microsoft.com/en-us/azure/devops/pipelines/process/approvals?view=azure-devops#branch-control).
+Код выбранной ветки получит production credentials после checks и approval —
+одобряйте только проверенный SHA из Summary, а не просто знакомое имя ветки.
 
 ## 6. Выбор ветки, режима и запуск
 
@@ -230,14 +235,24 @@ GitHub-репозиторий и YAML `/azure-ci/azure-deploy-hermes.yml` из `
 Обновлённые YAML и helper `azure-ci/scripts/prepare-hermes-deploy.py` должны
 быть опубликованы в `main` до запуска: локальные правки ADO не видит.
 
-В **Run pipeline** задайте:
+Repository resource `deploySource` использует GitHub service connection
+`github.com_YauheniPo`. В **Project settings → Service connections** разрешите
+этому pipeline использование подключения, если оно ещё не авторизовано;
+**Open access** не требуется.
+
+В **Run pipeline** оставьте версию самого pipeline на `main`, затем откройте
+**Resources → deploySource** и выберите ветку исходников в штатном picker Azure.
+Ручного строкового параметра ветки больше нет.
 
 | Поле | Что выбрать |
 |---|---|
 | Branch/tag определения pipeline | `main` |
-| Source branch to deploy (`deployBranch`) | `main` или проверенная ветка этого репозитория, например `feat/my-change` |
+| Resources → deploySource | `main` или проверенная ветка этого репозитория, разрешённая Branch control |
 | Ansible deployment mode (`deployMode`) | `full`, `config-only` или `runtime-only` |
-| Confirm production deployment (`confirmProduction`) | `true` |
+
+Отдельного чекбокса подтверждения production нет: ручной **Run pipeline**
+запускает проверку запроса. Настроенные approvals и проверки доступа в Azure
+по-прежнему обязательны перед deployment; автоматические CI/PR triggers выключены.
 
 - `full` — установка/обновление upstream Hermes и deployment.
 - `config-only` — конфигурация без обновления upstream Hermes.
@@ -245,8 +260,10 @@ GitHub-репозиторий и YAML `/azure-ci/azure-deploy-hermes.yml` из `
 
 Режимы не обходят проверки безопасности и backup. Границы режимов описаны в
 [Hermes README](../hermes/README.md#режимы-deploy).
-В `deployBranch` допустим также `refs/heads/...`; теги, произвольные SHA и
-fork URL не поддерживаются. Выбранная ветка должна содержать Hermes playbook.
+Выбирайте ветку, а не тег: helper принимает только ref вида `refs/heads/...`
+и сверяет checkout с commit SHA, переданным Azure для выбранного resource.
+Смена репозитория на fork не поддерживается. Выбранная ветка должна содержать
+Hermes playbook.
 
 Дождитесь завершения `ValidateRequest`, откройте Summary с веткой, SHA и
 режимом и только затем подтвердите approvals `DeployProduction`.
@@ -255,7 +272,10 @@ deploy job использует прежний архив; для нового S
 
 ## 7. Что происходит при запуске
 
-1. Trusted pipeline из `main` фиксирует SHA выбранной ветки до approvals.
+1. Pipeline проверяет `main` для своего определения и отдельно скачивает `self`
+   и выбранную версию `deploySource` без сохранения credentials. Helper из
+   доверенного checkout `main` сверяет SHA исходников с версией resource Azure
+   и архивирует именно этот commit до approvals, не вычисляя вершину ветки заново.
 2. После approvals environment, Secure Files и группы переменных подготавливает
    временные файлы секретов, устанавливает Tailscale из официального signed apt repo
    и подключает CI node `ado-hermes-<build>-<attempt>` без входящего SSH.

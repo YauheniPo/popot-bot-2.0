@@ -1109,18 +1109,28 @@ host key прямо внутри pipeline.
 добавьте approval владельца, **Branch control** для `refs/heads/main` и
 **Exclusive lock**. У самого pipeline оставьте право **Queue builds** только
 владельцу. Эти проверки задаются в Azure UI, а не в YAML. Branch control
-проверяет ветку определения pipeline (`main`), а не выбранную ниже ветку
-исходников: её код Ansible получит production credentials после approval.
-Поэтому согласовывайте только проверенный commit, показанный в отчёте запуска.
+проверяет все связанные repository resources, включая выбранную ветку
+`deploySource`: при allowlist только `refs/heads/main` feature-ветки будут
+заблокированы. Изменение allowlist требует отдельного согласования; checks
+не отключайте. Код Ansible выбранной ветки получит production credentials
+после checks и approval, поэтому согласовывайте только проверенный commit,
+показанный в отчёте запуска.
 
-После попадания этой версии YAML в `main`, в **Run pipeline** задайте:
+Repository resource `deploySource` использует GitHub service connection
+`github.com_YauheniPo`; разрешите его использование deployment pipeline без
+**Open access**, если разрешение ещё не выдано.
+После попадания этой версии YAML в `main`, в **Run pipeline** откройте
+**Resources → deploySource** для выбора ветки исходников:
 
 | Поле | Значение |
 |---|---|
 | Branch/tag (ветка самого pipeline) | `main` — не меняйте на feature-ветку |
-| Source branch to deploy (`deployBranch`) | Ветка кода, например `feat/hermes-workspace-and-deploy-improvements`; допустим и `refs/heads/...` |
+| Resources → deploySource | Ветка кода, разрешённая Branch control; по умолчанию `main` |
 | Ansible deployment mode (`deployMode`) | `full`, `config-only` или `runtime-only` |
-| Confirm production deployment | `true` |
+
+Отдельный чекбокс подтверждения production не требуется: достаточно ручного
+**Run pipeline**, затем настроенных approvals в Azure. Автоматические CI/PR
+triggers выключены; проверки ветки, доступа, секретов и backup сохраняются.
 
 `full` сохраняет консервативный путь установки/обновления; `config-only`
 применяет конфигурацию без обновления upstream Hermes; `runtime-only` ограничивает
@@ -1131,8 +1141,10 @@ host key прямо внутри pipeline.
 Pipeline:
 
 1. проверит, что definition запущен из `main`;
-2. через существующее GitHub connection скачает историю/ветки без сохранения
-   credentials, найдёт выбранную ветку и сохранит архив её конкретного SHA;
+2. через GitHub connection скачает `self` и выбранную версию `deploySource`
+   в разные каталоги без сохранения credentials; helper из доверенного `main`
+   сверит checkout с SHA resource Azure и сохранит архив этого commit,
+   не вычисляя вершину ветки заново;
 3. до approvals опубликует в Summary ветку, SHA и режим. Проверьте их перед
    согласованием environment, Secure Files и группы переменных;
 4. после approvals возьмёт архив **из этого же запуска**, проверит защищённые
@@ -1141,7 +1153,8 @@ Pipeline:
 
 Несуществующая/некорректная ветка останавливает запуск до получения Secure Files.
 Ветка должна находиться в том же репозитории и содержать Hermes playbook;
-теги, произвольные SHA и fork URL не являются параметром `deployBranch`.
+выбирайте в picker ветку, а не тег. Helper принимает только ref
+`refs/heads/...` и SHA выбранного resource; смена репозитория на fork не поддерживается.
 Для нового SHA запускайте новый pipeline; повтор deploy job использует прежний
 артефакт. GitHub credentials, `.git` и незакоммиченные локальные файлы в него не
 попадают. Доступ к артефакту исходников ограничьте доверенными пользователями.
@@ -1800,8 +1813,8 @@ server и настройка custom provider не требуются.
    переопределение, чтобы использовалась политика repository.
 3. Примените обычный Ansible deploy. Для Azure сначала загрузите обновлённый
    **зашифрованный** `vault.yml` в **Pipelines → Library → Secure files** и
-   запустите deployment pipeline из `main` с **Confirm production deployment**
-   и настроенными approvals. Изменения repository должны быть доступны в
+   запустите deployment pipeline из `main` и пройдите настроенные approvals.
+   Изменения repository должны быть доступны в
    `main`; изменение только локального Vault не обновляет Azure Secure File.
    Deploy сам перезапустит gateway.
 4. Откройте `/model` в Hermes/Telegram и выберите **Ollama Cloud**. Hermes
@@ -2117,8 +2130,8 @@ Azure CLI, Sonar scanner или MCP для чтения API не требует�
    Секрет `SONAR_TOKEN` в GitHub Actions не доставляется на VPS автоматически.
 3. Примените Ansible deploy. Для Azure pipeline обновите зашифрованный
    `vault.yml` в **Pipelines → Library → Secure files**; изменения repository
-   должны быть в `main`. Запустите pipeline с **Confirm production deployment**
-   и пройдите настроенные approvals. Gateway перезапустится автоматически.
+   должны быть в `main`. Запустите pipeline и пройдите настроенные approvals.
+   Gateway перезапустится автоматически.
 4. Проверьте из нового диалога Hermes: «Покажи последние пять сборок Azure
    DevOps проекта popot-bot-2.0» и «Покажи Quality Gate и открытые issues
    SonarQube проекта YauheniPo_popot-bot-2.0». Проверка должна вернуть данные
