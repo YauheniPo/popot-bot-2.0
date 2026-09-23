@@ -16,4 +16,4 @@ globals().update({name: value for name, value in vars(_MODULE).items() if not na
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main())  # pragma: no cover - exercised by the deployable entrypoint
