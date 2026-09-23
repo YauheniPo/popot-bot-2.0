@@ -11,6 +11,7 @@ install_operations_assets() {
         "${SCRIPT_DIR}/prune-backups.py" \
         "${SCRIPT_DIR}/prune-observability.py" \
         "${SCRIPT_DIR}/export-metrics.py" \
+        "${SCRIPT_DIR}/extract-review-metrics.py" \
         "${SCRIPT_DIR}/ops-report.py" \
         "${SCRIPT_DIR}/status-report.py" \
         "${SCRIPT_DIR}/startup-notify.sh" \
@@ -18,6 +19,8 @@ install_operations_assets() {
         "${SCRIPT_DIR}/../runtime/backup-personal-state.py" \
         "${SCRIPT_DIR}/../runtime/manage-workspace-agents.py" \
         /usr/local/lib/hermes-ops/
+    # The review importer is invoked manually or by an operator-owned timer
+    # with a short-lived GITHUB_TOKEN; no token is persisted in service config.
     ln -sfn /usr/local/lib/hermes-ops/ops-report.py /usr/local/bin/hermes-ops-report
 
     # This file contains only repository-owned non-secret policy. Re-render it

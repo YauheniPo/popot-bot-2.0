@@ -344,6 +344,26 @@
       "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "SELECT provider AS \"Provider\", requested_model AS \"Requested\", model AS \"Served\", COUNT(*) AS \"Responses\", MAX(ts) AS \"Last seen\" FROM api_calls WHERE COALESCE(requested_model, '') != '' AND requested_model != model AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2, 3 ORDER BY 4 DESC", "rawQueryText": "SELECT provider AS \"Provider\", requested_model AS \"Requested\", model AS \"Served\", COUNT(*) AS \"Responses\", MAX(ts) AS \"Last seen\" FROM api_calls WHERE COALESCE(requested_model, '') != '' AND requested_model != model AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2, 3 ORDER BY 4 DESC", "queryType": "table", "timeColumns": ["Last seen"], "refId": "A"}],
       "title": "Requested vs served model — selected range",
       "type": "table"
+    },
+    {
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
+      "description": "Published CI review attempts imported from GitHub. Use this table to compare provider/model reliability and chunk coverage.",
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 152},
+      "options": {"cellHeight": "lg", "showHeader": true, "sortBy": [{"displayName": "Observed", "desc": true}]},
+      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "SELECT observed_at AS \"Observed\", reviewer AS \"Reviewer\", provider AS \"Provider\", model AS \"Model\", outcome AS \"Outcome\", validated_chunks || '/' || NULLIF(total_chunks, 0) AS \"Chunks\", attempts AS \"Attempts\", retries AS \"Retries\", provider_seconds AS \"Provider seconds\", head_sha AS \"Head SHA\" FROM review_runs WHERE observed_at >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND observed_at < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') ORDER BY observed_at DESC", "rawQueryText": "SELECT observed_at AS \"Observed\", reviewer AS \"Reviewer\", provider AS \"Provider\", model AS \"Model\", outcome AS \"Outcome\", validated_chunks || '/' || NULLIF(total_chunks, 0) AS \"Chunks\", attempts AS \"Attempts\", retries AS \"Retries\", provider_seconds AS \"Provider seconds\", head_sha AS \"Head SHA\" FROM review_runs WHERE observed_at >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND observed_at < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') ORDER BY observed_at DESC", "queryType": "table", "timeColumns": ["Observed"], "refId": "A"}],
+      "title": "AI review runs — selected range",
+      "type": "table"
+    },
+    {
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
+      "description": "Provider processing time for each imported review run, grouped by provider and model.",
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 161},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "SELECT CAST(strftime('%s', observed_at) AS INTEGER) AS time, provider || ' / ' || model || ' · ' || reviewer AS route, provider_seconds AS seconds FROM review_runs WHERE observed_at >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND observed_at < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') ORDER BY time", "rawQueryText": "SELECT CAST(strftime('%s', observed_at) AS INTEGER) AS time, provider || ' / ' || model || ' · ' || reviewer AS route, provider_seconds AS seconds FROM review_runs WHERE observed_at >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND observed_at < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') ORDER BY time", "queryType": "time series", "timeColumns": ["time"], "refId": "A"}],
+      "title": "AI review provider time",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",

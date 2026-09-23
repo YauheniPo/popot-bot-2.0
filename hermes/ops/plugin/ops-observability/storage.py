@@ -80,6 +80,17 @@ def _db() -> sqlite3.Connection:
         );
         CREATE INDEX IF NOT EXISTS idx_api_calls_ts ON api_calls(ts);
         CREATE INDEX IF NOT EXISTS idx_api_calls_model ON api_calls(provider, model);
+        CREATE TABLE IF NOT EXISTS review_runs (
+          source_id TEXT PRIMARY KEY, pr_number INTEGER NOT NULL,
+          reviewer TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
+          outcome TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+          validated_chunks INTEGER NOT NULL DEFAULT 0, total_chunks INTEGER NOT NULL DEFAULT 0,
+          retries INTEGER NOT NULL DEFAULT 0, fallback_successes INTEGER NOT NULL DEFAULT 0,
+          provider_seconds REAL NOT NULL DEFAULT 0, observed_at TEXT NOT NULL,
+          head_sha TEXT NOT NULL DEFAULT '', run_id TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_review_runs_observed ON review_runs(observed_at);
+        CREATE INDEX IF NOT EXISTS idx_review_runs_route ON review_runs(provider, model);
         CREATE TABLE IF NOT EXISTS route_fallbacks (
           ts TEXT NOT NULL, from_provider TEXT, from_model TEXT,
           to_provider TEXT, to_model TEXT
@@ -244,5 +255,4 @@ def _audit(event: str, **metadata: Any) -> None:
         if sanitized is not None:
             record[key_text] = sanitized
     _enqueue("audit", (json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n").encode())
-
 
