@@ -226,6 +226,10 @@ install_hermes() {
   if [[ "$UPDATE_GUARD_ACTIVE" == true ]]; then
     UPDATE_MUTATION_STARTED=true
   fi
+  # A matching HEAD/venv does not prove the rest of this installer succeeded.
+  # Invalidate only after the backup gate; a failed download/backup leaves the
+  # previously completed installation eligible for fast deployment.
+  run_as_hermes rm -f -- "$HERMES_USER_HOME/.hermes-install-complete"
   log "Installing Hermes $HERMES_RELEASE ($HERMES_VERSION, $HERMES_COMMIT) as $HERMES_USER"
   run_as_hermes bash "$INSTALLER_FILE" "${installer_args[@]}"
   [[ -x "$HERMES_BIN" ]] || die "Hermes launcher was not created at $HERMES_BIN"
@@ -243,6 +247,11 @@ install_hermes() {
     die "installed Hermes version mismatch (got $actual_version)"
   log "Hermes source identity verified"
   return
+}
+
+record_installation_completion() {
+  run_as_hermes bash -c 'umask 077; printf "%s\n" "$2" > "$1"' bash \
+    "$HERMES_USER_HOME/.hermes-install-complete" "$HERMES_COMMIT"
 }
 
 verify_updated_kanban_state() {
@@ -323,6 +332,11 @@ configure_development_clis() {
   [[ "$INSTALL_DEV_CLIS" == true ]] || return 0
 
   local github_wrapper="$SCRIPT_DIR/runtime/github-cli-wrapper.py"
+  local ansible_managed_git=false
+  if [[ -f "$HERMES_USER_HOME/.gitconfig" ]] && \
+    grep -qFx '# BEGIN HERMES MANAGED GIT DEFAULTS' "$HERMES_USER_HOME/.gitconfig"; then
+    ansible_managed_git=true
+  fi
   local default_branch
   local fetch_prune
   local fetch_prune_tags
@@ -334,12 +348,16 @@ configure_development_clis() {
   push_auto_setup_remote="$(python3 "$VPS_CONFIG_APPLIER" value --settings "$VPS_SETTINGS_FILE" vps_github.git_defaults.push_auto_setup_remote)"
   pull_ff="$(python3 "$VPS_CONFIG_APPLIER" value --settings "$VPS_SETTINGS_FILE" vps_github.git_defaults.pull_ff)"
 
-  log "Configuring safe Git defaults for the Hermes user"
-  run_as_hermes git config --global init.defaultBranch "$default_branch"
-  run_as_hermes git config --global fetch.prune "$fetch_prune"
-  run_as_hermes git config --global fetch.pruneTags "$fetch_prune_tags"
-  run_as_hermes git config --global push.autoSetupRemote "$push_auto_setup_remote"
-  run_as_hermes git config --global pull.ff "$pull_ff"
+  if [[ "$ansible_managed_git" == true ]]; then
+    log "Git defaults and credentials are owned by Ansible; preserving its managed block"
+  else
+    log "Configuring safe Git defaults for the Hermes user"
+    run_as_hermes git config --global --replace-all init.defaultBranch "$default_branch"
+    run_as_hermes git config --global --replace-all fetch.prune "$fetch_prune"
+    run_as_hermes git config --global --replace-all fetch.pruneTags "$fetch_prune_tags"
+    run_as_hermes git config --global --replace-all push.autoSetupRemote "$push_auto_setup_remote"
+    run_as_hermes git config --global --replace-all pull.ff "$pull_ff"
+  fi
 
   if command -v git-lfs >/dev/null 2>&1; then
     run_as_hermes git lfs install --skip-repo
@@ -348,9 +366,11 @@ configure_development_clis() {
   if [[ -x /usr/bin/gh && -f "$github_wrapper" ]]; then
     install -o "$HERMES_USER" -g "$HERMES_GROUP" -m 0750 \
       "$github_wrapper" "$HERMES_USER_HOME/.local/bin/gh"
-    run_as_hermes git config --global --replace-all credential.https://github.com.helper ""
-    run_as_hermes git config --global --add credential.https://github.com.helper \
-      "!$HERMES_USER_HOME/.local/bin/gh auth git-credential"
+    if [[ "$ansible_managed_git" == false ]]; then
+      run_as_hermes git config --global --replace-all credential.https://github.com.helper ""
+      run_as_hermes git config --global --add credential.https://github.com.helper \
+        "!$HERMES_USER_HOME/.local/bin/gh auth git-credential"
+    fi
   elif ! command -v gh >/dev/null 2>&1; then
     warn "GitHub CLI (gh) was not available; regular git clone/pull/push still work"
   else

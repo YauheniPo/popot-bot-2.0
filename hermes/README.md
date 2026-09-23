@@ -862,7 +862,8 @@ HERMES_UPSTREAM_DIR=/path/to/hermes-agent python3.11 -m unittest \
 
 Проверка сверяет commit/version/installer checksum, применяет gateway-патчи
 к временным копиям, компилирует результат и проверяет идемпотентность,
-маршрутизацию команд и приоритеты Telegram menu. Она не устанавливает Hermes,
+маршрутизацию команд, приоритеты Telegram menu и совместимость проверки backup
+со штатным обходчиком файлов закреплённой версии. Она не устанавливает Hermes,
 не обращается к VPS и не заменяет backup и post-deploy проверки.
 
 #### Режимы deploy
@@ -881,12 +882,20 @@ ansible-playbook -i inventory.yml playbook.yml -e hermes_deploy_mode=config-only
 ansible-playbook -i inventory.yml playbook.yml -e hermes_deploy_mode=runtime-only
 ```
 
-Оба быстрых режима откажутся запускаться, если установленный Hermes или его
-venv не совпадает с pinned commit. В этом случае сначала запустите `full`.
+Оба быстрых режима откажутся запускаться, если установленный Hermes не совпадает
+с pinned commit, отсутствует его venv или маркер успешного завершения установщика
+`<hermes_user_home>/.hermes-install-complete` с этим commit. В этом случае сначала
+запустите `full`. На ранее установленных VPS без маркера потребуется один полный
+проход установщика с обязательным backup. Маркер удаляется только после успешной
+проверки backup, непосредственно перед установкой, и записывается в конце
+`deploy-hermes.sh`; ошибка после обновления HEAD не считается завершённой установкой.
+Маркер подтверждает завершение shell-установщика, а не последующих задач Ansible
+или live-проверок: они выполняются playbook отдельно.
 
 Production VPS обновляется повторным запуском Ansible playbook. Playbook
-сравнивает установленный commit с `vps_deploy.hermes_source.commit` и запускает
-обновление только при расхождении. Перед изменением кода deploy обязательно:
+сравнивает установленный commit и маркер завершения с `vps_deploy.hermes_source.commit`,
+проверяет наличие venv и повторяет установку при расхождении или незавершённом
+предыдущем запуске. Перед изменением кода deploy обязательно:
 
 1. синхронизирует restorable mirror личного workspace `AGENTS.md` и
    останавливает managed gateway;
@@ -1432,6 +1441,11 @@ repository workspace, write owners и приватный access probe. Кажд�
 токен из Hermes `.env` во время запуска и не создаёт второй plaintext token
 store. После изменения Vault gateway перезапускается и получает новый token.
 
+Git defaults, identity и credential helper в блоке `HERMES MANAGED GIT DEFAULTS`
+принадлежат Ansible. Shell-установщик сохраняет этот блок; без него применяет
+defaults через `git config --replace-all`, чтобы существующие дубли не прерывали
+установку. Остальные личные Git-настройки сохраняются.
+
 Рекомендуемые fine-grained permissions: Metadata read, Contents read/write,
 Pull requests read/write, Issues read/write и Actions read. Workflows
 read/write добавляйте только если Hermes должен изменять `.github/workflows`.
@@ -1512,6 +1526,15 @@ sudo -u hermes -H /home/hermes/.local/bin/hermes checkpoints prune
 копию workspace `AGENTS.md` и дополнительных инструкций), а для всех Kanban DB — SQLite integrity и
 неизменные counts по статусам. При source update дополнительно сравниваются
 личные файлы и Kanban до/после установки.
+
+Проверяемый список учитывает штатные исключения закреплённого Hermes:
+`node/`, `models/`, `runtimes/` и `browser_profiles/` исключаются только в корне
+Hermes и `profiles/<name>/`. В `cache/` на этих уровнях обязательны `images/`,
+`audio/`, `videos/`, `documents/`, `screenshots/` и `citations/`; прочие временные
+данные не требуются. Одноимённые вложенные каталоги skills остаются личными
+данными. `browser-profile/` и `browser-profiles/` исключены штатным backup как
+runtime-профили браузера. Отсутствие обязательных файлов по-прежнему прерывает
+deploy; сообщение ограничено количеством и первыми 20 отсутствующими путями.
 
 При source update установщик сначала скачивается по закреплённому commit и
 проверяется по SHA-256, пока gateway продолжает работать. Загрузка допускает

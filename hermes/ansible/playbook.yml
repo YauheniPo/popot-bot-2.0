@@ -522,12 +522,24 @@
         recurse: true
       when: hermes_binary.stat.exists
 
+    - name: Read the last completed Hermes installation commit
+      ansible.builtin.command:
+        argv:
+          - cat
+          - "{{ hermes_user_home }}/.hermes-install-complete"
+      register: hermes_completed_install
+      changed_when: false
+      # Missing/unreadable markers fail closed to a full installation, not a
+      # fast deployment inferred from a partially updated HEAD and venv.
+      failed_when: hermes_completed_install.rc not in [0, 1]
+
     - name: Decide whether the pinned Hermes source needs installation
       ansible.builtin.set_fact:
         hermes_source_update_required: >-
           {{ (not hermes_binary.stat.exists) or
              (hermes_installed_commit.stdout | default('') != hermes_commit) or
-             (not hermes_venv_python.stat.exists) }}
+             (not hermes_venv_python.stat.exists) or
+             (hermes_completed_install.stdout | default('') != hermes_commit) }}
 
     - name: Require a current Hermes source for a fast deployment mode
       ansible.builtin.assert:
@@ -535,8 +547,9 @@
           - hermes_binary.stat.exists
           - not (hermes_source_update_required | bool)
         fail_msg: >-
-          Fast deployment modes require the installed Hermes source and venv to
-          match the pinned commit. Run with -e hermes_deploy_mode=full instead.
+          Fast deployment modes require the installed Hermes source, venv and
+          successful installer completion marker to match the pinned commit.
+          Run with -e hermes_deploy_mode=full instead.
       when: hermes_deploy_mode != 'full'
 
     - name: Deploy Hermes with bounded maintenance coverage

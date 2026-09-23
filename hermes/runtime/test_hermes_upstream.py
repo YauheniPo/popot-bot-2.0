@@ -15,6 +15,7 @@ import os
 import logging
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,7 @@ import tomllib
 from types import SimpleNamespace
 import unittest
 from unittest import mock
+import zipfile
 
 import yaml
 
@@ -35,6 +37,48 @@ UPSTREAM = os.environ.get("HERMES_UPSTREAM_DIR")
 
 @unittest.skipUnless(UPSTREAM, "HERMES_UPSTREAM_DIR is not configured")
 class HermesUpstreamTests(unittest.TestCase):
+    def test_native_full_backup_walker_agrees_with_update_verifier(self):
+        # Execute the pinned source's real walker and its constants without
+        # importing the unrelated CLI/provider dependency graph.
+        names = {"_QUICK_SNAPSHOTS_DIR", "_EXCLUDED_DIRS", "_EXCLUDED_ROOT_DIRS",
+                 "_EXCLUDED_BACKUP_ROOT_DIRS", "_KEPT_CACHE_SUBDIRS", "_in_excluded_root_dir",
+                 "_SQLITE_SIDECAR_SUFFIXES", "_EXCLUDED_SUFFIXES", "_EXCLUDED_NAMES",
+                 "_EXCLUDED_PREFIXES", "_is_non_regular_path", "_should_exclude", "_iter_backup_files",
+                 "LOCAL_RUNTIME_ROOT_DIRS", "RETIRED_GENERATION_DIR_SUFFIX"}
+        namespace = {"Path": Path, "os": os, "stat": stat, "suppress": contextlib.suppress}
+        for source in ("hermes_constants.py", "hermes_state_dbfile.py", "hermes_cli/backup.py"):
+            tree = ast.parse((Path(UPSTREAM) / source).read_text())
+            selected = [node for node in tree.body if getattr(node, "name", "") in names
+                        or isinstance(node, ast.Assign) and any(
+                            isinstance(target, ast.Name) and target.id in names for target in node.targets)
+                        or isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+                        and node.target.id in names]
+            exec("from __future__ import annotations\n" + ast.unparse(ast.Module(body=selected, type_ignores=[])),
+                 namespace)
+        spec = importlib.util.spec_from_file_location("backup_verifier", ROOT / "runtime/verify-update-state.py")
+        verifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verifier)
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve() / ".hermes"
+            for prefix in ("", "profiles/builder/", "skills/custom/"):
+                for relative in ("config.yaml", "SOUL.md", "hermes-agent/SKILL.md", "node/bin/node",
+                                 "models/model", "runtimes/tool", "cache/catalog.json", "cache/delegation/task.log",
+                                 "cache/images/photo", "cache/audio/message", "cache/videos/clip",
+                                 "cache/documents/file", "cache/screenshots/screen", "cache/citations/evidence",
+                                 "browser-profile/Login Data", "browser-profiles/default/Cookies",
+                                 "browser_profiles/default/Cookies", "skills/.archive/custom/SKILL.md"):
+                    path = home / (prefix + relative)
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("fixture")
+            archive_path = home.parent / "backup.zip"
+            native_files = list(namespace["_iter_backup_files"](home, archive_path))
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                for path, relative in native_files:
+                    archive.write(path, relative.as_posix())
+            snapshot = verifier.create_snapshot(home)
+            self.assertEqual(set(snapshot["files"]), {str(relative) for _, relative in native_files})
+            verifier.verify_backup(archive_path, snapshot)
+
     def patched_source(self, path):
         source = (Path(UPSTREAM) / path).read_text()
         for target, marker, old, new in patches._PATCHES:

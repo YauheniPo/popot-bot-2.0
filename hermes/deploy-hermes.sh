@@ -439,6 +439,7 @@ main() {
   run_diagnostics
 
   print_summary
+  record_installation_completion
 }
 
 main
