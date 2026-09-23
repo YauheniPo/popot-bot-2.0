@@ -406,8 +406,8 @@ main() {
   resolve_user_paths
   resolve_managed_runtime
   enable_host_administration
-  quiesce_existing_gateway_for_update
   download_installer
+  quiesce_existing_gateway_for_update
   backup_existing_installation
   install_hermes
   verify_updated_kanban_state

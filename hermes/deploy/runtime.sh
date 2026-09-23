@@ -123,8 +123,19 @@ download_installer() {
   chmod 0755 "$INSTALLER_FILE"
 
   log "Downloading the Hermes installer pinned to $HERMES_COMMIT"
-  curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
-    "$installer_url" --output "$INSTALLER_FILE"
+  log "Download limits: up to 4 attempts, connect 10s, transfer 30s, retry budget 120s"
+  # curl retries transient failures (including 429) and honors Retry-After.
+  # Keep retry warnings visible without a progress meter or response bodies.
+  # The last transfer may take up to 30s beyond the retry budget.
+  local http_status curl_exit
+  if http_status="$(curl --proto '=https' --tlsv1.2 --fail --no-progress-meter --show-error --location \
+    --connect-timeout 10 --max-time 30 --retry 3 --retry-max-time 120 \
+    --write-out '%{http_code}' "$installer_url" --output "$INSTALLER_FILE" || exit "$?")"; then
+    log "Installer download completed: http_status=$http_status"
+  else
+    curl_exit=$?
+    die "Installer download failed: curl_exit=$curl_exit http_status=$http_status; source=raw.githubusercontent.com commit=$HERMES_COMMIT; no Hermes code changes started"
+  fi
 
   local actual_sha256
   actual_sha256="$(sha256sum "$INSTALLER_FILE" | cut -d' ' -f1)"
