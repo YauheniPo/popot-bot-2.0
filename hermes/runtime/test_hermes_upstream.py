@@ -14,7 +14,6 @@ import io
 import os
 import logging
 from pathlib import Path
-import shutil
 import stat
 import subprocess
 import sys
@@ -47,7 +46,7 @@ class HermesUpstreamTests(unittest.TestCase):
                  "LOCAL_RUNTIME_ROOT_DIRS", "RETIRED_GENERATION_DIR_SUFFIX"}
         namespace = {"Path": Path, "os": os, "stat": stat, "suppress": contextlib.suppress}
         for source in ("hermes_constants.py", "hermes_state_dbfile.py", "hermes_cli/backup.py"):
-            tree = ast.parse((Path(UPSTREAM) / source).read_text())
+            tree = ast.parse(self.patched_source(source))
             selected = [node for node in tree.body if getattr(node, "name", "") in names
                         or isinstance(node, ast.Assign) and any(
                             isinstance(target, ast.Name) and target.id in names for target in node.targets)
@@ -63,7 +62,7 @@ class HermesUpstreamTests(unittest.TestCase):
             profile_names = ("builder", "cache", "models", "runtimes", "node", "browser_profiles",
                              "images", "audio", "videos", "documents", "screenshots", "citations")
             for prefix in ("", "skills/custom/", *(f"profiles/{name}/" for name in profile_names)):
-                for relative in ("config.yaml", "SOUL.md", "hermes-agent/SKILL.md", "node/bin/node",
+                for relative in ("config.yaml", "SOUL.md", "gateway.lock", "personal.lock", "hermes-agent/SKILL.md", "node/bin/node",
                                  "models/model", "runtimes/tool", "cache/catalog.json", "cache/delegation/task.log",
                                  "cache/images/photo", "cache/audio/message", "cache/videos/clip",
                                  "cache/documents/file", "cache/screenshots/screen", "cache/citations/evidence",
@@ -74,12 +73,22 @@ class HermesUpstreamTests(unittest.TestCase):
                     path.write_text("fixture")
             archive_path = home.parent / "backup.zip"
             native_files = list(namespace["_iter_backup_files"](home, archive_path))
+            # Reproduce shutdown cleanup between inventory and archive writes.
+            for lock in home.rglob("gateway.lock"):
+                lock.unlink()
             with zipfile.ZipFile(archive_path, "w") as archive:
                 for path, relative in native_files:
                     archive.write(path, relative.as_posix())
             snapshot = verifier.create_snapshot(home)
             self.assertEqual(set(snapshot["files"]), {str(relative) for _, relative in native_files})
             verifier.verify_backup(archive_path, snapshot)
+            self.assertIn("personal.lock", snapshot["files"])
+            # Only the known runtime lock is disposable, not arbitrary files.
+            (home / "personal.lock").unlink()
+            with zipfile.ZipFile(home.parent / "incomplete.zip", "w") as archive:
+                with self.assertRaises(FileNotFoundError):
+                    for path, relative in native_files:
+                        archive.write(path, relative.as_posix())
 
     def patched_source(self, path):
         source = (Path(UPSTREAM) / path).read_text()
@@ -171,7 +180,8 @@ class HermesUpstreamTests(unittest.TestCase):
             for path in paths:
                 target = destination / path
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(Path(UPSTREAM) / path, target)
+                target.write_bytes(subprocess.check_output(
+                    ['git', '-C', str(UPSTREAM), 'show', f'HEAD:{path}']))
             with mock.patch.object(patches, "HERMES_AGENT_DIR", destination):
                 output = io.StringIO()
                 with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):

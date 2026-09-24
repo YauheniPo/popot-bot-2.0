@@ -9,8 +9,10 @@ command cannot silently disappear. Nothing is written unless the old code or
 the recorded previous patch matches exactly.
 
 Covered customizations (not yet upstream):
+ * full backups exclude the ephemeral gateway.lock, matching the state verifier
  * gateway commands: /gw-restart (canonical, with /restart and /gw_restart
-   aliases so the Telegram menu entry resolves), /model_global, and /doctor
+   aliases so the Telegram menu entry resolves), /model_global, /fallback, and /doctor
+ * quota fallback skips the exhausted provider; chat list edits survive cooldown
  * /status shows reasoning, models, and session-scoped background activity
  * busy-session dispatch handles /gw-restart like /restart
  * Telegram command-menu usage ranking, with explicit user priorities pinned
@@ -24,6 +26,7 @@ touched here.
 
 from __future__ import annotations
 
+import argparse
 import os
 import hashlib
 import json
@@ -45,6 +48,7 @@ _GATEWAY_RUN_PATH = "gateway/run.py"
 _GATEWAY_BUSY_PATH = "gateway/run_busy.py"
 _GATEWAY_STATUS_PATH = "gateway/slash_commands_status.py"
 _COMMAND_PLATFORMS_PATH = "hermes_cli/commands_platforms.py"
+_BACKUP_PATH = "hermes_cli/backup.py"
 # Construct the retired spelling without advertising it as a supported slash
 # command. It is needed only to migrate files patched by earlier deployments.
 _RETIRED_MODEL_GLOBAL = "model" + chr(45) + "global"
@@ -313,6 +317,13 @@ def _migrate_installed_telegram_usage_ranking() -> int:
 _PATCHES: list[tuple[str, str, str, str]] = [
     # NOTE: every ``new`` block MUST include its marker as a comment line so
     # the idempotency check (marker already present -> skip) works on re-run.
+    (
+        _BACKUP_PATH,
+        _PREFIX + " exclude ephemeral gateway lock from backups",
+        '_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid"}\n',
+        '# Local Hermes: exclude ephemeral gateway lock from backups\n'
+        '_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid", "gateway.lock"}\n',
+    ),
     (
         _HERMES_CLI_COMMANDS_PATH,
         _PREFIX + " model_global CommandDef",
@@ -879,6 +890,81 @@ def _clamp_command_names(
     ),
 ]
 
+# Keep the implementation testable as ordinary Python; install it through the
+# same fingerprinted source-patch mechanism, not a sys.path/bootstrap hook.
+_FALLBACK_POLICY = Path(__file__).with_name("fallback-policy.py").read_text(encoding="utf-8")
+_PATCHES.extend([
+    (
+        "gateway/run_config_loaders.py", _PREFIX + " fallback live config",
+        '''        if getattr(agent, "_fallback_activated", False) and rate_limited_until > time.monotonic():
+            return
+        old_chain = list(getattr(agent, "_fallback_chain", []) or [])
+''',
+        '''        # Local Hermes: fallback live config
+        # Preserve an unchanged in-flight cooldown; explicit list edits must
+        # still affect the next turn, including /fallback off.
+        old_chain = list(getattr(agent, "_fallback_chain", []) or [])
+        if (new_chain == old_chain and getattr(agent, "_fallback_activated", False)
+                and rate_limited_until > time.monotonic()):
+            return
+        if new_chain != old_chain:
+            agent._fallback_index = 0
+''',
+    ),
+    (
+        "hermes_cli/fallback_config.py", _PREFIX + " managed fallback policy",
+        "    return chain\n",
+        "    return chain\n\n\n# Local Hermes: managed fallback policy\n" + _FALLBACK_POLICY,
+    ),
+    (
+        _HERMES_CLI_COMMANDS_PATH, _PREFIX + " fallback CommandDef",
+        '    CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",',
+        '''    # Local Hermes: fallback CommandDef
+    CommandDef("fallback", "Manage fallback providers and models", "Configuration",
+               args_hint="[list|set provider model; ...|add provider model|remove N|off|reset]",
+               gateway_only=True, busy_policy="reject"),
+    CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",''',
+    ),
+    (
+        _GATEWAY_BUSY_PATH, _PREFIX + " fallback route",
+        '    _IDLE_COMMANDS = (\n',
+        '    _IDLE_COMMANDS = (\n        # Local Hermes: fallback route\n        "fallback",\n',
+    ),
+    (
+        "gateway/slash_commands_model.py", _PREFIX + " fallback handler",
+        '    def _save_gateway_config_key(self, key_path: str, value) -> bool:\n',
+        '''    # Local Hermes: fallback handler
+    async def _handle_fallback_command(self, event: MessageEvent) -> Optional[str]:
+        if not self._is_user_authorized_for_source(event.source):
+            return "Недостаточно прав для управления fallback."
+        from gateway.run import _gateway_config_home
+        from hermes_cli.fallback_config import run_fallback_command
+        return run_fallback_command(_gateway_config_home() / "config.yaml", event.get_command_args())
+
+    def _save_gateway_config_key(self, key_path: str, value) -> bool:
+''',
+    ),
+    (
+        "agent/chat_completion_helpers.py", _PREFIX + " fallback quota scope",
+        '    cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)\n',
+        '''    cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
+    # Local Hermes: fallback quota scope
+    from hermes_cli.fallback_config import begin_fallback_walk, allow_fallback_candidate
+    begin_fallback_walk(agent, reason)
+''',
+    ),
+    (
+        "agent/chat_completion_helpers.py", _PREFIX + " fallback quota candidate",
+        '        fb_key = _fallback_entry_key(fb)\n',
+        '''        # Local Hermes: fallback quota candidate
+        if not allow_fallback_candidate(agent, fb):
+            logger.info("Fallback candidate skipped: quota provider or non-free OpenRouter route")
+            continue
+        fb_key = _fallback_entry_key(fb)
+''',
+    ),
+])
+
 
 def _migrate_installed_portal_info() -> int:
     """Repair the first portal-info rollout, which used invalid multiline literals."""
@@ -992,7 +1078,7 @@ def _apply_one_patch(
     return 1, None, True
 
 
-def main() -> int:
+def main(*, backup_only: bool = False) -> int:
     if not HERMES_AGENT_DIR.is_dir():
         print(
             f"[hermes-patch] ERROR: Hermes install directory is missing: {HERMES_AGENT_DIR}",
@@ -1000,7 +1086,8 @@ def main() -> int:
         )
         return 1
     try:
-        migrated = (
+        # Before the mandatory backup, do not mutate unrelated gateway code.
+        migrated = 0 if backup_only else (
             _migrate_installed_model_global()
             + _migrate_installed_gw_restart()
             + _migrate_installed_doctor_handler()
@@ -1015,6 +1102,8 @@ def main() -> int:
     patch_state = _load_patch_state()
     state_changed = False
     for relative_path, marker, old, new in _PATCHES:
+        if backup_only and relative_path != _BACKUP_PATH:
+            continue
         delta, failure, changed = _apply_one_patch(relative_path, marker, old, new, patch_state)
         applied += delta
         state_changed = state_changed or changed
@@ -1039,4 +1128,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--backup-only", action="store_true",
+                        help="Apply only backup exclusions before the mandatory deployment backup")
+    raise SystemExit(main(backup_only=parser.parse_args().backup_only))

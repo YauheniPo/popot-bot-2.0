@@ -212,6 +212,25 @@
     - vps_deploy.features.workspace_ui | default(false) | bool
   no_log: true
 
+- name: Validate managed fallback provider and model pairs
+  vars:
+    fallback_routes: >-
+      {{ hermes_managed_config.get('fallback_policy', {}).get(
+           'default_routes', hermes_managed_config.get('fallback_providers', [])) }}
+  ansible.builtin.assert:
+    that:
+      - fallback_routes is sequence and fallback_routes is not string and fallback_routes is not mapping
+      - fallback_routes | select('mapping') | list | length == fallback_routes | length
+      - fallback_routes | selectattr('provider', 'defined') | selectattr('model', 'defined') | list | length == fallback_routes | length
+      - fallback_routes | map(attribute='provider') | select('string') | map('trim') | select | list | length == fallback_routes | length
+      - fallback_routes | map(attribute='model') | select('string') | map('trim') | select | list | length == fallback_routes | length
+      - >-
+        (fallback_routes | map(attribute='provider') | zip(fallback_routes | map(attribute='model')) |
+         list | unique | list | length) == fallback_routes | length
+    fail_msg: Managed fallback routes must contain unique non-empty provider/model pairs; providers may repeat.
+  when: hermes_managed_config | length > 0
+  no_log: true
+
 - name: Apply the managed Hermes model and voice configuration
   ansible.builtin.copy:
     content: >-
@@ -232,6 +251,18 @@
             list | items2dict)
            if (vps_deploy.features.workspace_ui | default(false) | bool) else {},
            recursive=true, list_merge='replace'
+         ) |
+         combine(
+           {'fallback_providers': hermes_existing_config.get('fallback_providers',
+             hermes_managed_config.get('fallback_policy', {}).get(
+               'default_routes', hermes_managed_config.get('fallback_providers', [])))},
+           recursive=true, list_merge='replace'
+         ) |
+         combine(
+           {'fallback_policy': {
+             'default_routes': hermes_managed_config.get('fallback_policy', {}).get(
+               'default_routes', hermes_managed_config.get('fallback_providers', []))
+           }}, recursive=true, list_merge='replace'
          ) |
          combine(
            {'platforms': {'api_server': {'enabled': true}}}

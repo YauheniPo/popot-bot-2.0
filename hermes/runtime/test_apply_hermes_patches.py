@@ -21,6 +21,32 @@ SPEC.loader.exec_module(apply_hermes_patches)
 
 
 class ApplyHermesPatchesTests(unittest.TestCase):
+    def test_backup_only_patches_without_gateway_files_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "hermes_cli/backup.py"
+            target.parent.mkdir()
+            target.write_text('_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid"}\n')
+            with mock.patch.object(apply_hermes_patches, "HERMES_AGENT_DIR", root), \
+                    mock.patch.object(apply_hermes_patches, "_migrate_installed_model_global") as migrate:
+                self.assertEqual(apply_hermes_patches.main(backup_only=True), 0)
+                first = target.read_text()
+                self.assertIn('"gateway.lock"', first)
+                self.assertEqual(apply_hermes_patches.main(backup_only=True), 0)
+                self.assertEqual(target.read_text(), first)
+                migrate.assert_not_called()
+
+    def test_backup_only_rejects_unknown_source_without_writing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "hermes_cli/backup.py"
+            target.parent.mkdir()
+            source = "# unknown backup implementation\n"
+            target.write_text(source)
+            with mock.patch.object(apply_hermes_patches, "HERMES_AGENT_DIR", root):
+                self.assertEqual(apply_hermes_patches.main(backup_only=True), 1)
+                self.assertEqual(target.read_text(), source)
+
     def test_registry_migration_makes_underscore_name_canonical(self) -> None:
         retired = apply_hermes_patches._RETIRED_MODEL_GLOBAL
         source = f'''    # Local Hermes: {retired} CommandDef

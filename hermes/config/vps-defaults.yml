@@ -77,10 +77,27 @@ vps_hermes:
         # Single source: deploy also applies this route to existing profiles.
         default: nvidia/nemotron-3-ultra-550b-a55b
         provider: nvidia
-      # Use a separate provider for emergency fallback with NVIDIA_API_KEY.
-      fallback_providers:
-        - provider: openrouter
-          model: inclusionai/ling-3.0-flash-fin:free
+      # Initial ordered list; /fallback edits survive deployment. /fallback reset
+      # restores this list. Credentials stay in Vault, never in chat commands.
+      fallback_policy:
+        # Repeated providers are allowed; each provider/model pair must be unique.
+        # Catalogs checked 2026-09-23; selection rationale/limits: hermes/README.md.
+        # Alternate providers first. Quota failures skip ALL later routes of
+        # that provider; later same-provider models help with non-quota failures.
+        default_routes:
+          - provider: openrouter
+            model: inclusionai/ling-3.0-flash-fin:free
+          - provider: nous
+            model: meituan/longcat-2.0:free
+          - provider: nvidia
+            model: nvidia/nemotron-3-super-120b-a12b
+          - provider: openrouter
+            model: nvidia/nemotron-3-ultra-550b-a55b:free
+          - provider: nous
+            model: poolside/laguna-s-2.1:free
+        # Chat may only choose these existing integrations. No automatic keys,
+        # endpoints or paid OpenRouter routes are added by the command.
+        allowed_providers: [nvidia, openrouter, nous]
       user_char_limit: 3000
       memory_char_limit: 4000
       # Compact long sessions after 70% of the active model context is used.
@@ -283,7 +300,7 @@ vps_runtime:
     # Local Hermes: keep /gw_restart and /model_global visible in the
     # Telegram menu — the default 60-command cap would hide them.
     platforms.telegram.extra.command_menu.priority_mode: prepend
-    platforms.telegram.extra.command_menu.priority: [gw_restart, model_global, model, status, doctor, stop]
+    platforms.telegram.extra.command_menu.priority: [gw_restart, model_global, model, fallback, status, doctor, stop]
     # Commands above stay pinned in this exact order. Remaining commands are
     # ranked by persisted authorized Telegram command usage and the menu is
     # refreshed after every five invocations.

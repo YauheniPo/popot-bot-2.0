@@ -51,10 +51,14 @@ def _profile_config_updates(config: dict[str, Any], values: dict[str, str]) -> b
 def api_retry_fallbacks(settings: dict[str, Any]) -> str:
     """Render the managed global fallback chain for the one-shot API helper."""
     overlay = settings.get('vps_hermes', {}).get('config', {}).get('managed_overlay', {})
-    chain = overlay.get('fallback_providers', [])
+    policy = overlay.get('fallback_policy', {})
+    if not isinstance(policy, dict):
+        raise ValueError('managed fallback_policy must be a mapping')
+    chain = policy.get('default_routes', overlay.get('fallback_providers', []))
     if not isinstance(chain, list):
-        raise ValueError('managed fallback_providers must be a list')
+        raise ValueError('managed fallback routes must be a list')
     routes = []
+    seen = set()
     for entry in chain:
         if not isinstance(entry, dict):
             raise ValueError('managed fallback provider entries must be mappings')
@@ -63,6 +67,10 @@ def api_retry_fallbacks(settings: dict[str, Any]) -> str:
         if (not isinstance(provider, str) or not re.fullmatch(r'[a-z][a-z0-9-]*', provider)
                 or not isinstance(model, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/+-]*', model)):
             raise ValueError('managed fallback provider entries require valid provider and model')
+        pair = (provider, model)
+        if pair in seen:
+            raise ValueError('managed fallback routes contain a duplicate provider/model pair')
+        seen.add(pair)
         routes.append(f'{provider}:{model}')
     return ','.join(routes)
 

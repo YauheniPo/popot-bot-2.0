@@ -195,6 +195,10 @@ backup_existing_installation() {
       "$HERMES_HOME/operator-state/workspace-AGENTS.md"
   fi
 
+  log "Applying the backup runtime exclusion patch before the mandatory backup"
+  run_as_hermes env HERMES_INSTALL_DIR="$HERMES_INSTALL_DIR" \
+    python3 "$SCRIPT_DIR/runtime/apply-hermes-patches.py" --backup-only
+
   log "Inventorying Hermes state and checking every Kanban database before the update"
   python3 "$UPDATE_STATE_VERIFIER" snapshot \
     --hermes-home "$HERMES_HOME" \

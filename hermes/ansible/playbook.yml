@@ -636,6 +636,19 @@
                 # themselves only.
                 follow: false
 
+            - name: Apply only the backup runtime exclusion patch
+              ansible.builtin.command:
+                argv:
+                  - python3
+                  - "{{ hermes_bundle_dir }}/runtime/apply-hermes-patches.py"
+                  - --backup-only
+              become_user: "{{ hermes_user }}"
+              environment:
+                HOME: "{{ hermes_user_home }}"
+                HERMES_INSTALL_DIR: "{{ hermes_home }}/hermes-agent"
+              register: hermes_backup_patch
+              changed_when: "'[hermes-patch] changed' in hermes_backup_patch.stdout"
+
             - name: Snapshot Hermes state before a config-only deployment
               ansible.builtin.command:
                 argv:

@@ -1034,6 +1034,12 @@ ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventory.ini \
 интерактивный терминал controller и автоматически открывается браузер
 (на macOS — `open`, на Linux — `xdg-open`, если доступен). Ссылка не попадает
 в результат задачи или CI-лог; пароль и Vault-секреты не передаются в команду SSH.
+При локальном запуске без `/dev/tty` (например, из IDE) браузер всё равно
+открывается, если доступен opener, и проверка ждёт SSH в тех же пределах.
+Отсутствие терминала или ошибка открытия браузера не прерывает ожидание:
+авторизация могла быть начата другим локальным процессом. Успех означает
+успешное SSH-подключение, а не запуск браузера или только вход в аккаунт.
+Если браузер не открылся, повторите запуск из интерактивного терминала.
 
 Если вкладка закрыта без подтверждения, по истечении таймаута процесс SSH
 завершается и создаётся новое подключение с новым запросом авторизации.
@@ -1043,8 +1049,9 @@ ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventory.ini \
 Сбор фактов выполняется отдельной задачей с общим лимитом 60 секунд; нумерация
 прогресса начинается с проверки подключения, а не с последнего шага.
 
-В CI/без интерактивного терминала запрос browser approval сразу завершает
-проверку ошибкой. Для автоматического deploy нужна отдельно разрешённая
+В CI (`CI`, `TF_BUILD` или `GITHUB_ACTIONS` равен `true`/`1`) запрос browser
+approval сразу завершает проверку ошибкой без открытия браузера или вывода
+ссылки. Для автоматического deploy нужна отдельно разрешённая
 SSH-идентичность; playbook не отключает check mode, ACL или проверку host key.
 Для обычного SSH по публичному адресу эта browser-проверка пропускается.
 При обычном password SSH через tailnet пароль обрабатывает сам Ansible,
@@ -1577,8 +1584,13 @@ deploy; сообщение ограничено количеством и пер
 Только после успешной проверки установщика gateway останавливается для
 согласованного полного backup; установка начинается после проверки backup.
 
-Временный `gateway.lock` не входит в проверяемый список файлов: он может
-исчезнуть при остановке процесса между обходом каталогов и чтением хеша.
+Временный `gateway.lock` не входит ни в архив, ни в проверяемый список файлов:
+он может исчезнуть при остановке процесса между обходом каталогов и чтением.
+До обязательного backup (config-only и source update) deploy применяет только
+backup-патч через `apply-hermes-patches.py --backup-only`; остальные runtime-патчи
+остаются после backup. Исключение также действует для последующих штатных full
+backups, включая scheduled backup, в основном home и профилях. Патч идемпотентен;
+неизвестный исходный код архиватора прерывает deploy, а не пропускает проверку.
 Исчезновение личных файлов по-прежнему останавливает deploy; остальные
 `*.lock` не исключаются автоматически.
 
@@ -1770,9 +1782,10 @@ cd /root/hermes # замените путь, если repository находит�
 
 Deploy применяет модельную политику из `vps_hermes.config.managed_overlay` в
 [`config/vps-defaults.yml`](config/vps-defaults.yml): основной provider и модель,
-вспомогательные модели, настройки cron и `fallback_providers`. Для каждого
+вспомогательные модели, настройки cron и `fallback_policy.default_routes`. Для каждого
 используемого provider нужны его credentials; наличие записи fallback не
-заменяет авторизацию. Следующий deploy снова применит эту политику. Hermes также
+заменяет авторизацию. Следующий deploy снова применит модельную политику, но
+сохранит существующий `fallback_providers`, включая пустой список. Hermes также
 поддерживает built-in providers с API key/OAuth, named custom providers и
 локальные OpenAI-compatible endpoints.
 Для Ansible укажите нужные ENV keys в `hermes_secret_env`, а non-secret
@@ -1854,8 +1867,8 @@ sudo -u hermes -H /home/hermes/.local/bin/hermes cron list
 sudo -u hermes -H /home/hermes/.local/bin/hermes cron status
 ```
 
-Не добавляйте пустые entries в `fallback_providers`. Hermes игнорирует записи
-без `provider` или `model`, а provider без credentials не проходит preflight.
+Не добавляйте пустые entries в `fallback_policy.default_routes`: deploy отклоняет
+записи без `provider` или `model`. Provider без credentials не проходит preflight.
 
 Переключение внутри Hermes или Telegram не требует перезапуска и не теряет
 историю диалога:
@@ -1888,15 +1901,105 @@ Grafana либо `hermes-ops-report --period 7d`. Если provider не соо�
 [routing aggregators](https://hermes-agent.nousresearch.com/docs/user-guide/features/provider-routing),
 [fallback providers](https://hermes-agent.nousresearch.com/docs/user-guide/features/fallback-providers).
 
-Если основная модель недоступна или достигла лимита, Hermes сможет продолжить
-задачу через другого провайдера:
+#### Резервные модели и провайдеры в Telegram
+
+Managed Hermes использует нативную цепочку fallback без повторного запуска
+задачи или выполненных tools. Начальный упорядоченный список задаётся в
+`vps_hermes.config.managed_overlay.fallback_policy.default_routes` в
+[`config/vps-defaults.yml`](config/vps-defaults.yml). В
+`fallback_policy.allowed_providers` того же overlay задаются провайдеры,
+которые можно выбирать через чат. Ключи остаются в Vault/штатной авторизации;
+chat-команда не принимает credentials или произвольные endpoint URL.
+
+Каждый элемент `default_routes` содержит **оба** поля: `provider` и `model`.
+Один provider может встречаться несколько раз с разными моделями; запрещён
+только повтор одинаковой пары. `allowed_providers` — разрешения chat-команды,
+не список моделей для автоматического выбора. Deploy формирует нативный
+`fallback_providers` из `default_routes` при первой установке, а затем сохраняет
+активный список пользователя. Старый deploy-ключ `fallback_providers` читается
+для совместимости, только если `fallback_policy.default_routes` не задан.
+
+Базовый список проверен по публичным каталогам **23 сентября 2026**:
+
+| Порядок | Provider | Model ID | Основание выбора |
+| --- | --- | --- | --- |
+| 1 | `openrouter` | `inclusionai/ling-3.0-flash-fin:free` | Уже настроен основным Direct Review; поддерживает tools, используется Hermes |
+| 2 | `nous` | `meituan/longcat-2.0:free` | Официальная бесплатная рекомендация Portal, coding/agentic задачи, tools |
+| 3 | `nvidia` | `nvidia/nemotron-3-super-120b-a12b` | Уже настроен для compression Hermes; agentic reasoning/coding/tools |
+| 4 | `openrouter` | `nvidia/nemotron-3-ultra-550b-a55b:free` | Уже настроен резервом Direct Review, есть в curated-каталоге Hermes |
+| 5 | `nous` | `poolside/laguna-s-2.1:free` | Официальная бесплатная рекомендация Portal, модель для coding agents, tools |
+
+Источники: [каталог OpenRouter](https://openrouter.ai/api/v1/models),
+[бесплатные рекомендации Nous](https://portal.nousresearch.com/api/nous/recommended-models),
+[каталог API Nous](https://inference-api.nousresearch.com/v1/models),
+[curated-каталог Hermes](https://hermes-agent.nousresearch.com/docs/api/model-catalog.json),
+[NVIDIA Super endpoint](https://build.nvidia.com/nvidia/nemotron-3-super-120b-a12b).
+У выбранных OpenRouter/Nous routes на дату проверки нулевые input/output цены
+и есть `tools` в supported parameters. NVIDIA предоставляет бесплатный endpoint
+для прототипирования с ограничениями [Developer Program](https://docs.api.nvidia.com/nim/docs/product),
+а не гарантированный бесплатный production SLA. Для Nous требуется существующий
+OAuth login, для остальных — их API keys; ключи этой правкой не добавляются.
+
+Это обоснованный стартовый набор, **не результат сравнительного live-теста**
+на ваших задачах. Настройка модели в review не доказывает качество её вердиктов.
+Проверялись публичные каталоги, не inference с вашими credentials. Free-квоты,
+модели и доступность могут меняться; для чувствительных данных учитывайте условия
+free endpoint (в частности, NVIDIA предупреждает о логировании запросов).
+Разные API providers также могут использовать общий upstream: запасной Ultra
+через OpenRouter не гарантирует независимость от сбоя NVIDIA. При quota
+переключение идёт между providers, а повторные модели того же provider
+пригодятся при других ошибках, не для обхода его общей квоты.
+
+В Telegram у авторизованного пользователя доступны команды (placeholders
+замените точными provider/model IDs):
+
+```text
+/fallback
+/fallback set <provider-1> <model-1>; <provider-2> <model-2>
+/fallback add <provider> <model>
+/fallback remove 2
+/fallback off
+/fallback reset
+```
+
+`set` заменяет список, `add` дополняет, `remove` удаляет по номеру,
+`off` отключает дальнейшие резервные переключения. `reset` восстанавливает
+базовый список из последней раскатки. Максимум — 8 маршрутов; дубликаты
+запрещены. Для OpenRouter разрешены только IDs с `:free`; фактическая
+доступность модели зависит от провайдера и не гарантируется суффиксом.
+
+Список записывается атомарно в `config.yaml` текущего routed Hermes home/profile,
+а не только одной беседы: другие беседы этого профиля используют тот же список.
+Изменения учитываются со следующего сообщения без рестарта; в занятой беседе
+команда отклоняется. Уже выполняющиеся задачи не прерываются. Если агент уже
+работает на резервной модели, `off` сам по себе не возвращает его на основную —
+возврат остаётся под управлением штатного cooldown Hermes.
+
+При quota/429/billing обход пропускает **все модели провайдера, уже отказавшего
+по квоте**, до проверки его credentials/client и пробует следующий другой
+провайдер в заданном порядке, без случайного выбора. Если он тоже исчерпал
+квоту, его остальные модели также пропускаются в этом обходе. Проверка
+credentials и реальный API-вызов выполняются нативным fallback при использовании;
+`/fallback` не делает платных/пробных запросов и не выдаёт сохранение списка за
+успешную проверку API. При исчерпании списка сохраняется штатная ошибка Hermes,
+без бесконечного перебора. При других ошибках штатные критерии fallback
+сохраняются, но платные OpenRouter-маршруты также пропускаются.
+
+Повторный Ansible deploy сохраняет выбранный список даже без Workspace UI и
+обновляет только baseline `fallback_policy.default_routes` для `/fallback reset`.
+Чтобы заменить активный список новым deploy-default, выполните `reset` после
+раскатки. Для отдельного routed profile нужны собственные
+`fallback_policy.allowed_providers` и `fallback_policy.default_routes` в его
+конфигурации. Команды изменения списка также убирают legacy `fallback_model`,
+чтобы он не включил скрытый резерв после `off`.
+
+Официальный CLI-мастер по-прежнему доступен:
 
 ```bash
 sudo -u hermes -H /home/hermes/.local/bin/hermes fallback
 ```
 
-Лучше использовать другого провайдера, а не только другую модель в том же
-сервисе. Затем откройте настройку моделей:
+Авторизацию дополнительных провайдеров настройте через Vault либо мастер моделей:
 
 ```bash
 sudo -u hermes -H /home/hermes/.local/bin/hermes model

@@ -158,7 +158,7 @@ def retry_probe(run, attempts, report):
 
 
 def show_approval(url):
-    """Open only a Tailscale URL on an interactive controller, not on the VPS."""
+    """Offer local browser approval; lack of a TTY must not cancel the SSH wait."""
     try:
         parsed = urlparse(url)
         port = parsed.port
@@ -168,21 +168,24 @@ def show_approval(url):
             or parsed.username or parsed.password or port
             or not parsed.path.startswith('/a/')):
         return False
-    if os.environ.get('CI', '').lower() in {'1', 'true'}:
+    if any(os.environ.get(flag, '').lower() in {'1', 'true'}
+           for flag in ('CI', 'TF_BUILD', 'GITHUB_ACTIONS')):
         return False
     try:
         with open('/dev/tty', 'w') as terminal:
             terminal.write(f'\n[Tailscale SSH] Open and approve this request: {url}\n')
             terminal.flush()
     except OSError:
-        return False
+        # Local IDE/Ansible workers may have a desktop browser but no /dev/tty.
+        # Never fall back to printing the approval URL into captured task logs.
+        pass
     opener = shutil.which('open' if sys.platform == 'darwin' else 'xdg-open')
     if opener:
         try:
             subprocess.run([opener, url], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL, timeout=3, check=False)
         except (OSError, subprocess.TimeoutExpired):
-            pass  # The operator can still open the URL printed to their TTY.
+            pass  # Approval elsewhere can still succeed within the probe deadline.
     return True
 
 
@@ -211,8 +214,8 @@ _OUTCOME_MESSAGES = {
     'host_key': 'SSH host-key verification failed. Verify the VPS host key and known_hosts manually; verification was not disabled.',
     'denied': 'SSH access denied. Check Tailscale SSH policy/user. For ordinary password SSH over a tailnet, authorize with standard Ansible authentication instead.',
     'policy_denied': 'Tailscale ACL denied this source device before authentication. Allow this device or its tag to reach the VPS on TCP 22, then rerun the playbook; no browser approval URL is generated for an ACL denial.',
-    'auth_required': 'Tailscale SSH requires browser approval, but this controller has no interactive terminal. Authorize from an interactive terminal or configure a narrowly scoped CI SSH identity.',
-    'auth_timeout': 'Tailscale browser approval was not completed within the bounded attempts. Rerun this playbook to receive a fresh approval link; do not close the approval tab before confirmation.',
+    'auth_required': 'Tailscale SSH requires browser approval, which is disabled on CI. Authorize from an interactive terminal or configure a narrowly scoped CI SSH identity.',
+    'auth_timeout': 'Tailscale browser approval was not completed within the bounded attempts. Rerun this playbook to receive a fresh approval link and confirm the SSH request, not just account login. If no browser opens, run from an interactive terminal.',
     'timeout': 'SSH connection timed out. Check Tailscale connectivity, the VPS, destination address and SSH access policy.',
     'failed': 'SSH preflight failed. Run ssh -v to the inventory host to diagnose authentication or SSH configuration.',
 }
