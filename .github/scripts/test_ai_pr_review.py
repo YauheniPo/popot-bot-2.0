@@ -2224,3 +2224,86 @@ class RateLimitLadderTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RateLimitLadderEdgeCaseTest(unittest.TestCase):
+    """Edge case tests for the 429 retry ladder implementation."""
+
+    def test_rate_limit_retry_delay_first_step(self) -> None:
+        """First 429 retry uses 60s ladder step."""
+        error = reviewer.RequestError("rate limited", status=429)
+        attempts = reviewer.ReviewAttempts()
+        attempts.rate_limit_used = 1
+        delay = reviewer._rate_limit_retry_delay(error, attempts)
+        self.assertEqual(delay, 60.0)
+
+    def test_rate_limit_retry_delay_second_step(self) -> None:
+        """Second 429 retry uses 120s ladder step."""
+        error = reviewer.RequestError("rate limited", status=429)
+        attempts = reviewer.ReviewAttempts()
+        attempts.rate_limit_used = 2
+        delay = reviewer._rate_limit_retry_delay(error, attempts)
+        self.assertEqual(delay, 120.0)
+
+    def test_rate_limit_retry_delay_third_step(self) -> None:
+        """Third 429 retry uses 300s ladder step."""
+        error = reviewer.RequestError("rate limited", status=429)
+        attempts = reviewer.ReviewAttempts()
+        attempts.rate_limit_used = 3
+        delay = reviewer._rate_limit_retry_delay(error, attempts)
+        self.assertEqual(delay, 300.0)
+
+    def test_rate_limit_retry_delay_fourth_step(self) -> None:
+        """Fourth 429 retry uses 600s ladder step."""
+        error = reviewer.RequestError("rate limited", status=429)
+        attempts = reviewer.ReviewAttempts()
+        attempts.rate_limit_used = 4
+        delay = reviewer._rate_limit_retry_delay(error, attempts)
+        self.assertEqual(delay, 600.0)
+
+    def test_rate_limit_retry_delay_provider_hint_extends(self) -> None:
+        """Provider Retry-After extends the ladder step when longer."""
+        error = reviewer.RequestError("rate limited", status=429)
+        error.retry_after_seconds = 200.0
+        attempts = reviewer.ReviewAttempts()
+        attempts.rate_limit_used = 1  # 60s ladder step
+        delay = reviewer._rate_limit_retry_delay(error, attempts)
+        # max(60, 200) = 200
+        self.assertEqual(delay, 200.0)
+
+    def test_rate_limit_retry_delay_provider_hint_capped(self) -> None:
+        """Provider Retry-After is capped at MAX_RATE_LIMIT_RETRY_DELAY_SECONDS (900s)."""
+        error = reviewer.RequestError("rate limited", status=429)
+        error.retry_after_seconds = 2000.0
+        attempts = reviewer.ReviewAttempts()
+        attempts.rate_limit_used = 1  # 60s ladder step
+        delay = reviewer._rate_limit_retry_delay(error, attempts)
+        # min(max(60, 2000), 900) = 900
+        self.assertEqual(delay, 900.0)
+
+    def test_rate_limit_retry_delay_index_bounds_negative(self) -> None:
+        """Negative index defaults to first ladder step."""
+        error = reviewer.RequestError("rate limited", status=429)
+        attempts = reviewer.ReviewAttempts()
+        attempts.rate_limit_used = 0  # Would give idx = -1
+        delay = reviewer._rate_limit_retry_delay(error, attempts)
+        self.assertEqual(delay, 60.0)
+
+    def test_rate_limit_retry_delay_index_bounds_excess(self) -> None:
+        """Excessive index defaults to first ladder step."""
+        error = reviewer.RequestError("rate limited", status=429)
+        attempts = reviewer.ReviewAttempts()
+        attempts.rate_limit_used = 10  # Would give idx = 9, out of bounds
+        delay = reviewer._rate_limit_retry_delay(error, attempts)
+        self.assertEqual(delay, 60.0)
+
+    def test_rate_limit_start_exhausted_returns_negative(self) -> None:
+        """rate_limit_start returns -1 when 4 retries already used."""
+        attempts = reviewer.ReviewAttempts()
+        for _ in range(4):
+            attempts.rate_limit_start()
+        self.assertEqual(attempts.rate_limit_start(), -1)
+
+
+if __name__ == "__main__":
+    unittest.main()
