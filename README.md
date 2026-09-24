@@ -209,6 +209,12 @@ identity variables or credentials are required. Each publishes its own PR
 summary and inline findings. The observable reviewer never resolves or replies
 to other reviewers' threads, avoiding races between the parallel jobs.
 
+Direct API retries HTTP 429 on a dedicated ladder of 1, 2, 5 and 10 minutes
+that does not consume its general four-request budget for transport, JSON and
+schema retries; a longer provider `Retry-After` extends a step up to 15 minutes,
+and the review deadline still bounds every wait. Other retryable errors keep
+exponential backoff (1, 2, 4 seconds) with provider hints capped at 90 seconds.
+
 Observable review retries HTTP 429 with exponential backoff (30s, then 60s)
 and honors a longer `Retry-After` or rate-limit reset hint. Waiting is capped at
 120 seconds per diff chunk across both routes; a longer hint skips that route

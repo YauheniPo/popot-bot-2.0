@@ -54,7 +54,7 @@ DEFAULT_REQUESTS_PER_MINUTE = 8
 # Provider Retry-After headers extend the step when longer (capped at 15 min).
 RATE_LIMIT_RETRY_LADDER = (60.0, 120.0, 300.0, 600.0)
 MAX_RATE_LIMIT_RETRY_DELAY_SECONDS = 900.0
-# Cap for untrusted provider retry headers in non-429 paths.
+# Cap for untrusted provider retry headers outside the 429 ladder.
 MAX_RETRY_DELAY_SECONDS = 90.0
 MAX_REQUEST_ATTEMPTS = 4
 # After two connection-level failures, use a ready fallback rather than spend
@@ -426,7 +426,9 @@ def _retry_after_candidate(value: object) -> float | None:
         return _seconds_until_reset(value)
 
 
-def _retry_after_seconds(response_headers: object, details: str) -> float | None:
+def _retry_after_seconds(
+    response_headers: object, details: str, cap: float = MAX_RETRY_DELAY_SECONDS,
+) -> float | None:
     headers = _header_mapping(response_headers)
     headers.update(_error_headers(details))
 
@@ -441,7 +443,7 @@ def _retry_after_seconds(response_headers: object, details: str) -> float | None
         return None
     # Add a small boundary margin, but never let an untrusted provider header
     # stall a CI runner indefinitely.
-    return min(max(candidates) + 1.0, MAX_RETRY_DELAY_SECONDS)
+    return min(max(candidates) + 1.0, cap)
 
 
 def required_env(name: str) -> str:
@@ -469,7 +471,11 @@ def _http_failure(error: urllib.error.HTTPError, model_request: bool) -> Request
             details = error.read(16_384).decode("utf-8", errors="replace")
         except TRANSIENT_NETWORK_ERRORS:
             details = "response body could not be read"
-        retry_after = _retry_after_seconds(error.headers, details)
+        # The 429 ladder may honor a longer provider hint than other retries.
+        retry_after = _retry_after_seconds(
+            error.headers, details,
+            cap=MAX_RATE_LIMIT_RETRY_DELAY_SECONDS if error.code == 429 else MAX_RETRY_DELAY_SECONDS,
+        )
     # Model error bodies can echo the request. Retain only compatibility hints
     # needed by existing schema/reasoning negotiation, never arbitrary prose.
     quota = ""
@@ -947,12 +953,14 @@ def request_with_transient_retries(
                 timeout=min(MODEL_REQUEST_TOTAL_SECONDS, available),
             )
         except RequestError as error:
-            # Track 429 retries separately from general attempt budget
             if error.status == 429:
-                rl_attempt = attempts.rate_limit_start()
-                if rl_attempt == -1:
+                # A rate-limited request does not spend the general budget: the
+                # dedicated ladder bounds these retries on its own.
+                attempts.used -= 1
+                if attempts.rate_limit_start() == -1:
                     print(
-                        "  429 retry ladder exhausted (4 retries); stopping this route",
+                        "  429 retry ladder exhausted "
+                        f"({len(RATE_LIMIT_RETRY_LADDER)} retries); stopping this route",
                         file=sys.stderr,
                         flush=True,
                     )
@@ -981,13 +989,14 @@ def _retry_delay_or_raise(error: RequestError, attempt: int, body: dict[str, obj
             file=sys.stderr,
         )
         raise error
-    if not _retryable_request_error(error) or attempt == MAX_REQUEST_ATTEMPTS:
+    if not _retryable_request_error(error):
         raise error
-    
-    # 429 gets its own dedicated ladder; other retryable errors use exponential backoff
+    # 429 has its own ladder and budget, so the general attempt cap does not apply.
     if error.status == 429:
         return _rate_limit_retry_delay(error, attempts)
-    return error.retry_after_seconds or _retry_delay_seconds(error, attempt)
+    if attempt == MAX_REQUEST_ATTEMPTS:
+        raise error
+    return error.retry_after_seconds or _retry_delay_seconds(attempt)
 
 
 def _has_independent_configured_fallback(body: dict[str, object]) -> bool:
@@ -1029,16 +1038,14 @@ def _retryable_request_error(error: RequestError) -> bool:
     return error.status is None or error.status in RETRYABLE_HTTP_STATUSES
 
 
-def _retry_delay_seconds(_error: RequestError, attempt: int) -> float:
-    delay = float(2 ** (attempt - 1))
-    # Non-429 retryable errors use exponential backoff with 15s floor.
-    # 429 errors use their own dedicated ladder via _rate_limit_retry_delay.
-    return max(delay, 15.0)
+def _retry_delay_seconds(attempt: int) -> float:
+    """Exponential backoff for non-429 retryable errors; 429 uses the ladder."""
+    return float(2 ** (attempt - 1))
 
 
 def _rate_limit_retry_delay(error: RequestError, attempts: ReviewAttempts) -> float:
     """Return delay for 429 retry based on dedicated ladder and provider hint.
-    
+
     The ladder is 1, 2, 5, 10 minutes (60, 120, 300, 600 seconds).
     Provider Retry-After extends the step when longer, capped at 15 minutes.
     """

@@ -593,13 +593,14 @@ class OllamaCloudRequestTest(unittest.TestCase):
     def test_four_attempts_are_shared_by_transport_json_and_reasoning_retries(self):
         valid = {"choices": [{"message": {"content": '{"summary":"Reviewed.","findings":[]}'}}]}
         malformed = {"choices": [{"message": {"content": "not-json"}}]}
-        rate_limit = reviewer.RequestError("rate limited", status=429)
+        unavailable = reviewer.RequestError("unavailable", status=503)
         reasoning = reviewer.RequestError(reviewer.MANDATORY_REASONING_ERROR, status=400)
+        # 429 is deliberately absent here: it has its own budget (see RateLimitLadderTest).
         scenarios = (
-            ("transport recovers", [rate_limit] * 3 + [valid], 4, 0),
+            ("transport recovers", [unavailable] * 3 + [valid], 4, 0),
             ("JSON recovers", [malformed] * 3 + [valid], 4, 0),
-            ("mixed recovers", [rate_limit, malformed, reasoning, valid], 4, 0),
-            ("mixed exhausted", [rate_limit, malformed, rate_limit, malformed, valid], 5, 1),
+            ("mixed recovers", [unavailable, malformed, reasoning, valid], 4, 0),
+            ("mixed exhausted", [unavailable, malformed, unavailable, malformed, valid], 5, 1),
             ("compatibility exhausted", [malformed] * 3 + [reasoning, valid], 5, 1),
         )
         chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
@@ -2066,10 +2067,6 @@ class ThreadTriageTest(unittest.TestCase):
         self.assertIn("azure-devops", marker)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class RateLimitLadderTest(unittest.TestCase):
     """Tests for the dedicated 429 retry ladder."""
 
@@ -2171,15 +2168,13 @@ class RateLimitLadderTest(unittest.TestCase):
         sleep.assert_called_once_with(900.0)
 
     def test_429_ladder_exhausted_after_4_retries(self) -> None:
-        """After 4 dedicated 429 retries, the route is abandoned.
-        
-        Note: The general attempt budget (MAX_REQUEST_ATTEMPTS=4) also applies,
-        so total attempts including the initial call is 4 (1 initial + 3 retries)
-        before the general budget is exhausted. The dedicated 429 budget allows
-        up to 4 retries, but the general budget limits to 4 total attempts.
+        """Five consecutive 429s walk the whole ladder, then the route is abandoned.
+
+        429 retries do not spend the general attempt budget (MAX_REQUEST_ATTEMPTS),
+        so the dedicated ladder alone bounds them: 1 initial call + 4 retries.
         """
         chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
-        errors = [reviewer.RequestError("rate limited", status=429)] * 5  # 5 errors = more than budget
+        errors = [reviewer.RequestError("rate limited", status=429)] * 5
         with (
             mock.patch.object(
                 reviewer,
@@ -2187,18 +2182,47 @@ class RateLimitLadderTest(unittest.TestCase):
                 side_effect=errors,
             ) as request,
             mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(2000.0)),
             mock.patch.object(reviewer.time, "sleep") as sleep,
         ):
             with self.assertRaises(reviewer.RequestError):
                 reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
 
-        # General budget of 4 attempts: 1 initial + 3 retries = 4 calls
-        # Sleeps for the 3 retries: 60, 120, 300
-        self.assertEqual(request.call_count, 4)
-        sleep.assert_has_calls([mock.call(60.0), mock.call(120.0), mock.call(300.0)])
+        self.assertEqual(request.call_count, 5)
+        self.assertEqual(
+            sleep.call_args_list,
+            [mock.call(60.0), mock.call(120.0), mock.call(300.0), mock.call(600.0)],
+        )
+
+    def test_429_after_general_retries_still_uses_the_ladder(self) -> None:
+        """A 429 on the last general attempt is not raised; the ladder still applies."""
+        response = {
+            "choices": [
+                {"message": {"content": json.dumps({"summary": "Reviewed.", "findings": []})}}
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        transport = reviewer.RequestError("connection error", reason="connection_error")
+        with (
+            mock.patch.object(
+                reviewer,
+                "request_json",
+                side_effect=[transport, transport, transport,
+                             reviewer.RequestError("rate limited", status=429), response],
+            ) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch.object(reviewer.time, "sleep") as sleep,
+        ):
+            reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
+
+        self.assertEqual(request.call_count, 5)
+        self.assertEqual(
+            sleep.call_args_list,
+            [mock.call(1.0), mock.call(2.0), mock.call(4.0), mock.call(60.0)],
+        )
 
     def test_non_429_errors_use_exponential_backoff(self) -> None:
-        """Non-429 retryable errors still use exponential backoff (1/2/4/8s, floor 15s)."""
+        """Non-429 retryable errors keep pure exponential backoff (1/2/4s), no 15s floor."""
         response = {
             "choices": [
                 {"message": {"content": json.dumps({"summary": "Reviewed.", "findings": []})}}
@@ -2218,12 +2242,18 @@ class RateLimitLadderTest(unittest.TestCase):
             reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
 
         self.assertEqual(request.call_count, 3)
-        # First backoff: max(2^0, 15) = 15s, second: max(2^1, 15) = 15s
-        sleep.assert_has_calls([mock.call(15.0), mock.call(15.0)])
+        self.assertEqual(sleep.call_args_list, [mock.call(1.0), mock.call(2.0)])
 
+    def test_provider_retry_after_cap_depends_on_status(self) -> None:
+        """429 honors a provider hint up to the ladder cap; other statuses stay at 90s."""
+        def failure(code: int) -> reviewer.RequestError:
+            error = urllib.error.HTTPError(
+                "https://example.test", code, "busy", {"Retry-After": "600"}, io.BytesIO(b"{}"),
+            )
+            return reviewer._http_failure(error, model_request=True)
 
-if __name__ == "__main__":
-    unittest.main()
+        self.assertEqual(failure(429).retry_after_seconds, 601.0)
+        self.assertEqual(failure(503).retry_after_seconds, reviewer.MAX_RETRY_DELAY_SECONDS)
 
 
 class RateLimitLadderEdgeCaseTest(unittest.TestCase):
@@ -2304,12 +2334,8 @@ class RateLimitLadderEdgeCaseTest(unittest.TestCase):
             attempts.rate_limit_start()
         self.assertEqual(attempts.rate_limit_start(), -1)
 
-    def test_fourth_429_retry_integration_with_extra_budget(self) -> None:
-        """Integration test: 4th 429 retry (600s step) when budget allows.
-        
-        The general attempt budget (4) normally limits to 3 retries.
-        This test verifies the 4th ladder step works when budget is increased.
-        """
+    def test_fourth_429_retry_reaches_the_600s_step(self) -> None:
+        """The 4th ladder step is reachable under the default general budget."""
         response = {
             "choices": [
                 {"message": {"content": json.dumps({"summary": "Reviewed.", "findings": []})}}
@@ -2325,7 +2351,6 @@ class RateLimitLadderEdgeCaseTest(unittest.TestCase):
                 side_effect=errors,
             ) as request,
             mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
-            mock.patch.object(reviewer, "MAX_REQUEST_ATTEMPTS", 5),  # Extra budget for 4 retries
             mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(2000.0)),
             mock.patch.object(reviewer.time, "sleep") as sleep,
         ):
@@ -2338,12 +2363,15 @@ class RateLimitLadderEdgeCaseTest(unittest.TestCase):
             mock.call(300.0), mock.call(600.0)
         ])
 
-    def test_429_ladder_exhausted_raises_before_general_budget(self) -> None:
-        """When 429 ladder is exhausted (4 retries), error raised even if general budget remains."""
+    def test_429_retries_do_not_spend_the_general_attempt_budget(self) -> None:
+        """Even with a general budget of 2, four 429 retries run and the 5th call succeeds."""
+        response = {
+            "choices": [
+                {"message": {"content": json.dumps({"summary": "Reviewed.", "findings": []})}}
+            ]
+        }
         chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
-        # 6 errors = 4 (ladder) + 1 (rl_attempt==-1 path) + would-be-success
-        # But ladder exhaustion should raise on the 5th 429 attempt
-        errors = [reviewer.RequestError("rate limited", status=429)] * 5 + [{"choices": [{"message": {"content": json.dumps({"summary": "Reviewed.", "findings": []})}}]}]
+        errors = [reviewer.RequestError("rate limited", status=429)] * 4 + [response]
         with (
             mock.patch.object(
                 reviewer,
@@ -2351,20 +2379,17 @@ class RateLimitLadderEdgeCaseTest(unittest.TestCase):
                 side_effect=errors,
             ) as request,
             mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
-            mock.patch.object(reviewer, "MAX_REQUEST_ATTEMPTS", 6),  # Large budget
-            mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(5000.0)),
+            mock.patch.object(reviewer, "MAX_REQUEST_ATTEMPTS", 2),
+            mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(2000.0)),
             mock.patch.object(reviewer.time, "sleep") as sleep,
         ):
-            with self.assertRaises(reviewer.RequestError):
-                reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
+            reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
 
-        # 5 calls: initial + 4 retries, then ladder exhausted -> raise
         self.assertEqual(request.call_count, 5)
-        # Four sleeps for the 4 retries: 60, 120, 300, 600
-        sleep.assert_has_calls([
-            mock.call(60.0), mock.call(120.0), 
-            mock.call(300.0), mock.call(600.0)
-        ])
+        self.assertEqual(
+            sleep.call_args_list,
+            [mock.call(60.0), mock.call(120.0), mock.call(300.0), mock.call(600.0)],
+        )
 
 
 if __name__ == "__main__":
