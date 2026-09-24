@@ -191,7 +191,7 @@ class SshPreflightTests(unittest.TestCase):
     def test_interactive_approval_opens_only_a_tailscale_url(self):
         from unittest.mock import Mock, patch
         opened = []
-        with patch.dict('os.environ', {'CI': ''}, clear=False), \
+        with patch.dict('os.environ', {}, clear=True), \
              patch('builtins.open', unittest.mock.mock_open()) as tty, \
              patch.object(preflight.shutil, 'which', return_value='/usr/bin/xdg-open'), \
              patch.object(preflight.subprocess, 'run', side_effect=lambda *a, **k: opened.append(a[0])):
@@ -201,7 +201,7 @@ class SshPreflightTests(unittest.TestCase):
 
     def test_interactive_approval_rejects_untrusted_url(self):
         from unittest.mock import patch
-        with patch.dict('os.environ', {'CI': ''}, clear=False), \
+        with patch.dict('os.environ', {}, clear=True), \
              patch('builtins.open', unittest.mock.mock_open()), \
              patch.object(preflight.shutil, 'which', return_value='/usr/bin/xdg-open'), \
              patch.object(preflight.subprocess, 'run') as opener:
@@ -212,13 +212,42 @@ class SshPreflightTests(unittest.TestCase):
             self.assertFalse(preflight.show_approval('https://login.tailscale.com/other/test'))
             opener.assert_not_called()
 
-    def test_interactive_approval_is_skipped_in_ci_and_without_a_terminal(self):
-        from unittest.mock import patch
-        with patch.dict('os.environ', {'CI': 'true'}, clear=False):
-            self.assertFalse(preflight.show_approval('https://login.tailscale.com/a/test123'))
-        with patch.dict('os.environ', {'CI': ''}, clear=False), \
-             patch('builtins.open', side_effect=OSError('no tty')):
-            self.assertFalse(preflight.show_approval('https://login.tailscale.com/a/test123'))
+    def test_approval_is_skipped_in_ci_without_opening_or_printing_url(self):
+        for flag in ('CI', 'TF_BUILD', 'GITHUB_ACTIONS'):
+            with self.subTest(flag=flag), \
+                 mock.patch.dict('os.environ', {flag: 'true'}, clear=True), \
+                 mock.patch('builtins.open') as tty, \
+                 mock.patch.object(preflight.subprocess, 'run') as opener:
+                self.assertFalse(preflight.show_approval('https://login.tailscale.com/a/test123'))
+                tty.assert_not_called()
+                opener.assert_not_called()
+
+    def test_local_approval_without_tty_waits_for_ssh_success(self):
+        command = [sys.executable, '-u', '-c',
+                   "import sys,time; print('https://login.tailscale.com/a/test123', file=sys.stderr, flush=True); time.sleep(.15)"]
+        with mock.patch.dict('os.environ', {}, clear=True), \
+             mock.patch('builtins.open', side_effect=OSError('no tty')), \
+             mock.patch.object(preflight.shutil, 'which', return_value='/usr/bin/open'), \
+             mock.patch.object(preflight.subprocess, 'run') as opener:
+            self.assertEqual(preflight.probe(command, 2, preflight.show_approval, lambda _: None), 'ready')
+            opener.assert_called_once()
+            self.assertEqual(opener.call_args.args[0], ['/usr/bin/open', 'https://login.tailscale.com/a/test123'])
+
+    def test_local_approval_without_tty_or_opener_still_has_a_deadline(self):
+        command = [sys.executable, '-u', '-c',
+                   "import sys,time; print('https://login.tailscale.com/a/test123', file=sys.stderr, flush=True); time.sleep(30)"]
+        reports = []
+        with mock.patch.dict('os.environ', {}, clear=True), \
+             mock.patch('builtins.open', side_effect=OSError('no tty')), \
+             mock.patch.object(preflight.shutil, 'which', return_value=None):
+            started = time.monotonic()
+            result = preflight.retry_probe(
+                lambda: preflight.probe(command, .2, preflight.show_approval, reports.append),
+                2, reports.append)
+        self.assertEqual(result, 'auth_timeout')
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertIn('SSH check 2/2', reports)
+        self.assertNotIn('https://', str(reports))
 
     def _action(self, *, transport='ssh', host='100.64.0.1', args=None, options=None):
         from types import SimpleNamespace
@@ -260,7 +289,7 @@ class SshPreflightTests(unittest.TestCase):
         from unittest.mock import patch
         for outcome, expected in (('ready', 'SSH authentication confirmed'),
                                   ('host_key', 'host-key verification failed'),
-                                  ('auth_required', 'no interactive terminal'),
+                                  ('auth_required', 'disabled on CI'),
                                   ('auth_timeout', 'not completed within the bounded attempts'),
                                   ('timeout', 'SSH connection timed out'),
                                   ('failed', 'Run ssh -v')):
@@ -274,7 +303,7 @@ class SshPreflightTests(unittest.TestCase):
 
     def test_interactive_approval_swallows_an_opener_failure(self):
         from unittest.mock import patch
-        with patch.dict('os.environ', {'CI': ''}, clear=False), \
+        with patch.dict('os.environ', {}, clear=True), \
              patch('builtins.open', unittest.mock.mock_open()), \
              patch.object(preflight.shutil, 'which', return_value='/usr/bin/xdg-open'), \
              patch.object(preflight.subprocess, 'run',
@@ -282,7 +311,7 @@ class SshPreflightTests(unittest.TestCase):
             # A slow or missing opener must not fail the preflight; the URL is
             # already printed on the operator's TTY.
             self.assertTrue(preflight.show_approval('https://login.tailscale.com/a/test123'))
-        with patch.dict('os.environ', {'CI': ''}, clear=False), \
+        with patch.dict('os.environ', {}, clear=True), \
              patch('builtins.open', unittest.mock.mock_open()), \
              patch.object(preflight.shutil, 'which', return_value='/usr/bin/xdg-open'), \
              patch.object(preflight.subprocess, 'run', side_effect=OSError('cannot exec')):

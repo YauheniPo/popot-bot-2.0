@@ -846,6 +846,44 @@ Tailscale-доступа временно задайте `lock_public_ssh: false
 
 ### Управляемое обновление и автоподъём
 
+Текущий pin — стабильный [Hermes 0.21.4 / v2026.9.21](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.9.21).
+Commit и SHA-256 installer берутся только из `vps_deploy.hermes_source`.
+Локальные gateway/Telegram-патчи адаптированы к разделённым upstream-модулям;
+Edge TTS retry оборачивает новый provider entry point, сохраняя остальные providers.
+Изменение pin в Git само по себе не обновляет работающий VPS — нужен deploy ниже.
+
+После проверки SHA-256 скачанного installer managed deploy адаптирует его
+Git-update: существующий checkout переключается сразу на pinned commit, без
+промежуточного обновления `main`, и лишь затем восстанавливаются локальные правки.
+Python-подготовщик получает только текст через stdin и возвращает его через stdout;
+он не принимает файловые пути. Shell заменяет свой временный файл только после
+успешной подготовки, сохраняя скачанный installer при ошибке преобразования.
+Неизвестная структура installer останавливает deploy ещё до остановки gateway.
+Конфликт восстановления останавливает установку без сброса рабочего дерева;
+stash сохраняется. Managed deploy создаёт собственные
+`hermes-managed-install-autostash-*`; их наличие или неразрешённые Git-конфликты
+блокируют повторный запуск до ручного разбора. Исторические upstream-stash
+`hermes-install-autostash-*` и пользовательские WIP не блокируют обновление,
+не применяются и не удаляются: deploy сохраняет текущие локальные правки отдельно.
+Обычный Hermes backup исключает `hermes-agent/` и не заменяет сохранение Git-правок.
+
+Azure CI задаёт `ANSIBLE_LOCAL_TEMP` только для своего агента; временный каталог
+на VPS выбирает Ansible. Путь `$(Agent.TempDirectory)` не передаётся как remote temp.
+
+Перед следующим обновлением проверяйте патчи на чистом checkout выбранного
+upstream commit (не на установленном Hermes с личными данными):
+
+```bash
+HERMES_UPSTREAM_DIR=/path/to/hermes-agent python3.11 -m unittest \
+  hermes.runtime.test_hermes_upstream -v
+```
+
+Проверка сверяет commit/version/installer checksum, применяет gateway-патчи
+к временным копиям, компилирует результат и проверяет идемпотентность,
+маршрутизацию команд, приоритеты Telegram menu и совместимость проверки backup
+со штатным обходчиком файлов закреплённой версии. Она не устанавливает Hermes,
+не обращается к VPS и не заменяет backup и post-deploy проверки.
+
 #### Режимы deploy
 
 По умолчанию playbook запускается в консервативном режиме `full`: он может
@@ -862,12 +900,20 @@ ansible-playbook -i inventory.yml playbook.yml -e hermes_deploy_mode=config-only
 ansible-playbook -i inventory.yml playbook.yml -e hermes_deploy_mode=runtime-only
 ```
 
-Оба быстрых режима откажутся запускаться, если установленный Hermes или его
-venv не совпадает с pinned commit. В этом случае сначала запустите `full`.
+Оба быстрых режима откажутся запускаться, если установленный Hermes не совпадает
+с pinned commit, отсутствует его venv или маркер успешного завершения установщика
+`<hermes_user_home>/.hermes-install-complete` с этим commit. В этом случае сначала
+запустите `full`. На ранее установленных VPS без маркера потребуется один полный
+проход установщика с обязательным backup. Маркер удаляется только после успешной
+проверки backup, непосредственно перед установкой, и записывается в конце
+`deploy-hermes.sh`; ошибка после обновления HEAD не считается завершённой установкой.
+Маркер подтверждает завершение shell-установщика, а не последующих задач Ansible
+или live-проверок: они выполняются playbook отдельно.
 
 Production VPS обновляется повторным запуском Ansible playbook. Playbook
-сравнивает установленный commit с `vps_deploy.hermes_source.commit` и запускает
-обновление только при расхождении. Перед изменением кода deploy обязательно:
+сравнивает установленный commit и маркер завершения с `vps_deploy.hermes_source.commit`,
+проверяет наличие venv и повторяет установку при расхождении или незавершённом
+предыдущем запуске. Перед изменением кода deploy обязательно:
 
 1. синхронизирует restorable mirror личного workspace `AGENTS.md` и
    останавливает managed gateway;
@@ -988,6 +1034,12 @@ ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventory.ini \
 интерактивный терминал controller и автоматически открывается браузер
 (на macOS — `open`, на Linux — `xdg-open`, если доступен). Ссылка не попадает
 в результат задачи или CI-лог; пароль и Vault-секреты не передаются в команду SSH.
+При локальном запуске без `/dev/tty` (например, из IDE) браузер всё равно
+открывается, если доступен opener, и проверка ждёт SSH в тех же пределах.
+Отсутствие терминала или ошибка открытия браузера не прерывает ожидание:
+авторизация могла быть начата другим локальным процессом. Успех означает
+успешное SSH-подключение, а не запуск браузера или только вход в аккаунт.
+Если браузер не открылся, повторите запуск из интерактивного терминала.
 
 Если вкладка закрыта без подтверждения, по истечении таймаута процесс SSH
 завершается и создаётся новое подключение с новым запросом авторизации.
@@ -997,8 +1049,9 @@ ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i ansible/inventory.ini \
 Сбор фактов выполняется отдельной задачей с общим лимитом 60 секунд; нумерация
 прогресса начинается с проверки подключения, а не с последнего шага.
 
-В CI/без интерактивного терминала запрос browser approval сразу завершает
-проверку ошибкой. Для автоматического deploy нужна отдельно разрешённая
+В CI (`CI`, `TF_BUILD` или `GITHUB_ACTIONS` равен `true`/`1`) запрос browser
+approval сразу завершает проверку ошибкой без открытия браузера или вывода
+ссылки. Для автоматического deploy нужна отдельно разрешённая
 SSH-идентичность; playbook не отключает check mode, ACL или проверку host key.
 Для обычного SSH по публичному адресу эта browser-проверка пропускается.
 При обычном password SSH через tailnet пароль обрабатывает сам Ansible,
@@ -1063,18 +1116,28 @@ host key прямо внутри pipeline.
 добавьте approval владельца, **Branch control** для `refs/heads/main` и
 **Exclusive lock**. У самого pipeline оставьте право **Queue builds** только
 владельцу. Эти проверки задаются в Azure UI, а не в YAML. Branch control
-проверяет ветку определения pipeline (`main`), а не выбранную ниже ветку
-исходников: её код Ansible получит production credentials после approval.
-Поэтому согласовывайте только проверенный commit, показанный в отчёте запуска.
+проверяет все связанные repository resources, включая выбранную ветку
+`deploySource`: при allowlist только `refs/heads/main` feature-ветки будут
+заблокированы. Изменение allowlist требует отдельного согласования; checks
+не отключайте. Код Ansible выбранной ветки получит production credentials
+после checks и approval, поэтому согласовывайте только проверенный commit,
+показанный в отчёте запуска.
 
-После попадания этой версии YAML в `main`, в **Run pipeline** задайте:
+Repository resource `deploySource` использует GitHub service connection
+`github.com_YauheniPo`; разрешите его использование deployment pipeline без
+**Open access**, если разрешение ещё не выдано.
+После попадания этой версии YAML в `main`, в **Run pipeline** откройте
+**Resources → deploySource** для выбора ветки исходников:
 
 | Поле | Значение |
 |---|---|
 | Branch/tag (ветка самого pipeline) | `main` — не меняйте на feature-ветку |
-| Source branch to deploy (`deployBranch`) | Ветка кода, например `feat/hermes-workspace-and-deploy-improvements`; допустим и `refs/heads/...` |
+| Resources → deploySource | Ветка кода, разрешённая Branch control; по умолчанию `main` |
 | Ansible deployment mode (`deployMode`) | `full`, `config-only` или `runtime-only` |
-| Confirm production deployment | `true` |
+
+Отдельный чекбокс подтверждения production не требуется: достаточно ручного
+**Run pipeline**, затем настроенных approvals в Azure. Автоматические CI/PR
+triggers выключены; проверки ветки, доступа, секретов и backup сохраняются.
 
 `full` сохраняет консервативный путь установки/обновления; `config-only`
 применяет конфигурацию без обновления upstream Hermes; `runtime-only` ограничивает
@@ -1085,8 +1148,10 @@ host key прямо внутри pipeline.
 Pipeline:
 
 1. проверит, что definition запущен из `main`;
-2. через существующее GitHub connection скачает историю/ветки без сохранения
-   credentials, найдёт выбранную ветку и сохранит архив её конкретного SHA;
+2. через GitHub connection скачает `self` и выбранную версию `deploySource`
+   в разные каталоги без сохранения credentials; helper из доверенного `main`
+   сверит checkout с SHA resource Azure и сохранит архив этого commit,
+   не вычисляя вершину ветки заново;
 3. до approvals опубликует в Summary ветку, SHA и режим. Проверьте их перед
    согласованием environment, Secure Files и группы переменных;
 4. после approvals возьмёт архив **из этого же запуска**, проверит защищённые
@@ -1095,7 +1160,8 @@ Pipeline:
 
 Несуществующая/некорректная ветка останавливает запуск до получения Secure Files.
 Ветка должна находиться в том же репозитории и содержать Hermes playbook;
-теги, произвольные SHA и fork URL не являются параметром `deployBranch`.
+выбирайте в picker ветку, а не тег. Helper принимает только ref
+`refs/heads/...` и SHA выбранного resource; смена репозитория на fork не поддерживается.
 Для нового SHA запускайте новый pipeline; повтор deploy job использует прежний
 артефакт. GitHub credentials, `.git` и незакоммиченные локальные файлы в него не
 попадают. Доступ к артефакту исходников ограничьте доверенными пользователями.
@@ -1413,6 +1479,11 @@ repository workspace, write owners и приватный access probe. Кажд�
 токен из Hermes `.env` во время запуска и не создаёт второй plaintext token
 store. После изменения Vault gateway перезапускается и получает новый token.
 
+Git defaults, identity и credential helper в блоке `HERMES MANAGED GIT DEFAULTS`
+принадлежат Ansible. Shell-установщик сохраняет этот блок; без него применяет
+defaults через `git config --replace-all`, чтобы существующие дубли не прерывали
+установку. Остальные личные Git-настройки сохраняются.
+
 Рекомендуемые fine-grained permissions: Metadata read, Contents read/write,
 Pull requests read/write, Issues read/write и Actions read. Workflows
 read/write добавляйте только если Hermes должен изменять `.github/workflows`.
@@ -1494,8 +1565,32 @@ sudo -u hermes -H /home/hermes/.local/bin/hermes checkpoints prune
 неизменные counts по статусам. При source update дополнительно сравниваются
 личные файлы и Kanban до/после установки.
 
-Временный `gateway.lock` не входит в проверяемый список файлов: он может
-исчезнуть при остановке процесса между обходом каталогов и чтением хеша.
+Проверяемый список учитывает штатные исключения закреплённого Hermes:
+`node/`, `models/`, `runtimes/` и `browser_profiles/` исключаются только в корне
+Hermes и `profiles/<name>/`. В `cache/` на этих уровнях обязательны `images/`,
+`audio/`, `videos/`, `documents/`, `screenshots/` и `citations/`; прочие временные
+данные не требуются. Одноимённые вложенные каталоги skills остаются личными
+данными. `browser-profile/` и `browser-profiles/` исключены штатным backup как
+runtime-профили браузера. Отсутствие обязательных файлов по-прежнему прерывает
+deploy; сообщение ограничено количеством и первыми 20 отсутствующими путями.
+
+При source update установщик сначала скачивается по закреплённому commit и
+проверяется по SHA-256, пока gateway продолжает работать. Загрузка допускает
+до четырёх попыток при временных ошибках (включая HTTP 429), учитывает
+`Retry-After`: таймаут соединения — 10 секунд, одной передачи — 30 секунд,
+бюджет повторов — 120 секунд (последняя передача может добавить до 30 секунд).
+В логах видны повторы, итоговый HTTP status и код ошибки curl, без содержимого
+ответа. Ошибка загрузки или checksum прерывает deploy без остановки gateway.
+Только после успешной проверки установщика gateway останавливается для
+согласованного полного backup; установка начинается после проверки backup.
+
+Временный `gateway.lock` не входит ни в архив, ни в проверяемый список файлов:
+он может исчезнуть при остановке процесса между обходом каталогов и чтением.
+До обязательного backup (config-only и source update) deploy применяет только
+backup-патч через `apply-hermes-patches.py --backup-only`; остальные runtime-патчи
+остаются после backup. Исключение также действует для последующих штатных full
+backups, включая scheduled backup, в основном home и профилях. Патч идемпотентен;
+неизвестный исходный код архиватора прерывает deploy, а не пропускает проверку.
 Исчезновение личных файлов по-прежнему останавливает deploy; остальные
 `*.lock` не исключаются автоматически.
 
@@ -1687,9 +1782,10 @@ cd /root/hermes # замените путь, если repository находит�
 
 Deploy применяет модельную политику из `vps_hermes.config.managed_overlay` в
 [`config/vps-defaults.yml`](config/vps-defaults.yml): основной provider и модель,
-вспомогательные модели, настройки cron и `fallback_providers`. Для каждого
+вспомогательные модели, настройки cron и `fallback_policy.default_routes`. Для каждого
 используемого provider нужны его credentials; наличие записи fallback не
-заменяет авторизацию. Следующий deploy снова применит эту политику. Hermes также
+заменяет авторизацию. Следующий deploy снова применит модельную политику, но
+сохранит существующий `fallback_providers`, включая пустой список. Hermes также
 поддерживает built-in providers с API key/OAuth, named custom providers и
 локальные OpenAI-compatible endpoints.
 Для Ansible укажите нужные ENV keys в `hermes_secret_env`, а non-secret
@@ -1730,8 +1826,8 @@ server и настройка custom provider не требуются.
    переопределение, чтобы использовалась политика repository.
 3. Примените обычный Ansible deploy. Для Azure сначала загрузите обновлённый
    **зашифрованный** `vault.yml` в **Pipelines → Library → Secure files** и
-   запустите deployment pipeline из `main` с **Confirm production deployment**
-   и настроенными approvals. Изменения repository должны быть доступны в
+   запустите deployment pipeline из `main` и пройдите настроенные approvals.
+   Изменения repository должны быть доступны в
    `main`; изменение только локального Vault не обновляет Azure Secure File.
    Deploy сам перезапустит gateway.
 4. Откройте `/model` в Hermes/Telegram и выберите **Ollama Cloud**. Hermes
@@ -1771,8 +1867,8 @@ sudo -u hermes -H /home/hermes/.local/bin/hermes cron list
 sudo -u hermes -H /home/hermes/.local/bin/hermes cron status
 ```
 
-Не добавляйте пустые entries в `fallback_providers`. Hermes игнорирует записи
-без `provider` или `model`, а provider без credentials не проходит preflight.
+Не добавляйте пустые entries в `fallback_policy.default_routes`: deploy отклоняет
+записи без `provider` или `model`. Provider без credentials не проходит preflight.
 
 Переключение внутри Hermes или Telegram не требует перезапуска и не теряет
 историю диалога:
@@ -1805,15 +1901,105 @@ Grafana либо `hermes-ops-report --period 7d`. Если provider не соо�
 [routing aggregators](https://hermes-agent.nousresearch.com/docs/user-guide/features/provider-routing),
 [fallback providers](https://hermes-agent.nousresearch.com/docs/user-guide/features/fallback-providers).
 
-Если основная модель недоступна или достигла лимита, Hermes сможет продолжить
-задачу через другого провайдера:
+#### Резервные модели и провайдеры в Telegram
+
+Managed Hermes использует нативную цепочку fallback без повторного запуска
+задачи или выполненных tools. Начальный упорядоченный список задаётся в
+`vps_hermes.config.managed_overlay.fallback_policy.default_routes` в
+[`config/vps-defaults.yml`](config/vps-defaults.yml). В
+`fallback_policy.allowed_providers` того же overlay задаются провайдеры,
+которые можно выбирать через чат. Ключи остаются в Vault/штатной авторизации;
+chat-команда не принимает credentials или произвольные endpoint URL.
+
+Каждый элемент `default_routes` содержит **оба** поля: `provider` и `model`.
+Один provider может встречаться несколько раз с разными моделями; запрещён
+только повтор одинаковой пары. `allowed_providers` — разрешения chat-команды,
+не список моделей для автоматического выбора. Deploy формирует нативный
+`fallback_providers` из `default_routes` при первой установке, а затем сохраняет
+активный список пользователя. Старый deploy-ключ `fallback_providers` читается
+для совместимости, только если `fallback_policy.default_routes` не задан.
+
+Базовый список проверен по публичным каталогам **23 сентября 2026**:
+
+| Порядок | Provider | Model ID | Основание выбора |
+| --- | --- | --- | --- |
+| 1 | `openrouter` | `inclusionai/ling-3.0-flash-fin:free` | Уже настроен основным Direct Review; поддерживает tools, используется Hermes |
+| 2 | `nous` | `meituan/longcat-2.0:free` | Официальная бесплатная рекомендация Portal, coding/agentic задачи, tools |
+| 3 | `nvidia` | `nvidia/nemotron-3-super-120b-a12b` | Уже настроен для compression Hermes; agentic reasoning/coding/tools |
+| 4 | `openrouter` | `nvidia/nemotron-3-ultra-550b-a55b:free` | Уже настроен резервом Direct Review, есть в curated-каталоге Hermes |
+| 5 | `nous` | `poolside/laguna-s-2.1:free` | Официальная бесплатная рекомендация Portal, модель для coding agents, tools |
+
+Источники: [каталог OpenRouter](https://openrouter.ai/api/v1/models),
+[бесплатные рекомендации Nous](https://portal.nousresearch.com/api/nous/recommended-models),
+[каталог API Nous](https://inference-api.nousresearch.com/v1/models),
+[curated-каталог Hermes](https://hermes-agent.nousresearch.com/docs/api/model-catalog.json),
+[NVIDIA Super endpoint](https://build.nvidia.com/nvidia/nemotron-3-super-120b-a12b).
+У выбранных OpenRouter/Nous routes на дату проверки нулевые input/output цены
+и есть `tools` в supported parameters. NVIDIA предоставляет бесплатный endpoint
+для прототипирования с ограничениями [Developer Program](https://docs.api.nvidia.com/nim/docs/product),
+а не гарантированный бесплатный production SLA. Для Nous требуется существующий
+OAuth login, для остальных — их API keys; ключи этой правкой не добавляются.
+
+Это обоснованный стартовый набор, **не результат сравнительного live-теста**
+на ваших задачах. Настройка модели в review не доказывает качество её вердиктов.
+Проверялись публичные каталоги, не inference с вашими credentials. Free-квоты,
+модели и доступность могут меняться; для чувствительных данных учитывайте условия
+free endpoint (в частности, NVIDIA предупреждает о логировании запросов).
+Разные API providers также могут использовать общий upstream: запасной Ultra
+через OpenRouter не гарантирует независимость от сбоя NVIDIA. При quota
+переключение идёт между providers, а повторные модели того же provider
+пригодятся при других ошибках, не для обхода его общей квоты.
+
+В Telegram у авторизованного пользователя доступны команды (placeholders
+замените точными provider/model IDs):
+
+```text
+/fallback
+/fallback set <provider-1> <model-1>; <provider-2> <model-2>
+/fallback add <provider> <model>
+/fallback remove 2
+/fallback off
+/fallback reset
+```
+
+`set` заменяет список, `add` дополняет, `remove` удаляет по номеру,
+`off` отключает дальнейшие резервные переключения. `reset` восстанавливает
+базовый список из последней раскатки. Максимум — 8 маршрутов; дубликаты
+запрещены. Для OpenRouter разрешены только IDs с `:free`; фактическая
+доступность модели зависит от провайдера и не гарантируется суффиксом.
+
+Список записывается атомарно в `config.yaml` текущего routed Hermes home/profile,
+а не только одной беседы: другие беседы этого профиля используют тот же список.
+Изменения учитываются со следующего сообщения без рестарта; в занятой беседе
+команда отклоняется. Уже выполняющиеся задачи не прерываются. Если агент уже
+работает на резервной модели, `off` сам по себе не возвращает его на основную —
+возврат остаётся под управлением штатного cooldown Hermes.
+
+При quota/429/billing обход пропускает **все модели провайдера, уже отказавшего
+по квоте**, до проверки его credentials/client и пробует следующий другой
+провайдер в заданном порядке, без случайного выбора. Если он тоже исчерпал
+квоту, его остальные модели также пропускаются в этом обходе. Проверка
+credentials и реальный API-вызов выполняются нативным fallback при использовании;
+`/fallback` не делает платных/пробных запросов и не выдаёт сохранение списка за
+успешную проверку API. При исчерпании списка сохраняется штатная ошибка Hermes,
+без бесконечного перебора. При других ошибках штатные критерии fallback
+сохраняются, но платные OpenRouter-маршруты также пропускаются.
+
+Повторный Ansible deploy сохраняет выбранный список даже без Workspace UI и
+обновляет только baseline `fallback_policy.default_routes` для `/fallback reset`.
+Чтобы заменить активный список новым deploy-default, выполните `reset` после
+раскатки. Для отдельного routed profile нужны собственные
+`fallback_policy.allowed_providers` и `fallback_policy.default_routes` в его
+конфигурации. Команды изменения списка также убирают legacy `fallback_model`,
+чтобы он не включил скрытый резерв после `off`.
+
+Официальный CLI-мастер по-прежнему доступен:
 
 ```bash
 sudo -u hermes -H /home/hermes/.local/bin/hermes fallback
 ```
 
-Лучше использовать другого провайдера, а не только другую модель в том же
-сервисе. Затем откройте настройку моделей:
+Авторизацию дополнительных провайдеров настройте через Vault либо мастер моделей:
 
 ```bash
 sudo -u hermes -H /home/hermes/.local/bin/hermes model
@@ -2047,8 +2233,8 @@ Azure CLI, Sonar scanner или MCP для чтения API не требует�
    Секрет `SONAR_TOKEN` в GitHub Actions не доставляется на VPS автоматически.
 3. Примените Ansible deploy. Для Azure pipeline обновите зашифрованный
    `vault.yml` в **Pipelines → Library → Secure files**; изменения repository
-   должны быть в `main`. Запустите pipeline с **Confirm production deployment**
-   и пройдите настроенные approvals. Gateway перезапустится автоматически.
+   должны быть в `main`. Запустите pipeline и пройдите настроенные approvals.
+   Gateway перезапустится автоматически.
 4. Проверьте из нового диалога Hermes: «Покажи последние пять сборок Azure
    DevOps проекта popot-bot-2.0» и «Покажи Quality Gate и открытые issues
    SonarQube проекта YauheniPo_popot-bot-2.0». Проверка должна вернуть данные

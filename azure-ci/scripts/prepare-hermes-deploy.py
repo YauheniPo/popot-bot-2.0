@@ -1,4 +1,4 @@
-"""Freeze a fetched branch for deployment after approval; never execute its code."""
+"""Freeze Azure's selected repository version; never execute source checkout code."""
 
 import json
 import os
@@ -15,18 +15,25 @@ def git(*args: str) -> str:
 
 
 def main() -> int:
-    branch = os.environ.get("DEPLOY_BRANCH", "").removeprefix("refs/heads/")
+    branch_ref = os.environ.get("DEPLOY_BRANCH", "")
+    branch = branch_ref.removeprefix("refs/heads/")
+    commit = os.environ.get("DEPLOY_COMMIT", "")
     mode = os.environ.get("DEPLOY_MODE", "")
     if mode not in {"full", "config-only", "runtime-only"}:
         raise ValueError("Invalid deployment mode")
     # Limit input to ordinary branch names, not tags, SHAs, revision expressions
     # or strings interpreted by Azure logging / shell / Markdown syntax.
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", branch) or branch.startswith("refs/"):
+    if (not branch_ref.startswith("refs/heads/")
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", branch)
+            or branch.startswith("refs/")):
         raise ValueError("Invalid deployment branch name")
     git("check-ref-format", f"refs/heads/{branch}")
-    # checkout:self with fetchDepth:0 fetches remote branches through the
-    # existing service connection. No PAT or persisted checkout token is needed.
-    commit = git("rev-parse", "--verify", f"refs/remotes/origin/{branch}^{{commit}}")
+    # Azure resolves the resource version before checkout. Never resolve the
+    # branch again: it may have moved since the user selected this version.
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("Invalid selected resource commit")
+    if git("rev-parse", "--verify", "HEAD^{commit}") != commit:
+        raise ValueError("Source checkout does not match selected resource commit")
     git("cat-file", "-e", f"{commit}:hermes/ansible/playbook.yml")
     output = Path(os.environ["DEPLOY_ARTIFACT_DIR"])
     output.mkdir(parents=True, exist_ok=True)
@@ -55,5 +62,5 @@ if __name__ == "__main__":
     except (ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
         # Never dump git config, credentials or raw subprocess output.
         print(f"ERROR: Could not prepare deployment: {error}. "
-              "Check deployBranch, deployMode and full checkout of remote branches.", file=sys.stderr)
+              "Check Resources > deploySource, deployMode and the selected commit checkout.", file=sys.stderr)
         raise SystemExit(1) from error

@@ -259,7 +259,7 @@ class ApplyConfigTests(unittest.TestCase):
                     self.assert_runtime_contract({**runtime, key: invalid})
 
     def assert_fallback_contract(self, overlay: dict) -> None:
-        chain = overlay["fallback_providers"]
+        chain = overlay["fallback_policy"]["default_routes"]
         self.assertIsInstance(chain, list)
         routes = {(overlay["model"]["provider"], overlay["model"]["default"])}
         for entry in chain:
@@ -275,6 +275,19 @@ class ApplyConfigTests(unittest.TestCase):
         settings = apply_config.load_settings(MODULE_PATH.parent.parent / "config" / "vps-defaults.yml")
         self.assert_fallback_contract(settings["vps_hermes"]["config"]["managed_overlay"])
 
+    def test_repository_fallbacks_span_providers_and_keep_free_aggregator_routes(self) -> None:
+        settings = apply_config.load_settings(MODULE_PATH.parent.parent / "config" / "vps-defaults.yml")
+        overlay = settings['vps_hermes']['config']['managed_overlay']
+        policy = overlay['fallback_policy']
+        chain = policy['default_routes']
+        providers = {route['provider'] for route in chain}
+        self.assertGreaterEqual(len(providers), 3, 'quota recovery needs independent provider choices')
+        self.assertGreaterEqual(len(providers - {overlay['model']['provider']}), 2)
+        self.assertLessEqual(providers, set(policy['allowed_providers']))
+        for route in chain:
+            if route['provider'] in {'openrouter', 'nous'}:
+                self.assertTrue(route['model'].endswith(':free'))
+
     def test_fallback_contract_rejects_entries_hermes_would_ignore(self) -> None:
         for chain in ({}, [{}], [{"provider": "primary-provider", "model": " "}],
                       [{"provider": "primary-provider", "model": "primary-model"}]):
@@ -282,12 +295,33 @@ class ApplyConfigTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     self.assert_fallback_contract({
                         "model": {"provider": "primary-provider", "default": "primary-model"},
-                        "fallback_providers": chain,
+                        "fallback_policy": {"default_routes": chain},
                     })
+
+    def test_policy_defaults_override_legacy_routes_and_allow_repeated_providers(self) -> None:
+        overlay = {'fallback_providers': [{'provider': 'old', 'model': 'old'}],
+                   'fallback_policy': {'default_routes': [
+                       {'provider': 'nous', 'model': 'a'}, {'provider': 'nous', 'model': 'b'}]}}
+        settings = {'vps_hermes': {'config': {'managed_overlay': overlay}}}
+        self.assertEqual(apply_config.api_retry_fallbacks(settings), 'nous:a,nous:b')
+        overlay['fallback_policy']['default_routes'] = []
+        self.assertEqual(apply_config.api_retry_fallbacks(settings), '')
+        del overlay['fallback_policy']
+        self.assertEqual(apply_config.api_retry_fallbacks(settings), 'old:old')
+
+    def test_policy_rejects_duplicate_provider_model_pairs(self) -> None:
+        route = {'provider': 'nous', 'model': 'a'}
+        with self.assertRaisesRegex(ValueError, 'duplicate'):
+            apply_config.api_retry_fallbacks({'vps_hermes': {'config': {'managed_overlay': {
+                'fallback_policy': {'default_routes': [route, dict(route)]}}}}})
 
     def test_api_retry_fallbacks_rejects_malformed_managed_overlay(self) -> None:
         base = {'vps_hermes': {'config': {'managed_overlay': {}}}}
         cases = [
+            {'fallback_policy': None},
+            {'fallback_policy': {'default_routes': 'not-a-list'}},
+            {'fallback_policy': {'default_routes': ['not-a-mapping']}},
+            {'fallback_policy': {'default_routes': [{'provider': 'nous', 'model': ''}]}},
             {'fallback_providers': 'not-a-list'},
             {'fallback_providers': ['not-a-mapping']},
             {'fallback_providers': [{'provider': 'Bad Provider', 'model': 'valid-model'}]},

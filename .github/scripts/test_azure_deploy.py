@@ -36,11 +36,12 @@ class DeploymentSelectionTests(unittest.TestCase):
     def git(self, *args):
         return subprocess.check_output(["git", *args], cwd=self.repo, text=True)
 
-    def prepare(self, branch="feature/deploy", mode="full"):
+    def prepare(self, branch="refs/heads/feature/deploy", mode="full", commit=None):
         return subprocess.run(
             [sys.executable, str(PREPARE)], cwd=self.repo, text=True,
             capture_output=True, check=False,
             env={**os.environ, "DEPLOY_BRANCH": branch, "DEPLOY_MODE": mode,
+                 "DEPLOY_COMMIT": self.sha if commit is None else commit,
                  "DEPLOY_ARTIFACT_DIR": str(self.output)},
         )
 
@@ -70,14 +71,49 @@ class DeploymentSelectionTests(unittest.TestCase):
                 self.assertEqual(manifest["mode"], mode)
                 self.assertEqual(manifest["branch"], "feature/deploy")
 
-    def test_invalid_or_missing_branches_fail_before_archive(self):
-        for branch in ("missing", "", "-option", "feature/../deploy", "HEAD", self.sha,
-                       "refs/tags/v1", "$(touch injected)", "main\n##vso[bad]", "feature/*"):
+    def test_invalid_branch_metadata_fails_before_archive(self):
+        for branch in ("", "-option", "refs/heads/feature/../deploy", "HEAD",
+                       "refs/tags/v1", "$(touch injected)", "refs/heads/main\n##vso[bad]",
+                       "refs/heads/feature/*", "refs/heads/", "refs/heads/refs/other"):
             with self.subTest(branch=branch):
                 result = self.prepare(branch)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("ERROR:", result.stderr)
                 self.assertFalse((self.output / "source.tar").exists())
+
+    def test_selected_resource_commit_is_not_re_resolved_from_moving_branch(self):
+        self.file.write_text("new branch tip\n")
+        self.git("add", ".")
+        self.git("commit", "-qm", "advance source branch before preparation")
+        self.git("update-ref", "refs/remotes/origin/feature/deploy", "HEAD")
+        self.git("checkout", "--detach", self.sha)
+        for _ in range(2):
+            result = self.prepare()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with tarfile.open(self.output / "source.tar") as archive:
+                self.assertEqual(archive.extractfile("hermes/ansible/playbook.yml").read(), b"original\n")
+            manifest = json.loads((self.output / "deployment.json").read_text())
+            self.assertEqual(manifest["commit"], self.sha)
+
+    def test_missing_invalid_or_mismatched_resource_commit_fails_before_archive(self):
+        for commit in ("", "HEAD", "--help", "$(deploymentSourceVersion)",
+                       "a" * 40, self.sha[:12], self.sha + "\n##vso[bad]"):
+            with self.subTest(commit=commit):
+                result = self.prepare(commit=commit)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("commit", result.stderr.lower())
+                self.assertFalse((self.output / "source.tar").exists())
+
+    def test_source_helper_is_never_executed(self):
+        helper = self.repo / "azure-ci/scripts/prepare-hermes-deploy.py"
+        helper.parent.mkdir(parents=True)
+        marker = self.repo / "executed-untrusted-code"
+        helper.write_text(f"from pathlib import Path\nPath({str(marker)!r}).touch()\n")
+        self.git("add", ".")
+        self.git("commit", "-qm", "untrusted helper fixture")
+        result = self.prepare(commit=self.git("rev-parse", "HEAD").strip())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(marker.exists())
 
     def test_invalid_mode_fails_before_archive(self):
         result = self.prepare(mode="full -e unsafe=true")
@@ -89,7 +125,7 @@ class DeploymentSelectionTests(unittest.TestCase):
         self.git("rm", "hermes/ansible/playbook.yml")
         self.git("commit", "-qm", "remove playbook")
         self.git("update-ref", "refs/remotes/origin/feature/deploy", "HEAD")
-        result = self.prepare()
+        result = self.prepare(commit=self.git("rev-parse", "HEAD").strip())
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.output / "source.tar").exists())
 
@@ -109,6 +145,30 @@ class DeploymentPipelineTests(unittest.TestCase):
 
     def deployment_steps(self):
         return self.pipeline["stages"][1]["jobs"][0]["strategy"]["runOnce"]["deploy"]["steps"]
+
+    def test_manual_run_needs_no_confirmation_parameter_and_keeps_protected_stage(self):
+        self.assertEqual(self.pipeline["trigger"], "none")
+        self.assertEqual(self.pipeline["pr"], "none")
+        self.assertCountEqual([p["name"] for p in self.pipeline["parameters"]],
+                              ["deployMode"])
+        content = json.dumps(self.pipeline)
+        for obsolete in ("confirmProduction", "CONFIRM_PRODUCTION", "Validate production confirmation"):
+            self.assertNotIn(obsolete, content)
+        validate, deploy = self.pipeline["stages"]
+        self.assertEqual(validate["jobs"][0]["steps"][0]["template"],
+                         "azure-templates/validate-trusted-branch.yml")
+        self.assertEqual(deploy["dependsOn"], validate["stage"])
+        self.assertEqual(deploy["condition"], "succeeded()")
+        self.assertEqual(deploy["lockBehavior"], "sequential")
+        self.assertEqual(deploy["jobs"][0]["environment"], "hermes-vps")
+
+    def test_agent_temp_is_not_used_as_remote_vps_temp(self):
+        steps = [step for step in self.deployment_steps()
+                 if "ANSIBLE_LOCAL_TEMP" in step.get("env", {})]
+        self.assertEqual(len(steps), 3)
+        for step in steps:
+            self.assertNotIn("ANSIBLE_REMOTE_TEMP", step["env"])
+            self.assertNotIn("ANSIBLE_REMOTE_TEMP", step["bash"])
 
     def test_tailnet_join_is_protected_and_cleanup_runs_on_failure_or_cancel(self):
         steps = self.deployment_steps()
@@ -311,6 +371,17 @@ sudo() { printf '%s\\n' "$@"; [[ "$*" != *'tailscale logout'* ]]; }
         checkout = next(s for s in steps if s.get("checkout") == "self")
         self.assertEqual(checkout["fetchDepth"], 0)
         self.assertIs(checkout["persistCredentials"], False)
+        self.assertEqual(checkout["path"], "s/pipeline")
+        source_checkout = next(s for s in steps if s.get("checkout") == "deploySource")
+        self.assertEqual(source_checkout["path"], "s/deploy-source")
+        self.assertIs(source_checkout["persistCredentials"], False)
+        prepare = next(s for s in steps if "prepare-hermes-deploy.py" in s.get("bash", ""))
+        self.assertEqual(prepare["bash"],
+                         'python3 "$(Pipeline.Workspace)/s/pipeline/azure-ci/scripts/prepare-hermes-deploy.py"')
+        self.assertEqual(prepare["workingDirectory"], "$(Pipeline.Workspace)/s/deploy-source")
+        self.assertEqual(prepare["env"]["DEPLOY_BRANCH"], "$(deploymentSourceRef)")
+        self.assertEqual(prepare["env"]["DEPLOY_COMMIT"], "$(deploymentSourceVersion)")
+        self.assertLess(steps.index(source_checkout), steps.index(prepare))
         self.assertTrue(any("validate-trusted-branch" in s.get("template", "") for s in steps))
         publish = next(s for s in steps if s.get("task") == "PublishPipelineArtifact@1")
         self.assertEqual(publish["inputs"]["artifact"], "hermes-deploy-source")
@@ -321,10 +392,20 @@ sudo() { printf '%s\\n' "$@"; [[ "$*" != *'tailscale logout'* ]]; }
         download = next(s for s in deploy_steps if s.get("download") == "current")
         self.assertEqual(download["artifact"], publish["inputs"]["artifact"])
 
+    def test_deploy_source_uses_native_github_resource_picker(self):
+        self.assertEqual(self.pipeline["resources"]["repositories"], [{
+            "repository": "deploySource", "type": "github",
+            "endpoint": "github.com_YauheniPo", "name": "YauheniPo/popot-bot-2.0",
+            "ref": "refs/heads/main",
+        }])
+        variables = self.pipeline["stages"][0]["jobs"][0]["variables"]
+        self.assertEqual(variables["deploymentSourceRef"], "$[ resources.repositories.deploySource.ref ]")
+        self.assertEqual(variables["deploymentSourceVersion"], "$[ resources.repositories.deploySource.version ]")
+
     def test_mode_parameters_reach_both_ansible_commands_after_vault(self):
         parameters = {p["name"]: p for p in self.pipeline["parameters"]}
         self.assertEqual(set(parameters["deployMode"]["values"]), {"full", "config-only", "runtime-only"})
-        self.assertEqual(parameters["deployBranch"]["type"], "string")
+        self.assertNotIn("deployBranch", parameters)
         steps = self.pipeline["stages"][1]["jobs"][0]["strategy"]["runOnce"]["deploy"]["steps"]
         commands = [s for s in steps if "ansible-playbook \\" in s.get("bash", "")]
         self.assertEqual(len(commands), 2)
