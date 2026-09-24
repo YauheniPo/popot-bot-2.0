@@ -2357,11 +2357,10 @@ class RateLimitLadderEdgeCaseTest(unittest.TestCase):
             reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
 
         self.assertEqual(request.call_count, 5)
-        # Four sleeps: 60, 120, 300, 600
-        sleep.assert_has_calls([
-            mock.call(60.0), mock.call(120.0), 
-            mock.call(300.0), mock.call(600.0)
-        ])
+        self.assertEqual(
+            sleep.call_args_list,
+            [mock.call(60.0), mock.call(120.0), mock.call(300.0), mock.call(600.0)],
+        )
 
     def test_429_retries_do_not_spend_the_general_attempt_budget(self) -> None:
         """Even with a general budget of 2, four 429 retries run and the 5th call succeeds."""
