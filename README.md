@@ -367,8 +367,12 @@ liveness does not prove the provider is thinking. A stream must terminate cleanl
 before JSON/schema/anchor validation; partial responses are not successful reviews.
 Ollama receives the requested reasoning effort via its supported
 [`reasoning_effort`](https://docs.ollama.com/api/openai-compatibility) field,
-instead of silently reverting to the model's default thinking mode. Wire data
-is capped at 16 MiB, including SSE framing, independently of the token budget.
+instead of silently reverting to the model's default thinking mode. Nous receives
+the nested `reasoning` object supported by its gateway, including `effort=none`
+and the existing `effort=low` retry when a model requires reasoning. Both primary
+and fallback review requests retain these controls; they are requests to the
+provider, not a guarantee that every model will finish within the deadline.
+Wire data is capped at 16 MiB, including SSE framing, independently of the token budget.
 Non-streaming responses remain supported under the same watchdog. Failures have
 explicit reasons such as `inactivity_timeout`, `attempt_timeout`, `connection_error`,
 `stream_incomplete`, or `output_limit`. CI's step summary records request history;

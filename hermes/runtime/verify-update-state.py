@@ -22,13 +22,14 @@ SNAPSHOT_SCHEMA_VERSION = 3
 KANBAN_DB_NAME = "kanban.db"
 BACKUP_MARKERS = {".env", "config.yaml", "state.db"}
 EXCLUDED_DIRECTORIES = {
-    "hermes-agent",
     "__pycache__",
     ".git",
     "node_modules",
     "backups",
     "state-snapshots",
     "checkpoints",
+    "browser-profiles",
+    "browser-profile",
     ".venv",
     "venv",
     "site-packages",
@@ -39,6 +40,10 @@ EXCLUDED_DIRECTORIES = {
     ".mypy_cache",
     ".ruff_cache",
 }
+# Match the pinned Hermes backup policy at HERMES_HOME and profiles/<name>/
+# only. A skill's nested node/, models/ or cache/ can contain user data.
+EXCLUDED_ROOT_DIRECTORIES = {"models", "runtimes", "node", "browser_profiles"}
+KEPT_CACHE_SUBDIRECTORIES = {"images", "audio", "videos", "documents", "screenshots", "citations"}
 # Process locks can disappear between inventory and hashing as workers stop.
 # They are not restorable user state; do not broadly ignore missing files or *.lock.
 # Git worktrees use a .git file, not a directory; exclude Git metadata in both forms.
@@ -48,6 +53,20 @@ EXCLUDED_FILE_SUFFIXES = (".pyc", ".pyo", ".db-wal", ".db-shm", ".db-journal")
 
 class VerificationError(RuntimeError):
     """Raised when an update safety invariant is not satisfied."""
+
+
+def _excluded_runtime_path(relative_path: Path) -> bool:
+    parts = relative_path.parts
+    if parts and parts[0] == "hermes-agent":
+        return True
+    if len(parts) >= 3 and parts[0] == "profiles":
+        parts = parts[2:]
+    if not parts:
+        return False
+    # hermes-agent is root-only upstream, not excluded inside a named profile.
+    if parts[0] in EXCLUDED_ROOT_DIRECTORIES:
+        return True
+    return parts[0] == "cache" and len(parts) >= 2 and parts[1] not in KEPT_CACHE_SUBDIRECTORIES
 
 
 def _archivable_file(root: Path, current: Path, name: str) -> Path | None:
@@ -63,6 +82,8 @@ def _archivable_file(root: Path, current: Path, name: str) -> Path | None:
         path.resolve().relative_to(root)
     except ValueError as exc:
         raise VerificationError(f"backup file escapes HERMES_HOME: {path}") from exc
+    if _excluded_runtime_path(path.relative_to(root)):
+        return None
     return path
 
 
@@ -74,7 +95,9 @@ def _inventory_directory(root: Path) -> list[Path]:
         directory_names[:] = [
             name
             for name in directory_names
-            if name not in EXCLUDED_DIRECTORIES and not (current / name).is_symlink()
+            if name not in EXCLUDED_DIRECTORIES
+            and not _excluded_runtime_path((current / name).relative_to(root))
+            and not (current / name).is_symlink()
         ]
         for name in file_names:
             path = _archivable_file(root, current, name)
@@ -304,7 +327,7 @@ def verify_backup(backup_path: Path, before_snapshot: dict[str, Any]) -> None:
             if missing_files:
                 raise VerificationError(
                     "backup is missing live Hermes files; "
-                    f"missing={missing_files}"
+                    f"missing_count={len(missing_files)}; missing_sample={missing_files[:20]}"
                 )
 
             archived_kanban_paths = {name for name in file_names if _is_kanban_archive_path(name)}

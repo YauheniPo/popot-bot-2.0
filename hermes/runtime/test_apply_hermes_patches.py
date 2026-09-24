@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import runpy
 import sys
 from pathlib import Path
 import tempfile
@@ -21,6 +23,46 @@ SPEC.loader.exec_module(apply_hermes_patches)
 
 
 class ApplyHermesPatchesTests(unittest.TestCase):
+    def test_backup_only_cli_dispatch_and_repeat(self):
+        script_path = str(MODULE_PATH)
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "hermes_cli/backup.py"
+            target.parent.mkdir()
+            target.write_text('_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid"}\n')
+            with mock.patch.dict(os.environ, {"HERMES_INSTALL_DIR": directory}), \
+                    mock.patch.object(sys, "argv", [script_path, "--backup-only"]):
+                for _ in range(2):
+                    with self.assertRaises(SystemExit) as result:
+                        runpy.run_path(script_path, run_name="__main__")
+                    self.assertEqual(result.exception.code, 0)
+                    self.assertEqual(target.read_text().count('"gateway.lock"'), 1)
+
+    def test_backup_only_patches_without_gateway_files_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "hermes_cli/backup.py"
+            target.parent.mkdir()
+            target.write_text('_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid"}\n')
+            with mock.patch.object(apply_hermes_patches, "HERMES_AGENT_DIR", root), \
+                    mock.patch.object(apply_hermes_patches, "_migrate_installed_model_global") as migrate:
+                self.assertEqual(apply_hermes_patches.main(backup_only=True), 0)
+                first = target.read_text()
+                self.assertIn('"gateway.lock"', first)
+                self.assertEqual(apply_hermes_patches.main(backup_only=True), 0)
+                self.assertEqual(target.read_text(), first)
+                migrate.assert_not_called()
+
+    def test_backup_only_rejects_unknown_source_without_writing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "hermes_cli/backup.py"
+            target.parent.mkdir()
+            source = "# unknown backup implementation\n"
+            target.write_text(source)
+            with mock.patch.object(apply_hermes_patches, "HERMES_AGENT_DIR", root):
+                self.assertEqual(apply_hermes_patches.main(backup_only=True), 1)
+                self.assertEqual(target.read_text(), source)
+
     def test_registry_migration_makes_underscore_name_canonical(self) -> None:
         retired = apply_hermes_patches._RETIRED_MODEL_GLOBAL
         source = f'''    # Local Hermes: {retired} CommandDef
@@ -192,10 +234,17 @@ class ApplyHermesPatchesTests(unittest.TestCase):
             "# Local Hermes: gw-restart route",
             "# Local Hermes: status reasoning",
         ]
+        legacy_paths = dict.fromkeys(legacy_markers, "gateway/slash_commands.py")
+        for marker in ("# Local Hermes: model_global CommandDef", "# Local Hermes: gw-restart canonical"):
+            legacy_paths[marker] = "hermes_cli/commands.py"
+        for marker in ("# Local Hermes: model_global route", "# Local Hermes: gw-restart route"):
+            legacy_paths[marker] = "gateway/run.py"
         legacy_patches = [
-            patch
-            for patch in apply_hermes_patches._PATCHES
-            if patch[1] in legacy_markers
+            # This fixture represents the old monolithic layout, even when
+            # the current release's registry targets split upstream modules.
+            (legacy_paths[marker], marker, old, new)
+            for _path, marker, old, new in apply_hermes_patches._PATCHES
+            if marker in legacy_markers
         ]
         self.assertEqual(len(legacy_patches), len(legacy_markers))
 
@@ -278,10 +327,9 @@ class ApplyHermesPatchesTests(unittest.TestCase):
             "str(_resolve_hermes_bin())", patches["# Local Hermes: doctor handler"]
         )
         self.assertNotIn("shell=True", patches["# Local Hermes: doctor handler"])
-        # v0.21.0 dispatches ordinary slash commands from the shared
-        # _gateway_plain_command_handlers() map instead of per-command routes.
+        # The split upstream dispatcher derives handler names from this tuple.
         self.assertIn(
-            '"doctor": self._handle_doctor_command,',
+            '"doctor",',
             patches["# Local Hermes: doctor route"],
         )
 
@@ -314,7 +362,7 @@ class ApplyHermesPatchesTests(unittest.TestCase):
         # Usage ordering applies only to the last-resort tier: upstream's
         # configured-priority and default tiers stay above it, so a pinned
         # command can never be pushed below an unpinned one by usage counts.
-        self.assertIn("return (1, default_index, stable_index)", ranking)
+        self.assertIn("return (tier, indexes[table], stable_index)", ranking)
         self.assertIn("-_telegram_command_usage_count(final_name)", ranking)
         self.assertIn("def _telegram_command_usage_count", state)
         self.assertIn("telegram-command-usage.json", state)
@@ -350,11 +398,28 @@ class ApplyHermesPatchesTests(unittest.TestCase):
         self.assertIn('d.get("parent_session_id")', status)
         self.assertIn("**Subagents:**", status)
 
+    def test_status_model_display_resolves_split_module_dependencies(self):
+        status = next(new for _, marker, _, new in apply_hermes_patches._PATCHES
+                      if marker == "# Local Hermes: status reasoning")
+        block = status.split("        # Local Hermes: model info (global + topic)\n", 1)[1]
+        override = {"model": "session-model", "api_key": "private-key"}
+        runner = SimpleNamespace(_session_model_override=mock.Mock(return_value=override))
+        config = {"model": {"default": "global-model"}}
+        gateway_run = SimpleNamespace(_load_gateway_config=lambda: config,
+                                      _resolve_gateway_model=lambda value: value["model"]["default"])
+        namespace = {"self": runner, "session_key": "chat-a", "status_agent": None,
+                     "_AGENT_PENDING_SENTINEL": object(), "_clean_str": str.strip, "lines": []}
+        with mock.patch.dict(sys.modules, {"gateway": mock.Mock(), "gateway.run": gateway_run}):
+            exec(textwrap.dedent(block), namespace)
+        self.assertEqual(namespace["lines"], ["**Global model:** global-model", "**Topic model:** session-model *(override)*"])
+        runner._session_model_override.assert_called_once_with("chat-a")
+        self.assertNotIn("private-key", "\n".join(namespace["lines"]))
+
     def render_activity(self, processes=(), delegations=(), session_key="chat-a", **values):
         """Execute the actual injected block, using the pinned registry's API shape."""
         status = next(new for _, marker, _, new in apply_hermes_patches._PATCHES
                       if marker == "# Local Hermes: status reasoning")
-        block = status.split("        ])\n", 1)[1].split(
+        block = status.split("        # Local Hermes: status subagent activity\n", 1)[1].split(
             "        # Local Hermes: status reasoning\n", 1
         )[0]
         registry = mock.Mock()

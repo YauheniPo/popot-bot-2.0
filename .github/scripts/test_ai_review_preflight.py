@@ -93,6 +93,17 @@ class OllamaReviewTest(unittest.TestCase):
             self.assertNotIn("reasoning_effort", ai_review_preflight.completion_payload(body, "nvidia"))
         self.assertNotIn("reasoning_effort", ai_review_preflight.completion_payload({"reasoning": "bad"}))
 
+    def test_nous_preserves_reasoning_controls_without_gateway_routing_extensions(self):
+        for effort in ("none", "low"):
+            with self.subTest(effort=effort):
+                body = {"model": "test", "reasoning": {"effort": effort, "exclude": True},
+                        "provider": {}, "plugins": [], "response_format": {"type": "json_schema"}}
+                payload = ai_review_preflight.completion_payload(body, "nous")
+                self.assertEqual(payload["reasoning"], body["reasoning"])
+                self.assertTrue({"provider", "plugins", "response_format", "reasoning_effort"}.isdisjoint(payload))
+        self.assertNotIn("reasoning", ai_review_preflight.completion_payload({"reasoning": "bad"}, "nous"))
+        self.assertNotIn("reasoning", ai_review_preflight.completion_payload({}, "nous"))
+
     def test_workflow_reports_missing_reviews_and_aggregates_real_results(self):
         root = Path(__file__).resolve().parents[2]
         jobs = yaml.safe_load((root / ".github/workflows/pr-ai-review.yml").read_text())["jobs"]
@@ -895,6 +906,7 @@ class NousReviewTest(unittest.TestCase):
         payload = ai_review_preflight.completion_payload(source, provider="nous")
         self.assertEqual(payload, {
             "model": "vendor/model", "max_tokens": 32000, "messages": source["messages"],
+            "reasoning": {},
         })
         self.assertEqual(source["max_tokens"], 32768)
         self.assertEqual(ai_review_preflight.completion_payload({"max_tokens": 4096}, provider="nous"), {"max_tokens": 4096})

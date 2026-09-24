@@ -190,6 +190,19 @@ class DeploymentStatePolicyTests(unittest.TestCase):
         self.assertIn("- not (hermes_source_update_required | bool)", playbook)
         self.assertIn("- hermes_deploy_mode == 'full'", playbook)
 
+    def test_backup_patch_is_applied_before_both_deployment_snapshots(self):
+        playbook = (HERMES_ROOT / "ansible/playbook.yml").read_text()
+        patch_position = playbook.index("Apply only the backup runtime exclusion patch")
+        self.assertLess(playbook.index("Stop the active gateway for a consistent config-only backup"), patch_position)
+        snapshot_position = playbook.index("Snapshot Hermes state before a config-only deployment")
+        self.assertLess(patch_position, snapshot_position)
+        task = playbook[patch_position:snapshot_position]
+        self.assertIn("--backup-only", task)
+        self.assertIn("HERMES_INSTALL_DIR:", task)
+        runtime = (HERMES_ROOT / "deploy/runtime.sh").read_text()
+        backup = runtime[runtime.index("backup_existing_installation() {"):runtime.index("install_hermes() {")]
+        self.assertLess(backup.index("--backup-only"), backup.index('"$UPDATE_STATE_VERIFIER" snapshot'))
+
     def test_workspace_agents_uses_selective_managed_block_reconciliation(self) -> None:
         playbook = (HERMES_ROOT / "ansible" / "playbook.yml").read_text()
         scheduled_backup = (HERMES_ROOT / "ops" / "backup.sh").read_text()

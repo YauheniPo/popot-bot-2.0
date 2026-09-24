@@ -39,6 +39,37 @@ NEW = f'''    {MARKER}
             await asyncio.sleep(float(attempt + 1))
 '''
 
+# Newer Hermes delegates the provider implementation to a sibling module.
+# Wrap only its Edge entry point in the same trusted tts_tool.py target; all
+# provider configuration and the other providers still belong to upstream.
+SPLIT_OLD = '''from tools.tts_tool_providers import (
+    _generate_edge_tts, _generate_elevenlabs, _generate_gemini_tts, _generate_minimax_tts,
+    _generate_mistral_tts, _generate_xai_tts, _resolve_minimax_tts_runtime)
+'''
+SPLIT_NEW = f'''from tools.tts_tool_providers import (
+    _generate_edge_tts as _upstream_generate_edge_tts,
+    _generate_elevenlabs, _generate_gemini_tts, _generate_minimax_tts,
+    _generate_mistral_tts, _generate_xai_tts, _resolve_minimax_tts_runtime)
+
+
+async def _generate_edge_tts(text, output_path, tts_config):
+    {MARKER}
+    for attempt in range(3):
+        try:
+            return await _upstream_generate_edge_tts(text, output_path, tts_config)
+        except Exception as exc:
+            if exc.__class__.__name__ != "NoAudioReceived" or attempt == 2:
+                raise
+            try:
+                Path(output_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+            logger.warning("Edge TTS returned no audio; retrying synthesis (%d/3)", attempt + 2)
+            await asyncio.sleep(float(attempt + 1))
+
+
+'''
+
 
 def _trusted_roots() -> list[Path]:
     # The two roots hermes/ansible/tasks/services.yml's "find" task searches
@@ -66,10 +97,11 @@ def patch_target(target: Path) -> str:
         source = handle.read()
         if MARKER in source:
             return "Edge TTS transient retry already installed"
-        if OLD not in source:
+        old, new = (SPLIT_OLD, SPLIT_NEW) if SPLIT_OLD in source else (OLD, NEW)
+        if old not in source:
             return "Edge TTS retry skipped: upstream implementation changed"
         handle.seek(0)
-        handle.write(source.replace(OLD, NEW, 1))
+        handle.write(source.replace(old, new, 1))
         handle.truncate()
     return "installed Edge TTS transient retry"
 

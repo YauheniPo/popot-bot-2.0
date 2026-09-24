@@ -123,14 +123,35 @@ download_installer() {
   chmod 0755 "$INSTALLER_FILE"
 
   log "Downloading the Hermes installer pinned to $HERMES_COMMIT"
-  curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
-    "$installer_url" --output "$INSTALLER_FILE"
+  log "Download limits: up to 4 attempts, connect 10s, transfer 30s, retry budget 120s"
+  # curl retries transient failures (including 429) and honors Retry-After.
+  # Keep retry warnings visible without a progress meter or response bodies.
+  # The last transfer may take up to 30s beyond the retry budget.
+  local http_status curl_exit
+  if http_status="$(curl --proto '=https' --tlsv1.2 --fail --no-progress-meter --show-error --location \
+    --connect-timeout 10 --max-time 30 --retry 3 --retry-max-time 120 \
+    --write-out '%{http_code}' "$installer_url" --output "$INSTALLER_FILE" || exit "$?")"; then
+    log "Installer download completed: http_status=$http_status"
+  else
+    curl_exit=$?
+    die "Installer download failed: curl_exit=$curl_exit http_status=$http_status; source=raw.githubusercontent.com commit=$HERMES_COMMIT; no Hermes code changes started"
+  fi
 
   local actual_sha256
   actual_sha256="$(sha256sum "$INSTALLER_FILE" | cut -d' ' -f1)"
   [[ "$actual_sha256" == "$INSTALLER_SHA256" ]] ||
     die "installer checksum mismatch (got $actual_sha256)"
   log "Installer checksum verified"
+  return
+}
+
+prepare_installer() {
+  local prepared_installer
+  # The Python transformer accepts text, never a filesystem path. Keep the
+  # checksum-verified download intact if preparation fails.
+  prepared_installer="$(python3 "$SCRIPT_DIR/runtime/prepare-hermes-installer.py" < "$INSTALLER_FILE")" || return
+  printf '%s\n' "$prepared_installer" > "$INSTALLER_FILE" || return
+  log "Managed installer prepared: pin before restoring local changes"
   return
 }
 
@@ -174,6 +195,10 @@ backup_existing_installation() {
       "$HERMES_HOME/operator-state/workspace-AGENTS.md"
   fi
 
+  log "Applying the backup runtime exclusion patch before the mandatory backup"
+  run_as_hermes env HERMES_INSTALL_DIR="$HERMES_INSTALL_DIR" \
+    python3 "$SCRIPT_DIR/runtime/apply-hermes-patches.py" --backup-only
+
   log "Inventorying Hermes state and checking every Kanban database before the update"
   python3 "$UPDATE_STATE_VERIFIER" snapshot \
     --hermes-home "$HERMES_HOME" \
@@ -215,6 +240,10 @@ install_hermes() {
   if [[ "$UPDATE_GUARD_ACTIVE" == true ]]; then
     UPDATE_MUTATION_STARTED=true
   fi
+  # A matching HEAD/venv does not prove the rest of this installer succeeded.
+  # Invalidate only after the backup gate; a failed download/backup leaves the
+  # previously completed installation eligible for fast deployment.
+  run_as_hermes rm -f -- "$HERMES_USER_HOME/.hermes-install-complete"
   log "Installing Hermes $HERMES_RELEASE ($HERMES_VERSION, $HERMES_COMMIT) as $HERMES_USER"
   run_as_hermes bash "$INSTALLER_FILE" "${installer_args[@]}"
   [[ -x "$HERMES_BIN" ]] || die "Hermes launcher was not created at $HERMES_BIN"
@@ -231,6 +260,12 @@ install_hermes() {
   [[ "$actual_version" == "$HERMES_VERSION" ]] ||
     die "installed Hermes version mismatch (got $actual_version)"
   log "Hermes source identity verified"
+  return
+}
+
+record_installation_completion() {
+  run_as_hermes bash -c 'umask 077; printf "%s\n" "$2" > "$1"' bash \
+    "$HERMES_USER_HOME/.hermes-install-complete" "$HERMES_COMMIT"
   return
 }
 
@@ -312,6 +347,11 @@ configure_development_clis() {
   [[ "$INSTALL_DEV_CLIS" == true ]] || return 0
 
   local github_wrapper="$SCRIPT_DIR/runtime/github-cli-wrapper.py"
+  local ansible_managed_git=false
+  if [[ -f "$HERMES_USER_HOME/.gitconfig" ]] && \
+    grep -qFx '# BEGIN HERMES MANAGED GIT DEFAULTS' "$HERMES_USER_HOME/.gitconfig"; then
+    ansible_managed_git=true
+  fi
   local default_branch
   local fetch_prune
   local fetch_prune_tags
@@ -323,12 +363,16 @@ configure_development_clis() {
   push_auto_setup_remote="$(python3 "$VPS_CONFIG_APPLIER" value --settings "$VPS_SETTINGS_FILE" vps_github.git_defaults.push_auto_setup_remote)"
   pull_ff="$(python3 "$VPS_CONFIG_APPLIER" value --settings "$VPS_SETTINGS_FILE" vps_github.git_defaults.pull_ff)"
 
-  log "Configuring safe Git defaults for the Hermes user"
-  run_as_hermes git config --global init.defaultBranch "$default_branch"
-  run_as_hermes git config --global fetch.prune "$fetch_prune"
-  run_as_hermes git config --global fetch.pruneTags "$fetch_prune_tags"
-  run_as_hermes git config --global push.autoSetupRemote "$push_auto_setup_remote"
-  run_as_hermes git config --global pull.ff "$pull_ff"
+  if [[ "$ansible_managed_git" == true ]]; then
+    log "Git defaults and credentials are owned by Ansible; preserving its managed block"
+  else
+    log "Configuring safe Git defaults for the Hermes user"
+    run_as_hermes git config --global --replace-all init.defaultBranch "$default_branch"
+    run_as_hermes git config --global --replace-all fetch.prune "$fetch_prune"
+    run_as_hermes git config --global --replace-all fetch.pruneTags "$fetch_prune_tags"
+    run_as_hermes git config --global --replace-all push.autoSetupRemote "$push_auto_setup_remote"
+    run_as_hermes git config --global --replace-all pull.ff "$pull_ff"
+  fi
 
   if command -v git-lfs >/dev/null 2>&1; then
     run_as_hermes git lfs install --skip-repo
@@ -337,9 +381,11 @@ configure_development_clis() {
   if [[ -x /usr/bin/gh && -f "$github_wrapper" ]]; then
     install -o "$HERMES_USER" -g "$HERMES_GROUP" -m 0750 \
       "$github_wrapper" "$HERMES_USER_HOME/.local/bin/gh"
-    run_as_hermes git config --global --replace-all credential.https://github.com.helper ""
-    run_as_hermes git config --global --add credential.https://github.com.helper \
-      "!$HERMES_USER_HOME/.local/bin/gh auth git-credential"
+    if [[ "$ansible_managed_git" == false ]]; then
+      run_as_hermes git config --global --replace-all credential.https://github.com.helper ""
+      run_as_hermes git config --global --add credential.https://github.com.helper \
+        "!$HERMES_USER_HOME/.local/bin/gh auth git-credential"
+    fi
   elif ! command -v gh >/dev/null 2>&1; then
     warn "GitHub CLI (gh) was not available; regular git clone/pull/push still work"
   else

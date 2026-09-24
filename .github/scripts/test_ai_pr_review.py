@@ -247,8 +247,12 @@ class AutomaticFallbackFormatTest(unittest.TestCase):
                 if provider == "openrouter":
                     self.assertEqual(payload["response_format"]["json_schema"], reviewer.REVIEW_RESPONSE_SCHEMA)
                 else:
-                    for field in ("response_format", "provider", "plugins", "reasoning"):
+                    for field in ("response_format", "provider", "plugins"):
                         self.assertNotIn(field, payload)
+                    if provider == "nous":
+                        self.assertEqual(payload["reasoning"], body["reasoning"])
+                    else:
+                        self.assertNotIn("reasoning", payload)
         self.assertNotIn("response_format", body)
 
     def test_explicit_unsupported_schema_switches_to_locally_validated_json(self):
@@ -290,6 +294,32 @@ class AutomaticFallbackFormatTest(unittest.TestCase):
 
 
 class RequestPublicationTest(unittest.TestCase):
+    def test_nous_mandatory_reasoning_retry_reaches_wire_with_low_effort(self):
+        url = "https://inference-api.nousresearch.com/v1/chat/completions"
+        rejected = urllib.error.HTTPError(url, 400, "bad request", {}, io.BytesIO(
+            b'{"error":{"message":"Reasoning is mandatory for this endpoint and cannot be disabled."}}'))
+        response = mock.MagicMock()
+        response.__enter__.return_value = io.StringIO(json.dumps({
+            "choices": [{"message": {"content": '{"summary":"Reviewed.","findings":[]}'}}],
+        }))
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        with (
+            mock.patch.object(reviewer, "ACTIVE_PROVIDER", "nous"),
+            mock.patch.object(reviewer, "OLLAMA_URL", url),
+            mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(600)),
+            mock.patch.dict(reviewer.os.environ, {}, clear=True),
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch.object(reviewer.urllib.request, "urlopen", side_effect=[rejected, response]) as request,
+            mock.patch("builtins.print"),
+        ):
+            result = reviewer.review_chunk("test-key", "vendor/primary", (), chunk, 1, 1)
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(request.call_count, 2)
+        payloads = [json.loads(call.args[0].data) for call in request.call_args_list]
+        self.assertEqual([p["reasoning"] for p in payloads], [
+            {"effort": "none", "exclude": True}, {"effort": "low", "exclude": True},
+        ])
+
     def test_nous_fallback_transport_and_provenance_follow_actual_request(self):
         from review_execution import ExecutionReport
         url = "https://inference-api.nousresearch.com/v1/chat/completions"
@@ -324,7 +354,8 @@ class RequestPublicationTest(unittest.TestCase):
             payload = json.loads(sent.data)
             models.append(payload["model"])
             self.assertLessEqual(payload["max_tokens"], 32000)
-            self.assertTrue({"provider", "plugins", "reasoning", "response_format"}.isdisjoint(payload))
+            self.assertTrue({"provider", "plugins", "response_format"}.isdisjoint(payload))
+            self.assertEqual(payload["reasoning"], {"effort": "none", "exclude": True})
             self.assertIn("REQUIRED_JSON_SCHEMA", payload["messages"][0]["content"])
         self.assertEqual(models, ["vendor/primary", "vendor/backup"])
         self.assertEqual([a.outcome for a in report.attempts], ["http_404", "valid_json"])

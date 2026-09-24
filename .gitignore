@@ -23,6 +23,12 @@ htmlcov/
 .scannerwork/
 sonar-review-context.json
 
+# One-off review helpers and local scan outputs. The maintained Sonar
+# configuration lives at the repository root, not under hermes/.
+/.tmp-*
+/hermes/sonar-project.properties
+/hermes/sonar-scan.log
+
 # Local virtual environments and tool caches.
 .venv/
 venv/

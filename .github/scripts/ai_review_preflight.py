@@ -66,6 +66,10 @@ def completion_payload(body: dict[str, object], provider: str = "ollama-cloud") 
     # Dropping effort entirely silently enables long default reasoning on a
     # real diff even when the tiny preflight responds immediately.
     reasoning = body.get("reasoning")
+    # Nous Portal accepts the nested reasoning object. Keep both the initial
+    # effort=none and the effort=low compatibility retry for mandatory thinkers.
+    if provider == "nous" and isinstance(reasoning, dict):
+        payload["reasoning"] = dict(reasoning)
     if provider == "ollama-cloud" and isinstance(reasoning, dict):
         effort = reasoning.get("effort")
         if effort in ("none", "low", "medium", "high", "max"):

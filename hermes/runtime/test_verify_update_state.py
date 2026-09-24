@@ -122,6 +122,67 @@ class VerifyUpdateStateTests(unittest.TestCase):
 
         verify_update_state.verify_backup(backup_path, snapshot)
 
+    def test_runtime_exclusions_preserve_durable_cache_and_nested_user_data(self) -> None:
+        excluded = []
+        retained = []
+        # Profile names are not runtime path components after profiles/<name>/.
+        profile_names = ("builder", "researcher", "cache", "models", "runtimes", "node",
+                         "browser_profiles", "images", "audio", "videos", "documents",
+                         "screenshots", "citations")
+        for prefix in ("", *(f"profiles/{name}/" for name in profile_names)):
+            excluded.extend(prefix + path for path in (
+                "node/bin/node", "models/download.bin", "runtimes/tool/bin",
+                "cache/model_catalog.json", "cache/delegation/live/task.log",
+                "browser_profiles/default/Cookies", "browser-profile/Login Data",
+                "browser-profiles/default/state.db",
+            ))
+            retained.extend(prefix + f"cache/{kind}/user-file" for kind in (
+                "images", "audio", "videos", "documents", "screenshots", "citations",
+            ))
+        retained.extend(("skills/hermes-agent/SKILL.md", "skills/custom/models/user.bin",
+                         "skills/custom/node/user.js", "skills/custom/cache/notes.md",
+                         "skills/custom/browser_profiles/user.txt"))
+        for relative in excluded + retained:
+            path = self.home / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("fixture")
+        snapshot = verify_update_state.create_snapshot(self.home)
+        for relative in excluded:
+            self.assertNotIn(relative, snapshot["files"])
+        for relative in retained:
+            self.assertIn(relative, snapshot["files"])
+
+        # Build independently of the verifier's walker: native backup skips the
+        # disposable trees, but must contain every durable file in this fixture.
+        backup_path = self.root / "native-backup.zip"
+        with zipfile.ZipFile(backup_path, "w") as archive:
+            for path in self.home.rglob("*"):
+                relative = path.relative_to(self.home).as_posix()
+                if path.is_file() and relative not in excluded:
+                    archive.write(path, relative)
+        verify_update_state.verify_backup(backup_path, snapshot)
+        for relative in retained:
+            with self.subTest(missing=relative):
+                create_backup(self.home, backup_path, omit=relative)
+                with self.assertRaisesRegex(verify_update_state.VerificationError, "missing live Hermes"):
+                    verify_update_state.verify_backup(backup_path, snapshot)
+
+    def test_runtime_exclusions_keep_home_and_profile_container_paths(self) -> None:
+        for relative in (".", "profiles", "profiles/builder", "profiles/builder/cache",
+                         "profiles/cache", "profiles/cache/cache", "profiles/browser_profiles/cache"):
+            with self.subTest(path=relative):
+                self.assertFalse(verify_update_state._excluded_runtime_path(Path(relative)))
+
+    def test_missing_file_diagnostic_is_bounded_without_accepting_incomplete_backup(self) -> None:
+        snapshot = verify_update_state.create_snapshot(self.home)
+        snapshot["files"] += [f"node/include/header-{index:05}.h" for index in range(10000)]
+        archive = self.root / "incomplete.zip"
+        create_backup(self.home, archive)
+        with self.assertRaises(verify_update_state.VerificationError) as error:
+            verify_update_state.verify_backup(archive, snapshot)
+        self.assertIn("missing_count=10000;", str(error.exception)[:100])
+        self.assertLess(len(str(error.exception)), 3000)
+
     def test_gateway_lock_disappearing_after_inventory_does_not_abort_snapshot(self) -> None:
         for relative in ("gateway.lock", "profiles/custom/gateway.lock"):
             with self.subTest(path=relative):
