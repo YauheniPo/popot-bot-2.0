@@ -19,15 +19,20 @@ from typing import Any
 
 
 METADATA_RE = re.compile(r"Technical metadata", re.I)
+# Published comments render the metadata block as a Markdown blockquote with
+# backtick-quoted values ("> Connection: `nous` · ..."); the plain format is
+# kept for older records and tests. Legacy DirectAPI bodies used "Requests:"
+# and "API time:" aliases before the shared metadata line was introduced.
 FIELD_RE = {
-    "connection": re.compile(r"^Connection:\s*([^·\n]+)", re.M),
-    "model": re.compile(r"^Successful models?:\s*([^\n]+)", re.M),
-    "attempts": re.compile(r"Attempts:\s*(\d+)", re.I),
+    "connection": re.compile(r"(?:^|> )Connection:\s*([^·\n]+)", re.M),
+    "model": re.compile(r"(?:^|> )Successful models?:\s*([^\n]+)", re.M),
+    "attempts": re.compile(r"(?:Attempts|Requests):\s*(\d+)", re.I),
     "validated_chunks": re.compile(r"Validated:\s*(\d+)", re.I),
     "retries": re.compile(r"Retries:\s*(\d+)", re.I),
     "fallback_successes": re.compile(r"Fallback successes:\s*(\d+)", re.I),
-    "provider_seconds": re.compile(r"Provider time:\s*([\d.]+)s", re.I),
-    "outcome": re.compile(r"^Result:\s*([^\n]+)", re.M | re.I),
+    "provider_seconds": re.compile(r"(?:Provider|API) time:\s*([\d.]+)s", re.I),
+    "outcome": re.compile(r"(?:^|> )Result:\s*([^\n]+)", re.M | re.I),
+    "coverage": re.compile(r"^(?:> )?Coverage:[ \t]*(complete|partial)\b", re.M | re.I),
     "scope": re.compile(r"Validated chunks:\s*(\d+)\s*/\s*(\d+)", re.I),
 }
 
@@ -41,8 +46,8 @@ def parse_review(body: str, reviewer_hint: str = "") -> dict[str, Any] | None:
     model = FIELD_RE["model"].search(block)
     if not connection or not model:
         return None
-    provider = connection.group(1).strip()
-    model_name = model.group(1).strip().split(",", 1)[0]
+    provider = connection.group(1).strip().strip("`").strip()
+    model_name = model.group(1).split(",", 1)[0].strip().strip("`").strip()
     reviewer = reviewer_hint.strip() or next(
         (candidate for candidate in ("DirectAPI", "ClaudeCodePlugin", "ObservableMessagesReview")
          if candidate.lower() in body.lower()),
@@ -55,6 +60,13 @@ def parse_review(body: str, reviewer_hint: str = "") -> dict[str, Any] | None:
     seconds = FIELD_RE["provider_seconds"].search(block)
     outcome = FIELD_RE["outcome"].search(block)
     scope = FIELD_RE["scope"].search(body)
+    # DirectAPI publishes partial coverage without a Result line. Explicit
+    # results (including Observable failures) still take precedence.
+    coverage = FIELD_RE["coverage"].search(block)
+    default_outcome = {"complete": "success", "partial": "partial"}.get(
+        coverage.group(1).lower() if coverage else "", "unknown"
+    )
+    raw_outcome = outcome.group(1).strip().strip("*_").strip() if outcome else default_outcome
     return {
         "reviewer": reviewer,
         "provider": provider,
@@ -65,7 +77,7 @@ def parse_review(body: str, reviewer_hint: str = "") -> dict[str, Any] | None:
         "retries": numbers["retries"],
         "fallback_successes": numbers["fallback_successes"],
         "provider_seconds": float(seconds.group(1)) if seconds else 0.0,
-        "outcome": outcome.group(1).strip().lower() if outcome else "unknown",
+        "outcome": raw_outcome.lower() if raw_outcome else default_outcome,
     }
 
 
@@ -133,7 +145,10 @@ def import_pr(repository: str, pr: int, token: str, database: Path) -> int:
         parsed.update({
             "source_id": f"{item.get('html_url') or item.get('id')}",
             "pr_number": pr,
-            "observed_at": item.get("updated_at") or item.get("created_at") or "",
+            # Pull-request reviews expose submitted_at, issue comments use
+            # created_at/updated_at; the fallback chain covers both shapes.
+            "observed_at": (item.get("updated_at") or item.get("created_at")
+                            or item.get("submitted_at") or ""),
             "head_sha": item.get("commit_id") or "",
             "run_id": "",
         })
