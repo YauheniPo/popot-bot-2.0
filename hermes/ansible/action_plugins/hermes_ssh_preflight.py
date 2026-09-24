@@ -1,8 +1,9 @@
 """Bounded, read-only Tailscale SSH check on the Ansible controller.
 
 No SSH password is passed to a subprocess. Tailscale authenticates the node;
-ordinary password SSH is left to Ansible. Approval URLs go only to /dev/tty,
-never to task results or CI logs. Host-key verification stays enabled.
+ordinary password SSH is left to Ansible. Approval URLs go to /dev/tty or
+screen-only controller output, never to task results, Ansible logs or CI logs.
+Host-key verification stays enabled.
 """
 
 import ipaddress
@@ -265,10 +266,15 @@ class ActionModule(ActionBase):
         def report(message):
             self._display.display(f'[ssh preflight] {message}')
 
+        def report_approval(message):
+            # Ansible logs ordinary Display messages when logging is enabled.
+            # Keep the short-lived approval URL off that channel.
+            self._display.display(f'[ssh preflight] {message}', screen_only=True)
+
         report(f'Each attempt is limited to {timeout}s. Browser approval may be required.')
         try:
             outcome = retry_probe(
-                lambda: probe(command, timeout, lambda url: show_approval(url, report), report),
+                lambda: probe(command, timeout, lambda url: show_approval(url, report_approval), report),
                 attempts, report)
         except OSError:
             return dict(result, failed=True, msg='Cannot execute the controller SSH client. Check ssh_executable and local SSH installation.')

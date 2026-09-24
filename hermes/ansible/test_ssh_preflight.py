@@ -311,6 +311,28 @@ class SshPreflightTests(unittest.TestCase):
         self.assertTrue(result['failed'])
         self.assertIn('Cannot execute the controller SSH client', result['msg'])
 
+    def test_approval_link_is_screen_only_on_each_local_attempt(self):
+        approval_url = 'https://login.tailscale.com/a/test123'
+        action = self._action(args={'attempts': 2, 'attempt_timeout': 1})
+
+        def fake_probe(_command, _timeout, on_auth, _heartbeat):
+            self.assertTrue(on_auth(approval_url))
+            return 'auth_timeout'
+
+        with mock.patch.object(preflight.ActionBase, 'run', return_value={}), \
+             mock.patch.object(preflight, 'ssh_command', return_value=['ssh']), \
+             mock.patch.object(preflight, 'probe', side_effect=fake_probe), \
+             mock.patch.dict('os.environ', {}, clear=True), \
+             mock.patch('builtins.open', side_effect=OSError('no tty')), \
+             mock.patch.object(preflight.shutil, 'which', return_value=None):
+            result = action.run(task_vars={})
+
+        link_calls = [call for call in action._display.display.call_args_list
+                      if approval_url in call.args[0]]
+        self.assertEqual(len(link_calls), 2)
+        self.assertTrue(all(call.kwargs.get('screen_only') is True for call in link_calls))
+        self.assertNotIn(approval_url, str(result))
+
     def test_preflight_reports_success_and_each_failure_message(self):
         from unittest.mock import patch
         for outcome, expected in (('ready', 'SSH authentication confirmed'),

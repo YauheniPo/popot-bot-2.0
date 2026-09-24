@@ -2070,6 +2070,28 @@ class ThreadTriageTest(unittest.TestCase):
 class RateLimitLadderTest(unittest.TestCase):
     """Tests for the dedicated 429 retry ladder."""
 
+    def test_deadline_stops_429_ladder_before_another_request(self) -> None:
+        now = [0.0]
+
+        def advance(seconds: float) -> None:
+            now[0] += seconds
+
+        with (
+            mock.patch.object(reviewer.time, "monotonic", side_effect=lambda: now[0]),
+            mock.patch.object(reviewer.time, "sleep", side_effect=advance) as sleep,
+            mock.patch.object(reviewer, "request_json", side_effect=reviewer.RequestError(
+                "rate limited", status=429)) as request,
+            mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(65.0)),
+            mock.patch.object(reviewer, "EXECUTION_REPORT", None),
+        ):
+            with self.assertRaises(reviewer.ReviewBudgetExhausted):
+                reviewer.request_with_transient_retries(
+                    {}, {"model": "review-model"}, reviewer.ReviewAttempts())
+
+        self.assertEqual(request.call_count, 1)
+        sleep.assert_called_once_with(60.0)
+        self.assertEqual(now[0], 60.0)
+
     def test_free_daily_429_uses_fallback_without_waiting(self) -> None:
         chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
         quota_error = reviewer.RequestError("daily limit", status=429, quota="free_daily")

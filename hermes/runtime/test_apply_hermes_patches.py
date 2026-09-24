@@ -39,6 +39,15 @@ class ApplyHermesPatchesTests(unittest.TestCase):
                     self.assertEqual(result.exception.code, 0)
                     self.assertEqual(target.read_text().count('"gateway.lock"'), 1)
 
+    def test_allow_unmatched_backup_requires_backup_only_cli(self):
+        script_path = str(MODULE_PATH)
+        with mock.patch.object(sys, "argv", [script_path, "--allow-unmatched-backup"]), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            with self.assertRaises(SystemExit) as result:
+                runpy.run_path(script_path, run_name="__main__")
+        self.assertEqual(result.exception.code, 2)
+        self.assertIn("requires --backup-only", stderr.getvalue())
+
     def test_backup_only_patches_without_gateway_files_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
