@@ -66,7 +66,7 @@ def parse_review(body: str, reviewer_hint: str = "") -> dict[str, Any] | None:
     default_outcome = {"complete": "success", "partial": "partial"}.get(
         coverage.group(1).lower() if coverage else "", "unknown"
     )
-    raw_outcome = outcome.group(1).strip().strip("*_").strip() if outcome else default_outcome
+    raw_outcome = outcome.group(1).strip().strip("*_`").strip() if outcome else default_outcome
     return {
         "reviewer": reviewer,
         "provider": provider,

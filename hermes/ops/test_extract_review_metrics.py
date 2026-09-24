@@ -67,6 +67,16 @@ Summary: Reviewed the PR in 1 bounded chunk(s); found no new actionable issues.
         parsed = metrics.parse_review(body)
         self.assertEqual(parsed["outcome"], "success")
 
+    def test_parse_result_line_strips_backticks_like_connection_and_model(self):
+        body = ("ObservableMessagesReview\nTechnical metadata\n"
+                "Connection: `nous` · API: https://inference.example/v1\n"
+                "Successful models: `model-a`\n"
+                "Provider time: 10.7s\n\nResult: `success`\n")
+        parsed = metrics.parse_review(body)
+        self.assertEqual(parsed["provider"], "nous")
+        self.assertEqual(parsed["model"], "model-a")
+        self.assertEqual(parsed["outcome"], "success")
+
     def test_parse_plain_metadata_without_result_defaults_to_unknown(self):
         body = ("Technical metadata\nConnection: provider · API: https://example\n"
                 "Successful models: model-a\n")

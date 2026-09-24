@@ -14,6 +14,8 @@ Covered customizations (not yet upstream):
    aliases so the Telegram menu entry resolves), /model_global, /fallback, and /doctor
  * quota fallback skips the exhausted provider; chat list edits survive cooldown
  * /status shows reasoning, models, and session-scoped background activity
+ * Telegram final replies show the actual provider/model in a copyable block
+ * /model accepts an explicit built-in provider/model pair
  * busy-session dispatch handles /gw-restart like /restart
  * Telegram command-menu usage ranking, with explicit user priorities pinned
  * /update is CLI-only: chat/gateway surfaces cannot trigger Hermes's own
@@ -47,6 +49,9 @@ _GATEWAY_SLASH_COMMANDS_PATH = "gateway/slash_commands.py"
 _GATEWAY_RUN_PATH = "gateway/run.py"
 _GATEWAY_BUSY_PATH = "gateway/run_busy.py"
 _GATEWAY_STATUS_PATH = "gateway/slash_commands_status.py"
+_GATEWAY_TURN_PATH = "gateway/run_turn.py"
+_MODEL_SWITCH_PATH = "hermes_cli/model_switch.py"
+_TURN_RUNNER_PATH = "gateway/run_turn_runner.py"
 _COMMAND_PLATFORMS_PATH = "hermes_cli/commands_platforms.py"
 _BACKUP_PATH = "hermes_cli/backup.py"
 # Construct the retired spelling without advertising it as a supported slash
@@ -323,6 +328,120 @@ _PATCHES: list[tuple[str, str, str, str]] = [
         '_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid"}\n',
         '# Local Hermes: exclude ephemeral gateway lock from backups\n'
         '_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid", "gateway.lock"}\n',
+    ),
+    (
+        _MODEL_SWITCH_PATH,
+        _PREFIX + " qualified provider/model target",
+        '''def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
+''',
+        '''# Local Hermes: qualified provider/model target
+def _local_qualified_model_target(model_input: str, explicit_provider: str) -> tuple[str, str]:
+    """Treat a known built-in provider/model pair as an explicit route.
+
+    Unknown vendor prefixes remain model IDs; --provider always wins.
+    """
+    if explicit_provider or "/" not in model_input:
+        return model_input, explicit_provider
+    provider, model = model_input.split("/", 1)
+    if not provider or not model:
+        return model_input, explicit_provider
+    from hermes_cli.providers import get_provider, normalize_provider
+
+    if get_provider(provider, allow_network=False) is None:
+        return model_input, explicit_provider
+    return model, normalize_provider(provider)
+
+
+def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
+''',
+    ),
+    (
+        _MODEL_SWITCH_PATH,
+        _PREFIX + " parse qualified provider/model target",
+        '''    return ModelSwitchRequest(
+        raw=raw, target=parsed.model_input, scope=scope, errors=tuple(errors),
+        **{f: getattr(parsed, f)
+           for f in ("explicit_provider", "reasoning_effort", "is_global", "is_session", "is_once", "force_refresh")})
+''',
+        '''    # Local Hermes: parse qualified provider/model target
+    target, explicit_provider = _local_qualified_model_target(
+        parsed.model_input, parsed.explicit_provider)
+    return ModelSwitchRequest(
+        raw=raw, target=target, scope=scope, errors=tuple(errors),
+        explicit_provider=explicit_provider,
+        **{f: getattr(parsed, f)
+           for f in ("reasoning_effort", "is_global", "is_session", "is_once", "force_refresh")})
+''',
+    ),
+    (
+        _TURN_RUNNER_PATH,
+        _PREFIX + " return actual turn provider",
+        '''            "model": getattr(agent, "model", None) if agent else None,
+            "context_length": (getattr(comp, "context_length", 0) or 0) if has_comp else 0,
+''',
+        '''            "model": getattr(agent, "model", None) if agent else None,
+            # Local Hermes: return actual turn provider
+            "provider": getattr(agent, "provider", None) if agent else None,
+            "context_length": (getattr(comp, "context_length", 0) or 0) if has_comp else 0,
+''',
+    ),
+    (
+        _GATEWAY_TURN_PATH,
+        _PREFIX + " copyable Telegram model route",
+        '''def _tool_call_logger() -> logging.Logger:
+''',
+        '''# Local Hermes: copyable Telegram model route
+def _local_telegram_model_route(agent_result):
+    """Show the completed turn's route, never a configured or requested guess."""
+    provider = str(agent_result.get("provider") or "").strip()
+    model = str(agent_result.get("model") or "").strip()
+    route = f"{provider}/{model}"
+    if not provider or not model or len(route) > 500 or any(c in route for c in "\\r\\n`"):
+        return ""
+    return f"🤖 **Model:**\\n```\\n{route}\\n```"
+
+def _tool_call_logger() -> logging.Logger:
+''',
+    ),
+    (
+        _GATEWAY_TURN_PATH,
+        _PREFIX + " deliver Telegram model route",
+        '''        adapter = self._delivery_adapter_for(source)
+        # Auto voice reply (TTS audio before the text) unless streaming TTS already delivered audio.
+''',
+        '''        adapter = self._delivery_adapter_for(source)
+        # Local Hermes: deliver Telegram model route
+        model_route = (
+            _local_telegram_model_route(agent_result)
+            if source.platform == Platform.TELEGRAM and response and not _intentional_silence else ""
+        )
+        # Auto voice reply (TTS audio before the text) unless streaming TTS already delivered audio.
+''',
+    ),
+    (
+        _GATEWAY_TURN_PATH,
+        _PREFIX + " streamed Telegram model route",
+        '''            # Return None so the body isn't sent twice; stash the delivered text on the event for the
+''',
+        '''            # Local Hermes: streamed Telegram model route
+            if model_route and adapter:
+                try:
+                    await adapter.send(source.chat_id, model_route, metadata=self._event_thread_metadata(event, source))
+                except Exception as _e:
+                    logger.debug("trailing model route send failed: %s", _e)
+            # Return None so the body isn't sent twice; stash the delivered text on the event for the
+''',
+    ),
+    (
+        _GATEWAY_TURN_PATH,
+        _PREFIX + " append Telegram model route",
+        '''        return response
+
+    # Chat-side next steps keyed by HTTP status; Hermes commands only''',
+        '''        # Local Hermes: append Telegram model route
+        return f"{response}\\n\\n{model_route}" if model_route else response
+
+    # Chat-side next steps keyed by HTTP status; Hermes commands only''',
     ),
     (
         _HERMES_CLI_COMMANDS_PATH,
@@ -1029,12 +1148,17 @@ def _apply_one_patch(
     old: str,
     new: str,
     patch_state: dict[str, dict[str, str]],
+    *,
+    warn_unmatched: bool = False,
 ) -> tuple[int, str | None, bool]:
     """Apply one registered patch; return (applied_delta, failure, state_changed).
 
     ``state_changed`` is True only when ``patch_state`` is actually mutated
     (``record``/``refresh``/``apply``/``upgrade``); ``skip`` intentionally
     returns False because it neither applies nor records anything new.
+    ``warn_unmatched`` downgrades a missing anchor to a warning: the pre-update
+    backup runs against the *installed* (older) Hermes, whose source may not
+    match the anchor written for the pinned version.
     """
     target = HERMES_AGENT_DIR / relative_path
     if not target.is_file():
@@ -1061,6 +1185,14 @@ def _apply_one_patch(
             file=sys.stderr,
         )
         return 0, relative_path, False
+    if action == "old-missing" and warn_unmatched:
+        print(
+            f"[hermes-patch] WARNING: {relative_path} does not match the pinned "
+            "Hermes version; skipping this patch for the installed version "
+            "(it is applied after the install).",
+            file=sys.stderr,
+        )
+        return 0, None, False
     if action == "old-missing":
         print(
             f"[hermes-patch] ERROR: {relative_path} does not match the expected "
@@ -1104,7 +1236,8 @@ def main(*, backup_only: bool = False) -> int:
     for relative_path, marker, old, new in _PATCHES:
         if backup_only and relative_path != _BACKUP_PATH:
             continue
-        delta, failure, changed = _apply_one_patch(relative_path, marker, old, new, patch_state)
+        delta, failure, changed = _apply_one_patch(
+            relative_path, marker, old, new, patch_state, warn_unmatched=backup_only)
         applied += delta
         state_changed = state_changed or changed
         if failure is not None:

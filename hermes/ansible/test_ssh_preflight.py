@@ -218,7 +218,9 @@ class SshPreflightTests(unittest.TestCase):
                  mock.patch.dict('os.environ', {flag: 'true'}, clear=True), \
                  mock.patch('builtins.open') as tty, \
                  mock.patch.object(preflight.subprocess, 'run') as opener:
-                self.assertFalse(preflight.show_approval('https://login.tailscale.com/a/test123'))
+                reports = []
+                self.assertFalse(preflight.show_approval('https://login.tailscale.com/a/test123', reports.append))
+                self.assertEqual(reports, [])
                 tty.assert_not_called()
                 opener.assert_not_called()
 
@@ -248,6 +250,30 @@ class SshPreflightTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 3)
         self.assertIn('SSH check 2/2', reports)
         self.assertNotIn('https://', str(reports))
+
+    def test_local_approval_without_tty_or_opener_reports_link_on_every_attempt(self):
+        command = [sys.executable, '-u', '-c',
+                   "import sys,time; print('https://login.tailscale.com/a/test123', file=sys.stderr, flush=True); time.sleep(30)"]
+        reports = []
+        with mock.patch.dict('os.environ', {}, clear=True), \
+             mock.patch('builtins.open', side_effect=OSError('no tty')), \
+             mock.patch.object(preflight.shutil, 'which', return_value=None):
+            result = preflight.retry_probe(
+                lambda: preflight.probe(command, .2, lambda url: preflight.show_approval(url, reports.append),
+                                        reports.append),
+                2, reports.append)
+        self.assertEqual(result, 'auth_timeout')
+        links = [r for r in reports if 'https://login.tailscale.com/a/test123' in r]
+        self.assertEqual(len(links), 2)
+
+    def test_local_approval_with_opener_does_not_report_link(self):
+        reports = []
+        with mock.patch.dict('os.environ', {}, clear=True), \
+             mock.patch('builtins.open', side_effect=OSError('no tty')), \
+             mock.patch.object(preflight.shutil, 'which', return_value='/usr/bin/open'), \
+             mock.patch.object(preflight.subprocess, 'run'):
+            self.assertTrue(preflight.show_approval('https://login.tailscale.com/a/test123', reports.append))
+        self.assertEqual(reports, [])
 
     def _action(self, *, transport='ssh', host='100.64.0.1', args=None, options=None):
         from types import SimpleNamespace

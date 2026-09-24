@@ -229,7 +229,6 @@
          list | unique | list | length) == fallback_routes | length
     fail_msg: Managed fallback routes must contain unique non-empty provider/model pairs; providers may repeat.
   when: hermes_managed_config | length > 0
-  no_log: true
 
 - name: Apply the managed Hermes model and voice configuration
   ansible.builtin.copy:
