@@ -2072,6 +2072,8 @@ class RateLimitLadderTest(unittest.TestCase):
 
     def test_deadline_stops_429_ladder_before_another_request(self) -> None:
         now = [0.0]
+        attempts = reviewer.ReviewAttempts()
+        rate_limited = reviewer.RequestError("rate limited", status=429)
 
         def advance(seconds: float) -> None:
             now[0] += seconds
@@ -2079,18 +2081,35 @@ class RateLimitLadderTest(unittest.TestCase):
         with (
             mock.patch.object(reviewer.time, "monotonic", side_effect=lambda: now[0]),
             mock.patch.object(reviewer.time, "sleep", side_effect=advance) as sleep,
-            mock.patch.object(reviewer, "request_json", side_effect=reviewer.RequestError(
-                "rate limited", status=429)) as request,
-            mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(65.0)),
+            mock.patch.object(reviewer, "request_json", side_effect=rate_limited) as request,
+            mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(60.0)),
             mock.patch.object(reviewer, "EXECUTION_REPORT", None),
         ):
             with self.assertRaises(reviewer.ReviewBudgetExhausted):
-                reviewer.request_with_transient_retries(
-                    {}, {"model": "review-model"}, reviewer.ReviewAttempts())
+                reviewer.request_with_transient_retries({}, {"model": "review-model"}, attempts)
 
         self.assertEqual(request.call_count, 1)
         sleep.assert_called_once_with(60.0)
         self.assertEqual(now[0], 60.0)
+        self.assertEqual(attempts.used, 0)
+        self.assertEqual(attempts.rate_limit_used, 1)
+
+    def test_429_retries_preserve_general_attempt_budget(self) -> None:
+        attempts = reviewer.ReviewAttempts()
+        rate_limited = reviewer.RequestError("rate limited", status=429)
+        response = object()
+
+        with (
+            mock.patch.object(reviewer, "request_json", side_effect=[rate_limited] * 4 + [response]) as request,
+            mock.patch.object(reviewer.time, "sleep") as sleep,
+        ):
+            result = reviewer.request_with_transient_retries({}, {"model": "review-model"}, attempts)
+
+        self.assertIs(result, response)
+        self.assertEqual(request.call_count, 5)
+        self.assertEqual(sleep.call_count, 4)
+        self.assertEqual(attempts.used, 1)
+        self.assertEqual(attempts.rate_limit_used, 4)
 
     def test_free_daily_429_uses_fallback_without_waiting(self) -> None:
         chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
