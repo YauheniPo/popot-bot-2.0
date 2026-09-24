@@ -2304,6 +2304,40 @@ class RateLimitLadderEdgeCaseTest(unittest.TestCase):
             attempts.rate_limit_start()
         self.assertEqual(attempts.rate_limit_start(), -1)
 
+    def test_fourth_429_retry_integration_with_extra_budget(self) -> None:
+        """Integration test: 4th 429 retry (600s step) when budget allows.
+        
+        The general attempt budget (4) normally limits to 3 retries.
+        This test verifies the 4th ladder step works when budget is increased.
+        """
+        response = {
+            "choices": [
+                {"message": {"content": json.dumps({"summary": "Reviewed.", "findings": []})}}
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        # 5 errors = 4 retries + success on 5th
+        errors = [reviewer.RequestError("rate limited", status=429)] * 4 + [response]
+        with (
+            mock.patch.object(
+                reviewer,
+                "request_json",
+                side_effect=errors,
+            ) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch.object(reviewer, "MAX_REQUEST_ATTEMPTS", 5),  # Extra budget for 4 retries
+            mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(2000.0)),
+            mock.patch.object(reviewer.time, "sleep") as sleep,
+        ):
+            reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
+
+        self.assertEqual(request.call_count, 5)
+        # Four sleeps: 60, 120, 300, 600
+        sleep.assert_has_calls([
+            mock.call(60.0), mock.call(120.0), 
+            mock.call(300.0), mock.call(600.0)
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()
