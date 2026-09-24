@@ -1031,7 +1031,9 @@ def _retryable_request_error(error: RequestError) -> bool:
 
 def _retry_delay_seconds(error: RequestError, attempt: int) -> float:
     delay = float(2 ** (attempt - 1))
-    return max(delay, 15.0) if error.status == 429 else max(delay, 15.0)
+    # Non-429 retryable errors use exponential backoff with 15s floor.
+    # 429 errors use their own dedicated ladder via _rate_limit_retry_delay.
+    return max(delay, 15.0)
 
 
 def _rate_limit_retry_delay(error: RequestError, attempts: ReviewAttempts) -> float:
