@@ -1063,7 +1063,8 @@ class OllamaCloudRequestTest(unittest.TestCase):
             reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
 
         self.assertEqual(request.call_count, 2)
-        sleep.assert_called_once_with(15.0)
+        # First 429 retry uses the new ladder: 60s (1 minute)
+        sleep.assert_called_once_with(60.0)
 
     def test_regenerates_after_malformed_structured_json(self) -> None:
         malformed = {
@@ -1391,7 +1392,7 @@ class OllamaCloudRequestTest(unittest.TestCase):
 
         self.assertEqual(result["findings"], [])
         self.assertEqual(request.call_count, 4)
-        sleep.assert_called_once_with(reviewer.DEFAULT_RATE_LIMIT_RETRY_SECONDS)
+        sleep.assert_called_once_with(60.0)
 
     def test_uses_provider_reset_header_for_rate_limit_retry(self) -> None:
         response = {
@@ -1431,7 +1432,7 @@ class OllamaCloudRequestTest(unittest.TestCase):
         ):
             reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
 
-        sleep.assert_called_once_with(51.0)
+        sleep.assert_called_once_with(60.0)
 
     def test_spaces_chunk_requests_below_configured_rpm(self) -> None:
         chunks = (
