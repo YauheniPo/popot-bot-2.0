@@ -1031,7 +1031,7 @@ def _retryable_request_error(error: RequestError) -> bool:
 
 def _retry_delay_seconds(error: RequestError, attempt: int) -> float:
     delay = float(2 ** (attempt - 1))
-    return max(delay, DEFAULT_RATE_LIMIT_RETRY_SECONDS) if error.status == 429 else delay
+    return max(delay, 15.0) if error.status == 429 else max(delay, 15.0)
 
 
 def _rate_limit_retry_delay(error: RequestError, attempts: ReviewAttempts) -> float:

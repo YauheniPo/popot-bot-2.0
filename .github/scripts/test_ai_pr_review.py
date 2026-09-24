@@ -2068,3 +2068,159 @@ class ThreadTriageTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RateLimitLadderTest(unittest.TestCase):
+    """Tests for the dedicated 429 retry ladder."""
+
+    def test_first_429_retry_uses_60s_ladder_step(self) -> None:
+        response = {
+            "choices": [
+                {"message": {"content": json.dumps({"summary": "Reviewed.", "findings": []})}}
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        with (
+            mock.patch.object(
+                reviewer,
+                "request_json",
+                side_effect=[reviewer.RequestError("rate limited", status=429), response],
+            ) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch.object(reviewer.time, "sleep") as sleep,
+        ):
+            reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
+
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once_with(60.0)
+
+    def test_second_429_retry_uses_120s_ladder_step(self) -> None:
+        response = {
+            "choices": [
+                {"message": {"content": json.dumps({"summary": "Reviewed.", "findings": []})}}
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        with (
+            mock.patch.object(
+                reviewer,
+                "request_json",
+                side_effect=[
+                    reviewer.RequestError("rate limited", status=429),
+                    reviewer.RequestError("rate limited", status=429),
+                    response,
+                ],
+            ) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch.object(reviewer.time, "sleep") as sleep,
+        ):
+            reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
+
+        self.assertEqual(request.call_count, 3)
+        sleep.assert_has_calls([mock.call(60.0), mock.call(120.0)])
+
+    def test_provider_retry_after_extends_ladder_step(self) -> None:
+        """Provider Retry-After header extends the ladder step when longer."""
+        response = {
+            "choices": [
+                {"message": {"content": json.dumps({"summary": "Reviewed.", "findings": []})}}
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        error = reviewer.RequestError("rate limited", status=429)
+        error.retry_after_seconds = 200.0  # Longer than first ladder step (60s)
+        with (
+            mock.patch.object(
+                reviewer,
+                "request_json",
+                side_effect=[error, response],
+            ) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch.object(reviewer.time, "sleep") as sleep,
+        ):
+            reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
+
+        self.assertEqual(request.call_count, 2)
+        # max(60, 200) = 200
+        sleep.assert_called_once_with(200.0)
+
+    def test_provider_retry_after_capped_at_max(self) -> None:
+        """Provider Retry-After is capped at MAX_RATE_LIMIT_RETRY_DELAY_SECONDS (900s)."""
+        response = {
+            "choices": [
+                {"message": {"content": json.dumps({"summary": "Reviewed.", "findings": []})}}
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        error = reviewer.RequestError("rate limited", status=429)
+        error.retry_after_seconds = 2000.0  # Exceeds 900s cap
+        with (
+            mock.patch.object(
+                reviewer,
+                "request_json",
+                side_effect=[error, response],
+            ) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(2000.0)),
+            mock.patch.object(reviewer.time, "sleep") as sleep,
+        ):
+            reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
+
+        self.assertEqual(request.call_count, 2)
+        # Capped at 900s
+        sleep.assert_called_once_with(900.0)
+
+    def test_429_ladder_exhausted_after_4_retries(self) -> None:
+        """After 4 dedicated 429 retries, the route is abandoned.
+        
+        Note: The general attempt budget (MAX_REQUEST_ATTEMPTS=4) also applies,
+        so total attempts including the initial call is 4 (1 initial + 3 retries)
+        before the general budget is exhausted. The dedicated 429 budget allows
+        up to 4 retries, but the general budget limits to 4 total attempts.
+        """
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        errors = [reviewer.RequestError("rate limited", status=429)] * 5  # 5 errors = more than budget
+        with (
+            mock.patch.object(
+                reviewer,
+                "request_json",
+                side_effect=errors,
+            ) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch.object(reviewer.time, "sleep") as sleep,
+        ):
+            with self.assertRaises(reviewer.RequestError):
+                reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
+
+        # General budget of 4 attempts: 1 initial + 3 retries = 4 calls
+        # Sleeps for the 3 retries: 60, 120, 300
+        self.assertEqual(request.call_count, 4)
+        sleep.assert_has_calls([mock.call(60.0), mock.call(120.0), mock.call(300.0)])
+
+    def test_non_429_errors_use_exponential_backoff(self) -> None:
+        """Non-429 retryable errors still use exponential backoff (1/2/4/8s, floor 15s)."""
+        response = {
+            "choices": [
+                {"message": {"content": json.dumps({"summary": "Reviewed.", "findings": []})}}
+            ]
+        }
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        error = reviewer.RequestError("connection error", reason="connection_error")
+        with (
+            mock.patch.object(
+                reviewer,
+                "request_json",
+                side_effect=[error, error, response],
+            ) as request,
+            mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+            mock.patch.object(reviewer.time, "sleep") as sleep,
+        ):
+            reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
+
+        self.assertEqual(request.call_count, 3)
+        # First backoff: max(2^0, 15) = 15s, second: max(2^1, 15) = 15s
+        sleep.assert_has_calls([mock.call(15.0), mock.call(15.0)])
+
+
+if __name__ == "__main__":
+    unittest.main()
