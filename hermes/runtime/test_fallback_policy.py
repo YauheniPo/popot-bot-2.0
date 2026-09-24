@@ -75,6 +75,34 @@ class FallbackPolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.policy.edit_fallback_config(updated, 'add nous a')
 
+    def test_reset_rejects_malformed_managed_routes_without_mutating_config(self):
+        for route in (None, 'nous model', {}, {'provider': 'nous'},
+                      {'provider': 'nous', 'model': 'a', 'api_key': 'secret'}):
+            with self.subTest(route=route):
+                self.config['fallback_policy']['default_routes'] = [route]
+                before = copy.deepcopy(self.config)
+                with self.assertRaisesRegex(self.policy.FallbackCommandError, 'Маршрут: provider model'):
+                    self.policy.edit_fallback_config(self.config, 'reset')
+                self.assertEqual(self.config, before)
+
+    def test_invalid_provider_policy_fails_closed(self):
+        for allowed in ('nous', None, ['nous', 1]):
+            with self.subTest(allowed=allowed):
+                self.config['fallback_policy']['allowed_providers'] = allowed
+                before = copy.deepcopy(self.config)
+                with self.assertRaisesRegex(ValueError, 'Invalid managed provider policy'):
+                    self.policy.edit_fallback_config(self.config, 'off')
+                self.assertEqual(self.config, before)
+
+    def test_invalid_chat_command_returns_authored_feedback_without_writing(self):
+        writer = mock.Mock()
+        config_module = SimpleNamespace(_CONFIG_LOCK=threading.RLock(),
+            read_user_config_raw=mock.Mock(return_value=self.config), atomic_config_write=writer)
+        with mock.patch.dict('sys.modules', {'hermes_cli.config': config_module}):
+            reply = self.policy.run_fallback_command(Path('/profile/config.yaml'), 'remove 99')
+        self.assertIn('Используйте /fallback', reply)
+        writer.assert_not_called()
+
     def test_list_does_not_write_or_expose_route_secrets(self):
         self.config['fallback_providers'][0]['api_key'] = 'never-show-this'
         updated, reply = self.policy.edit_fallback_config(self.config, '')

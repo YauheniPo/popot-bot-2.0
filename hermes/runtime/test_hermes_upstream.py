@@ -85,10 +85,10 @@ class HermesUpstreamTests(unittest.TestCase):
             self.assertIn("personal.lock", snapshot["files"])
             # Only the known runtime lock is disposable, not arbitrary files.
             (home / "personal.lock").unlink()
+            missing_file = home / "personal.lock"
             with zipfile.ZipFile(home.parent / "incomplete.zip", "w") as archive:
                 with self.assertRaises(FileNotFoundError):
-                    for path, relative in native_files:
-                        archive.write(path, relative.as_posix())
+                    archive.write(missing_file, "personal.lock")
 
     def patched_source(self, path):
         source = (Path(UPSTREAM) / path).read_text()

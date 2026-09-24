@@ -283,7 +283,7 @@ class ApplyConfigTests(unittest.TestCase):
         providers = {route['provider'] for route in chain}
         self.assertGreaterEqual(len(providers), 3, 'quota recovery needs independent provider choices')
         self.assertGreaterEqual(len(providers - {overlay['model']['provider']}), 2)
-        self.assertTrue(providers <= set(policy['allowed_providers']))
+        self.assertLessEqual(providers, set(policy['allowed_providers']))
         for route in chain:
             if route['provider'] in {'openrouter', 'nous'}:
                 self.assertTrue(route['model'].endswith(':free'))

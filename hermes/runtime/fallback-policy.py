@@ -50,6 +50,23 @@ def _fallback_route_text(routes):
                      for i, r in enumerate(routes, 1)) or '(отключён)'
 
 
+def _edit_fallback_routes(chain, policy, command, value):
+    """Resolve a write command without changing the existing route list."""
+    if command in ('set', 'add') and value:
+        entries = [part.split() for part in value.split(';')]
+        if any(len(entry) != 2 for entry in entries):
+            raise FallbackCommandError('Используйте: /fallback set provider model; provider model')
+        new = [{'provider': p, 'model': m} for p, m in entries]
+        return (chain if command == 'add' else []) + new
+    if command == 'remove' and value.isdecimal() and 1 <= int(value) <= len(chain):
+        return [entry for i, entry in enumerate(chain, 1) if i != int(value)]
+    if command == 'off' and not value:
+        return []
+    if command == 'reset' and not value and 'default_routes' in policy:
+        return policy['default_routes']
+    raise FallbackCommandError('Используйте /fallback: list, set, add, remove N, off или reset.')
+
+
 def edit_fallback_config(config, arguments):
     """Pure command parser; None means read-only, otherwise a fresh raw config."""
     policy = config.get('fallback_policy', {})
@@ -68,20 +85,7 @@ def edit_fallback_config(config, arguments):
                       + '\nПри quota/429 выбирается другой provider. Проверка API — при использовании.')
     if '\n' in arguments or '\r' in arguments:
         raise FallbackCommandError('Команда должна занимать одну строку.')
-    if command in ('set', 'add') and value:
-        entries = [part.split() for part in value.split(';')]
-        if any(len(entry) != 2 for entry in entries):
-            raise FallbackCommandError('Используйте: /fallback set provider model; provider model')
-        new = [{'provider': p, 'model': m} for p, m in entries]
-        routes = (chain if command == 'add' else []) + new
-    elif command == 'remove' and value.isdecimal() and 1 <= int(value) <= len(chain):
-        routes = [entry for i, entry in enumerate(chain, 1) if i != int(value)]
-    elif command == 'off' and not value:
-        routes = []
-    elif command == 'reset' and not value and 'default_routes' in policy:
-        routes = policy['default_routes']
-    else:
-        raise FallbackCommandError('Используйте /fallback: list, set, add, remove N, off или reset.')
+    routes = _edit_fallback_routes(chain, policy, command, value)
     routes = validate_fallback_routes(routes, allowed)
     updated = copy.deepcopy(config)
     updated['fallback_providers'] = routes

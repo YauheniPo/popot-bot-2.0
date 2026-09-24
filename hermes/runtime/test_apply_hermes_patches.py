@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import runpy
 import sys
 from pathlib import Path
 import tempfile
@@ -21,6 +23,20 @@ SPEC.loader.exec_module(apply_hermes_patches)
 
 
 class ApplyHermesPatchesTests(unittest.TestCase):
+    def test_backup_only_cli_dispatch_and_repeat(self):
+        script_path = str(MODULE_PATH)
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "hermes_cli/backup.py"
+            target.parent.mkdir()
+            target.write_text('_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid"}\n')
+            with mock.patch.dict(os.environ, {"HERMES_INSTALL_DIR": directory}), \
+                    mock.patch.object(sys, "argv", [script_path, "--backup-only"]):
+                for _ in range(2):
+                    with self.assertRaises(SystemExit) as result:
+                        runpy.run_path(script_path, run_name="__main__")
+                    self.assertEqual(result.exception.code, 0)
+                    self.assertEqual(target.read_text().count('"gateway.lock"'), 1)
+
     def test_backup_only_patches_without_gateway_files_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
