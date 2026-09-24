@@ -32,6 +32,7 @@ FIELD_RE = {
     "fallback_successes": re.compile(r"Fallback successes:\s*(\d+)", re.I),
     "provider_seconds": re.compile(r"(?:Provider|API) time:\s*([\d.]+)s", re.I),
     "outcome": re.compile(r"(?:^|> )Result:\s*([^\n]+)", re.M | re.I),
+    "coverage": re.compile(r"^(?:> )?Coverage:[ \t]*(complete|partial)\b", re.M | re.I),
     "scope": re.compile(r"Validated chunks:\s*(\d+)\s*/\s*(\d+)", re.I),
 }
 
@@ -46,7 +47,7 @@ def parse_review(body: str, reviewer_hint: str = "") -> dict[str, Any] | None:
     if not connection or not model:
         return None
     provider = connection.group(1).strip().strip("`").strip()
-    model_name = model.group(1).strip().split(",", 1)[0].strip("`").strip()
+    model_name = model.group(1).split(",", 1)[0].strip().strip("`").strip()
     reviewer = reviewer_hint.strip() or next(
         (candidate for candidate in ("DirectAPI", "ClaudeCodePlugin", "ObservableMessagesReview")
          if candidate.lower() in body.lower()),
@@ -59,10 +60,13 @@ def parse_review(body: str, reviewer_hint: str = "") -> dict[str, Any] | None:
     seconds = FIELD_RE["provider_seconds"].search(block)
     outcome = FIELD_RE["outcome"].search(block)
     scope = FIELD_RE["scope"].search(body)
-    # Published review bodies carry the metadata block; Observable failure
-    # and partial reports carry it too, with an explicit Result line that
-    # overrides the default. Markdown emphasis ("**success**") is stripped.
-    raw_outcome = outcome.group(1).strip().strip("*_").strip() if outcome else "success"
+    # DirectAPI publishes partial coverage without a Result line. Explicit
+    # results (including Observable failures) still take precedence.
+    coverage = FIELD_RE["coverage"].search(block)
+    default_outcome = {"complete": "success", "partial": "partial"}.get(
+        coverage.group(1).lower() if coverage else "", "unknown"
+    )
+    raw_outcome = outcome.group(1).strip().strip("*_").strip() if outcome else default_outcome
     return {
         "reviewer": reviewer,
         "provider": provider,
@@ -73,7 +77,7 @@ def parse_review(body: str, reviewer_hint: str = "") -> dict[str, Any] | None:
         "retries": numbers["retries"],
         "fallback_successes": numbers["fallback_successes"],
         "provider_seconds": float(seconds.group(1)) if seconds else 0.0,
-        "outcome": raw_outcome.lower() if raw_outcome else "success",
+        "outcome": raw_outcome.lower() if raw_outcome else default_outcome,
     }
 
 

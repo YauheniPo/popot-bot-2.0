@@ -56,7 +56,7 @@ Summary: Reviewed the PR in 1 bounded chunk(s); found no new actionable issues.
         self.assertEqual(parsed["model"], "inclusionai/ling-3.0-flash-sante:free")
         self.assertEqual(parsed["attempts"], 1)
         self.assertEqual(parsed["provider_seconds"], 60.8)
-        # Published reviews without an explicit Result line are successes.
+        # Complete coverage supplies the result when Result is absent.
         self.assertEqual(parsed["outcome"], "success")
 
     def test_parse_bulleted_result_line_strips_markdown(self):
@@ -67,10 +67,57 @@ Summary: Reviewed the PR in 1 bounded chunk(s); found no new actionable issues.
         parsed = metrics.parse_review(body)
         self.assertEqual(parsed["outcome"], "success")
 
-    def test_parse_plain_metadata_without_result_defaults_to_success(self):
+    def test_parse_plain_metadata_without_result_defaults_to_unknown(self):
         body = ("Technical metadata\nConnection: provider · API: https://example\n"
                 "Successful models: model-a\n")
-        self.assertEqual(metrics.parse_review(body)["outcome"], "success")
+        self.assertEqual(metrics.parse_review(body)["outcome"], "unknown")
+
+    def test_parse_quoted_values_with_surrounding_whitespace(self):
+        for value in ("`nous` ", "  `nous`  ", "` nous `", " nous "):
+            with self.subTest(value=value):
+                body = (f"Technical metadata\n> Connection: {value} · API: https://example\n"
+                        f"> Successful models: {value}, `second-model`\n")
+                parsed = metrics.parse_review(body)
+                self.assertEqual(parsed["provider"], "nous")
+                self.assertEqual(parsed["model"], "nous")
+
+    def test_parse_coverage_without_result(self):
+        metadata = ("## DirectAPI\n### Technical metadata\n"
+                    "> Connection: `provider` · API: `https://example`\n"
+                    "> Successful models: `model-a`\n")
+        for prefix in ("", "> "):
+            for coverage, expected in (("partial", "partial"), ("complete", "success"),
+                                       ("unavailable", "unknown")):
+                with self.subTest(prefix=prefix, coverage=coverage):
+                    body = metadata + f"{prefix}Coverage: {coverage} — 1/2 files complete\n"
+                    self.assertEqual(metrics.parse_review(body)["outcome"], expected)
+
+    def test_explicit_result_takes_precedence_over_coverage(self):
+        for result in ("failed", "partial", "success"):
+            with self.subTest(result=result):
+                body = ("ObservableMessagesReview\nTechnical metadata\n"
+                        "Connection: provider · API: https://example\n"
+                        "Successful models: model-a\n"
+                        "> Coverage: partial — 1/2 files complete\n"
+                        f"Result: **{result}**\n")
+                self.assertEqual(metrics.parse_review(body)["outcome"], result)
+
+    def test_reimport_corrects_partial_review_without_duplicate(self):
+        body = ("## DirectAPI\n### Technical metadata\n"
+                "> Connection: `provider` · API: `https://example`\n"
+                "> Successful models: `model-a`\n"
+                "> Coverage: partial — 1/2 files complete, 0 partial, 1 omitted by the bounded budget\n")
+        item = {"id": 2, "body": body, "submitted_at": "2026-09-23T10:00:00Z"}
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(metrics, "fetch_reviews", return_value=[item]):
+            database = Path(directory) / "metrics.db"
+            metrics.import_pr("org/repo", 43, "secret", database)
+            with sqlite3.connect(database) as connection:
+                connection.execute("UPDATE review_runs SET outcome = 'success'")
+            metrics.import_pr("org/repo", 43, "secret", database)
+            with sqlite3.connect(database) as connection:
+                rows = connection.execute("SELECT outcome, observed_at FROM review_runs").fetchall()
+            self.assertEqual(rows, [("partial", item["submitted_at"])])
 
     def test_upsert_is_idempotent_and_creates_schema(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -109,8 +156,7 @@ Summary: Reviewed the PR in 1 bounded chunk(s); found no new actionable issues.
     def test_parse_review_rejects_incomplete_and_supports_unknown_reviewer(self):
         self.assertIsNone(metrics.parse_review("ordinary comment"))
         self.assertIsNone(metrics.parse_review("Technical metadata\nResult: failed"))
-        # A body carrying the full metadata block is a published review and
-        # defaults to success; the explicit failed Result overrides it.
+        # Explicit failures are retained even with successful model metadata.
         parsed = metrics.parse_review(
             "Technical metadata\nConnection: provider · API: https://example\n"
             "Successful models: model-a\nResult: failed\n"
