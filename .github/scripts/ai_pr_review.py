@@ -1029,7 +1029,7 @@ def _retryable_request_error(error: RequestError) -> bool:
     return error.status is None or error.status in RETRYABLE_HTTP_STATUSES
 
 
-def _retry_delay_seconds(error: RequestError, attempt: int) -> float:
+def _retry_delay_seconds(_error: RequestError, attempt: int) -> float:
     delay = float(2 ** (attempt - 1))
     # Non-429 retryable errors use exponential backoff with 15s floor.
     # 429 errors use their own dedicated ladder via _rate_limit_retry_delay.
