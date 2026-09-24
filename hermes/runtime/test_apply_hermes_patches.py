@@ -479,8 +479,8 @@ class ApplyHermesPatchesTests(unittest.TestCase):
         normal = asyncio.run(namespace["deliver"](
             runner, telegram, event, result, "Answer", False, False))
         self.assertEqual(normal, "Answer\n\n🤖 **Model:**\n```\nnous/meituan/longcat-2.0:free\n```")
-        self.assertEqual(asyncio.run(namespace["deliver"](
-            runner, telegram, event, result, "Answer", False, True)), None)
+        self.assertIsNone(asyncio.run(namespace["deliver"](
+            runner, telegram, event, result, "Answer", False, True)))
         send.assert_awaited_once_with("chat", "🤖 **Model:**\n```\nnous/meituan/longcat-2.0:free\n```", metadata={})
         self.assertEqual(asyncio.run(namespace["deliver"](
             runner, other, event, result, "Answer", False, False)), "Answer")
