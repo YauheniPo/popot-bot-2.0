@@ -2070,6 +2070,31 @@ class ThreadTriageTest(unittest.TestCase):
 class RateLimitLadderTest(unittest.TestCase):
     """Tests for the dedicated 429 retry ladder."""
 
+    def test_free_daily_429_uses_fallback_without_waiting(self) -> None:
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        quota_error = reviewer.RequestError("daily limit", status=429, quota="free_daily")
+        fallback_result = {"summary": "Reviewed.", "findings": []}
+        reviewer.FREE_DAILY_QUOTA_ROUTES.clear()
+        try:
+            with (
+                mock.patch.dict(reviewer.os.environ, {"DIRECT_REVIEW_FALLBACK_MODEL": "other:free"}),
+                mock.patch.object(reviewer, "ACTIVE_PROVIDER", "openrouter"),
+                mock.patch.object(reviewer, "request_json", side_effect=quota_error) as request,
+                mock.patch.object(reviewer, "request_fallback_review", return_value=fallback_result) as fallback,
+                mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+                mock.patch.object(reviewer.time, "sleep") as sleep,
+            ):
+                self.assertEqual(
+                    reviewer.review_chunk("api-key", "reviewer:free", (), chunk, 1, 1),
+                    fallback_result,
+                )
+            self.assertEqual(request.call_count, 1)
+            sleep.assert_not_called()
+            fallback.assert_called_once()
+            self.assertTrue(reviewer._free_daily_route_disabled("openrouter", "reviewer:free"))
+        finally:
+            reviewer.FREE_DAILY_QUOTA_ROUTES.clear()
+
     def test_first_429_retry_uses_60s_ladder_step(self) -> None:
         response = {
             "choices": [

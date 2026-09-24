@@ -953,6 +953,10 @@ def request_with_transient_retries(
                 timeout=min(MODEL_REQUEST_TOTAL_SECONDS, available),
             )
         except RequestError as error:
+            if error.quota == "free_daily":
+                # Waiting cannot restore a daily allowance; let review_chunk
+                # switch to its configured fallback immediately.
+                raise
             if error.status == 429:
                 # A rate-limited request does not spend the general budget: the
                 # dedicated ladder bounds these retries on its own.

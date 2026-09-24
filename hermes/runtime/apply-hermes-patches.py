@@ -1156,9 +1156,8 @@ def _apply_one_patch(
     ``state_changed`` is True only when ``patch_state`` is actually mutated
     (``record``/``refresh``/``apply``/``upgrade``); ``skip`` intentionally
     returns False because it neither applies nor records anything new.
-    ``warn_unmatched`` downgrades a missing anchor to a warning: the pre-update
-    backup runs against the *installed* (older) Hermes, whose source may not
-    match the anchor written for the pinned version.
+    ``warn_unmatched`` downgrades a missing anchor to a warning only when the
+    caller has confirmed an update from a different installed Hermes commit.
     """
     target = HERMES_AGENT_DIR / relative_path
     if not target.is_file():
@@ -1210,7 +1209,7 @@ def _apply_one_patch(
     return 1, None, True
 
 
-def main(*, backup_only: bool = False) -> int:
+def main(*, backup_only: bool = False, allow_unmatched_backup: bool = False) -> int:
     if not HERMES_AGENT_DIR.is_dir():
         print(
             f"[hermes-patch] ERROR: Hermes install directory is missing: {HERMES_AGENT_DIR}",
@@ -1237,7 +1236,8 @@ def main(*, backup_only: bool = False) -> int:
         if backup_only and relative_path != _BACKUP_PATH:
             continue
         delta, failure, changed = _apply_one_patch(
-            relative_path, marker, old, new, patch_state, warn_unmatched=backup_only)
+            relative_path, marker, old, new, patch_state,
+            warn_unmatched=backup_only and allow_unmatched_backup)
         applied += delta
         state_changed = state_changed or changed
         if failure is not None:
@@ -1264,4 +1264,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backup-only", action="store_true",
                         help="Apply only backup exclusions before the mandatory deployment backup")
-    raise SystemExit(main(backup_only=parser.parse_args().backup_only))
+    parser.add_argument("--allow-unmatched-backup", action="store_true",
+                        help="Allow an older installed archiver before a confirmed source update")
+    args = parser.parse_args()
+    if args.allow_unmatched_backup and not args.backup_only:
+        parser.error("--allow-unmatched-backup requires --backup-only")
+    raise SystemExit(main(backup_only=args.backup_only,
+                          allow_unmatched_backup=args.allow_unmatched_backup))

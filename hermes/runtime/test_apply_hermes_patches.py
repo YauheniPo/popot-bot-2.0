@@ -54,6 +54,20 @@ class ApplyHermesPatchesTests(unittest.TestCase):
                 self.assertEqual(target.read_text(), first)
                 migrate.assert_not_called()
 
+    def test_backup_only_rejects_unknown_archiver_without_source_update(self):
+        source = '# unknown backup implementation\n'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "hermes_cli/backup.py"
+            target.parent.mkdir()
+            target.write_text(source)
+            with mock.patch.object(apply_hermes_patches, "HERMES_AGENT_DIR", root), \
+                    mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                self.assertEqual(apply_hermes_patches.main(backup_only=True), 1)
+                self.assertEqual(target.read_text(), source)
+                self.assertIn("ERROR", stderr.getvalue())
+                self.assertFalse((root / apply_hermes_patches._STATE_FILE).exists())
+
     def test_backup_only_warns_on_older_installed_archiver_without_writing(self):
         # Hermes 0.21.0 spells the set over several lines; the pre-update backup
         # of that install must not abort the upgrade to a pin with the new anchor.
@@ -66,7 +80,8 @@ class ApplyHermesPatchesTests(unittest.TestCase):
             target.write_text(source)
             with mock.patch.object(apply_hermes_patches, "HERMES_AGENT_DIR", root), \
                     mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
-                self.assertEqual(apply_hermes_patches.main(backup_only=True), 0)
+                self.assertEqual(apply_hermes_patches.main(
+                    backup_only=True, allow_unmatched_backup=True), 0)
                 self.assertEqual(target.read_text(), source)
                 self.assertIn("WARNING", stderr.getvalue())
                 self.assertIn("does not match the pinned", stderr.getvalue())

@@ -212,8 +212,10 @@ to other reviewers' threads, avoiding races between the parallel jobs.
 Direct API retries HTTP 429 on a dedicated ladder of 1, 2, 5 and 10 minutes
 that does not consume its general four-request budget for transport, JSON and
 schema retries; a longer provider `Retry-After` extends a step up to 15 minutes,
-and the review deadline still bounds every wait. Other retryable errors keep
-exponential backoff (1, 2, 4 seconds) with provider hints capped at 90 seconds.
+and the review deadline still bounds every wait. A confirmed OpenRouter free-model
+daily limit skips that ladder and immediately tries the configured fallback.
+Other retryable errors keep exponential backoff (1, 2, 4 seconds) with provider
+hints capped at 90 seconds.
 
 Observable review retries HTTP 429 with exponential backoff (30s, then 60s)
 and honors a longer `Retry-After` or rate-limit reset hint. Waiting is capped at

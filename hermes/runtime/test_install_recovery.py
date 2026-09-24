@@ -95,6 +95,38 @@ run_as_hermes() {{
                     hermes_completed_install={"stdout": completed})
                 self.assertEqual(result.strip(), str(expected))
 
+    def test_backup_anchor_warning_requires_a_different_installed_commit(self):
+        for installed_commit, expected_flag in (("pinned", False), ("old", True)):
+            with self.subTest(installed_commit=installed_commit), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory)
+                install_dir = home / "state/hermes-agent"
+                (install_dir / "venv/bin").mkdir(parents=True)
+                (install_dir / "venv/bin/python").touch(mode=0o755)
+                capture = home / "patch-args"
+                body = f"""
+HERMES_BIN={shlex.quote(sys.executable)}
+HERMES_INSTALL_DIR={shlex.quote(str(install_dir))}
+HERMES_HOME={shlex.quote(str(home / 'state'))}
+HERMES_BACKUP_DIR={shlex.quote(str(home / 'backups'))}
+HERMES_WORKSPACE={shlex.quote(str(home / 'workspace'))}
+HERMES_COMMIT=pinned
+UPDATE_STATE_VERIFIER="$SCRIPT_DIR/runtime/verify-update-state.py"
+run_as_hermes() {{
+  if [[ "$1" == git ]]; then printf '%s\\n' {shlex.quote(installed_commit)}; return; fi
+  if [[ "$1" == env && "$2" == HERMES_INSTALL_DIR=* ]]; then
+    printf '%s\\n' "$@" > {shlex.quote(str(capture))}
+    return 42
+  fi
+  return 0
+}}
+backup_existing_installation
+"""
+                result = self.run_shell(home, body)
+                self.assertEqual(result.returncode, 42, result.stdout + result.stderr)
+                args = capture.read_text().splitlines()
+                self.assertIn("--backup-only", args)
+                self.assertEqual("--allow-unmatched-backup" in args, expected_flag)
+
     def test_completion_marker_is_invalidated_before_mutation_and_written_only_on_success(self):
         deploy = (ROOT / "deploy-hermes.sh").read_text()
         main = "main() {" + deploy.split("\nmain() {", 1)[1].rsplit("\nmain\n", 1)[0]
