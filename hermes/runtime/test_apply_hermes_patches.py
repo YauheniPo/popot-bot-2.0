@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
+import io
 import os
 import runpy
 import sys
@@ -37,6 +39,15 @@ class ApplyHermesPatchesTests(unittest.TestCase):
                     self.assertEqual(result.exception.code, 0)
                     self.assertEqual(target.read_text().count('"gateway.lock"'), 1)
 
+    def test_allow_unmatched_backup_requires_backup_only_cli(self):
+        script_path = str(MODULE_PATH)
+        with mock.patch.object(sys, "argv", [script_path, "--allow-unmatched-backup"]), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            with self.assertRaises(SystemExit) as result:
+                runpy.run_path(script_path, run_name="__main__")
+        self.assertEqual(result.exception.code, 2)
+        self.assertIn("requires --backup-only", stderr.getvalue())
+
     def test_backup_only_patches_without_gateway_files_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -52,15 +63,53 @@ class ApplyHermesPatchesTests(unittest.TestCase):
                 self.assertEqual(target.read_text(), first)
                 migrate.assert_not_called()
 
-    def test_backup_only_rejects_unknown_source_without_writing(self):
+    def test_backup_only_rejects_unknown_archiver_without_source_update(self):
+        source = '# unknown backup implementation\n'
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             target = root / "hermes_cli/backup.py"
             target.parent.mkdir()
-            source = "# unknown backup implementation\n"
             target.write_text(source)
-            with mock.patch.object(apply_hermes_patches, "HERMES_AGENT_DIR", root):
+            with mock.patch.object(apply_hermes_patches, "HERMES_AGENT_DIR", root), \
+                    mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
                 self.assertEqual(apply_hermes_patches.main(backup_only=True), 1)
+                self.assertEqual(target.read_text(), source)
+                self.assertIn("ERROR", stderr.getvalue())
+                self.assertFalse((root / apply_hermes_patches._STATE_FILE).exists())
+
+    def test_backup_only_warns_on_older_installed_archiver_without_writing(self):
+        # Hermes 0.21.0 spells the set over several lines; the pre-update backup
+        # of that install must not abort the upgrade to a pin with the new anchor.
+        source = ('_EXCLUDED_NAMES = {\n    ".backup.lock",\n    "gateway.pid",\n'
+                  '    "cron.pid",\n}\n')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "hermes_cli/backup.py"
+            target.parent.mkdir()
+            target.write_text(source)
+            with mock.patch.object(apply_hermes_patches, "HERMES_AGENT_DIR", root), \
+                    mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                self.assertEqual(apply_hermes_patches.main(
+                    backup_only=True, allow_unmatched_backup=True), 0)
+                self.assertEqual(target.read_text(), source)
+                self.assertIn("WARNING", stderr.getvalue())
+                self.assertIn("does not match the pinned", stderr.getvalue())
+
+    def test_full_run_still_rejects_unknown_backup_source(self):
+        source = "# unknown backup implementation\n"
+        state = {}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "hermes_cli/backup.py"
+            target.parent.mkdir()
+            target.write_text(source)
+            with mock.patch.object(apply_hermes_patches, "HERMES_AGENT_DIR", root), \
+                    mock.patch("sys.stderr", new_callable=io.StringIO):
+                _path, marker, old, new = apply_hermes_patches._PATCHES[0]
+                self.assertEqual(_path, apply_hermes_patches._BACKUP_PATH)
+                delta, failure, changed = apply_hermes_patches._apply_one_patch(
+                    _path, marker, old, new, state)
+                self.assertEqual((delta, failure, changed), (0, _path, False))
                 self.assertEqual(target.read_text(), source)
 
     def test_registry_migration_makes_underscore_name_canonical(self) -> None:
@@ -302,6 +351,165 @@ class ApplyHermesPatchesTests(unittest.TestCase):
 
         self.assertIn("model_global", patch_payload)
         self.assertNotIn(retired, patch_payload)
+
+    def test_qualified_model_target_selects_the_named_provider(self) -> None:
+        patches = {
+            marker: new for _path, marker, _old, new in apply_hermes_patches._PATCHES
+        }
+        helper = patches["# Local Hermes: qualified provider/model target"].split(
+            "\ndef parse_model_switch_args", 1)[0]
+        namespace = {}
+        provider_module = SimpleNamespace(
+            get_provider=lambda name, **_kwargs: object() if name in {"nous", "nvidia"} else None,
+            normalize_provider=lambda name: name,
+        )
+        with mock.patch.dict(sys.modules, {
+            "hermes_cli": mock.Mock(), "hermes_cli.providers": provider_module,
+        }):
+            exec(helper, namespace)
+            parse = namespace["_local_qualified_model_target"]
+            self.assertEqual(parse("nous/meituan/longcat-2.0:free", ""),
+                             ("meituan/longcat-2.0:free", "nous"))
+            self.assertEqual(parse("nvidia/nvidia/nemotron-3-super", ""),
+                             ("nvidia/nemotron-3-super", "nvidia"))
+            self.assertEqual(parse("inclusionai/ling-3.0:free", ""),
+                             ("inclusionai/ling-3.0:free", ""))
+            self.assertEqual(parse("nous/model", "openrouter"),
+                             ("nous/model", "openrouter"))
+        self.assertIn("_local_qualified_model_target", patches[
+            "# Local Hermes: parse qualified provider/model target"
+        ])
+
+    def test_model_parser_keeps_global_scope_with_qualified_provider(self) -> None:
+        patches = {
+            marker: (old, new)
+            for _path, marker, old, new in apply_hermes_patches._PATCHES
+        }
+        source = '''def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
+    parsed = parse_model_flags_detailed(raw)
+    errors = []
+    scope = "global" if parsed.is_global else "default"
+    return ModelSwitchRequest(
+        raw=raw, target=parsed.model_input, scope=scope, errors=tuple(errors),
+        **{f: getattr(parsed, f)
+           for f in ("explicit_provider", "reasoning_effort", "is_global", "is_session", "is_once", "force_refresh")})
+'''
+        for marker in (
+            "# Local Hermes: qualified provider/model target",
+            "# Local Hermes: parse qualified provider/model target",
+        ):
+            old, new = patches[marker]
+            self.assertEqual(source.count(old), 1)
+            source = source.replace(old, new, 1)
+
+        def parse_flags(raw):
+            return SimpleNamespace(
+                model_input=raw.replace("--global", "").strip(),
+                explicit_provider="", reasoning_effort="", is_global="--global" in raw,
+                is_session=False, is_once=False, force_refresh=False,
+            )
+
+        provider_module = SimpleNamespace(
+            get_provider=lambda name, **_kwargs: object() if name == "nous" else None,
+            normalize_provider=lambda name: name,
+        )
+        namespace = {
+            "ModelSwitchRequest": lambda **values: SimpleNamespace(**values),
+            "parse_model_flags_detailed": parse_flags,
+        }
+        with mock.patch.dict(sys.modules, {
+            "hermes_cli": mock.Mock(), "hermes_cli.providers": provider_module,
+        }):
+            exec(source, namespace)
+            request = namespace["parse_model_switch_args"](
+                "nous/meituan/longcat-2.0:free --global")
+        self.assertEqual(request.target, "meituan/longcat-2.0:free")
+        self.assertEqual(request.explicit_provider, "nous")
+        self.assertEqual(request.scope, "global")
+        global_handler = next(new for _path, marker, _old, new in apply_hermes_patches._PATCHES
+                              if marker == "# Local Hermes: model_global handler")
+        self.assertIn('event.text = f"/model {raw_args} --global"', global_handler)
+
+    def test_telegram_final_model_route_is_copyable_and_uses_result_provider(self) -> None:
+        patches = {
+            marker: new for _path, marker, _old, new in apply_hermes_patches._PATCHES
+        }
+        namespace = {}
+        helper = patches["# Local Hermes: copyable Telegram model route"].split(
+            "\ndef _tool_call_logger", 1)[0]
+        exec(helper, namespace)
+        footer = namespace["_local_telegram_model_route"]
+        self.assertEqual(
+            footer({"provider": "nous", "model": "meituan/longcat-2.0:free"}),
+            "🤖 **Model:**\n```\nnous/meituan/longcat-2.0:free\n```",
+        )
+        self.assertEqual(footer({"provider": "", "model": "model"}), "")
+        self.assertEqual(footer({"provider": "nous", "model": "bad```model"}), "")
+        self.assertEqual(footer({"provider": "nous", "model": "bad\nmodel"}), "")
+        self.assertNotIn("secret", footer({"provider": "nous", "model": "model",
+                                                "api_key": "secret"}))
+        self.assertIn('"provider": getattr(agent, "provider", None)', patches[
+            "# Local Hermes: return actual turn provider"
+        ])
+        self.assertIn("source.platform == Platform.TELEGRAM", patches[
+            "# Local Hermes: deliver Telegram model route"
+        ])
+        self.assertIn("await adapter.send(source.chat_id, model_route", patches[
+            "# Local Hermes: streamed Telegram model route"
+        ])
+        self.assertIn('return f"{response}\\n\\n{model_route}"', patches[
+            "# Local Hermes: append Telegram model route"
+        ])
+
+    def test_telegram_model_route_follows_normal_and_streamed_final_delivery(self) -> None:
+        patches = {
+            marker: (old, new)
+            for _path, marker, old, new in apply_hermes_patches._PATCHES
+        }
+        source = '''async def deliver(self, source, event, agent_result, response, _intentional_silence, streamed):
+        adapter = self._delivery_adapter_for(source)
+        # Auto voice reply (TTS audio before the text) unless streaming TTS already delivered audio.
+        if streamed:
+            # Return None so the body isn't sent twice; stash the delivered text on the event for the
+            return None
+        return response
+
+    # Chat-side next steps keyed by HTTP status; Hermes commands only'''
+        for marker in (
+            "# Local Hermes: deliver Telegram model route",
+            "# Local Hermes: streamed Telegram model route",
+            "# Local Hermes: append Telegram model route",
+        ):
+            old, new = patches[marker]
+            self.assertEqual(source.count(old), 1)
+            source = source.replace(old, new, 1)
+        footer = patches["# Local Hermes: copyable Telegram model route"][1].split(
+            "\ndef _tool_call_logger", 1)[0]
+        namespace = {
+            "Platform": SimpleNamespace(TELEGRAM="telegram"),
+            "logger": mock.Mock(),
+        }
+        exec(footer + "\n" + source, namespace)
+        send = mock.AsyncMock()
+        runner = SimpleNamespace(
+            _delivery_adapter_for=lambda _source: SimpleNamespace(send=send),
+            _event_thread_metadata=lambda *_args: {},
+        )
+        result = {"provider": "nous", "model": "meituan/longcat-2.0:free"}
+        event = object()
+        telegram = SimpleNamespace(platform="telegram", chat_id="chat")
+        other = SimpleNamespace(platform="discord", chat_id="chat")
+
+        normal = asyncio.run(namespace["deliver"](
+            runner, telegram, event, result, "Answer", False, False))
+        self.assertEqual(normal, "Answer\n\n🤖 **Model:**\n```\nnous/meituan/longcat-2.0:free\n```")
+        self.assertIsNone(asyncio.run(namespace["deliver"](
+            runner, telegram, event, result, "Answer", False, True)))
+        send.assert_awaited_once_with("chat", "🤖 **Model:**\n```\nnous/meituan/longcat-2.0:free\n```", metadata={})
+        self.assertEqual(asyncio.run(namespace["deliver"](
+            runner, other, event, result, "Answer", False, False)), "Answer")
+        self.assertEqual(asyncio.run(namespace["deliver"](
+            runner, telegram, event, result, "", True, False)), "")
 
     def test_doctor_patch_is_a_gateway_only_fixed_argument_diagnostic(self) -> None:
         patches = {

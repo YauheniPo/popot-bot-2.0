@@ -1,8 +1,9 @@
 """Bounded, read-only Tailscale SSH check on the Ansible controller.
 
 No SSH password is passed to a subprocess. Tailscale authenticates the node;
-ordinary password SSH is left to Ansible. Approval URLs go only to /dev/tty,
-never to task results or CI logs. Host-key verification stays enabled.
+ordinary password SSH is left to Ansible. Approval URLs go to /dev/tty or
+screen-only controller output, never to task results, Ansible logs or CI logs.
+Host-key verification stays enabled.
 """
 
 import ipaddress
@@ -157,8 +158,12 @@ def retry_probe(run, attempts, report):
     return outcome
 
 
-def show_approval(url):
-    """Offer local browser approval; lack of a TTY must not cancel the SSH wait."""
+def show_approval(url, report=None):
+    """Offer local browser approval; lack of a TTY must not cancel the SSH wait.
+
+    With neither a TTY nor a browser opener the link is shown through ``report``
+    (controller output, never the task result) so a local operator can still
+    approve; every retried attempt shows its fresh link again."""
     try:
         parsed = urlparse(url)
         port = parsed.port
@@ -171,13 +176,14 @@ def show_approval(url):
     if any(os.environ.get(flag, '').lower() in {'1', 'true'}
            for flag in ('CI', 'TF_BUILD', 'GITHUB_ACTIONS')):
         return False
+    shown = False
     try:
         with open('/dev/tty', 'w') as terminal:
             terminal.write(f'\n[Tailscale SSH] Open and approve this request: {url}\n')
             terminal.flush()
+        shown = True
     except OSError:
         # Local IDE/Ansible workers may have a desktop browser but no /dev/tty.
-        # Never fall back to printing the approval URL into captured task logs.
         pass
     opener = shutil.which('open' if sys.platform == 'darwin' else 'xdg-open')
     if opener:
@@ -186,6 +192,11 @@ def show_approval(url):
                            stderr=subprocess.DEVNULL, timeout=3, check=False)
         except (OSError, subprocess.TimeoutExpired):
             pass  # Approval elsewhere can still succeed within the probe deadline.
+    elif not shown and report is not None:
+        # Nobody has seen the link yet: show it in the controller output rather
+        # than waiting silently for the deadline. CI returned above, so this
+        # never lands in a CI log.
+        report(f'Open and approve this Tailscale SSH request: {url}')
     return True
 
 
@@ -255,9 +266,16 @@ class ActionModule(ActionBase):
         def report(message):
             self._display.display(f'[ssh preflight] {message}')
 
+        def report_approval(message):
+            # Ansible logs ordinary Display messages when logging is enabled.
+            # Keep the short-lived approval URL off that channel.
+            self._display.display(f'[ssh preflight] {message}', screen_only=True)
+
         report(f'Each attempt is limited to {timeout}s. Browser approval may be required.')
         try:
-            outcome = retry_probe(lambda: probe(command, timeout, show_approval, report), attempts, report)
+            outcome = retry_probe(
+                lambda: probe(command, timeout, lambda url: show_approval(url, report_approval), report),
+                attempts, report)
         except OSError:
             return dict(result, failed=True, msg='Cannot execute the controller SSH client. Check ssh_executable and local SSH installation.')
         if outcome == 'ready':

@@ -195,9 +195,16 @@ backup_existing_installation() {
       "$HERMES_HOME/operator-state/workspace-AGENTS.md"
   fi
 
+  local installed_commit
+  installed_commit="$(run_as_hermes git -C "$HERMES_INSTALL_DIR" rev-parse HEAD)" ||
+    die "cannot verify the installed Hermes commit before backup"
+  local -a backup_patch_args=(--backup-only)
+  if [[ "$installed_commit" != "$HERMES_COMMIT" ]]; then
+    backup_patch_args+=(--allow-unmatched-backup)
+  fi
   log "Applying the backup runtime exclusion patch before the mandatory backup"
   run_as_hermes env HERMES_INSTALL_DIR="$HERMES_INSTALL_DIR" \
-    python3 "$SCRIPT_DIR/runtime/apply-hermes-patches.py" --backup-only
+    python3 "$SCRIPT_DIR/runtime/apply-hermes-patches.py" "${backup_patch_args[@]}"
 
   log "Inventorying Hermes state and checking every Kanban database before the update"
   python3 "$UPDATE_STATE_VERIFIER" snapshot \
