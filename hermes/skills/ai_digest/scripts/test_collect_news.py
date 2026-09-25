@@ -360,6 +360,22 @@ class CollectNewsTests(unittest.TestCase):
             result = collect(config, now=NOW, fetch=fetch)
         self.assertIn("source_issues", result)
 
+    def test_social_search_successfully_fetches_from_public_endpoint(self):
+        """Test searxng source with _public_url succeeding via mocking."""
+        from unittest.mock import patch as mock_patch
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 1},
+                  "sources": [{"id": "social", "type": "searxng", "query": "AI"}]}
+        payload = (b'{"results":[{"title":"AI release","url":"https://vendor.test/release",'
+                   b'"publishedDate":"2026-09-25T11:00:00Z","content":"Release details"}]}')
+        def fetch(url, _limit):
+            return payload if "/search?" in url else b"<main>" + b"Article body. " * 40 + b"</main>"
+        # Mock _public_url to succeed so the searxng branch completes
+        with mock_patch("collect_news._public_url", return_value=None):
+            with patch.dict("os.environ", {"AI_DIGEST_SEARCH_URL": "https://search.example.com",
+                                           "SEARXNG_URL": ""}):
+                result = collect(config, now=NOW, fetch=fetch)
+        self.assertEqual(len(result["items"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
