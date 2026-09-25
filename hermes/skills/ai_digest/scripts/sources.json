@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "defaults": {
+    "window_hours": 24,
+    "limit": 5,
+    "request_timeout_s": 12,
+    "max_summary_chars": 1200,
+    "max_article_chars": 4500,
+    "max_items": 25,
+    "max_response_bytes": 5242880
+  },
+  "profiles": {
+    "daily": {"window_hours": 24, "limit": 5},
+    "weekly": {"window_hours": 168, "limit": 7}
+  },
+  "sources": [
+    {"id": "hackernews", "type": "hackernews", "max_items": 10, "max_comments": 5},
+    {"id": "reddit", "type": "reddit", "subreddits": ["MachineLearning", "LocalLLaMA", "programming"], "max_items": 10},
+    {"id": "techcrunch", "type": "rss", "url": "https://techcrunch.com/feed/"},
+    {"id": "theverge", "type": "rss", "url": "https://www.theverge.com/rss/index.xml"},
+    {"id": "arstechnica", "type": "rss", "url": "https://feeds.arstechnica.com/arstechnica/index"},
+    {"id": "openai", "type": "rss", "url": "https://openai.com/news/rss.xml", "modes": ["daily", "weekly"], "category": "release"},
+    {"id": "anthropic", "type": "searxng", "query": "site:anthropic.com/news Anthropic", "max_items": 10},
+    {"id": "googleai", "type": "rss", "url": "https://blog.google/technology/ai/rss/"},
+    {"id": "deepmind", "type": "rss", "url": "https://deepmind.google/blog/rss.xml", "modes": ["daily", "weekly"], "category": "research"},
+    {"id": "meta-ai", "type": "searxng", "query": "site:ai.meta.com/blog AI research release", "max_items": 10, "category": "release"},
+    {"id": "habr", "type": "rss", "url": "https://habr.com/ru/rss/articles/?fl=ru"},
+    {"id": "3dnews", "type": "rss", "url": "https://3dnews.ru/news/rss/"},
+    {"id": "ixbt", "type": "rss", "url": "https://www.ixbt.com/export/news.rss"},
+    {"id": "thecode", "type": "rss", "url": "https://thecode.media/feed/"},
+    {"id": "arxiv-ai", "type": "arxiv", "categories": ["cs.AI", "cs.LG", "cs.CL"], "max_items": 15, "category": "research"},
+    {"id": "hf-papers", "type": "hf_papers", "max_items": 25, "modes": ["daily", "weekly"], "category": "research"},
+    {"id": "hf-trending", "type": "hf_trending", "max_items": 20, "category": "model"},
+    {"id": "simonwillison", "type": "rss", "url": "https://simonwillison.net/atom/everything/", "category": "practice"},
+    {"id": "github-trending", "type": "github_trending", "since": "daily", "max_items": 15,
+      "fallback": {"type": "github_notable", "query": "topic:ai", "min_stars": 500}},
+    {"id": "social-x", "type": "searxng", "query": "site:x.com/karpathy OR site:x.com/simonw OR site:x.com/swyx AI", "max_items": 10, "category": "practice"},
+    {"id": "social-linkedin", "type": "searxng", "query": "site:linkedin.com/posts AI", "max_items": 10},
+    {"id": "tldr-ai", "type": "searxng", "query": "site:tldr.tech/ai AI newsletter", "max_items": 10, "category": "roundup"},
+    {"id": "import-ai", "type": "rss", "url": "https://importai.substack.com/feed", "modes": ["weekly"], "category": "roundup"},
+    {"id": "interconnects", "type": "rss", "url": "https://www.interconnects.ai/feed", "modes": ["weekly"], "category": "research"},
+    {"id": "the-batch", "type": "searxng", "query": "site:deeplearning.ai/the-batch AI", "max_items": 10, "modes": ["weekly"], "category": "roundup"},
+    {"id": "alphaxiv", "type": "searxng", "query": "site:alphaxiv.org AI paper", "max_items": 10, "modes": ["weekly"], "category": "research"},
+    {"id": "swebench", "type": "swebench", "max_items": 25, "modes": ["weekly"], "category": "benchmark"},
+    {"id": "lmarena", "type": "searxng", "query": "site:lmarena.ai leaderboard update", "max_items": 10, "modes": ["weekly"], "category": "benchmark"},
+    {"id": "artificial-analysis", "type": "searxng", "query": "site:artificialanalysis.ai intelligence index model benchmark", "max_items": 10, "modes": ["weekly"], "category": "benchmark"},
+    {"id": "hf-open-leaderboard", "type": "searxng", "query": "site:huggingface.co/spaces/open-llm-leaderboard update", "max_items": 10, "modes": ["weekly"], "category": "benchmark"},
+    {"id": "latent-space", "type": "rss", "url": "https://www.latent.space/feed", "modes": ["weekly"], "audio_only": true, "category": "podcast"},
+    {"id": "dwarkesh", "type": "rss", "url": "https://www.dwarkeshpatel.com/feed", "modes": ["weekly"], "audio_only": true, "category": "podcast"}
+  ]
+}

@@ -167,6 +167,7 @@
     hermes_external_skill_dirs: >-
       {{
         (
+          [hermes_bundle_dir ~ '/skills'] +
           ([vps_external_skills.matt_pocock_engineering.skills_dir]
            if (vps_external_skills.matt_pocock_engineering.enabled | bool)
            else []
