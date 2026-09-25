@@ -145,6 +145,16 @@ class DashboardSqlTests(unittest.TestCase):
         columns, rows = self.run_query(targets["Tool call failures by model — selected range"])
         self.assertEqual(rows, [("model-b", 1.0, 1), ("model-a", 0.0, 1), ("unknown", 0.0, 1)])
 
+    def test_summary_charts_group_errors_and_finish_reasons_for_readability(self) -> None:
+        targets = dict(sqlite_targets())
+        columns, rows = self.run_query(targets["API errors by class"])
+        self.assertEqual(columns, ["time", "route", "errors"])
+        self.assertEqual({row[1]: row[2] for row in rows}, {"rate_limit": 1, "server": 1})
+        columns, rows = self.run_query(targets["Finish reasons"])
+        self.assertEqual(columns, ["time", "route", "responses"])
+        self.assertEqual({row[1]: row[2] for row in rows},
+                         {"stop": 2, "length": 1, "tool_calls": 1})
+
 
 if __name__ == "__main__":
     unittest.main()
