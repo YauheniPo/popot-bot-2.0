@@ -20,7 +20,6 @@ import re
 import socket
 import sys
 import time
-from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 import uuid
@@ -286,7 +285,7 @@ def _source(source: dict, defaults: dict, now: datetime, fetch) -> tuple[list[di
             url = f"https://www.reddit.com/r/{subreddit}/top.json?t=day&limit={limit}"
             try:
                 listing = _json(fetch, url, max_bytes)
-            except (OSError, ValueError, HTTPError, URLError, TimeoutError) as exc:
+            except (OSError, ValueError) as exc:
                 issues.append({"id": source_id, "kind": "degraded",
                                "reason": f"r/{subreddit}: {str(exc)[:120]}"})
                 continue
@@ -307,7 +306,7 @@ def _source(source: dict, defaults: dict, now: datetime, fetch) -> tuple[list[di
         html = fetch("https://github.com/trending?since=" + source.get("since", "daily"), max_bytes).decode("utf-8", "replace")
         article_pattern = re.compile(r'<article\b[^>]*class="[^"]*Box-row[^"]*"[^>]*>(.*?)</article>', re.S)
         for block in article_pattern.findall(html)[:limit]:
-            match = re.search(r'<h2\b.*?<a\b[^>]*\bhref="(/[^"/]+/[^"/]+)"', block, re.S)
+            match = re.search(r'<h2\b[^>]*>\s*<a\b[^>]*\bhref="(/[^"/]+/[^"/]+)"', block, re.S)
             if not match:
                 continue
             repo = match.group(1)
@@ -421,7 +420,7 @@ def collect(config: dict, *, now: datetime | None = None, fetch=http_fetch,
                 items, source_issues = future.result()
                 raw.extend(items)
                 issues.extend(source_issues)
-            except (ValueError, KeyError, TypeError, ET.ParseError, HTTPError, URLError, TimeoutError, OSError) as exc:
+            except (ValueError, KeyError, TypeError, ET.ParseError, OSError) as exc:
                 issues.append({"id": source.get("id", "unknown"), "kind": "failed", "reason": str(exc)[:160]})
     in_window = len(raw)
     if topic:
@@ -471,7 +470,7 @@ def collect(config: dict, *, now: datetime | None = None, fetch=http_fetch,
                 body = plain(comment.get("text", ""))[:400]
                 if body:
                     item["discussion_excerpts"].append({"source_id": "hackernews", "text": body})
-            except (OSError, ValueError, HTTPError, URLError, TimeoutError, TypeError) as exc:
+            except (OSError, ValueError, TypeError) as exc:
                 item["discussion_issue"] = f"Hacker News comment {comment_id} unavailable: {exc}"
         reddit_id = item.pop("reddit_post_id", "")
         max_comments = min(5, item.pop("max_comments", 5))
@@ -484,7 +483,7 @@ def collect(config: dict, *, now: datetime | None = None, fetch=http_fetch,
                     body = plain(row.get("data", {}).get("body", ""))[:400]
                     if row.get("kind") == "t1" and body:
                         item["discussion_excerpts"].append({"source_id": "reddit", "text": body})
-            except (OSError, ValueError, KeyError, IndexError, HTTPError, URLError, TimeoutError, TypeError):
+            except (OSError, ValueError, KeyError, IndexError, TypeError):
                 item["discussion_issue"] = "Reddit comments unavailable"
         if (not item["full_text_available"] and item.get("evidence_kind") not in
                 {"abstract", "benchmark_result", "model_metadata", "show_notes"}
@@ -500,7 +499,7 @@ def collect(config: dict, *, now: datetime | None = None, fetch=http_fetch,
                     item["full_text_available"] = True
                 else:
                     item["read_issue"] = "article body unavailable or too short"
-            except (OSError, ValueError, HTTPError, URLError, TimeoutError) as exc:
+            except (OSError, ValueError) as exc:
                 item["read_issue"] = str(exc)[:120]
     return {"schema_version": 1, "mode": mode, "generated_at": now.isoformat().replace(UTC_SUFFIX, "Z"),
             "window_hours": defaults["window_hours"], "limit": limit, "topic": topic or None,
@@ -535,7 +534,7 @@ def main(argv: list[str] | None = None) -> int:
                                      "exit_code": exit_code, "duration_s": round(time.monotonic() - started, 2)}) + "\n")
         print(output)
         return exit_code
-    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, TypeError) as exc:
         print(f"collection failed: {exc}", file=sys.stderr)
         return 2
 

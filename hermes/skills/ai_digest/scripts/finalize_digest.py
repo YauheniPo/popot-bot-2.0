@@ -12,7 +12,7 @@ import tempfile
 
 
 URL = re.compile(r"https?://[^\s<>\)\]]+")
-RUN_ID = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{8}$")
+RUN_ID = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{8}$")  # noqa: S6353
 
 
 def _validate_output_dir(output_dir: Path) -> Path:
