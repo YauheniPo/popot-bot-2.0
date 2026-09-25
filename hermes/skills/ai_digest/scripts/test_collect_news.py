@@ -9,7 +9,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from collect_news import _deduplicate, _public_url, collect, parse_rss, UTC_SUFFIX  # noqa: E402
+from collect_news import (_deduplicate, _public_url, _Text, _date, canonical_url,
+                           collect, parse_rss, UTC_SUFFIX, http_fetch)  # noqa: E402
 
 
 NOW = datetime(2026, 9, 25, 12, tzinfo=timezone.utc)
@@ -382,6 +383,47 @@ class CollectNewsTests(unittest.TestCase):
         with patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", ("8.8.8.8", 443))]):
             result = _public_url("https://8.8.8.8/search?q=test")
         self.assertIsNone(result)
+
+    def test_text_parser_skips_script_and_style(self):
+        """Test _Text parser skips script/style content and preserves text."""
+        parser = _Text()
+        parser.feed("<div>Hello</div><script>var x=1;</script>")
+        parser.feed('<p>World</p>')
+        text = "".join(parser.parts)
+        self.assertIn("Hello", text)
+        self.assertIn("World", text)
+        self.assertNotIn("var x=1", text)
+
+    def test_canonical_url_rejects_non_http(self):
+        """Test canonical_url raises ValueError for non-HTTP URLs."""
+        with self.assertRaises(ValueError):
+            canonical_url("ftp://example.com/path")
+        with self.assertRaises(ValueError):
+            canonical_url("javascript:alert(1)")
+
+    def test_public_url_rejects_unsafe_scheme_and_username(self):
+        """Test _public_url rejects unsafe URLs."""
+        with self.assertRaises(ValueError):
+            _public_url("javascript:alert(1)")
+        with self.assertRaises(ValueError):
+            _public_url("https://user:pass@example.com/path")
+
+    def test_parse_date_returns_none_for_invalid(self):
+        """Test _date returns None for invalid date strings."""
+        from collect_news import _date
+        self.assertIsNone(_date("not a date"))
+        self.assertIsNone(_date(""))
+
+    def test_item_returns_none_for_invalid_url(self):
+        """Test _item returns None when URL is invalid."""
+        from collect_news import _item
+        result = _item("Test", "not-a-url", NOW, "evidence", "src", NOW, 24, 1000)
+        self.assertIsNone(result)
+
+    def test_http_fetch_rejects_non_http_url(self):
+        """Test http_fetch rejects non-HTTP URLs."""
+        with self.assertRaises(ValueError):
+            http_fetch("javascript:alert(1)", max_bytes=100)
 
 
 if __name__ == "__main__":
