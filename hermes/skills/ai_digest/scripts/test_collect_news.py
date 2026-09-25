@@ -2,10 +2,12 @@
 
 from datetime import datetime, timezone
 import gzip
+import json
 from pathlib import Path
 import sys
 import unittest
 from unittest.mock import patch, MagicMock
+from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -234,6 +236,35 @@ class CollectNewsTests(unittest.TestCase):
         result = collect(config, now=NOW, fetch=fetch)
         self.assertEqual(len(result["items"]), 1)
         self.assertEqual(result["source_issues"][0]["kind"], "degraded")
+
+    def test_source_reddit_validates_created_utc(self):
+        """Test _source reddit skips items with missing or invalid created_utc."""
+        from collect_news import _source
+        listing_valid = b'{"data":{"children":[{"data":{"title":"AI release",' \
+                        b'"url":"https://vendor.test/release","created_utc":1790334000,' \
+                        b'"selftext":"Release details","score":8,"num_comments":0}}]}}'
+        listing_missing = b'{"data":{"children":[{"data":{"title":"No date",' \
+                          b'"url":"https://vendor.test/no-date","selftext":"details","score":1}}]}}'
+        listing_invalid = b'{"data":{"children":[{"data":{"title":"Zero date",' \
+                          b'"url":"https://vendor.test/zero-date","created_utc":0,' \
+                          b'"selftext":"details","score":2}}]}}'
+        
+        for payload, expected_issue in [(listing_missing, "missing or invalid created_utc"),
+                                         (listing_invalid, "missing or invalid created_utc")]:
+            def fetch(url, _):
+                return payload
+            items, issues = _source({"id": "reddit", "type": "reddit", "subreddits": ["test"]}, 
+                                    {}, NOW, fetch)
+            self.assertEqual(items, [])
+            self.assertTrue(any(i["kind"] == "degraded" and expected_issue in i["reason"] for i in issues),
+                           f"Expected degraded issue with '{expected_issue}'")
+
+        # Valid case
+        def fetch_valid(url, _):
+            return listing_valid
+        items, issues = _source({"id": "reddit", "type": "reddit", "subreddits": ["test"]}, 
+                                {}, NOW, fetch_valid)
+        self.assertEqual(len(items), 1)
 
     def test_daily_and_weekly_profiles_select_sources_and_windows(self):
         config = {"version": 1, "defaults": {"window_hours": 24, "limit": 1},
@@ -507,7 +538,7 @@ class CollectNewsTests(unittest.TestCase):
         call_count = [0]
         def fetch(url, max_bytes):
             call_count[0] += 1
-            if "api.github.com" in url:
+            if urlsplit(url).netloc == "api.github.com":
                 return search_payload
             return f"<html>{block}</html>".encode()
         items, issues = _source(source, {}, NOW, fetch)

@@ -291,8 +291,13 @@ def _source(source: dict, defaults: dict, now: datetime, fetch) -> tuple[list[di
                 continue
             for row in listing.get("data", {}).get("children", [])[:limit]:
                 post = row.get("data", {})
+                created_utc = post.get("created_utc")
+                if not isinstance(created_utc, (int, float)) or created_utc <= 0:
+                    issues.append({"id": source_id, "kind": "degraded",
+                                   "reason": f"r/{subreddit}: item missing or invalid created_utc"})
+                    continue
                 item = _item(post.get("title", ""), post.get("url", ""),
-                             datetime.fromtimestamp(post.get("created_utc") or 0, timezone.utc),
+                             datetime.fromtimestamp(created_utc, timezone.utc),
                              post.get("selftext", ""), source_id, now, window, max_chars,
                              score=int(post.get("score", 0)), discussion_count=int(post.get("num_comments", 0)))
                 if item:
