@@ -376,6 +376,13 @@ class CollectNewsTests(unittest.TestCase):
                 result = collect(config, now=NOW, fetch=fetch)
         self.assertEqual(len(result["items"]), 1)
 
+    def test_public_url_accepts_global_ips(self):
+        """Test _public_url accepts globally routable IPs."""
+        from unittest.mock import patch
+        with patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", ("8.8.8.8", 443))]):
+            result = _public_url("https://8.8.8.8/search?q=test")
+        self.assertIsNone(result)
+
 
 if __name__ == "__main__":
     unittest.main()
