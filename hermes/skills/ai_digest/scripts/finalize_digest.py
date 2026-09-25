@@ -11,13 +11,21 @@ import re
 import tempfile
 
 
-URL = re.compile(r"https?://[^\s<>\])]+")
-RUN_ID = re.compile(r"^[0-9]{8}-[0-9]{6}-[0-9a-f]{8}$")
+URL = re.compile(r"https?://[^\s<>\)\]]+")
+RUN_ID = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{8}$")
 
 
-def finalize(raw: dict, draft: str, output_dir: Path) -> Path:
+def _validate_output_dir(output_dir: Path) -> Path:
+    """Resolve and validate output directory, rejecting path traversal."""
+    resolved = output_dir.resolve()
+    if not resolved.is_absolute() or ".." in resolved.parts:
+        raise ValueError("invalid output directory")
+    return resolved
+
+
+def _validate_report(raw: dict, draft: str, items: list[dict]) -> None:
+    """Validate report structure and content against collected items."""
     run_id = raw.get("run_id", "")
-    items = raw.get("items", [])
     if not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id):
         raise ValueError("invalid run_id")
     if not isinstance(items, list) or not items:
@@ -39,17 +47,29 @@ def finalize(raw: dict, draft: str, output_dir: Path) -> Path:
         section_urls = {match.group().rstrip(".,;") for match in URL.finditer(section)}
         if not set(item.get("urls", [])) <= section_urls:
             raise ValueError("report item is missing source URLs")
+
+
+def _validate_source_availability(draft: str, issues: list[dict]) -> None:
+    """Verify all source issues are documented in the availability block."""
+    if not issues:
+        return
+    availability = draft.split("\n## Source availability\n", 1)
+    if len(availability) != 2 or any(
+            not re.search(rf"(?<![\w-]){re.escape(issue['id'])}(?![\w-])", availability[1])
+            for issue in issues):
+        raise ValueError("report omits unavailable or degraded sources")
+
+
+def finalize(raw: dict, draft: str, output_dir: Path) -> Path:
+    items = raw.get("items", [])
+    _validate_report(raw, draft, items)
     issues = raw.get("source_issues", [])
-    if issues:
-        availability = draft.split("\n## Source availability\n", 1)
-        if len(availability) != 2 or any(
-                not re.search(rf"(?<![\w-]){re.escape(issue['id'])}(?![\w-])", availability[1])
-                for issue in issues):
-            raise ValueError("report omits unavailable or degraded sources")
-    output_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
-    target = output_dir / f"digest-{run_id}.md"
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=output_dir,
-                                     prefix=".digest-", suffix=".tmp", delete=False) as stream:
+    _validate_source_availability(draft, issues)
+    validated_dir = _validate_output_dir(output_dir)
+    validated_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
+    target = validated_dir / f"digest-{raw['run_id']}.md"
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix=".digest-",
+                                     suffix=".tmp", delete=False) as stream:
         temporary = Path(stream.name)
         try:
             os.chmod(temporary, 0o640)

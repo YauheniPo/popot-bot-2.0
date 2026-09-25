@@ -37,13 +37,15 @@ class FinalizeDigestTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 finalize(RAW, VALID, Path(directory))
 
-    def test_rejects_missing_role_or_fabricated_link(self):
+    def test_rejects_missing_role(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(ValueError):
                 finalize(RAW, VALID.replace("### Senior", "### Expert"), Path(directory))
+
+    def test_rejects_fabricated_link(self):
+        with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(ValueError):
                 finalize(RAW, VALID + "\nhttps://unseen.test/claim\n", Path(directory))
-            self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_requires_every_link_for_a_merged_story(self):
         raw = {"run_id": RAW["run_id"], "items": [

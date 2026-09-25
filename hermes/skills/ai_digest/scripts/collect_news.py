@@ -31,6 +31,7 @@ USER_AGENT = "HermesNewsDigest/1.0 (+news aggregation; no scraping credentials)"
 ATOM = "{http://www.w3.org/2005/Atom}"
 CONTENT = "{http://purl.org/rss/1.0/modules/content/}"
 STOP_WORDS = {"about", "after", "from", "into", "over", "that", "this", "with", "your"}
+UTC_SUFFIX = "+00:00"
 
 
 class _Text(HTMLParser):
@@ -85,12 +86,7 @@ def _public_url(url: str) -> None:
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username:
         raise ValueError("unsafe source URL")
     host = parsed.hostname.lower()
-    local_search = urlsplit(os.environ.get("AI_DIGEST_SEARCH_URL") or os.environ.get("SEARXNG_URL", ""))
-    if (host == "127.0.0.1" and parsed.port == local_search.port and
-            parsed.scheme == local_search.scheme and parsed.netloc == local_search.netloc and
-            parsed.path.startswith("/search")):
-        return
-    if host in {"localhost", "localhost.localdomain"} or host.endswith((".local", ".internal")):
+    if host in {"localhost", "localhost.localdomain", "127.0.0.1"} or host.endswith((".local", ".internal")):
         raise ValueError("private source URL")
     try:
         addresses = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80))
@@ -121,7 +117,7 @@ def _date(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
-        result = parsedate_to_datetime(value) if "," in value else datetime.fromisoformat(value.replace("Z", "+00:00"))
+        result = parsedate_to_datetime(value) if "," in value else datetime.fromisoformat(value.replace("Z", UTC_SUFFIX))
         return result.astimezone(timezone.utc) if result.tzinfo else result.replace(tzinfo=timezone.utc)
     except (TypeError, ValueError, OverflowError):
         return None
@@ -138,7 +134,7 @@ def _item(title: str, url: str, published: datetime | None, evidence: str,
         return None
     evidence = plain(evidence)[:max_summary_chars]
     return {"title": plain(title)[:300], "url": url, "urls": [url], "source_ids": [source_id],
-            "published_at": published.isoformat().replace("+00:00", "Z"), "evidence": evidence,
+            "published_at": published.isoformat().replace(UTC_SUFFIX, "Z"), "evidence": evidence,
             "full_text_available": False, "score": score,
             "discussion_count": discussion_count, "discussion_excerpts": []}
 
@@ -219,8 +215,8 @@ def _source(source: dict, defaults: dict, now: datetime, fetch) -> tuple[list[di
                          discussion_count=int(row.get("numComments", 0)))
             if item:
                 published = _date(paper.get("publishedAt"))
-                item["published_at"] = published.isoformat().replace("+00:00", "Z") if published else None
-                item["listed_at"] = listed.isoformat().replace("+00:00", "Z")
+                item["published_at"] = published.isoformat().replace(UTC_SUFFIX, "Z") if published else None
+                item["listed_at"] = listed.isoformat().replace(UTC_SUFFIX, "Z")
                 item["time_basis"] = "curation"
                 item["evidence_kind"] = "abstract"
                 items.append(item)
@@ -240,7 +236,7 @@ def _source(source: dict, defaults: dict, now: datetime, fetch) -> tuple[list[di
                          score=int(repo.get("likes") or 0))
             if item:
                 item["published_at"] = None
-                item["observed_at"] = now.isoformat().replace("+00:00", "Z")
+                item["observed_at"] = now.isoformat().replace(UTC_SUFFIX, "Z")
                 item["time_basis"] = "trending_observation"
                 item["evidence_kind"] = "model_metadata"
                 item["category"] = "model"
@@ -319,7 +315,7 @@ def _source(source: dict, defaults: dict, now: datetime, fetch) -> tuple[list[di
                          description.group(1) if description else "", source_id, now, window, max_chars)
             if item:
                 item["published_at"] = None
-                item["observed_at"] = now.isoformat().replace("+00:00", "Z")
+                item["observed_at"] = now.isoformat().replace(UTC_SUFFIX, "Z")
                 item["time_basis"] = "trending_observation"
                 item["full_text_available"] = False
                 items.append(item)
@@ -340,6 +336,8 @@ def _source(source: dict, defaults: dict, now: datetime, fetch) -> tuple[list[di
         endpoint = os.environ.get("AI_DIGEST_SEARCH_URL") or os.environ.get("SEARXNG_URL", "")
         if not endpoint:
             return [], [{"id": source_id, "kind": "unavailable", "reason": "search endpoint is not configured"}]
+        # Validate the configured endpoint once (it's deployment-controlled, not user-supplied)
+        _public_url(endpoint.rstrip("/") + "/search?q=test&format=json")
         url = endpoint.rstrip("/") + "/search?" + urlencode({"q": source["query"], "format": "json"})
         for result in _json(fetch, url, max_bytes).get("results", [])[:limit]:
             item = _item(result.get("title", ""), result.get("url", ""),
@@ -464,7 +462,9 @@ def collect(config: dict, *, now: datetime | None = None, fetch=http_fetch,
     for item in selected:
         for comment_id in item.pop("comment_ids", []):
             try:
-                comment = _json(fetch, f"https://hacker-news.firebaseio.com/v0/item/{comment_id}.json", 100_000)
+                comment_url = f"https://hacker-news.firebaseio.com/v0/item/{comment_id}.json"
+                _public_url(comment_url)
+                comment = _json(fetch, comment_url, 100_000)
                 body = plain(comment.get("text", ""))[:400]
                 if body:
                     item["discussion_excerpts"].append({"source_id": "hackernews", "text": body})
@@ -474,7 +474,9 @@ def collect(config: dict, *, now: datetime | None = None, fetch=http_fetch,
         max_comments = min(5, item.pop("max_comments", 5))
         if reddit_id:
             try:
-                discussion = _json(fetch, f"https://www.reddit.com/comments/{reddit_id}.json?limit={max_comments}&sort=top", 500_000)
+                reddit_url = f"https://www.reddit.com/comments/{reddit_id}.json?limit={max_comments}&sort=top"
+                _public_url(reddit_url)
+                discussion = _json(fetch, reddit_url, 500_000)
                 for row in discussion[1].get("data", {}).get("children", [])[:max_comments]:
                     body = plain(row.get("data", {}).get("body", ""))[:400]
                     if row.get("kind") == "t1" and body:
@@ -497,7 +499,7 @@ def collect(config: dict, *, now: datetime | None = None, fetch=http_fetch,
                     item["read_issue"] = "article body unavailable or too short"
             except (OSError, ValueError, HTTPError, URLError, TimeoutError) as exc:
                 item["read_issue"] = str(exc)[:120]
-    return {"schema_version": 1, "mode": mode, "generated_at": now.isoformat().replace("+00:00", "Z"),
+    return {"schema_version": 1, "mode": mode, "generated_at": now.isoformat().replace(UTC_SUFFIX, "Z"),
             "window_hours": defaults["window_hours"], "limit": limit, "topic": topic or None,
             "items": selected, "source_issues": sorted(issues, key=lambda issue: issue["id"]),
             "stats": {"fetched": in_window, "after_dedup": len(merged), "returned": len(selected)}}
