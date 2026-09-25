@@ -5,7 +5,7 @@ import gzip
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -420,10 +420,422 @@ class CollectNewsTests(unittest.TestCase):
         result = _item("Test", "not-a-url", NOW, "evidence", "src", NOW, 24, 1000)
         self.assertIsNone(result)
 
+    def test_source_arxiv_raises_without_categories(self):
+        """Test _source arxiv raises ValueError when no categories."""
+        from collect_news import _source
+        with self.assertRaises(ValueError):
+            _source({"id": "test", "type": "arxiv"}, {}, NOW, lambda u, m: b"")
+
+    def test_source_unknown_type_raises(self):
+        """Test _source raises ValueError for unknown type."""
+        from collect_news import _source
+        with self.assertRaises(ValueError):
+            _source({"id": "test", "type": "unknown_type"}, {}, NOW, lambda u, m: b"")
+
+    def test_source_hackernews_skips_dead_stories(self):
+        """Test _source hackernews skips dead/deleted stories."""
+        from collect_news import _source
+        ids_payload = b"[1, 2]"
+        story_dead = b'{"id": 1, "dead": true, "title": "dead", "time": 1790334000}'
+        story_valid = b'{"id": 2, "title": "valid", "url": "https://example.com", "time": 1790334000, "score": 0, "descendants": 0}'
+        call_count = [0]
+        def fetch(url, max_bytes):
+            if "topstories" in url:
+                return ids_payload
+            call_count[0] += 1
+            return story_dead if call_count[0] == 1 else story_valid
+        items, issues = _source({"id": "hn", "type": "hackernews"}, {}, NOW, fetch)
+        self.assertEqual(len(items), 1)
+
+    def test_source_hf_papers_skips_missing_id(self):
+        """Test _source hf_papers skips rows without paper_id."""
+        from collect_news import _source
+        payload = b'[{"paper": {"title": "No id paper"}, "summary": "test"}]'
+        items, issues = _source({"id": "test", "type": "hf_papers"}, {}, NOW,
+                                lambda u, m: payload)
+        self.assertEqual(items, [])
+        self.assertTrue(any(i["kind"] == "empty" for i in issues))
+
+    def test_source_hf_trending_skips_non_model(self):
+        """Test _source hf_trending skips non-model repos."""
+        from collect_news import _source
+        payload = b'{"recentlyTrending": [{"repoType": "dataset", "repoData": {"id": "test/dataset"}}]}'
+        items, issues = _source({"id": "test", "type": "hf_trending"}, {}, NOW,
+                                lambda u, m: payload)
+        self.assertEqual(items, [])
+        self.assertTrue(any(i["kind"] == "empty" for i in issues))
+
+    def test_source_swebench_raises_without_verified_board(self):
+        """Test _source swebench raises ValueError when Verified leaderboard missing."""
+        from collect_news import _source
+        payload = b'{"leaderboards": [{"name": "Other", "results": []}]}'
+        with self.assertRaises(ValueError):
+            _source({"id": "test", "type": "swebench"}, {}, NOW, lambda u, m: payload)
+
+    def test_source_swebench_skips_invalid_rows(self):
+        """Test _source swebench skips rows without valid name or score."""
+        from collect_news import _source
+        rows = [{"name": "", "date": "2026-01-01"}, {"name": "test", "date": "2026-01-01"}]
+        payload = b'{"leaderboards": [{"name": "Verified", "results": []}]}'
+        import json as _json
+        payload = _json.dumps({"leaderboards": [{"name": "Verified", "results": rows}]}).encode()
+        items, issues = _source({"id": "test", "type": "swebench"}, {}, NOW,
+                                lambda u, m: payload)
+        self.assertEqual(items, [])
+        self.assertTrue(any(i["kind"] == "empty" for i in issues))
+
+    def test_source_github_trending_skips_no_match(self):
+        """Test _source github_trending skips blocks without matching href."""
+        from collect_news import _source
+        block = '<article class="Box-row"><p>some content</p></article>'
+        items, issues = _source({"id": "test", "type": "github_trending"}, {}, NOW,
+                                lambda u, m: f"<html>{block}</html>".encode())
+        self.assertEqual(items, [])
+        self.assertTrue(any(i["kind"] == "empty" for i in issues))
+
+    def test_source_github_trending_fallback_search(self):
+        """Test _source github_trending uses github_notable fallback."""
+        from collect_news import _source
+        block = '<article class="Box-row"><p>some content</p></article>'
+        import json as _json
+        repo = {"full_name": "test/repo", "html_url": "https://github.com/test/repo",
+                "pushed_at": "2026-09-25T10:00:00Z", "description": "Test repo",
+                "stargazers_count": 600}
+        search_payload = _json.dumps({"items": [repo]}).encode()
+        source = {"id": "test", "type": "github_trending",
+                  "fallback": {"type": "github_notable", "min_stars": 500}}
+        call_count = [0]
+        def fetch(url, max_bytes):
+            call_count[0] += 1
+            if "api.github.com" in url:
+                return search_payload
+            return f"<html>{block}</html>".encode()
+        items, issues = _source(source, {}, NOW, fetch)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["url"], "https://github.com/test/repo")
+        self.assertTrue(any(i["kind"] == "degraded" for i in issues))
+
+    def test_source_searxng_with_valid_endpoint(self):
+        """Test _source searxng fetches from a public endpoint."""
+        from collect_news import _source
+        results = [{"title": "Article", "url": "https://example.com/article",
+                    "content": "Content", "publishedDate": "2026-09-25T10:00:00Z"}]
+        import json as _json
+        payload = _json.dumps({"results": results}).encode()
+        env = {"AI_DIGEST_SEARCH_URL": "https://search.example.com/", "SEARXNG_URL": ""}
+        with patch.dict("os.environ", env, clear=False):
+            with patch("collect_news._public_url", return_value="https://search.example.com/search?q=test&format=json"):
+                items, issues = _source({"id": "search", "type": "searxng", "query": "test"}, {}, NOW,
+                                        lambda u, m: payload)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["title"], "Article")
+
+    def test_collect_main_returns_exit_code(self):
+        """Test main function returns exit code 2 on collection failure."""
+        from collect_news import main
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            sources_path = Path(directory) / "sources.json"
+            sources_path.write_text("not valid json")
+            state_dir = Path(directory) / "state"
+            with patch.dict("os.environ", {"AI_DIGEST_STATE_DIR": str(state_dir)}):
+                exit_code = main(["--sources", str(sources_path), "--state-dir", str(state_dir)])
+            self.assertEqual(exit_code, 2)
+
+    def test_main_writes_raw_and_runs_jsonl(self):
+        """Test main writes raw output and appends to runs.jsonl on success."""
+        from collect_news import main
+        import tempfile, json as _json
+        from pathlib import Path
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 1},
+                  "sources": []}
+        fake_result = {"schema_version": 1, "mode": "daily", "generated_at": "2026-09-25T12:00:00Z",
+                       "window_hours": 24, "limit": 1, "topic": "", "items": [], "source_issues": [],
+                       "run_id": ""}
+        with tempfile.TemporaryDirectory() as directory:
+            sources_path = Path(directory) / "sources.json"
+            sources_path.write_text(_json.dumps(config))
+            state_dir = Path(directory) / "state"
+            with patch("collect_news.collect", return_value=fake_result):
+                with patch.dict("os.environ", {"AI_DIGEST_STATE_DIR": str(state_dir)}):
+                    exit_code = main(["--sources", str(sources_path), "--state-dir", str(state_dir)])
+            self.assertEqual(exit_code, 3)
+            state = Path(state_dir)
+            self.assertTrue((state / "runs.jsonl").exists)
+            runs_lines = (state / "runs.jsonl").read_text().strip().split("\n")
+            self.assertEqual(len(runs_lines), 1)
+            run_record = _json.loads(runs_lines[0])
+            self.assertEqual(run_record["returned"], 0)
+
+    def test_http_fetch_response_too_large(self):
+        """Test http_fetch raises ValueError when response exceeds max_bytes."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b"x" * 201
+        mock_opener = MagicMock()
+        mock_opener.open.return_value.__enter__.return_value = mock_response
+        with patch("collect_news._public_url"):
+            with patch("collect_news.build_opener", return_value=mock_opener):
+                with self.assertRaises(ValueError):
+                    http_fetch("https://example.com", max_bytes=100)
+
+    def test_safe_redirect_validates_newurl(self):
+        """Test _SafeRedirect validates the redirect URL and delegates on success."""
+        from collect_news import _SafeRedirect
+        handler = _SafeRedirect()
+        mock_request = MagicMock()
+        mock_fp = MagicMock()
+        with patch("collect_news._public_url"):
+            with patch("collect_news.HTTPRedirectHandler.redirect_request",
+                       return_value=mock_request) as mock_super:
+                result = handler.redirect_request(mock_request, mock_fp, 301,
+                                                  "Moved", {}, "https://example.com/new")
+                self.assertEqual(result, mock_request)
+                mock_super.assert_called_once()
+
+    def test_parse_rss_rejects_oversized_gzip(self):
+        """Test parse_rss raises ValueError for decompressed data exceeding limit."""
+        import gzip, io
+        from collect_news import parse_rss
+        large_content = b"x" * 5_242_881
+        buf = io.BytesIO()
+        with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+            gz.write(large_content)
+        gzipped = buf.getvalue()
+        with self.assertRaises(ValueError):
+            parse_rss(gzipped, "test", NOW, 24, 5, 1200)
+
+    def test_collect_fetches_pdf_article_and_reports_read_issue(self):
+        """Test collect reports read issue for PDF articles."""
+        from collect_news import collect
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 1},
+                  "sources": [{"id": "vendor", "type": "rss", "url": "https://vendor.test/rss"}]}
+        feed = b"""<rss><channel><item><title>AI release</title>
+          <link>https://vendor.test/ai-release</link>
+          <pubDate>Fri, 25 Sep 2026 11:00:00 GMT</pubDate>
+          <description>Short teaser.</description></item></channel></rss>"""
+        def fetch(url, _limit):
+            if url.endswith("/rss"):
+                return feed
+            return b"%PDF-1.4 fake pdf content"
+        result = collect(config, now=NOW, fetch=fetch)
+        self.assertEqual(len(result["items"]), 1)
+        self.assertIn("read_issue", result["items"][0])
+        self.assertIn("PDF", result["items"][0]["read_issue"])
+
+    def test_collect_fetches_hn_comment_error_reports_issue(self):
+        """Test collect reports issue when HN comment fetch fails."""
+        from collect_news import collect
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 1},
+                  "sources": [{"id": "hn", "type": "hackernews", "max_items": 1, "max_comments": 2}]}
+        responses = {
+            "https://hacker-news.firebaseio.com/v0/topstories.json": b"[101]",
+            "https://hacker-news.firebaseio.com/v0/item/101.json":
+                b'{"time":1790334000,"title":"AI release","url":"https://vendor.test/release",'
+                b'"score":100,"descendants":2,"kids":[201,202]}',
+            "https://hacker-news.firebaseio.com/v0/item/201.json": b"not valid json",
+            "https://hacker-news.firebaseio.com/v0/item/202.json":
+                b'{"text":"Second discussion","time":1790334001}',
+            "https://vendor.test/release": b"<article><p>Article body.</p></article>",
+        }
+        result = collect(config, now=NOW, fetch=lambda url, _limit: responses[url])
+        self.assertEqual(len(result["items"]), 1)
+        self.assertIn("discussion_issue", result["items"][0])
+        self.assertIn("Hacker News comment 201", result["items"][0]["discussion_issue"])
+
+    def test_collect_fetches_reddit_comments(self):
+        """Test collect fetches Reddit comment excerpts for selected items."""
+        from collect_news import collect
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 1},
+                  "sources": [{"id": "reddit", "type": "reddit", "subreddits": ["test"],
+                               "max_items": 1}]}
+        listing = (b'{"data":{"children":[{"data":{"title":"AI release",'
+                   b'"url":"https://vendor.test/release","created_utc":1790334000,'
+                   b'"selftext":"Release details","score":8,"num_comments":2,'
+                   b'"permalink":"/r/test/comments/abc/","id":"abc123"}}]}}')
+        comment_data = (b'{"kind":"t1","data":{"body":"Great discussion"}}')
+        def fetch(url, _limit):
+            if "reddit.com/comments" in url:
+                return b'[{"data":{"children":[]}}, {"data":{"children":[{"kind":"t1","data":{"body":"Great discussion"}}]}}]'
+            return listing
+        result = collect(config, now=NOW, fetch=fetch)
+        self.assertEqual(len(result["items"]), 1)
+        self.assertIn("discussion_excerpts", result["items"][0])
+
+    def test_parse_rss_handles_gzip(self):
+        """Test parse_rss decompresses gzip-encoded feeds."""
+        import gzip, io
+        from collect_news import parse_rss
+        feed = b"""<rss><channel><item><title>Test</title>
+          <link>https://example.com/test</link>
+          <pubDate>Fri, 25 Sep 2026 11:00:00 GMT</pubDate>
+          <description>Test content here that is long enough.</description></item></channel></rss>"""
+        buf = io.BytesIO()
+        with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+            gz.write(feed)
+        items = parse_rss(buf.getvalue(), "test", NOW, 24, 5, 1200)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["title"], "Test")
+
+    def test_parse_rss_atom_feed(self):
+        """Test parse_rss handles Atom feeds."""
+        from collect_news import parse_rss
+        feed = b"""<feed xmlns="http://www.w3.org/2005/Atom">
+          <entry>
+            <title>Test Article</title>
+            <link rel="alternate" href="https://example.com/test"/>
+            <content type="text">This is the article content that is long enough to be included.</content>
+            <published>2026-09-25T11:00:00Z</published>
+          </entry>
+        </feed>"""
+        items = parse_rss(feed, "test", NOW, 24, 5, 1200)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["title"], "Test Article")
+        self.assertEqual(items[0]["url"], "https://example.com/test")
+
+    def test_source_arxiv_with_categories(self):
+        """Test _source arxiv with categories configured."""
+        from collect_news import _source
+        import json as _json
+        feed = b"""<feed xmlns="http://www.w3.org/2005/Atom">
+          <entry><title>arxiv paper</title>
+            <link rel="alternate" href="https://arxiv.org/abs/123"/>
+            <summary>Abstract content here that is long enough to be included in the item.</summary>
+            <published>2026-09-25T11:00:00Z</published>
+          </entry>
+        </feed>"""
+        source = {"id": "arxiv-cs", "type": "arxiv", "categories": ["cs.AI"]}
+        call_count = [0]
+        def fetch(url, max_bytes):
+            call_count[0] += 1
+            return feed
+        items, issues = _source(source, {}, NOW, fetch)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["title"], "arxiv paper")
+
+    def test_public_url_rejects_private_ip(self):
+        """Test _public_url rejects hosts that resolve to private IPs."""
+        with patch("socket.getaddrinfo", return_value=[
+            (0, 0, 0, "", ("192.168.1.1", 443))
+        ]):
+            with self.assertRaises(ValueError):
+                _public_url("https://private.test/path")
+
     def test_http_fetch_rejects_non_http_url(self):
         """Test http_fetch rejects non-HTTP URLs."""
         with self.assertRaises(ValueError):
             http_fetch("javascript:alert(1)", max_bytes=100)
+
+    def test_collect_rejects_invalid_timeout(self):
+        """Test collect rejects invalid timeout."""
+        from collect_news import collect
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 1,
+                                             "request_timeout_s": 0}, "sources": []}
+        with self.assertRaises(ValueError):
+            collect(config, now=NOW)
+
+    def test_deduplicate_merges_comment_ids(self):
+        """Test _deduplicate merges items with comment_ids."""
+        from collect_news import _deduplicate
+        item1 = {"title": "Test title", "url": "https://example.com",
+                 "urls": ["https://example.com"], "source_ids": ["a"],
+                 "score": 5, "discussion_count": 2, "evidence": "old evidence",
+                 "full_text_available": False, "comment_ids": [1, 2], "commentary": "old"}
+        item2 = {"title": "Test title", "url": "https://example.com",
+                 "urls": ["https://example.com"], "source_ids": ["b"],
+                 "score": 3, "discussion_count": 1, "evidence": "new evidence",
+                 "full_text_available": True, "max_comments": 3, "commentary": "new"}
+        result = _deduplicate([item1, item2])
+        self.assertEqual(len(result), 1)
+        self.assertIn("comment_ids", result[0])
+        self.assertEqual(result[0]["comment_ids"], [1, 2])
+
+    def test_collect_rejects_invalid_window_range(self):
+        """Test collect rejects invalid window or limit range."""
+        from collect_news import collect
+        config = {"version": 1, "defaults": {"window_hours": 0, "limit": 1}, "sources": []}
+        with self.assertRaises(ValueError):
+            collect(config, now=NOW)
+
+    def test_collect_rejects_invalid_schema(self):
+        """Test collect raises ValueError for invalid config schema."""
+        from collect_news import collect
+        with self.assertRaises(ValueError):
+            collect({"version": 2, "sources": []})
+        with self.assertRaises(ValueError):
+            collect({"version": 1, "sources": "not a list"})
+
+    def test_collect_rejects_unknown_mode(self):
+        """Test collect raises ValueError for unknown mode."""
+        from collect_news import collect
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 1},
+                  "sources": [], "profiles": {}}
+        with self.assertRaises(ValueError):
+            collect(config, mode="monthly")
+
+    def test_collect_rejects_invalid_limit_range(self):
+        """Test collect rejects invalid limit range."""
+        from collect_news import collect
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 0}, "sources": []}
+        with self.assertRaises(ValueError):
+            collect(config, now=NOW)
+
+    def test_collect_with_http_fetch_creates_inner_fetch(self):
+        """Test collect uses inner fetch wrapper when fetch is http_fetch."""
+        from collect_news import collect, http_fetch
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 1},
+                  "sources": [{"id": "vendor", "type": "rss",
+                               "url": "https://vendor.test/rss"}]}
+        feed = b"""<rss><channel><item><title>Test</title>
+          <link>https://vendor.test/test</link>
+          <pubDate>Fri, 25 Sep 2026 11:00:00 GMT</pubDate>
+          <description>Test content here.</description></item></channel></rss>"""
+        from unittest.mock import MagicMock
+        from io import BytesIO
+        mock_response = MagicMock()
+        mock_response.read.side_effect = [feed, b""]
+        mock_response.__enter__.return_value = mock_response
+        mock_opener = MagicMock()
+        mock_opener.open.return_value = mock_response
+        with patch("collect_news._public_url"):
+            with patch("collect_news.build_opener", return_value=mock_opener):
+                result = collect(config, now=NOW, fetch=http_fetch,
+                                 window_hours=24, limit=1)
+        self.assertEqual(len(result["items"]), 1)
+
+    def test_collect_hn_comment_invalid_id_reports_issue(self):
+        """Test collect reports issue for invalid HN comment_id (non-integer)."""
+        from collect_news import collect
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 1},
+                  "sources": [{"id": "hn", "type": "hackernews", "max_items": 1, "max_comments": 5}]}
+        responses = {
+            "https://hacker-news.firebaseio.com/v0/topstories.json": b"[101]",
+            "https://hacker-news.firebaseio.com/v0/item/101.json":
+                b'{"time":1790334000,"title":"AI release","url":"https://vendor.test/release",'
+                b'"score":100,"descendants":2,"kids":["not_an_int"]}',
+            "https://vendor.test/release": b"<article><p>Article body.</p></article>",
+        }
+        result = collect(config, now=NOW, fetch=lambda url, _limit: responses[url])
+        self.assertEqual(len(result["items"]), 1)
+        self.assertIn("discussion_issue", result["items"][0])
+
+    def test_collect_reddit_comment_fetch_error_reports_issue(self):
+        """Test collect reports issue when Reddit comment fetch fails."""
+        from collect_news import collect
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 1},
+                  "sources": [{"id": "reddit", "type": "reddit", "subreddits": ["test"],
+                               "max_items": 1}]}
+        listing = (b'{"data":{"children":[{"data":{"title":"AI release",'
+                   b'"url":"https://vendor.test/release","created_utc":1790334000,'
+                   b'"selftext":"Release details","score":8,"num_comments":2,'
+                   b'"permalink":"/r/test/comments/abc/","id":"abc123"}}]}}')
+        def fetch(url, _limit):
+            if "reddit.com/comments" in url:
+                raise OSError("comment fetch failed")
+            return listing
+        result = collect(config, now=NOW, fetch=fetch)
+        self.assertEqual(len(result["items"]), 1)
+        self.assertIn("discussion_issue", result["items"][0])
 
 
 if __name__ == "__main__":

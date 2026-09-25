@@ -293,7 +293,7 @@ def _source(source: dict, defaults: dict, now: datetime, fetch) -> tuple[list[di
             for row in listing.get("data", {}).get("children", [])[:limit]:
                 post = row.get("data", {})
                 item = _item(post.get("title", ""), post.get("url", ""),
-                             datetime.fromtimestamp(post.get("created_utc", 0), timezone.utc),
+                             datetime.fromtimestamp(post.get("created_utc") or 0, timezone.utc),
                              post.get("selftext", ""), source_id, now, window, max_chars,
                              score=int(post.get("score", 0)), discussion_count=int(post.get("num_comments", 0)))
                 if item:
@@ -305,7 +305,8 @@ def _source(source: dict, defaults: dict, now: datetime, fetch) -> tuple[list[di
                     items.append(item)
     elif kind == "github_trending":
         html = fetch("https://github.com/trending?since=" + source.get("since", "daily"), max_bytes).decode("utf-8", "replace")
-        for block in re.findall(r'<article\b[^>]*class="[^"]*Box-row[^"]*"[^>]*>(.*?)</article>', html, re.S)[:limit]:
+        article_pattern = re.compile(r'<article\b[^>]*class="[^"]*Box-row[^"]*"[^>]*>(.*?)</article>', re.S)
+        for block in article_pattern.findall(html)[:limit]:
             match = re.search(r'<h2\b.*?<a\b[^>]*\bhref="(/[^"/]+/[^"/]+)"', block, re.S)
             if not match:
                 continue
@@ -462,14 +463,16 @@ def collect(config: dict, *, now: datetime | None = None, fetch=http_fetch,
     for item in selected:
         for comment_id in item.pop("comment_ids", []):
             try:
+                if not isinstance(comment_id, int) or comment_id <= 0:
+                    raise ValueError("invalid comment_id")
                 comment_url = f"https://hacker-news.firebaseio.com/v0/item/{comment_id}.json"
                 _public_url(comment_url)
                 comment = _json(fetch, comment_url, 100_000)
                 body = plain(comment.get("text", ""))[:400]
                 if body:
                     item["discussion_excerpts"].append({"source_id": "hackernews", "text": body})
-            except (OSError, ValueError, HTTPError, URLError, TimeoutError, TypeError):
-                item["discussion_issue"] = "some Hacker News comments unavailable"
+            except (OSError, ValueError, HTTPError, URLError, TimeoutError, TypeError) as exc:
+                item["discussion_issue"] = f"Hacker News comment {comment_id} unavailable: {exc}"
         reddit_id = item.pop("reddit_post_id", "")
         max_comments = min(5, item.pop("max_comments", 5))
         if reddit_id:
@@ -537,5 +540,5 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())

@@ -20,7 +20,7 @@ def _validate_output_dir(output_dir: Path) -> Path:
     if ".." in output_dir.parts:
         raise ValueError("invalid output directory")
     resolved = output_dir.resolve()
-    if not resolved.is_absolute():
+    if not resolved.is_absolute():  # pragma: no cover
         raise ValueError("invalid output directory")
     return resolved
 
@@ -56,10 +56,14 @@ def _validate_source_availability(draft: str, issues: list[dict]) -> None:
     if not issues:
         return
     availability = draft.split("\n## Source availability\n", 1)
-    if len(availability) != 2 or any(
-            not re.search(rf"(?<![\w-]){re.escape(issue['id'])}(?![\w-])", availability[1])
-            for issue in issues):
+    if len(availability) != 2:
         raise ValueError("report omits unavailable or degraded sources")
+    for issue in issues:
+        issue_id = issue.get("id")
+        if not issue_id:
+            raise ValueError("malformed source issue entry: missing 'id'")
+        if not re.search(rf"(?<![\w-]){re.escape(issue_id)}(?![\w-])", availability[1]):
+            raise ValueError("report omits unavailable or degraded sources")
 
 
 def finalize(raw: dict, draft: str, output_dir: Path) -> Path:
@@ -100,5 +104,5 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
