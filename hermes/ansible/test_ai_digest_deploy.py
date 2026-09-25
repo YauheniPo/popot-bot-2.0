@@ -19,7 +19,7 @@ class DigestDeployTests(unittest.TestCase):
         self.assertIn("hermes_home ~ '/ops/news'", ENV)
         self.assertIn("hermes_workspace ~ '/digests'", ENV)
         self.assertIn("hermes_bundle_dir ~ '/skills/ai_digest'", ENV)
-        self.assertIn("vps_searxng.host_port", ENV)
+        self.assertIn("hermes_searxng_url", ENV)
         self.assertNotIn("Ensure the repository-owned AI digest cron job", RUNTIME)
 
 
