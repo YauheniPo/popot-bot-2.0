@@ -7,7 +7,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from finalize_digest import finalize  # noqa: E402
+from finalize_digest import finalize, _validate_output_dir  # noqa: E402
 
 
 RAW = {"run_id": "20260925-090000-abcdef12", "items": [
@@ -61,6 +61,17 @@ class FinalizeDigestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(ValueError):
                 finalize(raw, VALID, Path(directory))
+
+    def test_validate_output_dir_rejects_traversal(self):
+        with self.assertRaises(ValueError):
+            _validate_output_dir(Path("/tmp/../evil"))
+        with self.assertRaises(ValueError):
+            _validate_output_dir(Path(".."))
+
+    def test_validate_output_dir_accepts_absolute(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = _validate_output_dir(Path(directory))
+            self.assertEqual(result, Path(directory).resolve())
 
 
 if __name__ == "__main__":

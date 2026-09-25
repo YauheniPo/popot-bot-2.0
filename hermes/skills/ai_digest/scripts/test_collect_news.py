@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from collect_news import _deduplicate, _public_url, collect, parse_rss  # noqa: E402
+from collect_news import _deduplicate, _public_url, collect, parse_rss, UTC_SUFFIX  # noqa: E402
 
 
 NOW = datetime(2026, 9, 25, 12, tzinfo=timezone.utc)
@@ -338,6 +338,27 @@ class CollectNewsTests(unittest.TestCase):
         self.assertIn("78.4%", item["evidence"])
         self.assertIn("SWE-bench Verified", item["title"])
         self.assertEqual(item["published_at"], "2026-09-23T00:00:00Z")
+
+    def test_public_url_rejects_localhost(self):
+        with self.assertRaises(ValueError):
+            _public_url("http://127.0.0.1:8888/search?q=test")
+        with self.assertRaises(ValueError):
+            _public_url("http://localhost:8080/search")
+
+    def test_utc_suffix_constant_is_correct(self):
+        self.assertEqual(UTC_SUFFIX, "+00:00")
+
+    def test_social_search_validates_endpoint_url(self):
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 1},
+                  "sources": [{"id": "social", "type": "searxng", "query": "AI"}]}
+        payload = (b'{"results":[{"title":"AI release","url":"https://vendor.test/release",'
+                   b'"publishedDate":"2026-09-25T11:00:00Z","content":"Release details"}]}')
+        def fetch(url, _limit):
+            return payload if "/search?" in url else b"<main>" + b"Article body. " * 40 + b"</main>"
+        with patch.dict("os.environ", {"AI_DIGEST_SEARCH_URL": "https://search.example.com",
+                                       "SEARXNG_URL": ""}):
+            result = collect(config, now=NOW, fetch=fetch)
+        self.assertIn("source_issues", result)
 
 
 if __name__ == "__main__":
