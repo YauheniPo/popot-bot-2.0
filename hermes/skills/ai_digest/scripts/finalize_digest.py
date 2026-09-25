@@ -17,8 +17,10 @@ RUN_ID = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{8}$")
 
 def _validate_output_dir(output_dir: Path) -> Path:
     """Resolve and validate output directory, rejecting path traversal."""
+    if ".." in output_dir.parts:
+        raise ValueError("invalid output directory")
     resolved = output_dir.resolve()
-    if not resolved.is_absolute() or ".." in resolved.parts:
+    if not resolved.is_absolute():
         raise ValueError("invalid output directory")
     return resolved
 
