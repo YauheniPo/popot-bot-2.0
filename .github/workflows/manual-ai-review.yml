@@ -290,6 +290,16 @@ jobs:
       # The same checkout, preflight, chunked review, and publication
       # code runs here as in pr-ai-review.yml; only the inputs and
       # context resolution differ.
+      #
+      # The composite action references local scripts via
+      # ${{ github.action_path }}, so the repository must be checked out
+      # before it runs. The ref is a trusted Git SHA resolved from the
+      # workflow inputs (not raw user text), so this is safe against ref
+      # injection.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ steps.context.outputs.head_sha }}
+          fetch-depth: 0
       - name: AI Direct Review
         id: ai_review
         uses: ./.github/actions/ai-direct-review

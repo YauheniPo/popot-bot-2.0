@@ -56,13 +56,14 @@ jobs:
       issues: write
       pull-requests: write
     steps:
-      - name: Check out PR revision for local composite action
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Checkout before the composite action — it references local
+      # scripts via ${{ github.action_path }}.
+      # The ref is a trusted Git SHA from the pull_request event
+      # (not raw user text), so ref injection is not possible.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          fetch-depth: 1
-          persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
-
+          fetch-depth: 0
       - name: AI Direct Review
         id: ai_review
         uses: ./.github/actions/ai-direct-review
@@ -77,17 +78,17 @@ jobs:
           include_sonar: true
           include_threads: true
           budget_seconds: ${{ env.OLLAMA_REVIEW_BUDGET_SECONDS }}
-          max_chunks: ${{ vars.PR_REVIEW_MAX_CHUNKS || '100' }}
+          max_chunks: "40"
           fallback_model: ${{ env.DIRECT_REVIEW_FALLBACK_MODEL }}
           fallback_provider: ${{ env.DIRECT_REVIEW_FALLBACK_PROVIDER }}
           rpm: ${{ env.OLLAMA_REVIEW_RPM }}
-          review_origin: github-actions
           sonar_token: ${{ secrets.SONAR_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           ollama_api_key: ${{ secrets.OLLAMA_API_KEY }}
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           nvidia_api_key: ${{ secrets.NVIDIA_API_KEY }}
           nous_api_key: ${{ secrets.NOUS_API_KEY }}
+          review_origin: github-actions
 
   # Preserve the existing job id so configured required checks remain stable.
   claude-code-plugin-review:
