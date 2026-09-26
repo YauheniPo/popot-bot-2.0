@@ -921,7 +921,8 @@ class CollectNewsTests(unittest.TestCase):
             return listing
         result = collect(config, now=NOW, fetch=fetch)
         self.assertEqual(len(result["items"]), 1)
-        self.assertIn("discussion_issue", result["items"][0])
+        self.assertIn("Reddit comments unavailable: comment fetch failed",
+                      result["items"][0]["discussion_issue"])
 
 
 if __name__ == "__main__":

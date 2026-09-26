@@ -203,6 +203,18 @@ class FinalizeDigestTests(unittest.TestCase):
                     from finalize_digest import main
                     main(["--raw", str(raw_path), "--draft", str(draft_path)])
 
+    def test_main_rejects_raw_directory_inside_state_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_dir = Path(directory)
+            raw_path = state_dir / "raw-dir"
+            raw_path.mkdir()
+            draft_path = state_dir / "draft.md"
+            draft_path.write_text(VALID, encoding="utf-8")
+            with patch.dict("os.environ", {"AI_DIGEST_STATE_DIR": str(state_dir)}):
+                with self.assertRaisesRegex(ValueError, "input path is not a file"):
+                    from finalize_digest import main
+                    main(["--raw", str(raw_path), "--draft", str(draft_path)])
+
     def test_main_rejects_non_object_raw_json(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

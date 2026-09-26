@@ -591,8 +591,8 @@ def _fetch_reddit_comments(item: dict, reddit_id: str, max_comments: int, fetch)
             body = plain(row.get("data", {}).get("body", ""))[:400]
             if row.get("kind") == "t1" and body:
                 item["discussion_excerpts"].append({"source_id": "reddit", "text": body})
-    except (OSError, ValueError, KeyError, IndexError, TypeError):  # noqa: S5713
-        item["discussion_issue"] = "Reddit comments unavailable"
+    except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:  # noqa: S5713
+        item["discussion_issue"] = f"Reddit comments unavailable: {str(exc)[:120]}"
 
 
 def _read_article(item: dict, defaults: dict, fetch) -> None:
