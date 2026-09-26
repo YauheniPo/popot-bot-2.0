@@ -275,6 +275,22 @@ class CollectNewsTests(unittest.TestCase):
                                 {}, NOW, fetch_valid)
         self.assertEqual(len(items), 1)
 
+    def test_source_reddit_skips_post_outside_collection_window(self):
+        from datetime import timedelta
+        from collect_news import _source
+
+        old_post = {"data": {"children": [{"data": {
+            "title": "Old AI release", "url": "https://vendor.test/old",
+            "created_utc": (NOW - timedelta(hours=25)).timestamp(),
+            "selftext": "Old release details", "score": 2, "num_comments": 0,
+        }}]}}
+        items, issues = _source(
+            {"id": "reddit", "type": "reddit", "subreddits": ["test"]}, {}, NOW,
+            lambda _url, _limit: json.dumps(old_post).encode())
+
+        self.assertEqual(items, [])
+        self.assertEqual([issue["kind"] for issue in issues], ["empty"])
+
     def test_daily_and_weekly_profiles_select_sources_and_windows(self):
         config = {"version": 1, "defaults": {"window_hours": 24, "limit": 1},
                   "profiles": {"weekly": {"window_hours": 168, "limit": 2}},
