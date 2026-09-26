@@ -64,11 +64,13 @@ class DeploymentSelectionTests(unittest.TestCase):
                     env={**os.environ, "DEPLOY_BRANCH": branch},
                 )
                 self.assertNotEqual(result.returncode, 0)
+                self.assertTrue(result.stderr.strip())
+                self.assertIn("ERROR:", result.stderr)
                 if branch:
                     self.assertNotIn(branch, result.stderr)
                 self.assertNotIn("Traceback", result.stderr)
                 if branch == "a//b":
-                    self.assertIn("git check-ref-format rejected", result.stderr)
+                    self.assertIn("Git rejected the branch name", result.stderr)
 
     def test_snapshot_stays_pinned_when_branch_moves_and_excludes_local_files(self):
         (self.repo / "untracked-secret").write_text("must not be archived")

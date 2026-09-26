@@ -1141,11 +1141,18 @@ host key прямо внутри pipeline.
 проверяет все связанные repository resources. Шаблон `refs/heads/*` разрешает
 любую ветку кода `deploySource`, не разрешая теги; сохраните проверку защиты
 ветки, approvals и остальные checks. Это разрешает production deploy любого
-branch ref, включая ещё не проверенный; до сохранения allowlist в Azure владелец
-должен явно принять этот риск, а каждый run — одобрить по конкретному SHA из
-Summary. Настройте защиту для всех deployable веток, если Branch control требует
-protected source branches.
-Код выбранной ветки получит production credentials только после checks и approval.
+branch ref, включая ещё не проверенный. Владелец должен зафиксировать принятие
+риска в change request/PR до merge и изменения allowlist; пока sign-off не записан,
+оставляйте `refs/heads/main`. Для каждого run проверяйте SHA в Summary и одобряйте
+именно его. Настройте защиту всех deployable веток, если Branch control требует
+protected source branches. YAML фиксирует выбранный resource commit и публикует
+Summary до production stage; approval и Branch control задаются отдельно в Azure
+UI на Environment `hermes-vps` и Secure Files. Код выбранной ветки получит
+production credentials только после этих checks и approval.
+Перед первым production run с feature ref владелец сверяет в Azure UI, что
+Environment и оба Secure Files требуют owner approval и protected source branch;
+Queue builds остаётся только у владельца. Не запускайте такой run, пока эти
+checks не проверены.
 
 Repository resource `deploySource` использует GitHub service connection
 `github.com_YauheniPo`; разрешите его использование deployment pipeline без
