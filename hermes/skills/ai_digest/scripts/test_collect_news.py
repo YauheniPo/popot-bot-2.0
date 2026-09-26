@@ -258,7 +258,7 @@ class CollectNewsTests(unittest.TestCase):
                           b'"url":"https://vendor.test/zero-date","created_utc":0,' \
                           b'"selftext":"details","score":2}}]}}'
         
-        for payload, expected_issue in [(listing_missing, "missing or invalid created_utc"),
+        for payload, expected_reason in [(listing_missing, "missing or invalid created_utc"),
                                          (listing_invalid, "missing or invalid created_utc")]:
             def fetch(url, max_bytes):
                 self.assertEqual(max_bytes, 5_242_880)
@@ -266,8 +266,8 @@ class CollectNewsTests(unittest.TestCase):
             items, issues = _source({"id": "reddit", "type": "reddit", "subreddits": ["test"]},
                                     {}, NOW, fetch)
             self.assertEqual(items, [])
-            self.assertTrue(any(i["kind"] == "degraded" and expected_issue in i["reason"] for i in issues),
-                           f"Expected degraded issue with '{expected_issue}'")
+            self.assertTrue(any(i["kind"] == "degraded" and expected_reason in i["reason"] for i in issues),
+                           f"Expected degraded issue with '{expected_reason}'")
 
         # Valid case
         def fetch_valid(url, max_bytes):
@@ -360,6 +360,15 @@ class CollectNewsTests(unittest.TestCase):
         self.assertIsNone(item["published_at"])
         self.assertEqual(item["listed_at"], "2026-09-25T11:00:00Z")
         self.assertEqual(item["time_basis"], "curation")
+
+    def test_hugging_face_paper_without_any_date_is_skipped(self):
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 1},
+                  "sources": [{"id": "hf-papers", "type": "hf_papers"}]}
+        payload = b'''[{"title":"Undated paper","summary":"Curated abstract.",
+          "paper":{"id":"2609.54322"}}]'''
+        result = collect(config, now=NOW, fetch=lambda _url, _limit: payload)
+        self.assertEqual(result["items"], [])
+        self.assertTrue(any(issue["kind"] == "empty" for issue in result["source_issues"]))
 
     def test_hugging_face_trending_is_observation_not_release(self):
         config = {"version": 1, "defaults": {"window_hours": 24, "limit": 1},

@@ -247,7 +247,7 @@ def _collect_hf_papers(source: dict, source_id: str, now: datetime, fetch, limit
         if item:
             published = _date(paper.get("publishedAt"))
             item["published_at"] = published.isoformat().replace(UTC_SUFFIX, "Z") if published else None
-            item["listed_at"] = listed.isoformat().replace(UTC_SUFFIX, "Z")
+            item["listed_at"] = listed.isoformat().replace(UTC_SUFFIX, "Z") if listed else None
             item["time_basis"] = "curation"
             item["evidence_kind"] = "abstract"
             items.append(item)
