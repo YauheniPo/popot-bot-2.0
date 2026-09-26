@@ -115,7 +115,20 @@ jobs:
       - bash: |
           set -euo pipefail
 
-          payload="$(
+          # Azure DevOps may append \r to parameter values. Strip it.
+          # Rationale: workflow_dispatch API can pass \r in input values,
+          # causing bash case statements and string comparisons to fail.
+          # Both workflows (azure-ai-code-review.yml and manual-ai-review.yml)
+          # strip \r identically to ensure consistent validation.
+          TARGET_REF="${TARGET_REF//$'\r'/}"
+          BASE_REF="${BASE_REF//$'\r'/}"
+          REVIEW_SCOPE="${REVIEW_SCOPE//$'\r'/}"
+          REVIEW_MODEL="${REVIEW_MODEL//$'\r'/}"
+          REVIEW_PROVIDER="${REVIEW_PROVIDER//$'\r'/}"
+          PUBLISH_MODE="${PUBLISH_MODE//$'\r'/}"
+          REQUEST_ID="${REQUEST_ID//$'\r'/}"
+
+          payload="$(\
             jq -n \
               --arg target_ref "${TARGET_REF}" \
               --arg base_ref "${BASE_REF}" \
@@ -137,6 +150,7 @@ jobs:
                 }
               }'
           )"
+
 
           # REVIEWED: this call already fails closed. `--fail-with-body` is on the
           # continuation line below, not on the `curl` line, so a line-scoped

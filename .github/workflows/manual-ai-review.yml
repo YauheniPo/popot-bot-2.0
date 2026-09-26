@@ -91,6 +91,15 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Strip \r that may come from workflow_dispatch inputs.
+          # Rationale: workflow_dispatch API can pass \r in input values,
+          # causing bash case statements and string comparisons to fail.
+          # Both workflows (azure-ai-code-review.yml and manual-ai-review.yml)
+          # strip \r identically to ensure consistent validation.
+          TARGET_REF="${TARGET_REF//$'\r'/}"
+          BASE_REF="${BASE_REF//$'\r'/}"
+          PROVIDER="${PROVIDER//$'\r'/}"
+
           case "${PROVIDER}" in
             ollama-cloud|openrouter|nvidia|nous) ;;
             *)
@@ -144,6 +153,16 @@ jobs:
           TARGET_REF: ${{ inputs.target_ref }}
         run: |
           set -euo pipefail
+
+          # Strip \r that may come from workflow_dispatch inputs.
+          # Rationale: workflow_dispatch API can pass \r in input values,
+          # causing bash case statements and string comparisons to fail.
+          # Both workflows (azure-ai-code-review.yml and manual-ai-review.yml)
+          # strip \r identically to ensure consistent validation.
+          BASE_REF="${BASE_REF//$'\r'/}"
+          PUBLISH_MODE="${PUBLISH_MODE//$'\r'/}"
+          REVIEW_SCOPE="${REVIEW_SCOPE//$'\r'/}"
+          TARGET_REF="${TARGET_REF//$'\r'/}"
 
           head_sha="$(git -C target rev-parse 'HEAD^{commit}')"
           if [[ "${REVIEW_SCOPE}" == "full_branch" ]]; then
