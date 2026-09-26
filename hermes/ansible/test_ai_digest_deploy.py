@@ -22,6 +22,9 @@ class DigestDeployTests(unittest.TestCase):
         self.assertIn("hermes_searxng_url", ENV)
         self.assertNotIn("Ensure the repository-owned AI digest cron job", RUNTIME)
 
+    def test_digest_search_url_is_rendered_once_when_configured(self):
+        self.assertEqual(ENV.count("AI_DIGEST_SEARCH_URL="), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

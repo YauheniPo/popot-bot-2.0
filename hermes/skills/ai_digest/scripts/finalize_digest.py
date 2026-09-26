@@ -13,6 +13,7 @@ import tempfile
 
 URL = re.compile(r"https?://[^\s<>\)\]]+")
 RUN_ID = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{8}$")  # noqa: S6353
+MAX_RAW_BYTES = 10_485_760
 
 
 def _validate_output_dir(output_dir: Path) -> Path:
@@ -82,22 +83,28 @@ def finalize(raw: dict, draft: str, output_dir: Path) -> Path:
     validated_dir = _validate_output_dir(output_dir)
     validated_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
     target = validated_dir / f"digest-{raw['run_id']}.md"
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix=".digest-",
-                                     suffix=".tmp", delete=False) as stream:
-        temporary = Path(stream.name)
-        try:
-            os.chmod(temporary, 0o640)
+    with tempfile.TemporaryDirectory(prefix=".digest-", dir=validated_dir) as staging_dir:
+        staging = Path(staging_dir)
+        os.chmod(staging, 0o700)
+        temporary = staging / "draft.md"
+        with temporary.open("x", encoding="utf-8") as stream:
+            os.chmod(temporary, 0o600)
             stream.write(draft)
             stream.flush()
             os.fsync(stream.fileno())
-        except BaseException:
-            temporary.unlink(missing_ok=True)
-            raise
-    try:
         os.link(temporary, target)
-    finally:
-        temporary.unlink(missing_ok=True)
     return target
+
+
+def _read_raw(path: Path) -> dict:
+    with path.open("rb") as stream:
+        payload = stream.read(MAX_RAW_BYTES + 1)
+    if len(payload) > MAX_RAW_BYTES:
+        raise ValueError("raw file too large")
+    raw = json.loads(payload)
+    if not isinstance(raw, dict):
+        raise ValueError("raw file must contain a JSON object")
+    return raw
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -106,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--draft", type=Path, required=True)
     args = parser.parse_args(argv)
     output_dir = Path(os.environ.get("AI_DIGEST_OUTPUT_DIR", "~/workspace/digests")).expanduser()
-    raw = json.loads(args.raw.read_text(encoding="utf-8"))
+    raw = _read_raw(args.raw)
     print(finalize(raw, args.draft.read_text(encoding="utf-8"), output_dir))
     return 0
 

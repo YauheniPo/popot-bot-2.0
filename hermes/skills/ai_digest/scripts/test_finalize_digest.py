@@ -1,5 +1,6 @@
 """The report gate must fail closed before a cron delivery is attempted."""
 
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -156,6 +157,33 @@ class FinalizeDigestTests(unittest.TestCase):
                 with self.assertRaises(OSError):
                     finalize(RAW, VALID, Path(directory))
             self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_finalize_stages_in_private_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            link = os.link
+
+            def verify_private_staging(source, target):
+                staging = Path(source).parent
+                self.assertEqual(staging.parent, Path(directory).resolve())
+                self.assertEqual(staging.stat().st_mode & 0o777, 0o700)
+                self.assertEqual(Path(source).stat().st_mode & 0o777, 0o600)
+                link(source, target)
+
+            with patch("os.link", side_effect=verify_private_staging):
+                finalize(RAW, VALID, Path(directory))
+            self.assertEqual([path.name for path in Path(directory).iterdir()], [
+                "digest-20260925-090000-abcdef12.md"])
+
+    def test_main_rejects_oversized_raw_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw_path = root / "raw.json"
+            raw_path.write_text('"' + ("x" * 10_485_760) + '"', encoding="utf-8")
+            draft_path = root / "draft.md"
+            draft_path.write_text(VALID, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "raw file too large"):
+                from finalize_digest import main
+                main(["--raw", str(raw_path), "--draft", str(draft_path)])
 
     def test_finalize_cleans_up_temp_on_exception(self):
         """Test that finalize cleans up temp file on BaseException during write."""

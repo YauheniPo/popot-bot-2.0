@@ -476,6 +476,14 @@ class CollectNewsTests(unittest.TestCase):
         result = _item("Test", "not-a-url", NOW, "evidence", "src", NOW, 24, 1000)
         self.assertIsNone(result)
 
+    def test_item_rejects_future_publication(self):
+        from datetime import timedelta
+        from collect_news import _item
+
+        result = _item("Future", "https://example.test/future", NOW + timedelta(minutes=1),
+                       "evidence", "src", NOW, 24, 1000)
+        self.assertIsNone(result)
+
     def test_source_arxiv_raises_without_categories(self):
         """Test _source arxiv raises ValueError when no categories."""
         from collect_news import _source

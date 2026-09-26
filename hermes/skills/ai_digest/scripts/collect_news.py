@@ -126,7 +126,7 @@ def _date(value: str | None) -> datetime | None:
 def _item(title: str, url: str, published: datetime | None, evidence: str,
           source_id: str, now: datetime, window_hours: int,
           max_summary_chars: int, *, score: int = 0, discussion_count: int = 0) -> dict | None:
-    if not published or published < now - timedelta(hours=window_hours) or published > now + timedelta(minutes=15):
+    if not published or published < now - timedelta(hours=window_hours) or published > now:
         return None
     try:
         url = canonical_url(url)
