@@ -85,15 +85,10 @@ vps_hermes:
         # Alternate providers first. Quota failures skip ALL later routes of
         # that provider; later same-provider models help with non-quota failures.
         default_routes:
-          # Order: fastest/reliable first. Metrics from Grafana review panel
-          # (Sep 2026) show gemini-2.5-flash-lite (3.3s, 99.8%) and
-          # deepseek-v4.1-flash (8.9s, 99.1%) as top options; ling-3.0-flash-sante
-          # validated for PR review (<15s, 0 retries). Avoid poolside/laguna
-          # and meituan/longcat — both have high failure rates in metrics.
           - provider: openrouter
-            model: google/gemini-2.5-flash-lite
-          - provider: ollama-cloud
-            model: deepseek-v4.1-flash
+            model: inclusionai/ling-3.0-flash-fin:free
+          - provider: nous
+            model: meituan/longcat-2.0:free
           - provider: nvidia
             model: nvidia/nemotron-3-super-120b-a12b
           - provider: openrouter
@@ -102,7 +97,7 @@ vps_hermes:
             model: inclusionai/ling-3.0-flash-sante:free
         # Chat may only choose these existing integrations. No automatic keys,
         # endpoints or paid OpenRouter routes are added by the command.
-        allowed_providers: [nvidia, openrouter, nous, ollama-cloud]
+        allowed_providers: [nvidia, openrouter, nous]
       user_char_limit: 3000
       memory_char_limit: 4000
       # Compact long sessions after 70% of the active model context is used.
@@ -319,10 +314,9 @@ vps_runtime:
     # Prune stale tool-call output from context without an extra LLM call.
     # Starting value; tune based on observed context growth.
     proactive_prune_tokens: 50000
-    # Bounded instead of unlimited, so a stuck run fails instead of burning
-    # tokens indefinitely. Above the 20-turn default since this agent runs
-    # unattended VPS/ops tasks that can legitimately need more steps.
-    agent.max_turns: 200
+    # Match the pinned Hermes default: up to 500 tool-calling iterations for
+    # long VPS/ops tasks. This is still bounded; loop guardrails remain active.
+    agent.max_turns: 500
     goals.max_turns: 50
     # Match the agent-cache TTL to how long sessions actually stay idle
     # (session_reset.idle_minutes above) so a live session isn't evicted from

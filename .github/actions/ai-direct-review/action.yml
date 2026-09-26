@@ -65,6 +65,30 @@ inputs:
     description: "External request ID"
     required: false
     default: ""
+  sonar_token:
+    description: "SonarCloud token for optional PR context"
+    required: false
+    default: ""
+  github_token:
+    description: "GitHub token for review publication"
+    required: false
+    default: ""
+  ollama_api_key:
+    description: "Ollama Cloud API key"
+    required: false
+    default: ""
+  openrouter_api_key:
+    description: "OpenRouter API key"
+    required: false
+    default: ""
+  nvidia_api_key:
+    description: "NVIDIA API key"
+    required: false
+    default: ""
+  nous_api_key:
+    description: "Nous API key"
+    required: false
+    default: ""
 
 runs:
   using: "composite"
@@ -93,7 +117,7 @@ runs:
       continue-on-error: true
       shell: bash
       env:
-        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        SONAR_TOKEN: ${{ inputs.sonar_token }}
         SONAR_PROJECT_KEY: YauheniPo_popot-bot-2.0
         PR_NUMBER: ${{ inputs.pr_number }}
         BASE_SHA: ${{ inputs.base_sha }}
@@ -108,10 +132,10 @@ runs:
       id: direct_models
       shell: bash
       env:
-        OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
-        OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-        NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-        NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
+        OLLAMA_API_KEY: ${{ inputs.ollama_api_key }}
+        OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
+        NVIDIA_API_KEY: ${{ inputs.nvidia_api_key }}
+        NOUS_API_KEY: ${{ inputs.nous_api_key }}
         DIRECT_REVIEW_PROVIDER: ${{ inputs.provider }}
         DIRECT_REVIEW_MODEL: ${{ inputs.model }}
         DIRECT_REVIEW_FALLBACK_MODEL: ${{ inputs.fallback_model }}
@@ -189,11 +213,11 @@ runs:
         BASE_SHA: ${{ steps.direct_context.outputs.base_sha }}
         HEAD_SHA: ${{ steps.direct_context.outputs.head_sha }}
         CHECK_RUN_NAME: ${{ startsWith(inputs.request_id, 'ado-') && 'Azure DevOps · Manual AI code review' || 'Manual AI code review' }}
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
-        OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-        NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-        NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        OLLAMA_API_KEY: ${{ inputs.ollama_api_key }}
+        OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
+        NVIDIA_API_KEY: ${{ inputs.nvidia_api_key }}
+        NOUS_API_KEY: ${{ inputs.nous_api_key }}
         DIRECT_REVIEW_PROVIDER: ${{ steps.direct_models.outputs.selected_provider }}
         DIRECT_REVIEW_MODEL: ${{ steps.direct_models.outputs.selected_model }}
         DIRECT_REVIEW_PRIMARY_MODEL: ${{ steps.direct_models.outputs.primary_model }}
@@ -223,7 +247,7 @@ runs:
       if: always() && !cancelled() && (steps.direct_models.outcome == 'failure' || steps.direct_review.outcome == 'failure')
       shell: bash
       env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ inputs.github_token }}
         GITHUB_RUN_ID: ${{ github.run_id }}
         PR_NUMBER: ${{ steps.direct_context.outputs.pr_number }}
         PRIMARY_MODEL: ${{ inputs.model }}

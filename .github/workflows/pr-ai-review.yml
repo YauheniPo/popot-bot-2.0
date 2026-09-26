@@ -55,11 +55,16 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-    outputs:
-      findings_count: ${{ steps.ai_review.outputs.findings_count || 0 }}
     steps:
-      - name: AI Direct Review
-        id: ai_review
+      - name: Check out PR revision for local composite action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Direct API review
+        id: direct_review
         uses: ./.github/actions/ai-direct-review
         with:
           model: ${{ env.DIRECT_REVIEW_MODEL }}
@@ -77,12 +82,12 @@ jobs:
           fallback_provider: ${{ env.DIRECT_REVIEW_FALLBACK_PROVIDER }}
           rpm: ${{ env.OLLAMA_REVIEW_RPM }}
           review_origin: github-actions
-        secrets:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-          NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
+          sonar_token: ${{ secrets.SONAR_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          ollama_api_key: ${{ secrets.OLLAMA_API_KEY }}
+          openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          nvidia_api_key: ${{ secrets.NVIDIA_API_KEY }}
+          nous_api_key: ${{ secrets.NOUS_API_KEY }}
 
   # Preserve the existing job id so configured required checks remain stable.
   claude-code-plugin-review:

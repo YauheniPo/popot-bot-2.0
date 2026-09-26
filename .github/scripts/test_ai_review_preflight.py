@@ -132,6 +132,45 @@ class OllamaReviewTest(unittest.TestCase):
                                         env=env, capture_output=True, text=True, timeout=5)
                 self.assertEqual(result.returncode, expected, result.stderr)
 
+    def test_composite_review_action_is_called_as_a_step_with_explicit_secret_inputs(self):
+        root = Path(__file__).resolve().parents[2]
+        action_path = "./.github/actions/ai-direct-review"
+        secret_inputs = {
+            "sonar_token": "SONAR_TOKEN",
+            "github_token": "GITHUB_TOKEN",
+            "ollama_api_key": "OLLAMA_API_KEY",
+            "openrouter_api_key": "OPENROUTER_API_KEY",
+            "nvidia_api_key": "NVIDIA_API_KEY",
+            "nous_api_key": "NOUS_API_KEY",
+        }
+        workflow = yaml.load((root / ".github/workflows/pr-ai-review.yml").read_text(), Loader=yaml.BaseLoader)
+        direct_job = workflow["jobs"]["direct-api-review"]
+        self.assertIn("steps", direct_job)
+        self.assertNotIn("uses", direct_job)
+        direct_job_text = (root / ".github/workflows/pr-ai-review.yml").read_text().split("  direct-api-review:\n", 1)[1].split("\n  # Preserve the existing job id", 1)[0]
+        self.assertEqual(direct_job_text.count("\n    steps:\n"), 1)
+        self.assertNotIn("\n    secrets:\n", direct_job_text)
+        self.assertNotIn("\n    outputs:\n", direct_job_text)
+        direct_action = next(step for step in direct_job["steps"] if step.get("uses") == action_path)
+        self.assertLess(
+            next(i for i, step in enumerate(direct_job["steps"]) if step.get("uses", "").startswith("actions/checkout@")),
+            direct_job["steps"].index(direct_action),
+        )
+        manual = yaml.load((root / ".github/workflows/manual-ai-review.yml").read_text(), Loader=yaml.BaseLoader)
+        manual_action = next(
+            step for job in manual["jobs"].values() for step in job.get("steps", [])
+            if step.get("uses") == action_path
+        )
+        action = yaml.safe_load((root / ".github/actions/ai-direct-review/action.yml").read_text())
+        action_text = (root / ".github/actions/ai-direct-review/action.yml").read_text()
+        self.assertEqual(action["runs"]["using"], "composite")
+        self.assertNotIn("${{ secrets.", action_text)
+        for consumer in (direct_action, manual_action):
+            self.assertNotIn("secrets", consumer)
+            for input_name, secret_name in secret_inputs.items():
+                with self.subTest(consumer=consumer.get("name"), input=input_name):
+                    self.assertEqual(consumer["with"][input_name], f"${{{{ secrets.{secret_name} }}}}")
+
     def test_daily_quota_skips_same_provider_but_keeps_independent_fallback(self):
         for fallback_provider, expected_calls, expected_ready in (("openrouter", 1, False), ("ollama-cloud", 2, True)):
             with self.subTest(provider=fallback_provider), tempfile.TemporaryDirectory() as directory:
@@ -238,7 +277,12 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertEqual(payload["model"], "moonshotai/kimi-k3")
         self.assertNotIn("response_format", payload)
 
-    def test_default_provider_requires_its_configured_api_key(self):
+    def test_provider_must_be_explicit_instead_of_defaulting_to_nvidia(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "DIRECT_REVIEW_PROVIDER.*explicitly set"):
+                ai_review_preflight.main(["--probe", "json"])
+
+    def test_explicit_provider_requires_its_configured_api_key(self):
         with mock.patch.dict(os.environ, {"DIRECT_REVIEW_PROVIDER": "nvidia"}, clear=True):
             with self.assertRaisesRegex(RuntimeError, "NVIDIA_API_KEY"):
                 ai_review_preflight.main(["--probe", "json"])
@@ -275,7 +319,8 @@ class OllamaReviewTest(unittest.TestCase):
         response = {"choices": [{"message": {"content": '```json\n{"status":"ok"}\n```'}}]}
         for failure in (
             lambda: TimeoutError("timed out"),
-            lambda: urllib.error.HTTPError("https://ollama.com/v1/chat/completions", 503, "Unavailable", {}, None),
+            lambda: urllib.error.HTTPError(
+                "https://ollama.com/v1/chat/completions", 503, "Unavailable", {}, io.BytesIO(b"{}")),
         ):
             with self.subTest(failure=type(failure()).__name__):
                 with (
@@ -339,7 +384,7 @@ class OllamaReviewTest(unittest.TestCase):
 
     def test_missing_key_stops_before_network_access(self):
         with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(ai_review_preflight, "probe") as probe:
-            with self.assertRaisesRegex(RuntimeError, "NVIDIA_API_KEY"):
+            with self.assertRaisesRegex(RuntimeError, "DIRECT_REVIEW_PROVIDER.*explicitly set"):
                 ai_review_preflight.main(["--probe", "json"])
         probe.assert_not_called()
 
@@ -349,6 +394,7 @@ class OllamaReviewTest(unittest.TestCase):
             with (
                 mock.patch.dict(os.environ, {
                     "NVIDIA_API_KEY": "test-key", "GITHUB_OUTPUT": str(output),
+                    "DIRECT_REVIEW_PROVIDER": "nvidia",
                     "DIRECT_REVIEW_FALLBACK_MODEL": "backup",
                 }, clear=True),
                 mock.patch.object(ai_review_preflight, "probe") as probe,
@@ -956,7 +1002,7 @@ class NousReviewTest(unittest.TestCase):
         # The direct-api-review job uses the composite action; verify NOUS_API_KEY there too.
         direct_action = yaml.safe_load((root / ".github/actions/ai-direct-review/action.yml").read_text())
         direct_review = next(step for step in direct_action["runs"]["steps"] if "ai_pr_review.py" in step.get("run", ""))
-        self.assertEqual(direct_review["env"]["NOUS_API_KEY"], "${{ secrets.NOUS_API_KEY }}")
+        self.assertEqual(direct_review["env"]["NOUS_API_KEY"], "${{ inputs.nous_api_key }}")
 
     def test_azure_review_summary_explains_the_cross_platform_flow(self):
         root = Path(__file__).resolve().parents[2]

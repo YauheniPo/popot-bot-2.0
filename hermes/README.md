@@ -1496,7 +1496,7 @@ Docs/Sheets.
 Hermes использует встроенный terminal и bundled skill `github` (auth, PR
 review, issues, workflow, repo management — с v0.21.0 объединены в один
 скилл вместо прежних шести отдельных). Отдельный GitHub MCP не нужен.
-`git` выполняет локальные операции, а `gh` — PR, unresolved review threads,
+`git` выполняет локальные операции; `gh` — PR, unresolved review threads,
 issues, Actions и API-запросы.
 
 Для Ansible deployment задайте fine-grained PAT в encrypted Vault:
@@ -2117,14 +2117,14 @@ Prompt caching в Hermes работает автоматически. Skills з�
 набор. Объединяйте похожие cron-проверки в один отчёт вместо многих отдельных
 запусков.
 
-Скрипт удаляет пользовательские overrides `agent.max_turns` и
-`goals.max_turns`, поэтому обычные запросы и `/goal` используют полноценные
-встроенные бюджеты текущей версии Hermes. Hard-stop по-прежнему останавливает
-только повторяющиеся ошибки после трёх неудач; один turn ограничен 20 web
-searches и 10 subagents. Для Telegram включён подробный tool-progress, о
-background process приходит только итог, а сессия автоматически сбрасывается
-после 48 часов простоя. Метрики, health checks, backups и `hermes-ops-report` работают без
-LLM; автоматический анализ запускается только по вашему запросу.
+Deploy задаёт бюджеты основного агента и `/goal` через `agent.max_turns` и
+`goals.max_turns` в [`config/vps-defaults.yml`](config/vps-defaults.yml).
+Loop guardrails остаются активны; их значения и остальные runtime-лимиты
+определяются конфигурацией и закреплённой версией Hermes. Для Telegram включён
+подробный tool-progress, о background process приходит только итог, а сессия
+автоматически сбрасывается после настроенного периода простоя. Метрики, health
+checks, backups и `hermes-ops-report` работают без LLM; автоматический анализ
+запускается только по вашему запросу.
 
 #### Активность в `/status`
 

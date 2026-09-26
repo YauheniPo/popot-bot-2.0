@@ -87,9 +87,15 @@ def provider_config(provider_name: str | None = None) -> tuple[str, str, str]:
     compatibility alias for the provider. Credentials are selected by provider
     without changing workflow code.
     """
-    provider = (provider_name if provider_name is not None else os.environ.get(
-        "DIRECT_REVIEW_PROVIDER", os.environ.get("REVIEW_PROVIDER", "nvidia"),
-    )).strip().lower()
+    selected = provider_name
+    if selected is None:
+        selected = os.environ.get("DIRECT_REVIEW_PROVIDER") or os.environ.get("REVIEW_PROVIDER")
+    if not selected or not selected.strip():
+        raise RuntimeError(
+            "DIRECT_REVIEW_PROVIDER (or REVIEW_PROVIDER) must be explicitly set "
+            "to ollama-cloud, openrouter, nvidia, or nous"
+        )
+    provider = selected.strip().lower()
     if provider in {"ollama", "ollama_cloud", "ollama-cloud"}:
         return "ollama-cloud", os.environ.get("OLLAMA_API_KEY", "").strip(), CHAT_COMPLETIONS_URL
     if provider in {"openrouter", "open-router"}:

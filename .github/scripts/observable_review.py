@@ -48,6 +48,36 @@ def _confine_report_path(raw: Path) -> Path:
     return resolved
 
 
+def _secure_report_path(path: Path) -> None:
+    """Restrict a pre-existing report before review work starts."""
+    flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+    finally:
+        os.close(descriptor)
+
+
+def _write_private_report(path: Path, report: dict) -> None:
+    """Atomically replace a report with a file that was private from creation."""
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as target:
+            descriptor = -1
+            target.write(json.dumps(report))
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(temporary, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
 def routes() -> list[dict]:
     """Both agent reviewers share CLAUDE_REVIEW_*; never inherit Direct API routing."""
     provider = os.environ.get("CLAUDE_REVIEW_PROVIDER", "openrouter")
@@ -438,6 +468,7 @@ def review_chunks(workspace: Path, chunks: list[dict], files: set[str], report: 
 
 def run(report_path: Path) -> int:
     report_path = _confine_report_path(report_path)
+    _secure_report_path(report_path)
     report = {"status": "failed", "attempts": [], "reason": "review_not_completed"}
     try:
         workspace = Path.cwd().resolve()
@@ -453,8 +484,7 @@ def run(report_path: Path) -> int:
         print("::error::Observable review setup failed; check checkout, revisions and runner inputs.", flush=True)
         return 1
     finally:
-        report_path.write_text(json.dumps(report), encoding="utf-8")
-        report_path.chmod(0o600)
+        _write_private_report(report_path, report)
         output_path = os.environ.get("GITHUB_OUTPUT")
         if output_path:
             with open(output_path, "a", encoding="utf-8") as target:

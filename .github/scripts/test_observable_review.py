@@ -454,13 +454,21 @@ class ObservableReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             report_path = root / "report.json"
+            report_path.write_text("stale report", encoding="utf-8")
+            report_path.chmod(0o644)
+
+            def fail_after_checking_permissions(*_):
+                self.assertEqual(report_path.stat().st_mode & 0o777, 0o600)
+                raise RuntimeError("boom")
+
             with mock.patch.dict(os.environ, {"BASE_SHA": "a"*40, "HEAD_SHA": "b"*40}, clear=True), \
                     mock.patch.object(observer, "_confine_report_path", return_value=report_path), \
-                    mock.patch.object(observer, "prepare_prompt", side_effect=RuntimeError("boom")), \
+                    mock.patch.object(observer, "prepare_prompt", side_effect=fail_after_checking_permissions), \
                     redirect_stdout(io.StringIO()):
                 self.assertEqual(observer.run(report_path), 1)
             report = json.loads(report_path.read_text())
             self.assertEqual(report["reason"], "review_setup_failed")
+            self.assertEqual(report_path.stat().st_mode & 0o777, 0o600)
 
     def test_run_writes_step_summary(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -28,9 +28,9 @@ VPS or container. They do not dismiss or suppress scanner alerts.
 
 ## Alerts requiring context or an operator decision
 
-| GitHub alerts | Current boundary and disposition |
+| Alert / rule | Current boundary and disposition |
 |---|---|
-| #5, #6: Tailscale files readable by others | The signing key is public, not private. The APT source list is public metadata. Root owns both with `0644`; unprivileged APT readers need access. Do not change these to `0600` merely to clear an alert. |
+| SonarCloud S2612, Tailscale files readable by others | `hermes/ansible/tasks/network.yml` installs `/usr/share/keyrings/tailscale-archive-keyring.gpg` and `/etc/apt/sources.list.d/tailscale.list`, both root-owned with mode `0644`. The first contains the public signing key; the second contains public APT source metadata. These files contain no credentials, and APT must be able to read them. Do not change them to `0600` merely to clear the hotspot. |
 | #16–#18: HTTP links in deployment output | The links describe loopback-only monitoring endpoints. Remote access must use an authenticated encrypted SSH/Tailscale tunnel. A printed HTTPS link does not enable TLS. |
 | #19: HTTP retry endpoint | The validator accepts only `http://127.0.0.1:...`, not arbitrary remote hosts. External exposure requires a separate authenticated TLS design. |
 | #15: Docker root user | Root is used by the pinned image's initialization. The local administration profile also intentionally permits passwordless sudo. This is a real privilege trade-off, not proof that the agent is isolated from container root. Removing it requires changing the profile and testing initialization and the supported administration workflow. |

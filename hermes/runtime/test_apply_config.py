@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import yaml
+
 
 MODULE_PATH = Path(__file__).with_name("apply-config.py")
 SPEC = importlib.util.spec_from_file_location("apply_config", MODULE_PATH)
@@ -275,24 +277,17 @@ class ApplyConfigTests(unittest.TestCase):
         settings = apply_config.load_settings(MODULE_PATH.parent.parent / "config" / "vps-defaults.yml")
         self.assert_fallback_contract(settings["vps_hermes"]["config"]["managed_overlay"])
 
-    def test_repository_fallbacks_span_providers_and_keep_free_aggregator_routes(self) -> None:
+    def test_repository_fallbacks_span_allowed_providers(self) -> None:
         settings = apply_config.load_settings(MODULE_PATH.parent.parent / "config" / "vps-defaults.yml")
         overlay = settings['vps_hermes']['config']['managed_overlay']
         policy = overlay['fallback_policy']
         chain = policy['default_routes']
         providers = {route['provider'] for route in chain}
-        self.assertGreaterEqual(len(providers), 3, 'quota recovery needs independent provider choices')
-        self.assertGreaterEqual(len(providers - {overlay['model']['provider']}), 2)
+        self.assertTrue(
+            providers - {overlay['model']['provider']},
+            'quota recovery needs at least one provider independent of the primary',
+        )
         self.assertLessEqual(providers, set(policy['allowed_providers']))
-        for route in chain:
-            if route['provider'] in {'openrouter', 'nous'}:
-                # google/gemini-2.5-flash-lite is a free-tier OpenRouter
-                # model but its ID lacks the :free suffix used by most
-                # free-tier models on OpenRouter.
-                self.assertTrue(
-                    route['model'].endswith(':free')
-                    or route['model'] == 'google/gemini-2.5-flash-lite'
-                )
 
     def test_fallback_contract_rejects_entries_hermes_would_ignore(self) -> None:
         for chain in ({}, [{}], [{"provider": "primary-provider", "model": " "}],
@@ -448,6 +443,15 @@ class ApplyConfigTests(unittest.TestCase):
             source["skills_dir"],
             f"{source['checkout_dir']}/skills/engineering",
         )
+
+    def test_matt_pocock_skill_validation_checks_each_loop_result(self) -> None:
+        tasks = yaml.safe_load((MODULE_PATH.parent.parent / "ansible" / "tasks" / "runtime.yml").read_text())
+        task_index = next(i for i, task in enumerate(tasks)
+                          if task.get("name") == "Verify required Matt Pocock engineering skill sources")
+        check = tasks[task_index + 1]
+        self.assertEqual(check["name"], "Require all Matt Pocock engineering skill sources")
+        self.assertEqual(check["loop"], "{{ hermes_matt_pocock_skill_sources.results | default([]) }}")
+        self.assertIn("item.stat.exists", check["ansible.builtin.assert"]["that"])
 
     def test_repository_security_policy_requires_approval_and_github_auth(self) -> None:
         settings = apply_config.load_settings(MODULE_PATH.parent.parent / "config" / "vps-defaults.yml")

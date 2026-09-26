@@ -313,12 +313,12 @@ jobs:
           rpm: ${{ vars.OLLAMA_REVIEW_RPM || '60' }}
           review_origin: ${{ startsWith(inputs.request_id, 'ado-') && 'azure-devops' || 'github-actions' }}
           request_id: ${{ inputs.request_id }}
-        secrets:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-          NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
+          sonar_token: ${{ secrets.SONAR_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          ollama_api_key: ${{ secrets.OLLAMA_API_KEY }}
+          openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          nvidia_api_key: ${{ secrets.NVIDIA_API_KEY }}
+          nous_api_key: ${{ secrets.NOUS_API_KEY }}
 
       - name: Summarize manual review
         if: always()
