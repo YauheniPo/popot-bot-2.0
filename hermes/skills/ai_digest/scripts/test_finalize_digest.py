@@ -218,9 +218,10 @@ class FinalizeDigestTests(unittest.TestCase):
     def test_finalize_cleans_up_temp_on_exception(self):
         """Test that finalize cleans up temp file on BaseException during write."""
         with tempfile.TemporaryDirectory() as directory:
-            with patch("os.chmod", side_effect=RuntimeError("disk full")):
+            with patch("os.fsync", side_effect=RuntimeError("disk full")):
                 with self.assertRaises(RuntimeError):
                     finalize(RAW, VALID, Path(directory))
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
 
 if __name__ == "__main__":

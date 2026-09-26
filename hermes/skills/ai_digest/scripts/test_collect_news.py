@@ -347,6 +347,18 @@ class CollectNewsTests(unittest.TestCase):
         self.assertEqual(item["published_at"], "2026-09-24T00:00:00Z")
         self.assertEqual(item["time_basis"], "curation")
 
+    def test_hugging_face_paper_without_publication_date_keeps_curation_date(self):
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 1},
+                  "sources": [{"id": "hf-papers", "type": "hf_papers"}]}
+        payload = b'''[{"publishedAt":"2026-09-25T11:00:00Z","title":"Agent research",
+          "summary":"Curated abstract.","paper":{"id":"2609.54321",
+          "submittedOnDailyAt":"2026-09-25T11:00:00Z"}}]'''
+        result = collect(config, now=NOW, fetch=lambda _url, _limit: payload)
+        item = result["items"][0]
+        self.assertIsNone(item["published_at"])
+        self.assertEqual(item["listed_at"], "2026-09-25T11:00:00Z")
+        self.assertEqual(item["time_basis"], "curation")
+
     def test_hugging_face_trending_is_observation_not_release(self):
         config = {"version": 1, "defaults": {"window_hours": 24, "limit": 1},
                   "sources": [{"id": "hf-trending", "type": "hf_trending"}]}

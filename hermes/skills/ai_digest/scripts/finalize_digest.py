@@ -96,7 +96,8 @@ def finalize(raw: dict, draft: str, output_dir: Path) -> Path:
     return target
 
 
-def _read_raw(path: Path) -> dict:
+def _read_raw(path: Path, state_dir: Path) -> dict:
+    path = _validate_state_path(path, state_dir)
     with path.open("rb") as stream:
         payload = stream.read(MAX_RAW_BYTES + 1)
     if len(payload) > MAX_RAW_BYTES:
@@ -124,9 +125,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     state_dir = Path(os.environ.get("AI_DIGEST_STATE_DIR", "~/.hermes/ops/news")).expanduser()
     output_dir = Path(os.environ.get("AI_DIGEST_OUTPUT_DIR", "~/workspace/digests")).expanduser()
-    raw_path = _validate_state_path(args.raw, state_dir)
     draft_path = _validate_state_path(args.draft, state_dir)
-    raw = _read_raw(raw_path)
+    raw = _read_raw(args.raw, state_dir)
     print(finalize(raw, draft_path.read_text(encoding="utf-8"), output_dir))
     return 0
 

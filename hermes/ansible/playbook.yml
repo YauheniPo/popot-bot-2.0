@@ -403,7 +403,7 @@
         archive: true
         checksum: true
         rsync_opts:
-          - --exclude=__pycache__/
+          - --exclude=__pycache__
           - --exclude=*.pyc
           - --exclude=test_*.py
 
