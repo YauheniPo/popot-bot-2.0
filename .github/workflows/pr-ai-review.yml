@@ -55,6 +55,8 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
+    outputs:
+      findings_count: ${{ steps.ai_review.outputs.findings_count || 0 }}
     steps:
       - name: AI Direct Review
         id: ai_review
@@ -81,8 +83,6 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
-    outputs:
-      findings_count: ${{ steps.ai_review.outputs.findings_count || 0 }}
 
   # Preserve the existing job id so configured required checks remain stable.
   claude-code-plugin-review:
