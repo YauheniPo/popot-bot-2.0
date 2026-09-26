@@ -151,17 +151,22 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertEqual(direct_job_text.count("\n    steps:\n"), 1)
         self.assertNotIn("\n    secrets:\n", direct_job_text)
         self.assertNotIn("\n    outputs:\n", direct_job_text)
-        direct_action = next(step for step in direct_job["steps"] if step.get("uses") == action_path)
         self.assertLess(
             next(i for i, step in enumerate(direct_job["steps"]) if step.get("uses", "").startswith("actions/checkout@")),
-            direct_job["steps"].index(direct_action),
+            next(i for i, step in enumerate(direct_job["steps"]) if step.get("uses") == action_path),
+        )
+        direct_action = next(step for step in direct_job["steps"] if step.get("uses") == action_path)
+        action = yaml.safe_load((root / ".github/actions/ai-direct-review/action.yml").read_text())
+        action_steps = action["runs"]["steps"]
+        self.assertLess(
+            next(i for i, step in enumerate(action_steps) if step.get("name") == "Check out the review target"),
+            next(i for i, step in enumerate(action_steps) if step.get("id") == "direct_review"),
         )
         manual = yaml.load((root / ".github/workflows/manual-ai-review.yml").read_text(), Loader=yaml.BaseLoader)
         manual_action = next(
             step for job in manual["jobs"].values() for step in job.get("steps", [])
             if step.get("uses") == action_path
         )
-        action = yaml.safe_load((root / ".github/actions/ai-direct-review/action.yml").read_text())
         action_text = (root / ".github/actions/ai-direct-review/action.yml").read_text()
         self.assertEqual(action["runs"]["using"], "composite")
         self.assertNotIn("${{ secrets.", action_text)
@@ -683,6 +688,14 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertEqual(automatic["env"]["OLLAMA_REVIEW_RPM"], "${{ vars.OLLAMA_REVIEW_RPM || '60' }}")
         self.assertEqual(automatic["env"]["OLLAMA_REVIEW_COOLDOWN_SECONDS"], "${{ vars.OLLAMA_REVIEW_COOLDOWN_SECONDS || '0' }}")
         self.assertEqual(automatic["env"]["OLLAMA_REVIEW_BUDGET_SECONDS"], "${{ vars.OLLAMA_REVIEW_BUDGET_SECONDS || '2400' }}")
+        direct_review = next(
+            step for step in automatic["jobs"]["direct-api-review"]["steps"]
+            if step.get("id") == "ai_review"
+        )
+        self.assertEqual(
+            direct_review["with"]["max_chunks"],
+            "${{ vars.PR_REVIEW_MAX_CHUNKS || '100' }}",
+        )
         for job in automatic["jobs"].values():
             if "steps" not in job:
                 continue

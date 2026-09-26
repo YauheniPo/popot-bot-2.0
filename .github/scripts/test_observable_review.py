@@ -470,6 +470,16 @@ class ObservableReviewTests(unittest.TestCase):
             self.assertEqual(report["reason"], "review_setup_failed")
             self.assertEqual(report_path.stat().st_mode & 0o777, 0o600)
 
+    def test_private_report_closes_descriptor_when_permission_setup_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report_path = Path(directory) / "report.json"
+            with mock.patch.object(observer.os, "fchmod", side_effect=OSError("chmod failed")), \
+                    mock.patch.object(observer.os, "close", wraps=os.close) as close:
+                with self.assertRaisesRegex(OSError, "chmod failed"):
+                    observer._write_private_report(report_path, {"status": "failed"})
+            close.assert_called_once()
+            self.assertFalse(report_path.exists())
+
     def test_run_writes_step_summary(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
