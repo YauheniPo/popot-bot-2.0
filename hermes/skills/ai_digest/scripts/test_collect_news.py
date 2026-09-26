@@ -260,18 +260,20 @@ class CollectNewsTests(unittest.TestCase):
         
         for payload, expected_issue in [(listing_missing, "missing or invalid created_utc"),
                                          (listing_invalid, "missing or invalid created_utc")]:
-            def fetch(url, _):
+            def fetch(url, max_bytes):
+                self.assertEqual(max_bytes, 5_242_880)
                 return payload
-            items, issues = _source({"id": "reddit", "type": "reddit", "subreddits": ["test"]}, 
+            items, issues = _source({"id": "reddit", "type": "reddit", "subreddits": ["test"]},
                                     {}, NOW, fetch)
             self.assertEqual(items, [])
             self.assertTrue(any(i["kind"] == "degraded" and expected_issue in i["reason"] for i in issues),
                            f"Expected degraded issue with '{expected_issue}'")
 
         # Valid case
-        def fetch_valid(url, _):
+        def fetch_valid(url, max_bytes):
+            self.assertEqual(max_bytes, 5_242_880)
             return listing_valid
-        items, issues = _source({"id": "reddit", "type": "reddit", "subreddits": ["test"]}, 
+        items, issues = _source({"id": "reddit", "type": "reddit", "subreddits": ["test"]},
                                 {}, NOW, fetch_valid)
         self.assertEqual(len(items), 1)
 
@@ -514,14 +516,14 @@ class CollectNewsTests(unittest.TestCase):
         ids_payload = b"[1, 2]"
         story_dead = b'{"id": 1, "dead": true, "title": "dead", "time": 1790334000}'
         story_valid = b'{"id": 2, "title": "valid", "url": "https://example.com", "time": 1790334000, "score": 0, "descendants": 0}'
-        call_count = [0]
         def fetch(url, max_bytes):
             if "topstories" in url:
                 return ids_payload
-            call_count[0] += 1
-            return story_dead if call_count[0] == 1 else story_valid
+            return {"https://hacker-news.firebaseio.com/v0/item/1.json": story_dead,
+                    "https://hacker-news.firebaseio.com/v0/item/2.json": story_valid}[url]
         items, issues = _source({"id": "hn", "type": "hackernews"}, {}, NOW, fetch)
         self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["title"], "valid")
 
     def test_source_hf_papers_skips_missing_id(self):
         """Test _source hf_papers skips rows without paper_id."""

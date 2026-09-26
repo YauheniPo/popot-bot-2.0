@@ -398,7 +398,7 @@
 
     - name: Synchronize repository-owned Hermes skills
       ansible.posix.synchronize:
-        src: ../skills/
+        src: "{{ playbook_dir }}/../skills/"
         dest: "{{ hermes_bundle_dir }}/skills/"
         archive: true
         checksum: true
