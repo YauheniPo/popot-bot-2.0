@@ -39,6 +39,13 @@ class FinalizeDigestTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 finalize(RAW, VALID, Path(directory))
 
+    def test_creates_missing_output_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory) / "new" / "digests"
+            path = finalize(RAW, VALID, output_dir)
+            self.assertTrue(output_dir.is_dir())
+            self.assertEqual(path.read_text(), VALID)
+
     def test_rejects_missing_role(self):
         with tempfile.TemporaryDirectory() as directory:
             invalid_draft = VALID.replace("### Senior", "### Expert")

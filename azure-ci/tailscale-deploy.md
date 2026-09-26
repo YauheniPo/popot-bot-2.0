@@ -227,6 +227,9 @@ allowlist разрешает выкатывать в production любой branc
 проверенный; до сохранения allowlist в Azure владелец должен явно принять этот
 риск, а каждый run — одобрить по конкретному SHA из Summary. Настройте защиту для всех deployable
 веток, если Branch control требует, чтобы source branch была protected.
+Смена Branch control с `refs/heads/main` на `refs/heads/*` — отдельное изменение
+политики доступа: оформите для него change request и получите явное одобрение
+владельца до merge и сохранения allowlist в Azure.
 См. [Branch control в Azure](https://learn.microsoft.com/en-us/azure/devops/pipelines/process/approvals?view=azure-devops#branch-control).
 Код выбранной ветки получит production credentials после checks и approval —
 одобряйте только проверенный SHA из Summary, а не просто знакомое имя ветки.

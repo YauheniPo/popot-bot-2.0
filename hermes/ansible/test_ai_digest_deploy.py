@@ -22,7 +22,9 @@ class DigestDeployTests(unittest.TestCase):
         self.assertIn('src: "{{ playbook_dir }}/../skills/"', PLAYBOOK)
         self.assertIn("- --exclude=__pycache__\n", PLAYBOOK)
         for pattern in (".env", ".env.*", ".envrc", "dotenv", "env", "env.*",
-                        "*.secret", "*.key", "*.pem", "node_modules"):
+                        "*.secret", "*.key", "*.pem", "credentials.yml",
+                        "credentials.yaml", "vault.yml", "vault.yaml", "id_rsa",
+                        "id_ed25519", "*.p12", "*.pfx", ".netrc", "node_modules"):
             self.assertIn(f"- --exclude={pattern}\n", PLAYBOOK)
         self.assertIn("hermes_bundle_dir ~ '/skills'", RUNTIME)
         self.assertIn("hermes_existing_config.get('skills', {}).get('external_dirs', [])", RUNTIME)

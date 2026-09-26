@@ -415,6 +415,15 @@
           - --exclude=*.secret
           - --exclude=*.key
           - --exclude=*.pem
+          - --exclude=credentials.yml
+          - --exclude=credentials.yaml
+          - --exclude=vault.yml
+          - --exclude=vault.yaml
+          - --exclude=id_rsa
+          - --exclude=id_ed25519
+          - --exclude=*.p12
+          - --exclude=*.pfx
+          - --exclude=.netrc
           - --exclude=node_modules
 
     - name: Copy repository-owned Hermes workspace instructions

@@ -80,6 +80,12 @@ stages:
             fetchTags: false
             persistCredentials: false
 
+          # Validate the queue-time short name using only trusted self/main code.
+          - bash: python3 "$(Pipeline.Workspace)/s/pipeline/azure-ci/scripts/validate-deploy-branch.py"
+            displayName: Validate deployment branch name before checkout
+            env:
+              DEPLOY_BRANCH: ${{ parameters.deployBranch }}
+
           - checkout: deploySource
             path: s/deploy-source
             clean: true

@@ -14,6 +14,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 PREPARE = ROOT / "azure-ci/scripts/prepare-hermes-deploy.py"
+VALIDATE_BRANCH = ROOT / "azure-ci/scripts/validate-deploy-branch.py"
 
 
 class DeploymentSelectionTests(unittest.TestCase):
@@ -44,6 +45,24 @@ class DeploymentSelectionTests(unittest.TestCase):
                  "DEPLOY_COMMIT": self.sha if commit is None else commit,
                  "DEPLOY_ARTIFACT_DIR": str(self.output)},
         )
+
+    def test_branch_name_validation_accepts_feature_branch_and_rejects_invalid_refs(self):
+        for branch in ("feat/hermes-ai-digest-cron", "release/v1.2"):
+            with self.subTest(branch=branch):
+                result = subprocess.run(
+                    [sys.executable, str(VALIDATE_BRANCH)], cwd=self.repo, text=True,
+                    capture_output=True, check=False,
+                    env={**os.environ, "DEPLOY_BRANCH": branch},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        for branch in ("", "refs/heads/main", "../main", "main\n", "main^{commit}"):
+            with self.subTest(branch=branch):
+                result = subprocess.run(
+                    [sys.executable, str(VALIDATE_BRANCH)], cwd=self.repo, text=True,
+                    capture_output=True, check=False,
+                    env={**os.environ, "DEPLOY_BRANCH": branch},
+                )
+                self.assertNotEqual(result.returncode, 0)
 
     def test_snapshot_stays_pinned_when_branch_moves_and_excludes_local_files(self):
         (self.repo / "untracked-secret").write_text("must not be archived")
@@ -375,6 +394,9 @@ sudo() { printf '%s\\n' "$@"; [[ "$*" != *'tailscale logout'* ]]; }
         source_checkout = next(s for s in steps if s.get("checkout") == "deploySource")
         self.assertEqual(source_checkout["path"], "s/deploy-source")
         self.assertIs(source_checkout["persistCredentials"], False)
+        validate_branch = next(s for s in steps if "validate-deploy-branch.py" in s.get("bash", ""))
+        self.assertEqual(validate_branch["env"]["DEPLOY_BRANCH"], "${{ parameters.deployBranch }}")
+        self.assertLess(steps.index(validate_branch), steps.index(source_checkout))
         prepare = next(s for s in steps if "prepare-hermes-deploy.py" in s.get("bash", ""))
         self.assertEqual(prepare["bash"],
                          'python3 "$(Pipeline.Workspace)/s/pipeline/azure-ci/scripts/prepare-hermes-deploy.py"')
@@ -399,10 +421,11 @@ sudo() { printf '%s\\n' "$@"; [[ "$*" != *'tailscale logout'* ]]; }
             "ref": "refs/heads/${{ parameters.deployBranch }}",
         }])
         parameters = {p["name"]: p for p in self.pipeline["parameters"]}
+        self.assertCountEqual(parameters, ["deployBranch", "deployMode"])
         self.assertEqual(parameters["deployBranch"]["default"], "main")
+        self.assertEqual(parameters["deployBranch"]["type"], "string")
         self.assertEqual(self.pipeline["resources"]["repositories"][0]["ref"],
                          "refs/heads/${{ parameters.deployBranch }}")
-        self.assertEqual(parameters["deployBranch"]["type"], "string")
         variables = self.pipeline["stages"][0]["jobs"][0]["variables"]
         self.assertEqual(variables["deploymentSourceRef"], "$[ resources.repositories.deploySource.ref ]")
         self.assertEqual(variables["deploymentSourceVersion"], "$[ resources.repositories.deploySource.version ]")

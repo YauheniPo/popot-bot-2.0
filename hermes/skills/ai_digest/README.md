@@ -47,6 +47,12 @@ Meta AI Blog, TLDR AI и X-публикациям Karpathy, Simon Willison и sw
 X, LinkedIn и названных сайтов зависит от уже установленного SearXNG и наличия
 даты в его результате; пропуски отображаются в отчёте.
 
+Для AI digest задайте `vps_web.searxng_url` как доступный извне HTTP(S) endpoint.
+Коллектор перед запросом проверяет, что URL разрешается только в публичные IP;
+локальные и приватные адреса отклоняются. Эта проверка выполняется при запуске,
+поэтому локальный `127.0.0.1` endpoint, подходящий для Hermes `web_search`, не
+подходит для digest.
+
 Недельный выпуск использует RSS Import AI, Interconnects, Latent Space и
 Dwarkesh Podcast, OpenAI/DeepMind и Hugging Face Papers, поиск по The Batch и
 alphaXiv, а также опубликованный JSON SWE-bench Verified. LMArena, Artificial
