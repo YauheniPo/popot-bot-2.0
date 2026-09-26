@@ -86,6 +86,12 @@ jobs:
     runs-on: ubuntu-latest
     # 15 minutes for two model probes + 85 for review + five for setup/publication.
     timeout-minutes: 105
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
 
     steps:
       - name: Validate manual review inputs
@@ -129,24 +135,6 @@ jobs:
 
           validate_ref "${TARGET_REF}" target_ref
           validate_ref "${BASE_REF}" base_ref
-
-      # Keep executable review tooling on the trusted default branch. The
-      # selected target is checked out separately and treated only as data.
-      - name: Check out trusted reviewer tooling
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 1
-          path: reviewer
-          persist-credentials: false
-          ref: main
-
-      - name: Check out the selected review target
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-          path: target
-          persist-credentials: false
-          ref: ${{ inputs.target_ref }}
 
       - name: Resolve the exact comparison and publication target
         id: context
@@ -305,65 +293,42 @@ jobs:
             exit 1
           fi
 
-      - name: Verify direct API JSON review
-        id: models
-        shell: bash
-        env:
+      # Common review logic shared with pr-ai-review.yml via composite action.
+      # The same checkout, preflight, chunked review, and publication
+      # code runs here as in pr-ai-review.yml; only the inputs and
+      # context resolution differ.
+      - name: AI Direct Review
+        id: ai_review
+        uses: ./.github/actions/ai-direct-review
+        with:
+          model: ${{ inputs.model }}
+          provider: ${{ inputs.provider }}
+          base_sha: ${{ steps.context.outputs.base_sha }}
+          head_sha: ${{ steps.context.outputs.head_sha }}
+          pr_number: ${{ steps.context.outputs.pr_number }}
+          scope: ${{ inputs.scope }}
+          publish_mode: ${{ inputs.publish }}
+          max_chunks: ${{ vars.MANUAL_REVIEW_MAX_CHUNKS || '100' }}
+          budget_seconds: ${{ vars.MANUAL_REVIEW_BUDGET_SECONDS || '5100' }}
+          rpm: ${{ vars.OLLAMA_REVIEW_RPM || '60' }}
+          review_origin: ${{ startsWith(inputs.request_id, 'ado-') && 'azure-devops' || 'github-actions' }}
+          request_id: ${{ inputs.request_id }}
+        secrets:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
-          DIRECT_REVIEW_PROVIDER: ${{ inputs.provider || vars.DIRECT_REVIEW_PROVIDER || 'openrouter' }}
-          DIRECT_REVIEW_MODEL: ${{ inputs.model }}
-          DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'nvidia/nemotron-3-ultra-550b-a55b:free' }}
-          DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'openrouter' }}
-        run: python3 reviewer/.github/scripts/ai_review_preflight.py --probe json
-
-      - name: Review selected revision and publish findings
-        id: review
-        working-directory: target
-        env:
-          BASE_SHA: ${{ steps.context.outputs.base_sha }}
-          CHECK_RUN_NAME: ${{ startsWith(inputs.request_id, 'ado-') && 'Azure DevOps · Manual AI code review' || 'Manual AI code review' }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HEAD_SHA: ${{ steps.context.outputs.head_sha }}
-          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-          NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
-          DIRECT_REVIEW_PROVIDER: ${{ steps.models.outputs.selected_provider }}
-          DIRECT_REVIEW_MODEL: ${{ steps.models.outputs.selected_model }}
-          # Internal preflight metadata; this is not a repository variable.
-          DIRECT_REVIEW_PRIMARY_MODEL: ${{ steps.models.outputs.primary_model }}
-          DIRECT_REVIEW_FALLBACK_MODEL: ${{ steps.models.outputs.secondary_model }}
-          DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ steps.models.outputs.secondary_provider }}
-          OLLAMA_MAX_REVIEW_CHUNKS: ${{ vars.MANUAL_REVIEW_MAX_CHUNKS || '100' }}
-          # This job allows 105 minutes and up to 100 chunks. Without an explicit
-          # budget the script would stop after the 40-minute default meant for
-          # the automatic PR review and fail a large manual or Azure DevOps run.
-          OLLAMA_REVIEW_BUDGET_SECONDS: ${{ vars.MANUAL_REVIEW_BUDGET_SECONDS || '5100' }}
-          # The response mode is selected by preflight for this run.
-          DIRECT_REVIEW_MODEL_MODE: ${{ steps.models.outputs.selected_mode }}
-          OLLAMA_REVIEW_RPM: ${{ vars.OLLAMA_REVIEW_RPM || '60' }}
-          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
-          REQUIRE_COMPLETE_REVIEW: ${{ steps.context.outputs.pr_number != '' && inputs.scope == 'full_branch' && 'true' || 'false' }}
-          REQUIRE_REVIEW_RESULT: "true"
-          REVIEW_INCLUDE_REVIEWER_FILES: ${{ steps.context.outputs.pr_number != '' && inputs.scope == 'full_branch' && 'true' || 'false' }}
-          REVIEW_ORIGIN: ${{ startsWith(inputs.request_id, 'ado-') && 'azure-devops' || 'github-actions' }}
-          REVIEW_REQUEST_ID: ${{ inputs.request_id }}
-        run: python3 ../reviewer/.github/scripts/ai_pr_review.py
 
       - name: Summarize manual review
         if: always()
         shell: bash
         env:
-          BASE_SHA: ${{ steps.context.outputs.base_sha }}
-          CHECK_RUN_URL: ${{ steps.review.outputs.check_run_url }}
-          FINDINGS_COUNT: ${{ steps.review.outputs.findings_count }}
-          HEAD_SHA: ${{ steps.context.outputs.head_sha }}
-          MODEL: ${{ steps.models.outputs.selected_model }}
-          PROVIDER: ${{ steps.models.outputs.selected_provider }}
-          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          BASE_SHA: ${{ steps.ai_review.outputs.base_sha }}
+          CHECK_RUN_URL: ${{ steps.ai_review.outputs.check_run_url }}
+          FINDINGS_COUNT: ${{ steps.ai_review.outputs.findings_count }}
+          HEAD_SHA: ${{ steps.ai_review.outputs.head_sha }}
+          PR_NUMBER: ${{ steps.ai_review.outputs.pr_number }}
           REQUESTED_MODEL: ${{ inputs.model }}
           REQUESTED_PROVIDER: ${{ inputs.provider }}
           REQUEST_ID: ${{ inputs.request_id }}
@@ -371,9 +336,6 @@ jobs:
           BASE_REF: ${{ inputs.base_ref }}
           REQUESTED_PUBLISH_TARGET: ${{ inputs.publish }}
           PUBLISH_TARGET: ${{ steps.context.outputs.publish_target }}
-          # GITHUB_STEP_SUMMARY is a distinct file per step, so a later step
-          # cannot re-read what this step wrote there. Write the same text to
-          # a fixed path too, for "Package the review report" to pick up.
           REPORT_DIR: ${{ github.workspace }}/review-report
           REVIEW_SOURCE: ${{ startsWith(inputs.request_id, 'ado-') && 'Azure DevOps' || 'GitHub' }}
           TARGET_REF: ${{ inputs.target_ref }}
@@ -387,7 +349,6 @@ jobs:
             echo "- Range: \`${BASE_SHA}..${HEAD_SHA}\`"
             echo "- Scope: \`${REVIEW_SCOPE}\` (base input: \`${BASE_REF}\`)"
             echo "- Requested provider/model: \`${REQUESTED_PROVIDER}\` / \`${REQUESTED_MODEL}\`"
-            echo "- Effective provider/model: \`${PROVIDER}\` / \`${MODEL}\`"
             echo "- Requested publication: \`${REQUESTED_PUBLISH_TARGET}\`"
             echo "- Source: \`${REVIEW_SOURCE}\`"
             echo "- Publication: \`${PUBLISH_TARGET}\`"
@@ -410,14 +371,12 @@ jobs:
         if: always()
         shell: bash
         env:
-          BASE_SHA: ${{ steps.context.outputs.base_sha }}
-          CHECK_RUN_URL: ${{ steps.review.outputs.check_run_url }}
-          FINDINGS_COUNT: ${{ steps.review.outputs.findings_count || '0' }}
-          HEAD_SHA: ${{ steps.context.outputs.head_sha }}
+          BASE_SHA: ${{ steps.ai_review.outputs.base_sha }}
+          CHECK_RUN_URL: ${{ steps.ai_review.outputs.check_run_url }}
+          FINDINGS_COUNT: ${{ steps.ai_review.outputs.findings_count || '0' }}
+          HEAD_SHA: ${{ steps.ai_review.outputs.head_sha }}
           JOB_STATUS: ${{ job.status }}
-          MODEL: ${{ steps.models.outputs.selected_model }}
-          PROVIDER: ${{ steps.models.outputs.selected_provider }}
-          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          PR_NUMBER: ${{ steps.ai_review.outputs.pr_number }}
           PUBLISH_TARGET: ${{ steps.context.outputs.publish_target }}
           REPORT_DIR: ${{ github.workspace }}/review-report
           REQUEST_ID: ${{ inputs.request_id }}
@@ -437,8 +396,8 @@ jobs:
             --arg target_ref "${TARGET_REF}" \
             --arg base_sha "${BASE_SHA}" \
             --arg head_sha "${HEAD_SHA}" \
-            --arg model "${MODEL}" \
-            --arg provider "${PROVIDER}" \
+            --arg model "${REQUESTED_MODEL}" \
+            --arg provider "${REQUESTED_PROVIDER}" \
             --arg scope "${REVIEW_SCOPE}" \
             --arg base_ref "${BASE_REF}" \
             --arg requested_model "${REQUESTED_MODEL}" \
