@@ -339,6 +339,8 @@ jobs:
           REPORT_DIR: ${{ github.workspace }}/review-report
           REVIEW_SOURCE: ${{ startsWith(inputs.request_id, 'ado-') && 'Azure DevOps' || 'GitHub' }}
           TARGET_REF: ${{ inputs.target_ref }}
+          SELECTED_PROVIDER: ${{ steps.ai_review.outputs.selected_provider }}
+          SELECTED_MODEL: ${{ steps.ai_review.outputs.selected_model }}
         run: |
           set -euo pipefail
           mkdir -p "${REPORT_DIR}"
@@ -349,6 +351,7 @@ jobs:
             echo "- Range: \`${BASE_SHA}..${HEAD_SHA}\`"
             echo "- Scope: \`${REVIEW_SCOPE}\` (base input: \`${BASE_REF}\`)"
             echo "- Requested provider/model: \`${REQUESTED_PROVIDER}\` / \`${REQUESTED_MODEL}\`"
+            echo "- Effective provider/model: \`${SELECTED_PROVIDER}\` / \`${SELECTED_MODEL}\`"
             echo "- Requested publication: \`${REQUESTED_PUBLISH_TARGET}\`"
             echo "- Source: \`${REVIEW_SOURCE}\`"
             echo "- Publication: \`${PUBLISH_TARGET}\`"
