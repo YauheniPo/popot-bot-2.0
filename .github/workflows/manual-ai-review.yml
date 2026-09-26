@@ -33,12 +33,18 @@ on:
       model:
         description: Model for the direct reviewer
         required: true
-        default: inclusionai/ling-3.0-flash-fin:free
+        default: inclusionai/ling-3.0-flash-sante:free
+        # Rationale: Grafana review metrics (88 runs) show nous/ling-3.0-flash-sante:free
+        # as primary with 90% chunk completion rate and 146s avg. Switched from
+        # openrouter/ling-3.0-flash-fin:free which hit output_limit on large full_branch
+        # reviews despite 17/17 success rate on smaller jobs.
         type: string
       provider:
         description: Provider for the direct reviewer
         required: true
-        default: openrouter
+        default: nous
+        # Rationale: nous provider hosts the primary model (ling-3.0-flash-sante:free)
+        # with highest throughput in Grafana metrics. Previously used openrouter.
         type: choice
         options:
           - ollama-cloud

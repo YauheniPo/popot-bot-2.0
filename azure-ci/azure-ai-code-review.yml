@@ -60,12 +60,16 @@ parameters:
   - name: model
     displayName: Direct reviewer model
     type: string
-    default: inclusionai/ling-3.0-flash-fin:free
+    default: inclusionai/ling-3.0-flash-sante:free
+    # Rationale: Grafana review metrics (88 runs) show nous/ling-3.0-flash-sante:free
+    # as primary with 90% chunk completion rate and 146s avg. Switched from
+    # openrouter/ling-3.0-flash-fin:free which hit output_limit on large full_branch
+    # reviews despite 17/17 success rate on smaller jobs.
 
   - name: provider
     displayName: Direct reviewer provider
     type: string
-    default: openrouter
+    default: nous
     values:
       - ollama-cloud
       - openrouter
