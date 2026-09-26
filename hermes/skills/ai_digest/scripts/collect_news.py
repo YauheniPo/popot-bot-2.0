@@ -10,6 +10,7 @@ from email.utils import parsedate_to_datetime
 import gzip
 from html import unescape
 from html.parser import HTMLParser
+import http.client
 import io
 import ipaddress
 import json
@@ -21,7 +22,7 @@ import socket
 import sys
 import time
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPHandler, HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener
 import uuid
 import xml.etree.ElementTree as ET
 
@@ -82,6 +83,10 @@ def canonical_url(url: str) -> str:
 
 
 def _public_url(url: str) -> None:
+    _public_addresses(url)
+
+
+def _public_addresses(url: str) -> list[tuple]:
     parsed = urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username:
         raise ValueError("unsafe source URL")
@@ -89,11 +94,62 @@ def _public_url(url: str) -> None:
     if host in {"localhost", "localhost.localdomain", "127.0.0.1"} or host.endswith((".local", ".internal")):
         raise ValueError("private source URL")
     try:
-        addresses = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80))
+        addresses = socket.getaddrinfo(
+            host, parsed.port or (443 if parsed.scheme == "https" else 80),
+            type=socket.SOCK_STREAM,
+        )
     except OSError as exc:
         raise ValueError("source host could not be resolved") from exc
     if not addresses or any(not ipaddress.ip_address(row[4][0]).is_global for row in addresses):
         raise ValueError("source host resolves to a private address")
+    return addresses
+
+
+def _connect_resolved(addresses: list[tuple], timeout: float) -> socket.socket:
+    last_error = None
+    for family, socktype, protocol, _, sockaddr in addresses:
+        connection = socket.socket(family, socktype, protocol)
+        try:
+            connection.settimeout(timeout)
+            connection.connect(sockaddr)
+            return connection
+        except OSError as exc:
+            connection.close()
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise OSError("no resolved source addresses")
+
+
+def _pinned_connection_class(connection_type, url: str):
+    addresses = _public_addresses(url)
+
+    class PinnedConnection(connection_type):
+        def connect(self):
+            connection = _connect_resolved(addresses, self.timeout)
+            if issubclass(connection_type, http.client.HTTPSConnection):
+                try:
+                    self.sock = self._context.wrap_socket(connection, server_hostname=self.host)
+                except BaseException:
+                    connection.close()
+                    raise
+            else:
+                self.sock = connection
+
+    return PinnedConnection
+
+
+class _SafeHTTPHandler(HTTPHandler):
+    def http_open(self, req):
+        connection_type = _pinned_connection_class(http.client.HTTPConnection, req.full_url)
+        return self.do_open(connection_type, req)
+
+
+class _SafeHTTPSHandler(HTTPSHandler):
+    def https_open(self, req):
+        connection_type = _pinned_connection_class(http.client.HTTPSConnection, req.full_url)
+        return self.do_open(connection_type, req, context=self._context,
+                            check_hostname=self._check_hostname)
 
 
 class _SafeRedirect(HTTPRedirectHandler):
@@ -104,7 +160,7 @@ class _SafeRedirect(HTTPRedirectHandler):
 
 def http_fetch(url: str, max_bytes: int, timeout: int = 12) -> bytes:
     _public_url(url)
-    opener = build_opener(_SafeRedirect)
+    opener = build_opener(ProxyHandler({}), _SafeHTTPHandler(), _SafeHTTPSHandler(), _SafeRedirect())
     request = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json, application/xml, text/xml, text/html, */*"})
     with opener.open(request, timeout=timeout) as response:
         data = response.read(max_bytes + 1)

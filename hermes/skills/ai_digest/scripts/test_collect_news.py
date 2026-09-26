@@ -2,9 +2,14 @@
 
 from datetime import datetime, timezone
 import gzip
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import http.client
 import json
 from pathlib import Path
+import socket
+import ssl
 import sys
+import threading
 import unittest
 from unittest.mock import patch, MagicMock
 from urllib.parse import urlsplit
@@ -12,6 +17,7 @@ from urllib.parse import urlsplit
 sys.path.insert(0, str(Path(__file__).parent))
 
 from collect_news import (GITHUB_API_URL, _deduplicate, _public_url, _Text, _date, _trending_articles, canonical_url,
+                           _connect_resolved, _pinned_connection_class, _SafeHTTPSHandler,
                            collect, parse_rss, UTC_SUFFIX, http_fetch)  # noqa: E402
 
 
@@ -666,6 +672,85 @@ class CollectNewsTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     http_fetch("https://example.com", max_bytes=100)
 
+    def test_http_fetch_connects_to_the_validated_address_without_resolving_again(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+
+            def log_message(self, _format, *_args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        address = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "",
+                    server.server_address)]
+        try:
+            with patch("collect_news._public_url"), \
+                    patch("collect_news._public_addresses", return_value=address), \
+                    patch("socket.getaddrinfo", side_effect=AssertionError("unexpected DNS lookup")):
+                body = http_fetch(f"http://rebinding.invalid:{server.server_port}/", max_bytes=10)
+            self.assertEqual(body, b"ok")
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=2)
+
+    def test_connect_resolved_reports_connection_and_empty_address_failures(self):
+        failed_socket = MagicMock()
+        failed_socket.connect.side_effect = OSError("connection refused")
+        with patch("collect_news.socket.socket", return_value=failed_socket):
+            with self.assertRaisesRegex(OSError, "connection refused"):
+                _connect_resolved([(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                                    ("192.0.2.1", 80))], timeout=1)
+        failed_socket.close.assert_called_once()
+        with self.assertRaisesRegex(OSError, "no resolved source addresses"):
+            _connect_resolved([], timeout=1)
+
+    def test_pinned_https_connection_keeps_tls_hostname(self):
+        pinned_socket = MagicMock()
+        tls_socket = MagicMock()
+        with patch("collect_news._public_addresses", return_value=[]):
+            connection_type = _pinned_connection_class(
+                http.client.HTTPSConnection, "https://example.test/"
+            )
+        connection = connection_type("example.test", timeout=1)
+        connection._context = MagicMock()
+        connection._context.wrap_socket.return_value = tls_socket
+        with patch("collect_news._connect_resolved", return_value=pinned_socket):
+            connection.connect()
+        connection._context.wrap_socket.assert_called_once_with(
+            pinned_socket, server_hostname="example.test"
+        )
+        self.assertIs(connection.sock, tls_socket)
+
+    def test_pinned_https_connection_closes_socket_when_tls_setup_fails(self):
+        pinned_socket = MagicMock()
+        with patch("collect_news._public_addresses", return_value=[]):
+            connection_type = _pinned_connection_class(
+                http.client.HTTPSConnection, "https://example.test/"
+            )
+        connection = connection_type("example.test", timeout=1)
+        connection._context = MagicMock()
+        connection._context.wrap_socket.side_effect = ssl.SSLError("TLS setup failed")
+        with patch("collect_news._connect_resolved", return_value=pinned_socket):
+            with self.assertRaisesRegex(ssl.SSLError, "TLS setup failed"):
+                connection.connect()
+        pinned_socket.close.assert_called_once()
+
+    def test_safe_https_handler_uses_pinned_connection(self):
+        handler = _SafeHTTPSHandler()
+        request = MagicMock(full_url="https://example.test/")
+        connection_type = MagicMock()
+        with patch("collect_news._pinned_connection_class", return_value=connection_type) as factory:
+            with patch.object(handler, "do_open", return_value=MagicMock()) as do_open:
+                handler.https_open(request)
+        factory.assert_called_once_with(http.client.HTTPSConnection, request.full_url)
+        self.assertIs(do_open.call_args.args[0], connection_type)
+
     def test_safe_redirect_validates_newurl(self):
         """Test _SafeRedirect validates the redirect URL and delegates on success."""
         from collect_news import _SafeRedirect
@@ -830,7 +915,7 @@ class CollectNewsTests(unittest.TestCase):
                  "full_text_available": False, "comment_ids": [1, 2], "commentary": "old"}
         item2 = {"title": "Test title", "url": "https://example.com",
                  "urls": ["https://example.com"], "source_ids": ["b"],
-                 "score": 3, "discussion_count": 1, "evidence": "new evidence",
+                 "score": 3, "discussion_count": 1, "evidence": "new evidence with more detail",
                  "full_text_available": True, "max_comments": 3, "commentary": "new"}
         result = _deduplicate([item1, item2])
         self.assertEqual(len(result), 1)
