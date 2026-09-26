@@ -743,6 +743,7 @@ class CollectNewsTests(unittest.TestCase):
 
     def test_safe_https_handler_uses_pinned_connection(self):
         handler = _SafeHTTPSHandler()
+        del handler._check_hostname  # urllib may omit this private attribute
         request = MagicMock(full_url="https://example.test/")
         connection_type = MagicMock()
         with patch("collect_news._pinned_connection_class", return_value=connection_type) as factory:

@@ -149,7 +149,7 @@ class _SafeHTTPSHandler(HTTPSHandler):
     def https_open(self, req):
         connection_type = _pinned_connection_class(http.client.HTTPSConnection, req.full_url)
         return self.do_open(connection_type, req, context=self._context,
-                            check_hostname=self._check_hostname)
+                            check_hostname=getattr(self, "_check_hostname", None))
 
 
 class _SafeRedirect(HTTPRedirectHandler):
