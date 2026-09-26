@@ -627,6 +627,16 @@ health-check timer. `check.sh` прогоняет `promtool check rules`, есл
 установлен; тест `observability/test_dashboard_sql.py` исполняет каждый SQL
 дашборда на реальной схеме плагина.
 
+Grafana dashboard **Hermes Overview** разбит на разделы **At a glance**,
+**Usage and tools**, **User profiles**, **Model reliability and routing**,
+**VPS resources** и **AI review in CI**. В верхних карточках видны состояние
+gateway, доля неудачных API-запросов, средняя задержка, возраст backup, место
+на диске, оценка стоимости и число токенов. Стоимость и токены относятся к
+выбранному диапазону времени; скорости на графиках измеряются в секунду.
+При отсутствии вызовов доля ошибок и задержка показывают отсутствие данных,
+а не ложный ноль. Нагрузка хоста, занятые CPU-ядра и проценты CPU/inode
+отображаются отдельно, поскольку у них разные единицы.
+
 В Grafana панель **Route scorecard** сводит availability, first-attempt
 success, p95, output tok/s, доли обрезок и пустых ответов и стоимость успешного
 вызова; ниже — ошибки по классам, p95, finish reasons, fallbacks, ошибки tool
@@ -653,12 +663,16 @@ provider/model, результат, coverage чанков, retries и время
 После deploy исправленного импортёра повторный импорт PR обновляет ранее ошибочный результат
 в той же записи без создания дубликата.
 
-Панели **Profile requests** показывают обращения к основному `default` и
+Панели **Requests by profile** показывают обращения к основному `default` и
 именованным профилям. Одно обращение — одна сохранённая запись `role=user`
 в `state.db` соответствующего профиля, а не запуск tmux, tool call или запрос
 к LLM. Служебные compression summaries исключены; записанные smoke-check
 prompts считаются обращениями. Не дошедшие до записи задания не учитываются.
 Экспортёр читает только агрегаты и timestamps, не текст сообщений.
+В dashboard оставлена одна карточка времени — **Profile last activity**;
+внутренний timestamp последнего user-запроса остаётся в экспортёре для
+совместимости, но не дублируется на экране. Диагностическая метрика успешности
+чтения истории также не занимает отдельную панель.
 
 - `hermes_profile_user_requests{profile,window}` — количество за последние
   `1h`, `24h`, `7d` и всю **сохранённую** историю (`retained`). Это gauge:
@@ -1117,30 +1131,42 @@ host key прямо внутри pipeline.
 
 1. В **Pipeline permissions** разрешите только production deployment pipeline;
    не включайте **Open access**.
-2. В **Approvals and checks** добавьте **Branch control** только для
-   `refs/heads/main` и approval владельца репозитория.
+2. В **Approvals and checks** добавьте **Branch control** для
+   `refs/heads/main` и approval владельца репозитория. Переключайте на
+   `refs/heads/*` только после зафиксированного sign-off владельца в change
+   request/PR.
 
 Создайте Azure Environment `hermes-vps`. В его **Approvals and checks**
 добавьте approval владельца, **Branch control** для `refs/heads/main` и
 **Exclusive lock**. У самого pipeline оставьте право **Queue builds** только
 владельцу. Эти проверки задаются в Azure UI, а не в YAML. Branch control
-проверяет все связанные repository resources, включая выбранную ветку
-`deploySource`: при allowlist только `refs/heads/main` feature-ветки будут
-заблокированы. Изменение allowlist требует отдельного согласования; checks
-не отключайте. Код Ansible выбранной ветки получит production credentials
-после checks и approval, поэтому согласовывайте только проверенный commit,
-показанный в отчёте запуска.
+проверяет все связанные repository resources. Шаблон `refs/heads/*` разрешает
+любую ветку кода `deploySource`, не разрешая теги; сохраните проверку защиты
+ветки, approvals и остальные checks. Это разрешает production deploy любого
+branch ref, включая ещё не проверенный. Владелец должен зафиксировать принятие
+риска в change request/PR до merge и изменения allowlist; пока sign-off не записан,
+оставляйте `refs/heads/main`. Только после sign-off переключите Environment
+Branch control на `refs/heads/*`. Для каждого run проверяйте SHA в Summary и одобряйте
+именно его. Настройте защиту всех deployable веток, если Branch control требует
+protected source branches. YAML фиксирует выбранный resource commit и публикует
+Summary до production stage; approval и Branch control задаются отдельно в Azure
+UI на Environment `hermes-vps` и Secure Files. Код выбранной ветки получит
+production credentials только после этих checks и approval.
+Перед первым production run с feature ref владелец сверяет в Azure UI, что
+Environment и оба Secure Files требуют owner approval и protected source branch;
+Queue builds остаётся только у владельца. Не запускайте такой run, пока эти
+checks не проверены.
 
 Repository resource `deploySource` использует GitHub service connection
 `github.com_YauheniPo`; разрешите его использование deployment pipeline без
 **Open access**, если разрешение ещё не выдано.
-После попадания этой версии YAML в `main`, в **Run pipeline** откройте
-**Resources → deploySource** для выбора ветки исходников:
+После попадания этой версии YAML в `main`, в **Run pipeline** оставьте pipeline
+на `main` и укажите короткое имя ветки в параметре **Branch to deploy**:
 
 | Поле | Значение |
 |---|---|
 | Branch/tag (ветка самого pipeline) | `main` — не меняйте на feature-ветку |
-| Resources → deploySource | Ветка кода, разрешённая Branch control; по умолчанию `main` |
+| Branch to deploy | `<branch>` (например, `feat/hermes-ai-digest-cron`); по умолчанию `main` |
 | Ansible deployment mode (`deployMode`) | `full`, `config-only` или `runtime-only` |
 
 Отдельный чекбокс подтверждения production не требуется: достаточно ручного
@@ -1156,8 +1182,8 @@ triggers выключены; проверки ветки, доступа, сек
 Pipeline:
 
 1. проверит, что definition запущен из `main`;
-2. через GitHub connection скачает `self` и выбранную версию `deploySource`
-   в разные каталоги без сохранения credentials; helper из доверенного `main`
+2. через GitHub connection скачает `self` из `main` и выбранную параметром
+   ветку `deploySource` в разные каталоги без сохранения credentials; helper из доверенного `main`
    сверит checkout с SHA resource Azure и сохранит архив этого commit,
    не вычисляя вершину ветки заново;
 3. до approvals опубликует в Summary ветку, SHA и режим. Проверьте их перед
@@ -1856,6 +1882,39 @@ Swarm-профилям. Compression и fallback сохраняют отдель�
 Подробнее: [единая модель агентов](workspace-ui/README.md#единая-модель-агентов-и-swarm).
 
 ### Надёжные cron-задачи
+
+Для задач вида «собрать данные → проверить источники → подготовить отчёт →
+доставить результат» используйте сохранённую cron-задачу Hermes с прикреплённым
+skill. Время, имя задачи и адрес доставки выбираются при создании задачи через
+бота; Ansible их не записывает и не меняет. Ручной запуск той же задачи
+выполняется через `/cron run <job_id>` или `hermes cron run <job_id>`. Ответ
+приходит в настроенный у задачи канал после завершения, а историю и ошибки
+можно посмотреть через `hermes cron runs <job_id>` и `hermes cron doctor`.
+После создания проверьте следующее время запуска через `/cron list`: в
+закреплённой здесь версии Hermes часовой пояс расписания общий для инстанса,
+а не отдельный параметр задачи. Этот deploy его не меняет.
+
+Репозиторий устанавливает пример этого подхода — skill `ai_digest` для новостей
+IT/AI. Попросите бота создать cron-задачу с этим skill, нужным расписанием и
+доставкой в нужный Telegram-топик. Prompt выбирает режим: `daily` по умолчанию
+(релизы/новости, 24 часа, до 5 материалов) или `--mode weekly` (исследования,
+подкасты и бенчмарки, 168 часов, до 7 материалов). Тему, окно и число
+материалов можно уточнить в prompt. Дополнительная команда `/ai_digest` не
+нужна. Для ручной проверки запускайте сохранённую задачу через `/cron run`;
+сам skill не отправляет сообщения напрямую, а возвращает краткую сводку и
+Markdown-вложение штатному механизму доставки Hermes.
+
+Сборщик skill читает [список источников и лимиты](skills/ai_digest/scripts/sources.json),
+сохраняет сырой JSON и журнал сбора в `~/.hermes/ops/news/`, а проверенный
+отчёт — в `~/workspace/digests/`. Недоступный источник отмечается в отчёте;
+при отсутствии пригодных материалов задача завершается ошибкой. Для новых
+подобных задач используйте тот же контракт: ограниченный сбор и явная
+атрибуция данных, skill для анализа, проверка файла перед выдачей и штатный
+`deliver` cron. Отдельный scheduler, поисковый сервис или LLM-ключ для
+дайджеста не требуются. Для недельного выпуска подкасты анализируются по
+описанию, а результаты SWE-bench — по опубликованному JSON; изменение ранга
+без предыдущего снимка не утверждается. Детали и локальная проверка описаны в
+[документации skill](skills/ai_digest/README.md).
 
 Для cron deploy формирует `cron.model_provider` и `cron.model` из общей
 модели `vps_hermes.config.managed_overlay.model`. Задачи без собственного pin используют

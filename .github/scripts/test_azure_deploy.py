@@ -14,6 +14,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 PREPARE = ROOT / "azure-ci/scripts/prepare-hermes-deploy.py"
+VALIDATE_BRANCH = ROOT / "azure-ci/scripts/validate-deploy-branch.py"
 
 
 class DeploymentSelectionTests(unittest.TestCase):
@@ -44,6 +45,33 @@ class DeploymentSelectionTests(unittest.TestCase):
                  "DEPLOY_COMMIT": self.sha if commit is None else commit,
                  "DEPLOY_ARTIFACT_DIR": str(self.output)},
         )
+
+    def test_branch_name_validation_accepts_feature_branch_and_rejects_invalid_refs(self):
+        for branch in ("feat/hermes-ai-digest-cron", "release/v1.2"):
+            with self.subTest(branch=branch):
+                result = subprocess.run(
+                    [sys.executable, str(VALIDATE_BRANCH)], cwd=self.repo, text=True,
+                    capture_output=True, check=False,
+                    env={**os.environ, "DEPLOY_BRANCH": branch},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, "")
+        for branch in ("", "refs/heads/main", "../main", "a/b/../c", "main/", "a//b",
+                       "a/./b", "a/b/.", "main\n", "main^{commit}"):
+            with self.subTest(branch=branch):
+                result = subprocess.run(
+                    [sys.executable, str(VALIDATE_BRANCH)], cwd=self.repo, text=True,
+                    capture_output=True, check=False,
+                    env={**os.environ, "DEPLOY_BRANCH": branch},
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertTrue(result.stderr.strip())
+                self.assertIn("ERROR:", result.stderr)
+                if branch:
+                    self.assertNotIn(branch, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                if branch == "a//b":
+                    self.assertIn("Invalid deployment branch name", result.stderr)
 
     def test_snapshot_stays_pinned_when_branch_moves_and_excludes_local_files(self):
         (self.repo / "untracked-secret").write_text("must not be archived")
@@ -150,7 +178,7 @@ class DeploymentPipelineTests(unittest.TestCase):
         self.assertEqual(self.pipeline["trigger"], "none")
         self.assertEqual(self.pipeline["pr"], "none")
         self.assertCountEqual([p["name"] for p in self.pipeline["parameters"]],
-                              ["deployMode"])
+                              ["deployBranch", "deployMode"])
         content = json.dumps(self.pipeline)
         for obsolete in ("confirmProduction", "CONFIRM_PRODUCTION", "Validate production confirmation"):
             self.assertNotIn(obsolete, content)
@@ -375,6 +403,14 @@ sudo() { printf '%s\\n' "$@"; [[ "$*" != *'tailscale logout'* ]]; }
         source_checkout = next(s for s in steps if s.get("checkout") == "deploySource")
         self.assertEqual(source_checkout["path"], "s/deploy-source")
         self.assertIs(source_checkout["persistCredentials"], False)
+        validate_branch = next(s for s in steps if "validate-deploy-branch.py" in s.get("bash", ""))
+        self.assertEqual(validate_branch["env"]["DEPLOY_BRANCH"], "${{ parameters.deployBranch }}")
+        self.assertEqual(validate_branch["workingDirectory"], "$(Pipeline.Workspace)/s/pipeline")
+        self.assertLess(steps.index(checkout), steps.index(validate_branch))
+        self.assertLess(steps.index(validate_branch), steps.index(source_checkout))
+        self.assertEqual(source_checkout["checkout"], "deploySource")
+        self.assertEqual(self.pipeline["resources"]["repositories"][0]["ref"],
+                         "refs/heads/${{ parameters.deployBranch }}")
         prepare = next(s for s in steps if "prepare-hermes-deploy.py" in s.get("bash", ""))
         self.assertEqual(prepare["bash"],
                          'python3 "$(Pipeline.Workspace)/s/pipeline/azure-ci/scripts/prepare-hermes-deploy.py"')
@@ -392,20 +428,27 @@ sudo() { printf '%s\\n' "$@"; [[ "$*" != *'tailscale logout'* ]]; }
         download = next(s for s in deploy_steps if s.get("download") == "current")
         self.assertEqual(download["artifact"], publish["inputs"]["artifact"])
 
-    def test_deploy_source_uses_native_github_resource_picker(self):
+    def test_deploy_source_uses_queue_time_branch_parameter(self):
         self.assertEqual(self.pipeline["resources"]["repositories"], [{
             "repository": "deploySource", "type": "github",
             "endpoint": "github.com_YauheniPo", "name": "YauheniPo/popot-bot-2.0",
-            "ref": "refs/heads/main",
+            "ref": "refs/heads/${{ parameters.deployBranch }}",
         }])
+        parameters = {p["name"]: p for p in self.pipeline["parameters"]}
+        self.assertCountEqual(parameters, ["deployBranch", "deployMode"])
+        self.assertEqual(parameters["deployBranch"]["default"], "main")
+        self.assertEqual(parameters["deployBranch"]["type"], "string")
+        self.assertEqual(self.pipeline["resources"]["repositories"][0]["ref"],
+                         "refs/heads/${{ parameters.deployBranch }}")
         variables = self.pipeline["stages"][0]["jobs"][0]["variables"]
         self.assertEqual(variables["deploymentSourceRef"], "$[ resources.repositories.deploySource.ref ]")
         self.assertEqual(variables["deploymentSourceVersion"], "$[ resources.repositories.deploySource.version ]")
 
     def test_mode_parameters_reach_both_ansible_commands_after_vault(self):
         parameters = {p["name"]: p for p in self.pipeline["parameters"]}
+        self.assertEqual(parameters["deployBranch"]["type"], "string")
+        self.assertEqual(parameters["deployBranch"]["default"], "main")
         self.assertEqual(set(parameters["deployMode"]["values"]), {"full", "config-only", "runtime-only"})
-        self.assertNotIn("deployBranch", parameters)
         steps = self.pipeline["stages"][1]["jobs"][0]["strategy"]["runOnce"]["deploy"]["steps"]
         commands = [s for s in steps if "ansible-playbook \\" in s.get("bash", "")]
         self.assertEqual(len(commands), 2)

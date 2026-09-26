@@ -7,6 +7,8 @@ import re
 import subprocess
 import sys
 
+from branch_validation import validate_deploy_branch
+
 
 def git(*args: str) -> str:
     return subprocess.check_output(
@@ -16,18 +18,13 @@ def git(*args: str) -> str:
 
 def main() -> int:
     branch_ref = os.environ.get("DEPLOY_BRANCH", "")
-    branch = branch_ref.removeprefix("refs/heads/")
+    branch = validate_deploy_branch(branch_ref, full_ref=True)
     commit = os.environ.get("DEPLOY_COMMIT", "")
     mode = os.environ.get("DEPLOY_MODE", "")
     if mode not in {"full", "config-only", "runtime-only"}:
         raise ValueError("Invalid deployment mode")
     # Limit input to ordinary branch names, not tags, SHAs, revision expressions
     # or strings interpreted by Azure logging / shell / Markdown syntax.
-    if (not branch_ref.startswith("refs/heads/")
-            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", branch)
-            or branch.startswith("refs/")):
-        raise ValueError("Invalid deployment branch name")
-    git("check-ref-format", f"refs/heads/{branch}")
     # Azure resolves the resource version before checkout. Never resolve the
     # branch again: it may have moved since the user selected this version.
     if not re.fullmatch(r"[0-9a-f]{40}", commit):

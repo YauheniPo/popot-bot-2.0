@@ -464,7 +464,8 @@ class ExportMetricsTests(unittest.TestCase):
         panels = json.loads(dashboard.read_text())['panels']
         expressions = [target['expr'] for panel in panels for target in panel.get('targets', []) if 'expr' in target]
         self.assertTrue(any('hermes_profile_user_requests' in expr for expr in expressions))
-        self.assertTrue(any('hermes_profile_last_request_timestamp_seconds' in expr for expr in expressions))
+        self.assertTrue(any('hermes_profile_last_activity_timestamp_seconds' in expr for expr in expressions))
+        self.assertFalse(any('hermes_profile_last_request_timestamp_seconds' in expr for expr in expressions))
         self.assertTrue(any('hermes_profile_response_duration_seconds' in expr for expr in expressions))
         self.assertTrue(any('hermes_profile_last_request_duration_seconds' in expr for expr in expressions))
         self.assertFalse(any('rate(hermes_profile_user_requests' in expr for expr in expressions))

@@ -396,6 +396,36 @@
         archive: true
         checksum: true
 
+    - name: Synchronize repository-owned Hermes skills
+      ansible.posix.synchronize:
+        src: "{{ playbook_dir }}/../skills/"
+        dest: "{{ hermes_bundle_dir }}/skills/"
+        archive: true
+        checksum: true
+        rsync_opts:
+          - --exclude=__pycache__
+          - --exclude=*.pyc
+          - --exclude=test_*.py
+          - --exclude=.env
+          - --exclude=.env.*
+          - --exclude=.envrc
+          - --exclude=dotenv
+          - --exclude=env
+          - --exclude=env.*
+          - --exclude=*.secret
+          - --exclude=*.key
+          - --exclude=*.pem
+          - --exclude=credentials.yml
+          - --exclude=credentials.yaml
+          - --exclude=vault.yml
+          - --exclude=vault.yaml
+          - --exclude=id_rsa
+          - --exclude=id_ed25519
+          - --exclude=*.p12
+          - --exclude=*.pfx
+          - --exclude=.netrc
+          - --exclude=node_modules
+
     - name: Copy repository-owned Hermes workspace instructions
       ansible.builtin.copy:
         content: |

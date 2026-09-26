@@ -145,6 +145,40 @@ class DashboardSqlTests(unittest.TestCase):
         columns, rows = self.run_query(targets["Tool call failures by model — selected range"])
         self.assertEqual(rows, [("model-b", 1.0, 1), ("model-a", 0.0, 1), ("unknown", 0.0, 1)])
 
+    def test_summary_charts_group_errors_and_finish_reasons_for_readability(self) -> None:
+        targets = dict(sqlite_targets())
+        columns, rows = self.run_query(targets["API errors by class"])
+        self.assertEqual(columns, ["time", "route", "errors"])
+        self.assertEqual({row[1]: row[2] for row in rows}, {"rate_limit": 1, "server": 1})
+        columns, rows = self.run_query(targets["Finish reasons"])
+        self.assertEqual(columns, ["time", "route", "responses"])
+        self.assertEqual({row[1]: row[2] for row in rows},
+                         {"stop": 2, "length": 1, "tool_calls": 1})
+
+    def test_summary_charts_handle_empty_errors_and_missing_finish_reason(self) -> None:
+        targets = dict(sqlite_targets())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.dict(os.environ, {"HERMES_HOME": str(root)}):
+                load_plugin()._db().close()
+            database = root / "ops" / "metrics.db"
+            with closing(sqlite3.connect(database)) as connection, connection:
+                connection.execute(
+                    "INSERT INTO api_calls (ts, status, finish_reason, status_code) "
+                    "VALUES (?, ?, ?, ?)",
+                    (at(0), "ok", None, 0),
+                )
+            with closing(sqlite3.connect(f"file:{database}?mode=ro", uri=True)) as connection:
+                connection.execute("PRAGMA query_only = 1")
+                errors = connection.execute(
+                    grafana_sql(targets["API errors by class"]["rawQueryText"])
+                ).fetchall()
+                finish_reasons = connection.execute(
+                    grafana_sql(targets["Finish reasons"]["rawQueryText"])
+                ).fetchall()
+        self.assertEqual(errors, [])
+        self.assertEqual([row[1:] for row in finish_reasons], [("unknown", 1)])
+
 
 if __name__ == "__main__":
     unittest.main()

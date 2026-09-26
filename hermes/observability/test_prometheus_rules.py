@@ -54,6 +54,54 @@ class PrometheusRulesTests(unittest.TestCase):
         self.assertTrue(referenced)
         self.assertEqual(referenced - known, set(), "unknown metric names in rules or dashboard")
 
+    def test_dashboard_has_clear_groups_and_no_duplicate_or_low_value_panels(self) -> None:
+        panels = json.loads(DASHBOARD.read_text(encoding="utf-8"))["panels"]
+        titles = [panel["title"] for panel in panels]
+        self.assertEqual(len(titles), len(set(titles)))
+        self.assertNotIn("Profile last request", titles)
+        self.assertIn("Profile last activity", titles)
+        self.assertNotIn("Profile usage collection", titles)
+        self.assertNotIn("LLM cost rate by model", titles)
+        self.assertGreaterEqual(len([panel for panel in panels if panel["type"] == "row"]), 5)
+        for panel in panels:
+            with self.subTest(panel=panel["title"]):
+                self.assertTrue(panel.get("description", "").strip())
+                pos = panel["gridPos"]
+                self.assertGreater(pos["h"], 0)
+                self.assertGreater(pos["w"], 0)
+                self.assertLessEqual(pos["x"] + pos["w"], 24)
+        for i, left in enumerate(panels):
+            a = left["gridPos"]
+            for right in panels[i + 1:]:
+                b = right["gridPos"]
+                self.assertFalse(a["x"] < b["x"] + b["w"] and b["x"] < a["x"] + a["w"] and
+                                 a["y"] < b["y"] + b["h"] and b["y"] < a["y"] + a["h"],
+                                 f"overlap: {left['title']} / {right['title']}")
+
+    def test_dashboard_rates_and_units_match_the_queries(self) -> None:
+        panels = {p["title"]: p for p in json.loads(DASHBOARD.read_text(encoding="utf-8"))["panels"]}
+        failures = panels["Failed API requests"]
+        latency = panels["Average model response time"]
+        for panel in (failures, latency):
+            self.assertNotIn("clamp_min", panel["targets"][0]["expr"])
+            self.assertIn("rate(hermes_api_calls_total", panel["targets"][0]["expr"])
+        self.assertEqual(failures["fieldConfig"]["defaults"]["unit"], "percentunit")
+        self.assertEqual(latency["fieldConfig"]["defaults"]["unit"], "ms")
+        self.assertIn("or vector(0)", failures["targets"][0]["expr"])
+        self.assertNotIn("clamp_min", panels["Average model response time by route"]["targets"][0]["expr"])
+        availability = panels["Successful API responses by model"]["targets"][0]["expr"]
+        self.assertNotIn("clamp_min", availability)
+        self.assertIn("sum by (provider, model) (rate(hermes_api_calls_total", availability)
+        self.assertIn("rate(hermes_api_rate_limits_total[$__rate_interval])",
+                      panels["Rate-limited requests per second"]["targets"][0]["expr"])
+        self.assertIn("Host load", panels)
+        self.assertIn("No data means Prometheus returned no sample", panels["Gateway status"]["description"])
+        self.assertIn("Inodes used", panels)
+        self.assertIn("Gateway CPU use (cores)", panels)
+        self.assertIn("Host CPU used", panels)
+        self.assertEqual(panels["Inodes used"]["fieldConfig"]["defaults"]["unit"], "percentunit")
+        self.assertEqual(panels["Host CPU used"]["fieldConfig"]["defaults"]["unit"], "percentunit")
+
     def test_ratio_rules_guard_their_denominators(self) -> None:
         for rule in self.rules:
             if "record" in rule and ":ratio" in rule["record"]:

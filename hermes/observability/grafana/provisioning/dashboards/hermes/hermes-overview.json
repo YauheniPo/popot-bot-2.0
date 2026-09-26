@@ -7,363 +7,443 @@
   "links": [],
   "panels": [
     {
+      "id": 101,
+      "title": "At a glance",
+      "description": "Current health plus usage in the selected time range. Blank traffic ratios mean no calls were observed.",
+      "type": "row",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}
+    },
+    {
       "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []},
-      "gridPos": {"h": 7, "w": 4, "x": 0, "y": 0},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}, "mappings": [{"type": "value", "options": {"0": {"text": "Down"}, "1": {"text": "Running"}}}]}, "overrides": []},
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 1},
       "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
       "targets": [{"expr": "hermes_gateway_up", "refId": "A"}],
-      "title": "Gateway up",
-      "type": "stat"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "fieldConfig": {"defaults": {"unit": "percentunit"}, "overrides": []},
-      "gridPos": {"h": 7, "w": 4, "x": 4, "y": 0},
-      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
-      "targets": [{"expr": "hermes_host_disk_used_ratio", "refId": "A"}],
-      "title": "Disk used",
-      "type": "stat"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "fieldConfig": {"defaults": {"unit": "currencyUSD"}, "overrides": []},
-      "gridPos": {"h": 7, "w": 4, "x": 8, "y": 0},
-      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
-      "targets": [{"expr": "sum(increase(hermes_cost_usd_total[$__range]))", "refId": "A"}],
-      "title": "LLM cost in selected range",
-      "type": "stat"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
-      "gridPos": {"h": 7, "w": 4, "x": 12, "y": 0},
-      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
-      "targets": [{"expr": "sum(increase(hermes_tokens_total[$__range]))", "refId": "A"}],
-      "title": "Tokens in selected range",
-      "type": "stat"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2}, "unit": "short"}, "overrides": []},
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 7},
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [{"expr": "sum by (provider, model) (rate(hermes_tokens_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}}", "refId": "A"}],
-      "title": "Token rate by model",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2}, "unit": "currencyUSD"}, "overrides": []},
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 7},
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [{"expr": "sum by (provider, model) (rate(hermes_cost_usd_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}}", "refId": "A"}],
-      "title": "LLM cost rate by model",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2}, "unit": "short"}, "overrides": []},
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 16},
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [{"expr": "sum by (tool, status) (rate(hermes_tool_calls_total[$__rate_interval]))", "legendFormat": "{{tool}} / {{status}}", "refId": "A"}],
-      "title": "Tool calls by status",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2}, "unit": "percentunit"}, "overrides": []},
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 16},
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [{"expr": "hermes_host_memory_available_ratio", "legendFormat": "memory available", "refId": "A"}, {"expr": "1 - hermes_host_disk_used_ratio", "legendFormat": "disk available", "refId": "B"}],
-      "title": "Available resources",
-      "type": "timeseries"
+      "title": "Gateway status",
+      "type": "stat",
+      "description": "Running means Prometheus has a healthy gateway sample; Down means the exporter reports the gateway offline. No data means Prometheus returned no sample; check exporter and scrape availability before concluding the gateway is down.",
+      "id": 2
     },
     {
       "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
       "fieldConfig": {"defaults": {"unit": "percentunit", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.02}, {"color": "red", "value": 0.05}]}}, "overrides": []},
-      "gridPos": {"h": 7, "w": 6, "x": 0, "y": 25},
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 1},
       "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
-      "targets": [{"expr": "sum(rate(hermes_api_calls_total{status=\"error\"}[$__rate_interval])) / clamp_min(sum(rate(hermes_api_calls_total[$__rate_interval])), 1)", "refId": "A"}],
-      "title": "API error rate",
-      "type": "stat"
+      "targets": [{"expr": "(sum(rate(hermes_api_calls_total{status=\"error\"}[$__rate_interval])) or vector(0)) / sum(rate(hermes_api_calls_total[$__rate_interval]))", "refId": "A"}],
+      "title": "Failed API requests",
+      "type": "stat",
+      "description": "Failed model API calls divided by all model API calls in the current rate interval. No data means no recorded calls in that interval.",
+      "id": 3
     },
     {
       "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
       "fieldConfig": {"defaults": {"unit": "ms"}, "overrides": []},
-      "gridPos": {"h": 7, "w": 6, "x": 6, "y": 25},
+      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 1},
       "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
-      "targets": [{"expr": "sum(rate(hermes_api_duration_ms_total[$__rate_interval])) / clamp_min(sum(rate(hermes_api_calls_total[$__rate_interval])), 1)", "refId": "A"}],
-      "title": "Average API latency",
-      "type": "stat"
+      "targets": [{"expr": "sum(rate(hermes_api_duration_ms_total[$__rate_interval])) / sum(rate(hermes_api_calls_total[$__rate_interval]))", "refId": "A"}],
+      "title": "Average model response time",
+      "type": "stat",
+      "description": "Mean duration of recorded model API calls, including failures, in the current rate interval. No data means no recorded calls.",
+      "id": 4
     },
     {
       "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
       "fieldConfig": {"defaults": {"unit": "h", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 26}, {"color": "red", "value": 48}]}}, "overrides": []},
-      "gridPos": {"h": 7, "w": 6, "x": 12, "y": 25},
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 1},
       "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
       "targets": [{"expr": "hermes_backup_age_seconds / 3600", "refId": "A"}],
-      "title": "Latest backup age",
-      "type": "stat"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2}, "unit": "short"}, "overrides": []},
-      "gridPos": {"h": 7, "w": 6, "x": 18, "y": 25},
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [{"expr": "hermes_host_load", "legendFormat": "load {{window}}", "refId": "A"}, {"expr": "hermes_host_inode_used_ratio", "legendFormat": "inode used", "refId": "B"}],
-      "title": "Host load and inode pressure",
-      "type": "timeseries"
+      "title": "Time since last backup",
+      "type": "stat",
+      "description": "Hours since the latest backup. Compare with the backup schedule if this grows.",
+      "id": 5
     },
     {
       "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
       "fieldConfig": {"defaults": {"unit": "percentunit"}, "overrides": []},
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 7},
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "hermes_host_disk_used_ratio", "refId": "A"}],
+      "title": "Disk space used",
+      "type": "stat",
+      "description": "Share of the monitored filesystem already used. Check host storage before it reaches capacity.",
+      "id": 6
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD"}, "overrides": []},
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 7},
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "sum(increase(hermes_cost_usd_total[$__range]))", "refId": "A"}],
+      "title": "Estimated LLM cost (selected range)",
+      "type": "stat",
+      "description": "Estimated recorded model cost over the selected Grafana time range, in USD. Missing prices can understate this value; it is not an invoice.",
+      "id": 7
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 7},
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "sum(increase(hermes_tokens_total[$__range]))", "refId": "A"}],
+      "title": "Tokens used (selected range)",
+      "type": "stat",
+      "description": "Total recorded input and output tokens over the selected Grafana time range.",
+      "id": 8
+    },
+    {
+      "id": 102,
+      "title": "Usage and tools",
+      "description": "Traffic rates show activity over time; selected-range totals are cumulative for the time picker.",
+      "type": "row",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 13}
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (provider, model) (rate(hermes_tokens_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}}", "refId": "A"}],
+      "title": "Tokens per second by model",
+      "type": "timeseries",
+      "description": "Recorded input and output tokens per second, split by provider and model. Use this to see which routes drive traffic.",
+      "id": 10
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (tool, status) (rate(hermes_tool_calls_total[$__rate_interval]))", "legendFormat": "{{tool}} / {{status}}", "refId": "A"}],
+      "title": "Tool calls per second by status",
+      "type": "timeseries",
+      "description": "Tool calls per second by tool and outcome. Error series reveal failing tools.",
+      "id": 11
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Input and output tokens per second by provider and model; input and output are separate series.",
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 22},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (provider, model) (rate(hermes_input_tokens_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}} input", "refId": "A"}, {"expr": "sum by (provider, model) (rate(hermes_output_tokens_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}} output", "refId": "B"}],
+      "title": "Input and output tokens per second",
+      "type": "timeseries",
+      "id": 12
+    },
+    {
+      "id": 103,
+      "title": "User profiles",
+      "description": "Request counts come from saved Hermes history and exclude unrecorded work.",
+      "type": "row",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 30}
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "User messages recorded in Hermes history during each preceding hour, by profile. This is a rolling count, not LLM calls.",
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 31},
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi"}},
-      "targets": [{"expr": "rate(hermes_gateway_process_cpu_seconds_total[$__rate_interval])", "legendFormat": "Hermes gateway CPU cores", "refId": "A"}, {"expr": "1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[$__rate_interval]))", "legendFormat": "Host CPU used", "refId": "B"}],
-      "title": "Gateway and host CPU",
-      "type": "timeseries"
+      "targets": [{"expr": "hermes_profile_user_requests{window=\"1h\"}", "legendFormat": "{{profile}} · requests", "refId": "A"}],
+      "title": "Requests by profile (last hour)",
+      "type": "timeseries",
+      "id": 14
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Recorded user messages over rolling 24-hour and 7-day windows and stored history. History deletion or restore can change stored counts.",
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 31},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "hermes_profile_user_requests{window=~\"24h|7d|retained\"}", "legendFormat": "{{profile}} · {{window}}", "refId": "A"}],
+      "title": "Requests by profile (24h / 7d / stored)",
+      "type": "timeseries",
+      "id": 15
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Approximate cumulative time between user messages and assistant responses over rolling 1-hour, 24-hour and 7-day windows. Not CPU time.",
+      "fieldConfig": {"defaults": {"unit": "s", "min": 0}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 39},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "hermes_profile_response_duration_seconds{window=~\"1h|24h|7d\"}", "legendFormat": "{{profile}} · {{window}} · response time", "refId": "A"}],
+      "title": "Time spent answering (rolling windows)",
+      "type": "timeseries",
+      "id": 16
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Duration of each profile’s latest completed request. The value persists until another request completes.",
+      "fieldConfig": {"defaults": {"unit": "s", "min": 0}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 39},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "hermes_profile_last_request_duration_seconds", "legendFormat": "{{profile}} · latest call duration", "refId": "A"}],
+      "title": "Last completed request duration",
+      "type": "timeseries",
+      "id": 17
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Most recent recorded user or assistant event by profile. No activity means an empty readable history; No data can mean history collection failed.",
+      "fieldConfig": {"defaults": {"unit": "dateTimeAsLocal", "mappings": [{"type": "value", "options": {"0": {"text": "No activity"}}}]}, "overrides": []},
+      "gridPos": {"h": 5, "w": 24, "x": 0, "y": 47},
+      "options": {"colorMode": "value", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "hermes_profile_last_activity_timestamp_seconds * 1000", "legendFormat": "{{profile}} · last activity", "instant": true, "refId": "A"}],
+      "title": "Profile last activity",
+      "type": "stat",
+      "id": 18
+    },
+    {
+      "id": 104,
+      "title": "Model reliability and routing",
+      "description": "Compare availability, latency, rate limits, retries and routing changes before choosing a model.",
+      "type": "row",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 52}
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Successful model API calls divided by all calls for each provider and model during the current rate interval.",
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 53},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "min", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (provider, model) (rate(hermes_api_success_total[$__rate_interval])) / sum by (provider, model) (rate(hermes_api_calls_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}} availability", "refId": "A"}],
+      "title": "Successful API responses by model",
+      "type": "timeseries",
+      "id": 20
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Mean model API response time by provider and model in the current rate interval, in milliseconds.",
+      "fieldConfig": {"defaults": {"unit": "ms", "min": 0}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 53},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (provider, model) (rate(hermes_api_duration_ms_total[$__rate_interval])) / sum by (provider, model) (rate(hermes_api_calls_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}} latency", "refId": "A"}],
+      "title": "Average model response time by route",
+      "type": "timeseries",
+      "id": 21
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Rate-limited model API calls per second by provider and model. The rate interval adapts to the selected time range.",
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 61},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "sum", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (provider, model) (rate(hermes_api_rate_limits_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}}", "refId": "A"}],
+      "title": "Rate-limited requests per second",
+      "type": "timeseries",
+      "id": 22
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "description": "Recorded provider retry attempts per second by provider and model. Spikes indicate unstable routes.",
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 61},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "sum", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (provider, model) (rate(hermes_api_retries_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}} retries", "refId": "A"}],
+      "title": "Retries per second by model",
+      "type": "timeseries",
+      "id": 23
+    },
+    {
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
+      "description": "Number of failed model API calls in each error class over time. Use the route scorecard and latest events to identify affected models.",
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "displayName": "${__field.labels.route}", "custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 69},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "sum", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "SELECT (CAST(strftime('%s', ts) AS INTEGER) / MAX($__interval_ms / 1000, 60)) * MAX($__interval_ms / 1000, 60) AS time, CASE WHEN (status_code = 429 OR lower(finish_reason) LIKE '%rate%limit%' OR lower(finish_reason) LIKE '%too many requests%') THEN 'rate_limit' WHEN status_code IN (408, 504) OR lower(finish_reason) LIKE '%timeout%' OR lower(finish_reason) LIKE '%timed out%' THEN 'timeout' WHEN status_code >= 500 THEN 'server' WHEN status_code IN (401, 403) THEN 'auth' WHEN status_code >= 400 THEN 'client' WHEN lower(finish_reason) LIKE '%connect%' OR lower(finish_reason) LIKE '%network%' OR lower(finish_reason) LIKE '%dns%' OR lower(finish_reason) LIKE '%reset%' OR lower(finish_reason) LIKE '%ssl%' THEN 'network' ELSE 'other' END AS route, COUNT(*) AS errors FROM api_calls WHERE status != 'ok' AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2 ORDER BY 1", "rawQueryText": "SELECT (CAST(strftime('%s', ts) AS INTEGER) / MAX($__interval_ms / 1000, 60)) * MAX($__interval_ms / 1000, 60) AS time, CASE WHEN (status_code = 429 OR lower(finish_reason) LIKE '%rate%limit%' OR lower(finish_reason) LIKE '%too many requests%') THEN 'rate_limit' WHEN status_code IN (408, 504) OR lower(finish_reason) LIKE '%timeout%' OR lower(finish_reason) LIKE '%timed out%' THEN 'timeout' WHEN status_code >= 500 THEN 'server' WHEN status_code IN (401, 403) THEN 'auth' WHEN status_code >= 400 THEN 'client' WHEN lower(finish_reason) LIKE '%connect%' OR lower(finish_reason) LIKE '%network%' OR lower(finish_reason) LIKE '%dns%' OR lower(finish_reason) LIKE '%reset%' OR lower(finish_reason) LIKE '%ssl%' THEN 'network' ELSE 'other' END AS route, COUNT(*) AS errors FROM api_calls WHERE status != 'ok' AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2 ORDER BY 1", "queryType": "time series", "timeColumns": ["time"], "refId": "A"}],
+      "title": "API errors by class",
+      "type": "timeseries",
+      "id": 24
+    },
+    {
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
+      "description": "95th percentile response time of successful model calls in each time bucket. Slow tails can be hidden by averages.",
+      "fieldConfig": {"defaults": {"unit": "ms", "min": 0, "displayName": "${__field.labels.route} p95"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 69},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "WITH ok AS ( SELECT (CAST(strftime('%s', ts) AS INTEGER) / MAX($__interval_ms / 1000, 60)) * MAX($__interval_ms / 1000, 60) AS time, provider || ' / ' || model AS route, duration_ms FROM api_calls WHERE status = 'ok' AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch')), ranked AS ( SELECT time, route, duration_ms, ROW_NUMBER() OVER (PARTITION BY time, route ORDER BY duration_ms) AS rn, COUNT(*) OVER (PARTITION BY time, route) AS cnt FROM ok) SELECT time, route, MIN(CASE WHEN rn >= 0.95 * cnt THEN duration_ms END) AS p95_ms FROM ranked GROUP BY time, route ORDER BY time", "rawQueryText": "WITH ok AS ( SELECT (CAST(strftime('%s', ts) AS INTEGER) / MAX($__interval_ms / 1000, 60)) * MAX($__interval_ms / 1000, 60) AS time, provider || ' / ' || model AS route, duration_ms FROM api_calls WHERE status = 'ok' AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch')), ranked AS ( SELECT time, route, duration_ms, ROW_NUMBER() OVER (PARTITION BY time, route ORDER BY duration_ms) AS rn, COUNT(*) OVER (PARTITION BY time, route) AS cnt FROM ok) SELECT time, route, MIN(CASE WHEN rn >= 0.95 * cnt THEN duration_ms END) AS p95_ms FROM ranked GROUP BY time, route ORDER BY time", "queryType": "time series", "timeColumns": ["time"], "refId": "A"}],
+      "title": "Slow model responses (p95)",
+      "type": "timeseries",
+      "id": 25
+    },
+    {
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
+      "description": "Successful model calls grouped by provider finish reason. Length means the response was truncated; unknown means no reason was reported.",
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "displayName": "${__field.labels.route}", "custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 77},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "sum", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "SELECT (CAST(strftime('%s', ts) AS INTEGER) / MAX($__interval_ms / 1000, 60)) * MAX($__interval_ms / 1000, 60) AS time, CASE lower(COALESCE(finish_reason, '')) WHEN 'stop' THEN 'stop' WHEN 'end_turn' THEN 'stop' WHEN 'stop_sequence' THEN 'stop' WHEN 'length' THEN 'length' WHEN 'max_tokens' THEN 'length' WHEN 'tool_calls' THEN 'tool_calls' WHEN 'tool_use' THEN 'tool_calls' WHEN 'function_call' THEN 'tool_calls' WHEN 'content_filter' THEN 'content_filter' WHEN '' THEN 'unknown' ELSE 'other' END AS route, COUNT(*) AS responses FROM api_calls WHERE status = 'ok' AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2 ORDER BY 1", "rawQueryText": "SELECT (CAST(strftime('%s', ts) AS INTEGER) / MAX($__interval_ms / 1000, 60)) * MAX($__interval_ms / 1000, 60) AS time, CASE lower(COALESCE(finish_reason, '')) WHEN 'stop' THEN 'stop' WHEN 'end_turn' THEN 'stop' WHEN 'stop_sequence' THEN 'stop' WHEN 'length' THEN 'length' WHEN 'max_tokens' THEN 'length' WHEN 'tool_calls' THEN 'tool_calls' WHEN 'tool_use' THEN 'tool_calls' WHEN 'function_call' THEN 'tool_calls' WHEN 'content_filter' THEN 'content_filter' WHEN '' THEN 'unknown' ELSE 'other' END AS route, COUNT(*) AS responses FROM api_calls WHERE status = 'ok' AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2 ORDER BY 1", "queryType": "time series", "timeColumns": ["time"], "refId": "A"}],
+      "title": "Finish reasons",
+      "type": "timeseries",
+      "id": 26
+    },
+    {
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
+      "description": "Model or provider switches recorded during the selected time range. Frequent switches can signal an unstable route.",
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 77},
+      "options": {"cellHeight": "lg", "showHeader": true, "sortBy": [{"displayName": "Switches", "desc": true}]},
+      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "SELECT from_provider || ' / ' || from_model AS \"From\", to_provider || ' / ' || to_model AS \"To\", COUNT(*) AS \"Switches\", MAX(ts) AS \"Last switch\" FROM route_fallbacks WHERE ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2 ORDER BY 3 DESC", "rawQueryText": "SELECT from_provider || ' / ' || from_model AS \"From\", to_provider || ' / ' || to_model AS \"To\", COUNT(*) AS \"Switches\", MAX(ts) AS \"Last switch\" FROM route_fallbacks WHERE ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2 ORDER BY 3 DESC", "queryType": "table", "timeColumns": ["Last switch"], "refId": "A"}],
+      "title": "Route fallbacks — selected range",
+      "type": "table",
+      "id": 27
+    },
+    {
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
+      "description": "Compare model routes in the selected range: availability, first-attempt success, p95 time, output speed, truncated or empty replies and cost per success. These are operational proxies, not answer quality scores.",
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": [{"matcher": {"id": "byName", "options": "Availability"}, "properties": [{"id": "unit", "value": "percentunit"}]}, {"matcher": {"id": "byName", "options": "First-attempt success"}, "properties": [{"id": "unit", "value": "percentunit"}]}, {"matcher": {"id": "byName", "options": "p95 response time"}, "properties": [{"id": "unit", "value": "ms"}]}, {"matcher": {"id": "byName", "options": "Truncated"}, "properties": [{"id": "unit", "value": "percentunit"}]}, {"matcher": {"id": "byName", "options": "Empty responses"}, "properties": [{"id": "unit", "value": "percentunit"}]}, {"matcher": {"id": "byName", "options": "Cost per success"}, "properties": [{"id": "unit", "value": "currencyUSD"}]}]},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 85},
+      "options": {"cellHeight": "lg", "showHeader": true, "sortBy": [{"displayName": "Availability", "desc": true}]},
+      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "WITH calls AS ( SELECT a.provider, a.model, a.status, a.duration_ms, a.input_tokens, a.output_tokens, a.total_tokens, a.cost_usd, a.finish_reason, a.status_code, a.retry_count, CASE WHEN a.status = 'ok' AND (COALESCE(a.call_index, 0) = 0 OR NOT EXISTS ( SELECT 1 FROM api_calls e WHERE e.status != 'ok' AND e.session_id = a.session_id AND e.call_index = a.call_index AND e.ts <= a.ts)) THEN 1 ELSE 0 END AS first_attempt, ROW_NUMBER() OVER (PARTITION BY a.provider, a.model, a.status ORDER BY a.duration_ms) AS rn, COUNT(*) OVER (PARTITION BY a.provider, a.model, a.status) AS cnt FROM api_calls a WHERE ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch')) SELECT provider AS \"Provider\", model AS \"Model\", 1.0 * SUM(status = 'ok') / COUNT(*) AS \"Availability\", 1.0 * SUM(first_attempt) / NULLIF(SUM(status = 'ok'), 0) AS \"First-attempt success\", MIN(CASE WHEN status = 'ok' AND rn >= 0.95 * cnt THEN duration_ms END) AS \"p95 response time\", 1000.0 * SUM(CASE WHEN status = 'ok' THEN output_tokens END) / NULLIF(SUM(CASE WHEN status = 'ok' THEN duration_ms END), 0) AS \"Output tok/s\", 1.0 * SUM(status = 'ok' AND lower(COALESCE(finish_reason, '')) IN ('length', 'max_tokens')) / NULLIF(SUM(status = 'ok'), 0) AS \"Truncated\", 1.0 * SUM(status = 'ok' AND COALESCE(output_tokens, 0) = 0 AND (COALESCE(input_tokens, 0) > 0 OR COALESCE(total_tokens, 0) > 0)) / NULLIF(SUM(status = 'ok'), 0) AS \"Empty responses\", SUM(CASE WHEN status = 'ok' THEN cost_usd END) / NULLIF(SUM(status = 'ok'), 0) AS \"Cost per success\", SUM(status = 'ok') AS \"Successes\", SUM(status != 'ok') AS \"Errors\", SUM((status_code = 429 OR lower(finish_reason) LIKE '%rate%limit%' OR lower(finish_reason) LIKE '%too many requests%')) AS \"Rate limits\", SUM(COALESCE(retry_count, 0)) AS \"Retries\" FROM calls GROUP BY provider, model ORDER BY 3 DESC", "rawQueryText": "WITH calls AS ( SELECT a.provider, a.model, a.status, a.duration_ms, a.input_tokens, a.output_tokens, a.total_tokens, a.cost_usd, a.finish_reason, a.status_code, a.retry_count, CASE WHEN a.status = 'ok' AND (COALESCE(a.call_index, 0) = 0 OR NOT EXISTS ( SELECT 1 FROM api_calls e WHERE e.status != 'ok' AND e.session_id = a.session_id AND e.call_index = a.call_index AND e.ts <= a.ts)) THEN 1 ELSE 0 END AS first_attempt, ROW_NUMBER() OVER (PARTITION BY a.provider, a.model, a.status ORDER BY a.duration_ms) AS rn, COUNT(*) OVER (PARTITION BY a.provider, a.model, a.status) AS cnt FROM api_calls a WHERE ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch')) SELECT provider AS \"Provider\", model AS \"Model\", 1.0 * SUM(status = 'ok') / COUNT(*) AS \"Availability\", 1.0 * SUM(first_attempt) / NULLIF(SUM(status = 'ok'), 0) AS \"First-attempt success\", MIN(CASE WHEN status = 'ok' AND rn >= 0.95 * cnt THEN duration_ms END) AS \"p95 response time\", 1000.0 * SUM(CASE WHEN status = 'ok' THEN output_tokens END) / NULLIF(SUM(CASE WHEN status = 'ok' THEN duration_ms END), 0) AS \"Output tok/s\", 1.0 * SUM(status = 'ok' AND lower(COALESCE(finish_reason, '')) IN ('length', 'max_tokens')) / NULLIF(SUM(status = 'ok'), 0) AS \"Truncated\", 1.0 * SUM(status = 'ok' AND COALESCE(output_tokens, 0) = 0 AND (COALESCE(input_tokens, 0) > 0 OR COALESCE(total_tokens, 0) > 0)) / NULLIF(SUM(status = 'ok'), 0) AS \"Empty responses\", SUM(CASE WHEN status = 'ok' THEN cost_usd END) / NULLIF(SUM(status = 'ok'), 0) AS \"Cost per success\", SUM(status = 'ok') AS \"Successes\", SUM(status != 'ok') AS \"Errors\", SUM((status_code = 429 OR lower(finish_reason) LIKE '%rate%limit%' OR lower(finish_reason) LIKE '%too many requests%')) AS \"Rate limits\", SUM(COALESCE(retry_count, 0)) AS \"Retries\" FROM calls GROUP BY provider, model ORDER BY 3 DESC", "queryType": "table", "timeColumns": [], "refId": "A"}],
+      "title": "Route scorecard — selected range",
+      "type": "table",
+      "id": 28
+    },
+    {
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
+      "description": "Most recent success, error and rate-limit timestamps per provider and model in retained history, independent of the time picker.",
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 95},
+      "options": {"cellHeight": "lg", "showHeader": true, "sortBy": [{"displayName": "Last success", "desc": true}]},
+      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "SELECT provider AS \"Provider\", model AS \"Model\", MAX(CASE WHEN status = 'ok' THEN ts END) AS \"Last success\", MAX(CASE WHEN status != 'ok' THEN ts END) AS \"Last error\", MAX(CASE WHEN (status_code = 429 OR lower(finish_reason) LIKE '%rate%limit%' OR lower(finish_reason) LIKE '%too many requests%') THEN ts END) AS \"Last rate limit\" FROM api_calls GROUP BY provider, model ORDER BY 3 DESC", "rawQueryText": "SELECT provider AS \"Provider\", model AS \"Model\", MAX(CASE WHEN status = 'ok' THEN ts END) AS \"Last success\", MAX(CASE WHEN status != 'ok' THEN ts END) AS \"Last error\", MAX(CASE WHEN (status_code = 429 OR lower(finish_reason) LIKE '%rate%limit%' OR lower(finish_reason) LIKE '%too many requests%') THEN ts END) AS \"Last rate limit\" FROM api_calls GROUP BY provider, model ORDER BY 3 DESC", "queryType": "table", "timeColumns": ["Last success", "Last error", "Last rate limit"], "refId": "A"}],
+      "title": "Model/provider — latest availability events",
+      "type": "table",
+      "id": 29
+    },
+    {
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
+      "description": "Share and count of failed tool calls by the model active in the session during the selected range.",
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": [{"matcher": {"id": "byName", "options": "Failed share"}, "properties": [{"id": "unit", "value": "percentunit"}]}]},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 103},
+      "options": {"cellHeight": "lg", "showHeader": true, "sortBy": [{"displayName": "Failed share", "desc": true}]},
+      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "WITH calls AS ( SELECT t.status, COALESCE((SELECT s.model FROM sessions s WHERE s.session_id = t.session_id AND s.event = 'start' AND s.ts <= t.ts ORDER BY s.ts DESC LIMIT 1), 'unknown') AS model FROM tool_calls t WHERE ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch')) SELECT model AS \"Model\", 1.0 * SUM(status != 'ok') / COUNT(*) AS \"Failed share\", COUNT(*) AS \"Tool calls\" FROM calls GROUP BY model ORDER BY 2 DESC, 1", "rawQueryText": "WITH calls AS ( SELECT t.status, COALESCE((SELECT s.model FROM sessions s WHERE s.session_id = t.session_id AND s.event = 'start' AND s.ts <= t.ts ORDER BY s.ts DESC LIMIT 1), 'unknown') AS model FROM tool_calls t WHERE ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch')) SELECT model AS \"Model\", 1.0 * SUM(status != 'ok') / COUNT(*) AS \"Failed share\", COUNT(*) AS \"Tool calls\" FROM calls GROUP BY model ORDER BY 2 DESC, 1", "queryType": "table", "timeColumns": [], "refId": "A"}],
+      "title": "Tool call failures by model — selected range",
+      "type": "table",
+      "id": 30
+    },
+    {
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
+      "description": "Calls served by a different model than requested during the selected range. Check these before comparing route performance.",
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 103},
+      "options": {"cellHeight": "lg", "showHeader": true, "sortBy": [{"displayName": "Responses", "desc": true}]},
+      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "SELECT provider AS \"Provider\", requested_model AS \"Requested\", model AS \"Served\", COUNT(*) AS \"Responses\", MAX(ts) AS \"Last seen\" FROM api_calls WHERE COALESCE(requested_model, '') != '' AND requested_model != model AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2, 3 ORDER BY 4 DESC", "rawQueryText": "SELECT provider AS \"Provider\", requested_model AS \"Requested\", model AS \"Served\", COUNT(*) AS \"Responses\", MAX(ts) AS \"Last seen\" FROM api_calls WHERE COALESCE(requested_model, '') != '' AND requested_model != model AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2, 3 ORDER BY 4 DESC", "queryType": "table", "timeColumns": ["Last seen"], "refId": "A"}],
+      "title": "Requested vs served model — selected range",
+      "type": "table",
+      "id": 31
+    },
+    {
+      "id": 105,
+      "title": "VPS resources",
+      "description": "Capacity and process use; host load, CPU cores and percentages use separate axes.",
+      "type": "row",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 111}
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2}, "unit": "percentunit"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 112},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "hermes_host_memory_available_ratio", "legendFormat": "memory available", "refId": "A"}, {"expr": "1 - hermes_host_disk_used_ratio", "legendFormat": "disk available", "refId": "B"}],
+      "title": "Memory and disk free",
+      "type": "timeseries",
+      "description": "Share of RAM and disk capacity available to the host. Lower values mean less headroom.",
+      "id": 33
     },
     {
       "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
       "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []},
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 112},
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi"}},
       "targets": [{"expr": "hermes_gateway_process_resident_memory_bytes", "legendFormat": "Hermes gateway RSS", "refId": "A"}, {"expr": "node_memory_MemAvailable_bytes", "legendFormat": "Host available memory", "refId": "B"}],
-      "title": "Gateway and host memory",
-      "type": "timeseries"
+      "title": "Gateway RAM and host RAM available",
+      "type": "timeseries",
+      "description": "Gateway resident memory and host memory still available, both in bytes. A shrinking available host memory line may indicate pressure.",
+      "id": 34
     },
     {
       "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "description": "Recorded user input messages in the preceding hour, per profile. Sliding window gauge, not LLM calls or a lifetime counter. Prometheus history begins at the first scrape.",
-      "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []},
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 40},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 120},
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi"}},
-      "targets": [{"expr": "hermes_profile_user_requests{window=\"1h\"}", "legendFormat": "{{profile}} · requests", "refId": "A"}],
-      "title": "Profile requests — preceding hour",
-      "type": "timeseries"
+      "targets": [{"expr": "rate(hermes_gateway_process_cpu_seconds_total[$__rate_interval])", "legendFormat": "Hermes gateway CPU cores", "refId": "A"}],
+      "title": "Gateway CPU use (cores)",
+      "type": "timeseries",
+      "description": "CPU cores occupied by the Hermes gateway process. A value of 1 means one fully used core.",
+      "id": 35
     },
     {
       "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "description": "Counts from retained Hermes input history. Includes recorded smoke-test prompts. Deleting, importing or restoring history changes these gauges; do not apply rate/increase.",
-      "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []},
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 40},
+      "fieldConfig": {"defaults": {"unit": "percentunit"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 120},
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi"}},
-      "targets": [{"expr": "hermes_profile_user_requests{window=~\"24h|7d|retained\"}", "legendFormat": "{{profile}} · {{window}}", "refId": "A"}],
-      "title": "Profile requests — day / week / retained history",
-      "type": "timeseries"
+      "targets": [{"expr": "1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[$__rate_interval]))", "legendFormat": "Host CPU used", "refId": "A"}],
+      "title": "Host CPU used",
+      "type": "timeseries",
+      "description": "Share of total host CPU capacity used across all cores.",
+      "id": 36
     },
     {
       "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "description": "Time of the most recent retained user input, not process startup or background maintenance. Empty history is shown as No requests.",
-      "fieldConfig": {"defaults": {"unit": "dateTimeAsLocal", "mappings": [{"type": "value", "options": {"0": {"text": "No requests"}}}]}, "overrides": []},
-      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 48},
-      "options": {"colorMode": "value", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
-      "targets": [{"expr": "hermes_profile_last_request_timestamp_seconds * 1000", "legendFormat": "{{profile}}", "instant": true, "refId": "A"}],
-      "title": "Profile last request",
-      "type": "stat"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "description": "Approximate time from each retained user message to the following assistant response, aggregated by profile and lookback window.",
-      "fieldConfig": {"defaults": {"unit": "s", "min": 0}, "overrides": []},
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 54},
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [{"expr": "hermes_profile_response_duration_seconds{window=~\"1h|24h|7d\"}", "legendFormat": "{{profile}} · {{window}} · response time", "refId": "A"}],
-      "title": "Profile activity duration — selected time range",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "description": "Each profile's latest completed call duration from its user-message start to assistant-response end. The table shows the last, maximum and mean values in the selected Grafana range.",
-      "fieldConfig": {"defaults": {"unit": "s", "min": 0}, "overrides": []},
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 62},
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [{"expr": "hermes_profile_last_request_duration_seconds", "legendFormat": "{{profile}} · latest call duration", "refId": "A"}],
-      "title": "Agent call duration — start to end",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "description": "Latest observed activity for each profile, including the assistant response timestamp when available.",
-      "fieldConfig": {"defaults": {"unit": "dateTimeAsLocal", "mappings": [{"type": "value", "options": {"0": {"text": "No activity"}}}]}, "overrides": []},
-      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 54},
-      "options": {"colorMode": "value", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
-      "targets": [{"expr": "hermes_profile_last_activity_timestamp_seconds * 1000", "legendFormat": "{{profile}} · last activity", "instant": true, "refId": "A"}],
-      "title": "Profile last activity",
-      "type": "stat"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "description": "Zero means missing/unreadable history or a query timeout; usage is then unknown, not zero. One means the profile history was read successfully, including an empty history.",
-      "fieldConfig": {"defaults": {"min": 0, "max": 1, "mappings": [{"type": "value", "options": {"0": {"text": "History unavailable", "color": "red"}, "1": {"text": "History readable", "color": "green"}}}]}, "overrides": []},
-      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 48},
-      "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
-      "targets": [{"expr": "hermes_profile_history_readable", "legendFormat": "{{profile}}", "instant": true, "refId": "A"}],
-      "title": "Profile usage collection",
-      "type": "stat"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "description": "Provider/model pairs that returned rate-limit responses. Use this panel to identify unstable routes over the selected Grafana range.",
-      "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []},
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 70},
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "sum", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [{"expr": "sum by (provider, model) (increase(hermes_api_rate_limits_total[$__range]))", "legendFormat": "{{provider}} / {{model}}", "refId": "A"}],
-      "title": "Provider rate limits — selected range",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "description": "Latest rate-limit event timestamp per provider/model. Zero means no observed rate limit.",
-      "fieldConfig": {"defaults": {"unit": "dateTimeAsLocal", "mappings": [{"type": "value", "options": {"0": {"text": "No rate limits"}}}]}, "overrides": []},
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 70},
-      "options": {"colorMode": "value", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
-      "targets": [{"expr": "hermes_api_last_rate_limit_timestamp_seconds * 1000", "legendFormat": "{{provider}} / {{model}}", "instant": true, "refId": "A"}],
-      "title": "Last provider rate limit",
-      "type": "stat"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "description": "Input and output token throughput by provider and model. Total token metrics remain available in the panel above.",
       "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2}, "unit": "short"}, "overrides": []},
-      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 79},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 128},
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [
-        {"expr": "sum by (provider, model) (rate(hermes_input_tokens_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}} input", "refId": "A"},
-        {"expr": "sum by (provider, model) (rate(hermes_output_tokens_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}} output", "refId": "B"}
-      ],
-      "title": "Token throughput by provider and model",
-      "type": "timeseries"
+      "targets": [{"expr": "hermes_host_load", "legendFormat": "load {{window}}", "refId": "A"}],
+      "title": "Host load",
+      "type": "timeseries",
+      "description": "Host load averages over 1, 5 and 15 minutes. Load is runnable work, not a percent; compare it with CPU capacity.",
+      "id": 37
     },
     {
       "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "description": "Successful responses divided by all responses in the selected range. Provider and model stay visible in the legend.",
-      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []},
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 88},
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "min", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [{"expr": "sum by (provider, model) (rate(hermes_api_success_total[$__rate_interval])) / clamp_min(sum by (provider, model) (rate(hermes_api_success_total[$__rate_interval]) + rate(hermes_api_errors_total[$__rate_interval])), 1e-9)", "legendFormat": "{{provider}} / {{model}} availability", "refId": "A"}],
-      "title": "Model availability",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "description": "Average time spent waiting for a provider response, including stream completion as reported by the Hermes API hook.",
-      "fieldConfig": {"defaults": {"unit": "ms", "min": 0}, "overrides": []},
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 88},
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2}, "unit": "percentunit"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 128},
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [{"expr": "sum by (provider, model) (rate(hermes_api_duration_ms_total[$__rate_interval])) / clamp_min(sum by (provider, model) (rate(hermes_api_calls_total[$__rate_interval])), 1e-9)", "legendFormat": "{{provider}} / {{model}} latency", "refId": "A"}],
-      "title": "Model response latency",
-      "type": "timeseries"
+      "targets": [{"expr": "hermes_host_inode_used_ratio", "legendFormat": "inode used", "refId": "A"}],
+      "title": "Inodes used",
+      "type": "timeseries",
+      "description": "Share of filesystem inodes already used. High usage can prevent new files even when disk space remains.",
+      "id": 38
     },
     {
-      "datasource": {"type": "prometheus", "uid": "hermes-prometheus"},
-      "description": "Retry activity by provider and model. Spikes indicate recovery work and unstable availability.",
-      "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []},
-      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 97},
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "sum", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [{"expr": "sum by (provider, model) (rate(hermes_api_retries_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{model}} retries", "refId": "A"}],
-      "title": "API recovery attempts",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
-      "description": "Latest successful, failed and rate-limited response per provider/model over the retained history (not the time picker); useful for finding long periods of unavailability. Empty cell means the event was never observed.",
-      "fieldConfig": {"defaults": {}, "overrides": []},
-      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 106},
-      "options": {"cellHeight": "lg", "showHeader": true, "sortBy": [{"displayName": "Last success", "desc": true}]},
-      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "SELECT provider AS \"Provider\", model AS \"Model\", MAX(CASE WHEN status = 'ok' THEN ts END) AS \"Last success\", MAX(CASE WHEN status != 'ok' THEN ts END) AS \"Last error\", MAX(CASE WHEN (status_code = 429 OR lower(finish_reason) LIKE '%rate%limit%' OR lower(finish_reason) LIKE '%too many requests%') THEN ts END) AS \"Last rate limit\" FROM api_calls GROUP BY provider, model ORDER BY 3 DESC", "rawQueryText": "SELECT provider AS \"Provider\", model AS \"Model\", MAX(CASE WHEN status = 'ok' THEN ts END) AS \"Last success\", MAX(CASE WHEN status != 'ok' THEN ts END) AS \"Last error\", MAX(CASE WHEN (status_code = 429 OR lower(finish_reason) LIKE '%rate%limit%' OR lower(finish_reason) LIKE '%too many requests%') THEN ts END) AS \"Last rate limit\" FROM api_calls GROUP BY provider, model ORDER BY 3 DESC", "queryType": "table", "timeColumns": ["Last success", "Last error", "Last rate limit"], "refId": "A"}],
-      "title": "Model/provider — latest availability events",
-      "type": "table"
+      "id": 106,
+      "title": "AI review in CI",
+      "description": "Imported published review outcomes and provider processing times.",
+      "type": "row",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 136}
     },
     {
       "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
-      "description": "Route scorecard for the selected range, computed per call from the SQLite snapshot. Availability and first-attempt success show stability, p95 and output tok/s show speed, truncated and empty shares are quality proxies. First-attempt success links a success to error rows of the same session and api_call_count; without that correlation it equals availability of successes.",
-      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": [{"matcher": {"id": "byName", "options": "Availability"}, "properties": [{"id": "unit", "value": "percentunit"}]}, {"matcher": {"id": "byName", "options": "First-attempt success"}, "properties": [{"id": "unit", "value": "percentunit"}]}, {"matcher": {"id": "byName", "options": "p95 response time"}, "properties": [{"id": "unit", "value": "ms"}]}, {"matcher": {"id": "byName", "options": "Truncated"}, "properties": [{"id": "unit", "value": "percentunit"}]}, {"matcher": {"id": "byName", "options": "Empty responses"}, "properties": [{"id": "unit", "value": "percentunit"}]}, {"matcher": {"id": "byName", "options": "Cost per success"}, "properties": [{"id": "unit", "value": "currencyUSD"}]}]},
-      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 116},
-      "options": {"cellHeight": "lg", "showHeader": true, "sortBy": [{"displayName": "Availability", "desc": true}]},
-      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "WITH calls AS ( SELECT a.provider, a.model, a.status, a.duration_ms, a.input_tokens, a.output_tokens, a.total_tokens, a.cost_usd, a.finish_reason, a.status_code, a.retry_count, CASE WHEN a.status = 'ok' AND (COALESCE(a.call_index, 0) = 0 OR NOT EXISTS ( SELECT 1 FROM api_calls e WHERE e.status != 'ok' AND e.session_id = a.session_id AND e.call_index = a.call_index AND e.ts <= a.ts)) THEN 1 ELSE 0 END AS first_attempt, ROW_NUMBER() OVER (PARTITION BY a.provider, a.model, a.status ORDER BY a.duration_ms) AS rn, COUNT(*) OVER (PARTITION BY a.provider, a.model, a.status) AS cnt FROM api_calls a WHERE ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch')) SELECT provider AS \"Provider\", model AS \"Model\", 1.0 * SUM(status = 'ok') / COUNT(*) AS \"Availability\", 1.0 * SUM(first_attempt) / NULLIF(SUM(status = 'ok'), 0) AS \"First-attempt success\", MIN(CASE WHEN status = 'ok' AND rn >= 0.95 * cnt THEN duration_ms END) AS \"p95 response time\", 1000.0 * SUM(CASE WHEN status = 'ok' THEN output_tokens END) / NULLIF(SUM(CASE WHEN status = 'ok' THEN duration_ms END), 0) AS \"Output tok/s\", 1.0 * SUM(status = 'ok' AND lower(COALESCE(finish_reason, '')) IN ('length', 'max_tokens')) / NULLIF(SUM(status = 'ok'), 0) AS \"Truncated\", 1.0 * SUM(status = 'ok' AND COALESCE(output_tokens, 0) = 0 AND (COALESCE(input_tokens, 0) > 0 OR COALESCE(total_tokens, 0) > 0)) / NULLIF(SUM(status = 'ok'), 0) AS \"Empty responses\", SUM(CASE WHEN status = 'ok' THEN cost_usd END) / NULLIF(SUM(status = 'ok'), 0) AS \"Cost per success\", SUM(status = 'ok') AS \"Successes\", SUM(status != 'ok') AS \"Errors\", SUM((status_code = 429 OR lower(finish_reason) LIKE '%rate%limit%' OR lower(finish_reason) LIKE '%too many requests%')) AS \"Rate limits\", SUM(COALESCE(retry_count, 0)) AS \"Retries\" FROM calls GROUP BY provider, model ORDER BY 3 DESC", "rawQueryText": "WITH calls AS ( SELECT a.provider, a.model, a.status, a.duration_ms, a.input_tokens, a.output_tokens, a.total_tokens, a.cost_usd, a.finish_reason, a.status_code, a.retry_count, CASE WHEN a.status = 'ok' AND (COALESCE(a.call_index, 0) = 0 OR NOT EXISTS ( SELECT 1 FROM api_calls e WHERE e.status != 'ok' AND e.session_id = a.session_id AND e.call_index = a.call_index AND e.ts <= a.ts)) THEN 1 ELSE 0 END AS first_attempt, ROW_NUMBER() OVER (PARTITION BY a.provider, a.model, a.status ORDER BY a.duration_ms) AS rn, COUNT(*) OVER (PARTITION BY a.provider, a.model, a.status) AS cnt FROM api_calls a WHERE ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch')) SELECT provider AS \"Provider\", model AS \"Model\", 1.0 * SUM(status = 'ok') / COUNT(*) AS \"Availability\", 1.0 * SUM(first_attempt) / NULLIF(SUM(status = 'ok'), 0) AS \"First-attempt success\", MIN(CASE WHEN status = 'ok' AND rn >= 0.95 * cnt THEN duration_ms END) AS \"p95 response time\", 1000.0 * SUM(CASE WHEN status = 'ok' THEN output_tokens END) / NULLIF(SUM(CASE WHEN status = 'ok' THEN duration_ms END), 0) AS \"Output tok/s\", 1.0 * SUM(status = 'ok' AND lower(COALESCE(finish_reason, '')) IN ('length', 'max_tokens')) / NULLIF(SUM(status = 'ok'), 0) AS \"Truncated\", 1.0 * SUM(status = 'ok' AND COALESCE(output_tokens, 0) = 0 AND (COALESCE(input_tokens, 0) > 0 OR COALESCE(total_tokens, 0) > 0)) / NULLIF(SUM(status = 'ok'), 0) AS \"Empty responses\", SUM(CASE WHEN status = 'ok' THEN cost_usd END) / NULLIF(SUM(status = 'ok'), 0) AS \"Cost per success\", SUM(status = 'ok') AS \"Successes\", SUM(status != 'ok') AS \"Errors\", SUM((status_code = 429 OR lower(finish_reason) LIKE '%rate%limit%' OR lower(finish_reason) LIKE '%too many requests%')) AS \"Rate limits\", SUM(COALESCE(retry_count, 0)) AS \"Retries\" FROM calls GROUP BY provider, model ORDER BY 3 DESC", "queryType": "table", "timeColumns": [], "refId": "A"}],
-      "title": "Route scorecard — selected range",
-      "type": "table"
-    },
-    {
-      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
-      "description": "Failed API responses per interval by error class. rate_limit and server point at the provider; auth and client at configuration or request shape; timeout and network at connectivity.",
-      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "displayName": "${__field.labels.route}", "custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}, "overrides": []},
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 126},
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "sum", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "SELECT (CAST(strftime('%s', ts) AS INTEGER) / MAX($__interval_ms / 1000, 60)) * MAX($__interval_ms / 1000, 60) AS time, provider || ' / ' || model || ' · ' || CASE WHEN (status_code = 429 OR lower(finish_reason) LIKE '%rate%limit%' OR lower(finish_reason) LIKE '%too many requests%') THEN 'rate_limit' WHEN status_code IN (408, 504) OR lower(finish_reason) LIKE '%timeout%' OR lower(finish_reason) LIKE '%timed out%' THEN 'timeout' WHEN status_code >= 500 THEN 'server' WHEN status_code IN (401, 403) THEN 'auth' WHEN status_code >= 400 THEN 'client' WHEN lower(finish_reason) LIKE '%connect%' OR lower(finish_reason) LIKE '%network%' OR lower(finish_reason) LIKE '%dns%' OR lower(finish_reason) LIKE '%reset%' OR lower(finish_reason) LIKE '%ssl%' THEN 'network' ELSE 'other' END AS route, COUNT(*) AS errors FROM api_calls WHERE status != 'ok' AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2 ORDER BY 1", "rawQueryText": "SELECT (CAST(strftime('%s', ts) AS INTEGER) / MAX($__interval_ms / 1000, 60)) * MAX($__interval_ms / 1000, 60) AS time, provider || ' / ' || model || ' · ' || CASE WHEN (status_code = 429 OR lower(finish_reason) LIKE '%rate%limit%' OR lower(finish_reason) LIKE '%too many requests%') THEN 'rate_limit' WHEN status_code IN (408, 504) OR lower(finish_reason) LIKE '%timeout%' OR lower(finish_reason) LIKE '%timed out%' THEN 'timeout' WHEN status_code >= 500 THEN 'server' WHEN status_code IN (401, 403) THEN 'auth' WHEN status_code >= 400 THEN 'client' WHEN lower(finish_reason) LIKE '%connect%' OR lower(finish_reason) LIKE '%network%' OR lower(finish_reason) LIKE '%dns%' OR lower(finish_reason) LIKE '%reset%' OR lower(finish_reason) LIKE '%ssl%' THEN 'network' ELSE 'other' END AS route, COUNT(*) AS errors FROM api_calls WHERE status != 'ok' AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2 ORDER BY 1", "queryType": "time series", "timeColumns": ["time"], "refId": "A"}],
-      "title": "API errors by class",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
-      "description": "95th percentile of successful response time per route and interval, computed from individual calls. The average hides slow tails; compare with the scorecard.",
-      "fieldConfig": {"defaults": {"unit": "ms", "min": 0, "displayName": "${__field.labels.route} p95"}, "overrides": []},
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 126},
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "WITH ok AS ( SELECT (CAST(strftime('%s', ts) AS INTEGER) / MAX($__interval_ms / 1000, 60)) * MAX($__interval_ms / 1000, 60) AS time, provider || ' / ' || model AS route, duration_ms FROM api_calls WHERE status = 'ok' AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch')), ranked AS ( SELECT time, route, duration_ms, ROW_NUMBER() OVER (PARTITION BY time, route ORDER BY duration_ms) AS rn, COUNT(*) OVER (PARTITION BY time, route) AS cnt FROM ok) SELECT time, route, MIN(CASE WHEN rn >= 0.95 * cnt THEN duration_ms END) AS p95_ms FROM ranked GROUP BY time, route ORDER BY time", "rawQueryText": "WITH ok AS ( SELECT (CAST(strftime('%s', ts) AS INTEGER) / MAX($__interval_ms / 1000, 60)) * MAX($__interval_ms / 1000, 60) AS time, provider || ' / ' || model AS route, duration_ms FROM api_calls WHERE status = 'ok' AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch')), ranked AS ( SELECT time, route, duration_ms, ROW_NUMBER() OVER (PARTITION BY time, route ORDER BY duration_ms) AS rn, COUNT(*) OVER (PARTITION BY time, route) AS cnt FROM ok) SELECT time, route, MIN(CASE WHEN rn >= 0.95 * cnt THEN duration_ms END) AS p95_ms FROM ranked GROUP BY time, route ORDER BY time", "queryType": "time series", "timeColumns": ["time"], "refId": "A"}],
-      "title": "Model response latency — p95",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
-      "description": "Successful responses per interval by normalized finish reason. A growing 'length' share means truncated answers; 'content_filter' means provider refusals; 'unknown' means the provider reported no reason.",
-      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "displayName": "${__field.labels.route}", "custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}, "overrides": []},
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 135},
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "sum", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "SELECT (CAST(strftime('%s', ts) AS INTEGER) / MAX($__interval_ms / 1000, 60)) * MAX($__interval_ms / 1000, 60) AS time, provider || ' / ' || model || ' · ' || CASE lower(COALESCE(finish_reason, '')) WHEN 'stop' THEN 'stop' WHEN 'end_turn' THEN 'stop' WHEN 'stop_sequence' THEN 'stop' WHEN 'length' THEN 'length' WHEN 'max_tokens' THEN 'length' WHEN 'tool_calls' THEN 'tool_calls' WHEN 'tool_use' THEN 'tool_calls' WHEN 'function_call' THEN 'tool_calls' WHEN 'content_filter' THEN 'content_filter' WHEN '' THEN 'unknown' ELSE 'other' END AS route, COUNT(*) AS responses FROM api_calls WHERE status = 'ok' AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2 ORDER BY 1", "rawQueryText": "SELECT (CAST(strftime('%s', ts) AS INTEGER) / MAX($__interval_ms / 1000, 60)) * MAX($__interval_ms / 1000, 60) AS time, provider || ' / ' || model || ' · ' || CASE lower(COALESCE(finish_reason, '')) WHEN 'stop' THEN 'stop' WHEN 'end_turn' THEN 'stop' WHEN 'stop_sequence' THEN 'stop' WHEN 'length' THEN 'length' WHEN 'max_tokens' THEN 'length' WHEN 'tool_calls' THEN 'tool_calls' WHEN 'tool_use' THEN 'tool_calls' WHEN 'function_call' THEN 'tool_calls' WHEN 'content_filter' THEN 'content_filter' WHEN '' THEN 'unknown' ELSE 'other' END AS route, COUNT(*) AS responses FROM api_calls WHERE status = 'ok' AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2 ORDER BY 1", "queryType": "time series", "timeColumns": ["time"], "refId": "A"}],
-      "title": "Finish reasons",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
-      "description": "Route switches made by the API retry helper in the selected range, with the latest switch time. Frequent switches away from a route mean it failed when it was needed.",
+      "description": "Published CI review runs in the selected range, with outcome, validated chunks, attempts, retries and provider time.",
       "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 135},
-      "options": {"cellHeight": "lg", "showHeader": true, "sortBy": [{"displayName": "Switches", "desc": true}]},
-      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "SELECT from_provider || ' / ' || from_model AS \"From\", to_provider || ' / ' || to_model AS \"To\", COUNT(*) AS \"Switches\", MAX(ts) AS \"Last switch\" FROM route_fallbacks WHERE ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2 ORDER BY 3 DESC", "rawQueryText": "SELECT from_provider || ' / ' || from_model AS \"From\", to_provider || ' / ' || to_model AS \"To\", COUNT(*) AS \"Switches\", MAX(ts) AS \"Last switch\" FROM route_fallbacks WHERE ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2 ORDER BY 3 DESC", "queryType": "table", "timeColumns": ["Last switch"], "refId": "A"}],
-      "title": "Route fallbacks — selected range",
-      "type": "table"
-    },
-    {
-      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
-      "description": "Share of failed tool calls by the model active in the session (latest session start before the call). Malformed arguments and wrong tool choices surface here before they show as user-visible errors.",
-      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": [{"matcher": {"id": "byName", "options": "Failed share"}, "properties": [{"id": "unit", "value": "percentunit"}]}]},
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 144},
-      "options": {"cellHeight": "lg", "showHeader": true, "sortBy": [{"displayName": "Failed share", "desc": true}]},
-      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "WITH calls AS ( SELECT t.status, COALESCE((SELECT s.model FROM sessions s WHERE s.session_id = t.session_id AND s.event = 'start' AND s.ts <= t.ts ORDER BY s.ts DESC LIMIT 1), 'unknown') AS model FROM tool_calls t WHERE ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch')) SELECT model AS \"Model\", 1.0 * SUM(status != 'ok') / COUNT(*) AS \"Failed share\", COUNT(*) AS \"Tool calls\" FROM calls GROUP BY model ORDER BY 2 DESC, 1", "rawQueryText": "WITH calls AS ( SELECT t.status, COALESCE((SELECT s.model FROM sessions s WHERE s.session_id = t.session_id AND s.event = 'start' AND s.ts <= t.ts ORDER BY s.ts DESC LIMIT 1), 'unknown') AS model FROM tool_calls t WHERE ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch')) SELECT model AS \"Model\", 1.0 * SUM(status != 'ok') / COUNT(*) AS \"Failed share\", COUNT(*) AS \"Tool calls\" FROM calls GROUP BY model ORDER BY 2 DESC, 1", "queryType": "table", "timeColumns": [], "refId": "A"}],
-      "title": "Tool call failures by model — selected range",
-      "type": "table"
-    },
-    {
-      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
-      "description": "Responses served by a different model than requested. Any row means the provider silently rerouted the request; check the route before trusting its scorecard.",
-      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 144},
-      "options": {"cellHeight": "lg", "showHeader": true, "sortBy": [{"displayName": "Responses", "desc": true}]},
-      "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "SELECT provider AS \"Provider\", requested_model AS \"Requested\", model AS \"Served\", COUNT(*) AS \"Responses\", MAX(ts) AS \"Last seen\" FROM api_calls WHERE COALESCE(requested_model, '') != '' AND requested_model != model AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2, 3 ORDER BY 4 DESC", "rawQueryText": "SELECT provider AS \"Provider\", requested_model AS \"Requested\", model AS \"Served\", COUNT(*) AS \"Responses\", MAX(ts) AS \"Last seen\" FROM api_calls WHERE COALESCE(requested_model, '') != '' AND requested_model != model AND ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') GROUP BY 1, 2, 3 ORDER BY 4 DESC", "queryType": "table", "timeColumns": ["Last seen"], "refId": "A"}],
-      "title": "Requested vs served model — selected range",
-      "type": "table"
-    },
-    {
-      "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
-      "description": "Published CI review attempts imported from GitHub. Use this table to compare provider/model reliability and chunk coverage.",
-      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
-      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 152},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 137},
       "options": {"cellHeight": "lg", "showHeader": true, "sortBy": [{"displayName": "Observed", "desc": true}]},
       "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "SELECT observed_at AS \"Observed\", reviewer AS \"Reviewer\", provider AS \"Provider\", model AS \"Model\", outcome AS \"Outcome\", validated_chunks || '/' || NULLIF(total_chunks, 0) AS \"Chunks\", attempts AS \"Attempts\", retries AS \"Retries\", provider_seconds AS \"Provider seconds\", head_sha AS \"Head SHA\" FROM review_runs WHERE observed_at >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND observed_at < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') ORDER BY observed_at DESC", "rawQueryText": "SELECT observed_at AS \"Observed\", reviewer AS \"Reviewer\", provider AS \"Provider\", model AS \"Model\", outcome AS \"Outcome\", validated_chunks || '/' || NULLIF(total_chunks, 0) AS \"Chunks\", attempts AS \"Attempts\", retries AS \"Retries\", provider_seconds AS \"Provider seconds\", head_sha AS \"Head SHA\" FROM review_runs WHERE observed_at >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND observed_at < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') ORDER BY observed_at DESC", "queryType": "table", "timeColumns": ["Observed"], "refId": "A"}],
       "title": "AI review runs — selected range",
-      "type": "table"
+      "type": "table",
+      "id": 40
     },
     {
       "datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"},
-      "description": "Provider processing time for each imported review run, grouped by provider and model.",
-      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
-      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 161},
+      "description": "Time spent by the provider on each imported CI review run. Each point represents one review.",
+      "fieldConfig": {"defaults": {"unit": "s", "custom": {"drawStyle": "points", "showPoints": "always", "pointSize": 6, "lineWidth": 0}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 147},
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "targets": [{"datasource": {"type": "frser-sqlite-datasource", "uid": "hermes-sqlite"}, "queryText": "SELECT CAST(strftime('%s', observed_at) AS INTEGER) AS time, provider || ' / ' || model || ' · ' || reviewer AS route, provider_seconds AS seconds FROM review_runs WHERE observed_at >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND observed_at < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') ORDER BY time", "rawQueryText": "SELECT CAST(strftime('%s', observed_at) AS INTEGER) AS time, provider || ' / ' || model || ' · ' || reviewer AS route, provider_seconds AS seconds FROM review_runs WHERE observed_at >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') AND observed_at < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') ORDER BY time", "queryType": "time series", "timeColumns": ["time"], "refId": "A"}],
       "title": "AI review provider time",
-      "type": "timeseries"
+      "type": "timeseries",
+      "id": 41
     }
   ],
   "refresh": "30s",
@@ -374,5 +454,6 @@
   "timezone": "browser",
   "title": "Hermes Overview",
   "uid": "hermes-overview",
-  "version": 2
+  "version": 3,
+  "description": "Hermes usage, profile activity, model reliability, VPS health and CI reviews. Use the time picker for selected-range totals."
 }
