@@ -303,9 +303,9 @@ jobs:
         with:
           model: ${{ inputs.model }}
           provider: ${{ inputs.provider }}
-          base_sha: ${{ steps.context.outputs.base_sha }}
-          head_sha: ${{ steps.context.outputs.head_sha }}
-          pr_number: ${{ steps.context.outputs.pr_number }}
+          base_sha: ${{ steps.ai_review.outputs.base_sha }}
+          head_sha: ${{ steps.ai_review.outputs.head_sha }}
+          pr_number: ${{ steps.ai_review.outputs.pr_number }}
           scope: ${{ inputs.scope }}
           publish_mode: ${{ inputs.publish }}
           max_chunks: ${{ vars.MANUAL_REVIEW_MAX_CHUNKS || '100' }}
