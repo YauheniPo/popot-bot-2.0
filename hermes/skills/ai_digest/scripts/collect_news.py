@@ -27,6 +27,7 @@ import xml.etree.ElementTree as ET
 
 
 USER_AGENT = "HermesNewsDigest/1.0 (+news aggregation; no scraping credentials)"
+GITHUB_API_URL = "https://api.github.com"
 ATOM = "{http://www.w3.org/2005/Atom}"
 CONTENT = "{http://purl.org/rss/1.0/modules/content/}"
 STOP_WORDS = {"about", "after", "from", "into", "over", "that", "this", "with", "your"}
@@ -149,34 +150,253 @@ def parse_rss(data: bytes, source_id: str, now: datetime, window_hours: int,
     nodes = root.findall("./channel/item") if root.tag != ATOM + "feed" else root.findall(ATOM + "entry")
     result = []
     for node in nodes[:max_items]:
-        if audio_only and not any((enclosure.get("type") or "").startswith("audio/")
-                                  for enclosure in node.findall("enclosure")):
+        if audio_only and not _has_audio_enclosure(node):
             continue
-        if root.tag == ATOM + "feed":
-            link = next((a.get("href") for a in node.findall(ATOM + "link")
-                         if a.get("rel", "alternate") == "alternate"), "")
-            body = node.findtext(ATOM + "content") or node.findtext(ATOM + "summary") or ""
-            has_full_content = node.find(ATOM + "content") is not None
-            published = node.findtext(ATOM + "published") or node.findtext(ATOM + "updated")
-            title = node.findtext(ATOM + "title") or ""
-        else:
-            link = node.findtext("link") or ""
-            body = node.findtext(CONTENT + "encoded") or node.findtext("description") or ""
-            has_full_content = node.find(CONTENT + "encoded") is not None
-            published = node.findtext("pubDate") or node.findtext("date")
-            title = node.findtext("title") or ""
-        item = _item(title, link, _date(published), body, source_id, now, window_hours, max_summary_chars)
-        if item and item["title"]:
-            item["full_text_available"] = has_full_content and len(item["evidence"]) >= 400
-            if audio_only:
-                item["evidence_kind"] = "show_notes"
-                item["full_text_available"] = False
+        item = _parse_rss_node(node, root.tag == ATOM + "feed", source_id, now,
+                               window_hours, max_summary_chars, audio_only)
+        if item:
             result.append(item)
     return result
 
 
+def _has_audio_enclosure(node) -> bool:
+    return any((enclosure.get("type") or "").startswith("audio/")
+               for enclosure in node.findall("enclosure"))
+
+
+def _parse_rss_node(node, is_atom: bool, source_id: str, now: datetime,
+                    window_hours: int, max_summary_chars: int, audio_only: bool) -> dict | None:
+    if is_atom:
+        link = next((a.get("href") for a in node.findall(ATOM + "link")
+                     if a.get("rel", "alternate") == "alternate"), "")
+        body = node.findtext(ATOM + "content") or node.findtext(ATOM + "summary") or ""
+        has_full_content = node.find(ATOM + "content") is not None
+        published = node.findtext(ATOM + "published") or node.findtext(ATOM + "updated")
+        title = node.findtext(ATOM + "title") or ""
+    else:
+        link = node.findtext("link") or ""
+        body = node.findtext(CONTENT + "encoded") or node.findtext("description") or ""
+        has_full_content = node.find(CONTENT + "encoded") is not None
+        published = node.findtext("pubDate") or node.findtext("date")
+        title = node.findtext("title") or ""
+    item = _item(title, link, _date(published), body, source_id, now, window_hours, max_summary_chars)
+    if item and item["title"]:
+        item["full_text_available"] = has_full_content and len(item["evidence"]) >= 400
+        if audio_only:
+            item["evidence_kind"] = "show_notes"
+            item["full_text_available"] = False
+    return item if item and item["title"] else None
+
+
 def _json(fetch, url: str, max_bytes: int):
     return json.loads(fetch(url, max_bytes))
+
+
+def _trending_articles(html: str) -> list[tuple[str, str]]:
+    """Extract repository paths and descriptions from GitHub Trending cards."""
+    articles = re.findall(r"(<article\b[^>]*>)(.*?)</article\s*>", html, re.S | re.I)
+    result = []
+    for opening_tag, article in articles:
+        class_attr = re.search(r'\bclass="([^"]*)"', opening_tag, re.I)
+        if not class_attr or "Box-row" not in class_attr.group(1).split():
+            continue
+        match = re.search(r'<h2\b[^>]*>\s*<a\b[^>]*\bhref="(/[^"/]+/[^"/]+)"',
+                          article, re.S | re.I)
+        if not match:
+            continue
+        description = re.search(r"<p\b[^>]*>(.*?)</p\s*>", article, re.S | re.I)
+        result.append((match.group(1), plain(description.group(1)) if description else ""))
+    return result
+
+
+def _collect_rss(source: dict, source_id: str, now: datetime, fetch, limit: int, max_bytes: int, max_chars: int, window: int, issues: list[dict]) -> list[dict]:
+    return parse_rss(fetch(source["url"], max_bytes), source_id, now, window, limit, max_chars,
+                     audio_only=bool(source.get("audio_only", False)))
+
+
+def _collect_arxiv(source: dict, source_id: str, now: datetime, fetch, limit: int, max_bytes: int, max_chars: int, window: int, issues: list[dict]) -> list[dict]:
+    categories = source.get("categories", [])
+    if not categories:
+        raise ValueError("no categories configured")
+    query = " OR ".join("cat:" + str(category) for category in categories)
+    url = ("https://export.arxiv.org/api/query?" + urlencode({"search_query": query,
+           "sortBy": "submittedDate", "sortOrder": "descending", "max_results": limit}))
+    return parse_rss(fetch(url, max_bytes), source_id, now, window, limit, max_chars)
+
+
+def _collect_hf_papers(source: dict, source_id: str, now: datetime, fetch, limit: int, max_bytes: int, max_chars: int, window: int, issues: list[dict]) -> list[dict]:
+    items = []
+    for row in _json(fetch, "https://huggingface.co/api/daily_papers", max_bytes)[:limit]:
+        paper = row.get("paper", {})
+        paper_id = paper.get("id", "")
+        listed = _date(paper.get("submittedOnDailyAt") or row.get("publishedAt"))
+        if not paper_id:
+            continue
+        item = _item(row.get("title") or paper.get("title", ""),
+                     "https://huggingface.co/papers/" + paper_id, listed,
+                     row.get("summary") or paper.get("summary", ""),
+                     source_id, now, window, max_chars,
+                     score=int(paper.get("upvotes", 0)),
+                     discussion_count=int(row.get("numComments", 0)))
+        if item:
+            published = _date(paper.get("publishedAt"))
+            item["published_at"] = published.isoformat().replace(UTC_SUFFIX, "Z") if published else None
+            item["listed_at"] = listed.isoformat().replace(UTC_SUFFIX, "Z")
+            item["time_basis"] = "curation"
+            item["evidence_kind"] = "abstract"
+            items.append(item)
+    return items
+
+
+def _collect_hf_trending(source: dict, source_id: str, now: datetime, fetch, limit: int, max_bytes: int, max_chars: int, window: int, issues: list[dict]) -> list[dict]:
+    items = []
+    rows = _json(fetch, "https://huggingface.co/api/trending", max_bytes).get("recentlyTrending", [])
+    for row in rows[:limit]:
+        repo = row.get("repoData") or {}
+        if (row.get("repoType") or repo.get("repoType")) != "model" or not repo.get("id"):
+            continue
+        repo_id = repo["id"]
+        evidence = (f"Observed in Hugging Face recently trending models. "
+                    f"Repository: {repo_id}; pipeline: {repo.get('pipeline_tag') or 'unspecified'}; "
+                    f"likes: {repo.get('likes', 0)}; downloads: {repo.get('downloads', 0)}. "
+                    "Trending status is not a release date or quality measurement.")
+        item = _item(repo_id, "https://huggingface.co/" + repo_id, now,
+                     evidence, source_id, now, window, max_chars,
+                     score=int(repo.get("likes") or 0))
+        if item:
+            item["published_at"] = None
+            item["observed_at"] = now.isoformat().replace(UTC_SUFFIX, "Z")
+            item["time_basis"] = "trending_observation"
+            item["evidence_kind"] = "model_metadata"
+            item["category"] = "model"
+            items.append(item)
+    return items
+
+
+def _collect_swebench(source: dict, source_id: str, now: datetime, fetch, limit: int, max_bytes: int, max_chars: int, window: int, issues: list[dict]) -> list[dict]:
+    items = []
+    data_url = "https://raw.githubusercontent.com/SWE-bench/swe-bench.github.io/master/data/leaderboards.json"
+    leaderboards = _json(fetch, data_url, max_bytes).get("leaderboards", [])
+    verified = next((board for board in leaderboards if board.get("name") == "Verified"), None)
+    if verified is None:
+        raise ValueError("SWE-bench Verified leaderboard is missing")
+    recent = sorted(verified.get("results", []), key=lambda row: row.get("date", ""), reverse=True)
+    for row in recent[:max(limit * 3, limit)]:
+        name = row.get("name", "")
+        score = row.get("resolved")
+        published = _date(row.get("date"))
+        if not name or not isinstance(score, (int, float)):
+            continue
+        evidence = (f"SWE-bench Verified submission dated {row['date']}: "
+                    f"{name} resolved {score:g}% of tasks. "
+                    "This is a submitted agent result, not an isolated model score.")
+        item = _item("SWE-bench Verified: " + name,
+                     "https://www.swebench.com/", published, evidence,
+                     source_id, now, window, max_chars, score=int(score))
+        if item:
+            item["urls"].append(data_url)
+            item["category"] = "benchmark"
+            item["time_basis"] = "submission"
+            item["evidence_kind"] = "benchmark_result"
+            items.append(item)
+    return items
+
+
+def _collect_hackernews(source: dict, source_id: str, now: datetime, fetch, limit: int, max_bytes: int, max_chars: int, window: int, issues: list[dict]) -> list[dict]:
+    items = []
+    ids = _json(fetch, "https://hacker-news.firebaseio.com/v0/topstories.json", max_bytes)[:limit]
+    for story_id in ids:
+        story = _json(fetch, f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json", max_bytes)
+        if not isinstance(story, dict) or story.get("dead") or story.get("deleted"):
+            continue
+        url = story.get("url") or f"https://news.ycombinator.com/item?id={story_id}"
+        item = _item(story.get("title", ""), url, datetime.fromtimestamp(story["time"], timezone.utc),
+                     story.get("text", ""), source_id, now, window, max_chars,
+                     score=int(story.get("score", 0)), discussion_count=int(story.get("descendants", 0)))
+        if item:
+            item["discussion_url"] = f"https://news.ycombinator.com/item?id={story_id}"
+            item["urls"].append(item["discussion_url"])
+            item["comment_ids"] = story.get("kids", [])[:int(source.get("max_comments", 5))]
+            items.append(item)
+    return items
+
+
+def _collect_reddit(source: dict, source_id: str, now: datetime, fetch, limit: int, max_bytes: int, max_chars: int, window: int, issues: list[dict]) -> list[dict]:
+    items = []
+    for subreddit in source.get("subreddits", []):
+        url = f"https://www.reddit.com/r/{subreddit}/top.json?t=day&limit={limit}"
+        try:
+            listing = _json(fetch, url, max_bytes)
+        except (OSError, ValueError) as exc:  # noqa: S5713
+            issues.append({"id": source_id, "kind": "degraded",
+                           "reason": f"r/{subreddit}: {str(exc)[:120]}"})
+            continue
+        for row in listing.get("data", {}).get("children", [])[:limit]:
+            post = row.get("data", {})
+            created_utc = post.get("created_utc")
+            if not isinstance(created_utc, (int, float)) or created_utc <= 0:
+                issues.append({"id": source_id, "kind": "degraded",
+                               "reason": f"r/{subreddit}: item missing or invalid created_utc"})
+                continue
+            item = _item(post.get("title", ""), post.get("url", ""),
+                         datetime.fromtimestamp(created_utc, timezone.utc),
+                         post.get("selftext", ""), source_id, now, window, max_chars,
+                         score=int(post.get("score", 0)), discussion_count=int(post.get("num_comments", 0)))
+            if item:
+                item["discussion_url"] = "https://www.reddit.com" + post.get("permalink", "")
+                if post.get("permalink"):
+                    item["urls"].append(item["discussion_url"])
+                item["reddit_post_id"] = post.get("id", "")
+                item["max_comments"] = int(source.get("max_comments", 5))
+                items.append(item)
+    return items
+
+
+def _collect_github_trending(source: dict, source_id: str, now: datetime, fetch, limit: int, max_bytes: int, max_chars: int, window: int, issues: list[dict]) -> list[dict]:
+    items = []
+    html = fetch("https://github.com/trending?since=" + source.get("since", "daily"), max_bytes).decode("utf-8", "replace")
+    for repo, description in _trending_articles(html)[:limit]:
+        item = _item(repo.strip("/").replace("/", " / "), "https://github.com" + repo, now,
+                     description, source_id, now, window, max_chars)
+        if item:
+            item["published_at"] = None
+            item["observed_at"] = now.isoformat().replace(UTC_SUFFIX, "Z")
+            item["time_basis"] = "trending_observation"
+            item["full_text_available"] = False
+            items.append(item)
+    if not items and source.get("fallback", {}).get("type") == "github_notable":
+        fallback = source["fallback"]
+        query = f'{fallback.get("query", "topic:ai")} pushed:>={now.date() - timedelta(hours=window)} stars:>={fallback.get("min_stars", 500)}'
+        url = GITHUB_API_URL + "/search/repositories?" + urlencode({"q": query, "sort": "stars", "per_page": limit})
+        for repo in _json(fetch, url, max_bytes).get("items", [])[:limit]:
+            item = _item(repo.get("full_name", ""), repo.get("html_url", ""),
+                         _date(repo.get("pushed_at")),
+                         repo.get("description", ""), source_id, now, window, max_chars,
+                         score=int(repo.get("stargazers_count", 0)))
+            if item:
+                item["full_text_available"] = False
+                items.append(item)
+        issues.append({"id": source_id, "kind": "degraded", "reason": "GitHub Trending unavailable; used search fallback"})
+    return items
+
+
+def _collect_searxng(source: dict, source_id: str, now: datetime, fetch, limit: int, max_bytes: int, max_chars: int, window: int, issues: list[dict]) -> list[dict]:
+    items = []
+    endpoint = os.environ.get("AI_DIGEST_SEARCH_URL") or os.environ.get("SEARXNG_URL", "")
+    if not endpoint:
+        issues.append({"id": source_id, "kind": "unavailable", "reason": "search endpoint is not configured"})
+        return items
+    # Validate the configured endpoint once (it's deployment-controlled, not user-supplied)
+    _public_url(endpoint.rstrip("/") + "/search?q=test&format=json")
+    url = endpoint.rstrip("/") + "/search?" + urlencode({"q": source["query"], "format": "json"})
+    for result in _json(fetch, url, max_bytes).get("results", [])[:limit]:
+        item = _item(result.get("title", ""), result.get("url", ""),
+                     _date(result.get("publishedDate") or result.get("published_at")),
+                     result.get("content", ""), source_id, now, window, max_chars)
+        if item:
+            item["full_text_available"] = False
+            items.append(item)
+    return items
 
 
 def _source(source: dict, defaults: dict, now: datetime, fetch) -> tuple[list[dict], list[dict]]:
@@ -187,173 +407,22 @@ def _source(source: dict, defaults: dict, now: datetime, fetch) -> tuple[list[di
     max_chars = int(defaults.get("max_summary_chars", 1200))
     window = int(defaults.get("window_hours", 24))
     issues = []
-    items = []
-    if kind == "rss":
-        items = parse_rss(fetch(source["url"], max_bytes), source_id, now, window, limit, max_chars,
-                          audio_only=bool(source.get("audio_only", False)))
-    elif kind == "arxiv":
-        categories = source.get("categories", [])
-        if not categories:
-            raise ValueError("no categories configured")
-        query = " OR ".join("cat:" + str(category) for category in categories)
-        url = ("https://export.arxiv.org/api/query?" + urlencode({"search_query": query,
-               "sortBy": "submittedDate", "sortOrder": "descending", "max_results": limit}))
-        items = parse_rss(fetch(url, max_bytes), source_id, now, window, limit, max_chars)
-    elif kind == "hf_papers":
-        for row in _json(fetch, "https://huggingface.co/api/daily_papers", max_bytes)[:limit]:
-            paper = row.get("paper", {})
-            paper_id = paper.get("id", "")
-            listed = _date(paper.get("submittedOnDailyAt") or row.get("publishedAt"))
-            if not paper_id:
-                continue
-            item = _item(row.get("title") or paper.get("title", ""),
-                         "https://huggingface.co/papers/" + paper_id, listed,
-                         row.get("summary") or paper.get("summary", ""),
-                         source_id, now, window, max_chars,
-                         score=int(paper.get("upvotes", 0)),
-                         discussion_count=int(row.get("numComments", 0)))
-            if item:
-                published = _date(paper.get("publishedAt"))
-                item["published_at"] = published.isoformat().replace(UTC_SUFFIX, "Z") if published else None
-                item["listed_at"] = listed.isoformat().replace(UTC_SUFFIX, "Z")
-                item["time_basis"] = "curation"
-                item["evidence_kind"] = "abstract"
-                items.append(item)
-    elif kind == "hf_trending":
-        rows = _json(fetch, "https://huggingface.co/api/trending", max_bytes).get("recentlyTrending", [])
-        for row in rows[:limit]:
-            repo = row.get("repoData") or {}
-            if (row.get("repoType") or repo.get("repoType")) != "model" or not repo.get("id"):
-                continue
-            repo_id = repo["id"]
-            evidence = (f"Observed in Hugging Face recently trending models. "
-                        f"Repository: {repo_id}; pipeline: {repo.get('pipeline_tag') or 'unspecified'}; "
-                        f"likes: {repo.get('likes', 0)}; downloads: {repo.get('downloads', 0)}. "
-                        "Trending status is not a release date or quality measurement.")
-            item = _item(repo_id, "https://huggingface.co/" + repo_id, now,
-                         evidence, source_id, now, window, max_chars,
-                         score=int(repo.get("likes") or 0))
-            if item:
-                item["published_at"] = None
-                item["observed_at"] = now.isoformat().replace(UTC_SUFFIX, "Z")
-                item["time_basis"] = "trending_observation"
-                item["evidence_kind"] = "model_metadata"
-                item["category"] = "model"
-                items.append(item)
-    elif kind == "swebench":
-        data_url = "https://raw.githubusercontent.com/SWE-bench/swe-bench.github.io/master/data/leaderboards.json"
-        leaderboards = _json(fetch, data_url, max_bytes).get("leaderboards", [])
-        verified = next((board for board in leaderboards if board.get("name") == "Verified"), None)
-        if verified is None:
-            raise ValueError("SWE-bench Verified leaderboard is missing")
-        recent = sorted(verified.get("results", []), key=lambda row: row.get("date", ""), reverse=True)
-        for row in recent[:max(limit * 3, limit)]:
-            name = row.get("name", "")
-            score = row.get("resolved")
-            published = _date(row.get("date"))
-            if not name or not isinstance(score, (int, float)):
-                continue
-            evidence = (f"SWE-bench Verified submission dated {row['date']}: "
-                        f"{name} resolved {score:g}% of tasks. "
-                        "This is a submitted agent result, not an isolated model score.")
-            item = _item("SWE-bench Verified: " + name,
-                         "https://www.swebench.com/", published, evidence,
-                         source_id, now, window, max_chars, score=int(score))
-            if item:
-                item["urls"].append(data_url)
-                item["category"] = "benchmark"
-                item["time_basis"] = "submission"
-                item["evidence_kind"] = "benchmark_result"
-                items.append(item)
-    elif kind == "hackernews":
-        ids = _json(fetch, "https://hacker-news.firebaseio.com/v0/topstories.json", max_bytes)[:limit]
-        for story_id in ids:
-            story = _json(fetch, f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json", max_bytes)
-            if not isinstance(story, dict) or story.get("dead") or story.get("deleted"):
-                continue
-            url = story.get("url") or f"https://news.ycombinator.com/item?id={story_id}"
-            item = _item(story.get("title", ""), url, datetime.fromtimestamp(story["time"], timezone.utc),
-                         story.get("text", ""), source_id, now, window, max_chars,
-                         score=int(story.get("score", 0)), discussion_count=int(story.get("descendants", 0)))
-            if item:
-                item["discussion_url"] = f"https://news.ycombinator.com/item?id={story_id}"
-                item["urls"].append(item["discussion_url"])
-                item["comment_ids"] = story.get("kids", [])[:int(source.get("max_comments", 5))]
-                items.append(item)
-    elif kind == "reddit":
-        for subreddit in source.get("subreddits", []):
-            url = f"https://www.reddit.com/r/{subreddit}/top.json?t=day&limit={limit}"
-            try:
-                listing = _json(fetch, url, max_bytes)
-            except (OSError, ValueError) as exc:  # noqa: S5713
-                issues.append({"id": source_id, "kind": "degraded",
-                               "reason": f"r/{subreddit}: {str(exc)[:120]}"})
-                continue
-            for row in listing.get("data", {}).get("children", [])[:limit]:
-                post = row.get("data", {})
-                created_utc = post.get("created_utc")
-                if not isinstance(created_utc, (int, float)) or created_utc <= 0:
-                    issues.append({"id": source_id, "kind": "degraded",
-                                   "reason": f"r/{subreddit}: item missing or invalid created_utc"})
-                    continue
-                item = _item(post.get("title", ""), post.get("url", ""),
-                             datetime.fromtimestamp(created_utc, timezone.utc),
-                             post.get("selftext", ""), source_id, now, window, max_chars,
-                             score=int(post.get("score", 0)), discussion_count=int(post.get("num_comments", 0)))
-                if item:
-                    item["discussion_url"] = "https://www.reddit.com" + post.get("permalink", "")
-                    if post.get("permalink"):
-                        item["urls"].append(item["discussion_url"])
-                    item["reddit_post_id"] = post.get("id", "")
-                    item["max_comments"] = int(source.get("max_comments", 5))
-                    items.append(item)
-    elif kind == "github_trending":
-        html = fetch("https://github.com/trending?since=" + source.get("since", "daily"), max_bytes).decode("utf-8", "replace")
-        article_pattern = re.compile(r'<article\b[^>]*class="[^"]*Box-row[^"]*"[^>]*>([^<]*(?:<(?!/article\b)[^<]*)*)</article>', re.S)
-        for block in article_pattern.findall(html)[:limit]:
-            match = re.search(r'<h2\b[^>]*>\s*<a\b[^>]*\bhref="(/[^"/]+/[^"/]+)"', block, re.S)
-            if not match:
-                continue
-            repo = match.group(1)
-            description = re.search(r"<p\b[^>]*>(.*?)</p>", block, re.S)
-            item = _item(repo.strip("/").replace("/", " / "), "https://github.com" + repo, now,
-                         description.group(1) if description else "", source_id, now, window, max_chars)
-            if item:
-                item["published_at"] = None
-                item["observed_at"] = now.isoformat().replace(UTC_SUFFIX, "Z")
-                item["time_basis"] = "trending_observation"
-                item["full_text_available"] = False
-                items.append(item)
-        if not items and source.get("fallback", {}).get("type") == "github_notable":
-            fallback = source["fallback"]
-            query = f'{fallback.get("query", "topic:ai")} pushed:>={now.date() - timedelta(hours=window)} stars:>={fallback.get("min_stars", 500)}'
-            url = "https://api.github.com/search/repositories?" + urlencode({"q": query, "sort": "stars", "per_page": limit})
-            for repo in _json(fetch, url, max_bytes).get("items", [])[:limit]:
-                item = _item(repo.get("full_name", ""), repo.get("html_url", ""),
-                             _date(repo.get("pushed_at")),
-                             repo.get("description", ""), source_id, now, window, max_chars,
-                             score=int(repo.get("stargazers_count", 0)))
-                if item:
-                    item["full_text_available"] = False
-                    items.append(item)
-            issues.append({"id": source_id, "kind": "degraded", "reason": "GitHub Trending unavailable; used search fallback"})
-    elif kind == "searxng":
-        endpoint = os.environ.get("AI_DIGEST_SEARCH_URL") or os.environ.get("SEARXNG_URL", "")
-        if not endpoint:
-            return [], [{"id": source_id, "kind": "unavailable", "reason": "search endpoint is not configured"}]
-        # Validate the configured endpoint once (it's deployment-controlled, not user-supplied)
-        _public_url(endpoint.rstrip("/") + "/search?q=test&format=json")
-        url = endpoint.rstrip("/") + "/search?" + urlencode({"q": source["query"], "format": "json"})
-        for result in _json(fetch, url, max_bytes).get("results", [])[:limit]:
-            item = _item(result.get("title", ""), result.get("url", ""),
-                         _date(result.get("publishedDate") or result.get("published_at")),
-                         result.get("content", ""), source_id, now, window, max_chars)
-            if item:
-                item["full_text_available"] = False
-                items.append(item)
-    else:
+    collectors = {
+        "rss": _collect_rss,
+        "arxiv": _collect_arxiv,
+        "hf_papers": _collect_hf_papers,
+        "hf_trending": _collect_hf_trending,
+        "swebench": _collect_swebench,
+        "hackernews": _collect_hackernews,
+        "reddit": _collect_reddit,
+        "github_trending": _collect_github_trending,
+        "searxng": _collect_searxng,
+    }
+    collector = collectors.get(kind)
+    if collector is None:
         raise ValueError("unknown source type: " + str(kind))
-    if not items:
+    items = collector(source, source_id, now, fetch, limit, max_bytes, max_chars, window, issues)
+    if not items and not (kind == "searxng" and issues and issues[-1]["kind"] == "unavailable"):
         issues.append({"id": source_id, "kind": "empty", "reason": "no items in window"})
     for item in items:
         item.setdefault("category", source.get("category", "news"))
@@ -371,30 +440,154 @@ def _topic_words(topic: str) -> set[str]:
 def _deduplicate(items: list[dict]) -> list[dict]:
     merged = []
     for item in items:
-        words = _title_words(item["title"])
-        match = next((old for old in merged if old["url"] == item["url"] or
-                      (words and (len(words & _title_words(old["title"])) /
-                                  len(words | _title_words(old["title"]))) >= 0.6)), None)
+        match = _duplicate_match(item, merged)
         if match is None:
             merged.append(item)
             continue
-        match["source_ids"] = sorted(set(match["source_ids"] + item["source_ids"]))
-        match["urls"] = sorted(set(match["urls"] + item["urls"]))
-        match["score"] += item["score"]
-        match["discussion_count"] += item["discussion_count"]
-        if len(item["evidence"]) > len(match["evidence"]):
-            match["evidence"] = item["evidence"]
-            match["full_text_available"] = item["full_text_available"]
-            for key in ("published_at", "listed_at", "observed_at", "time_basis",
-                        "evidence_kind", "category"):
-                if key in item:
-                    match[key] = item[key]
-                else:
-                    match.pop(key, None)
-        for key in ("comment_ids", "reddit_post_id", "max_comments", "discussion_url"):
-            if key in item and key not in match:
-                match[key] = item[key]
+        _merge_duplicate(match, item)
     return merged
+
+
+def _duplicate_match(item: dict, merged: list[dict]) -> dict | None:
+    words = _title_words(item["title"])
+    for existing in merged:
+        existing_words = _title_words(existing["title"])
+        union = words | existing_words
+        if existing["url"] == item["url"] or (union and len(words & existing_words) / len(union) >= 0.6):
+            return existing
+    return None
+
+
+def _merge_duplicate(match: dict, item: dict) -> None:
+    match["source_ids"] = sorted(set(match["source_ids"] + item["source_ids"]))
+    match["urls"] = sorted(set(match["urls"] + item["urls"]))
+    match["score"] += item["score"]
+    match["discussion_count"] += item["discussion_count"]
+    if len(item["evidence"]) > len(match["evidence"]):
+        match["evidence"] = item["evidence"]
+        match["full_text_available"] = item["full_text_available"]
+        for key in ("published_at", "listed_at", "observed_at", "time_basis", "evidence_kind", "category"):
+            if key in item:
+                match[key] = item[key]
+            else:
+                match.pop(key, None)
+    for key in ("comment_ids", "reddit_post_id", "max_comments", "discussion_url"):
+        if key in item and key not in match:
+            match[key] = item[key]
+
+
+def _importance(item: dict, now: datetime, window_hours: int) -> float:
+    published = _date(item.get("listed_at") or item["published_at"])
+    age_hours = max(0, (now - published).total_seconds() / 3600) if published else window_hours
+    freshness = 10 * max(0, 1 - age_hours / window_hours)
+    popularity = 2 * min(6, math.log1p(max(0, item["score"])))
+    discussion = 2 * min(6, math.log1p(max(0, item["discussion_count"])))
+    return freshness + popularity + discussion + 10 * (len(item["source_ids"]) - 1)
+
+
+def _select_items(items: list[dict], limit: int, mode: str, now: datetime,
+                  window_hours: int) -> list[dict]:
+    ranked = sorted(items, key=lambda item: (-_importance(item, now, window_hours), item["title"]))
+    selected, counts = [], {}
+    max_per_source = max(1, math.ceil(limit / 3))
+    if mode == "weekly":
+        _select_weekly_categories(ranked, selected, counts, limit)
+    for item in ranked:
+        if len(selected) >= limit:
+            break
+        if item in selected:
+            continue
+        primary = item["source_ids"][0]
+        if counts.get(primary, 0) >= max_per_source and any(
+                counts.get(other["source_ids"][0], 0) < max_per_source
+                for other in ranked if other not in selected):
+            continue
+        selected.append(item)
+        counts[primary] = counts.get(primary, 0) + 1
+    return selected
+
+
+def _select_weekly_categories(ranked: list[dict], selected: list[dict],
+                              counts: dict[str, int], limit: int) -> None:
+    for category in ("research", "podcast", "benchmark"):
+        candidate = next((item for item in ranked if item.get("category") == category), None)
+        if candidate is not None and candidate not in selected and len(selected) < limit:
+            selected.append(candidate)
+            primary = candidate["source_ids"][0]
+            counts[primary] = counts.get(primary, 0) + 1
+
+
+def _collect_sources(sources: list[dict], defaults: dict, now: datetime, fetch) -> tuple[list[dict], list[dict]]:
+    raw, issues = [], []
+    with ThreadPoolExecutor(max_workers=min(6, max(1, len(sources)))) as pool:
+        futures = {pool.submit(_source, source, defaults, now, fetch): source for source in sources}
+        for future in as_completed(futures):
+            source = futures[future]
+            try:
+                items, source_issues = future.result()
+                raw.extend(items)
+                issues.extend(source_issues)
+            except (ValueError, KeyError, TypeError, ET.ParseError, OSError) as exc:  # noqa: S5713
+                issues.append({"id": source.get("id", "unknown"), "kind": "failed", "reason": str(exc)[:160]})
+    return raw, issues
+
+
+def _hydrate_items(selected: list[dict], defaults: dict, fetch) -> None:
+    for item in selected:
+        _fetch_discussions(item, fetch)
+        _read_article(item, defaults, fetch)
+
+
+def _fetch_discussions(item: dict, fetch) -> None:
+    for comment_id in item.pop("comment_ids", []):
+        try:
+            if not isinstance(comment_id, int) or comment_id <= 0:
+                raise ValueError("invalid comment_id")
+            comment_url = f"https://hacker-news.firebaseio.com/v0/item/{comment_id}.json"
+            _public_url(comment_url)
+            comment = _json(fetch, comment_url, 100_000)
+            body = plain(comment.get("text", ""))[:400]
+            if body:
+                item["discussion_excerpts"].append({"source_id": "hackernews", "text": body})
+        except (OSError, ValueError, TypeError) as exc:  # noqa: S5713
+            item["discussion_issue"] = f"Hacker News comment {comment_id} unavailable: {exc}"
+    reddit_id = item.pop("reddit_post_id", "")
+    max_comments = min(5, item.pop("max_comments", 5))
+    if reddit_id:
+        _fetch_reddit_comments(item, reddit_id, max_comments, fetch)
+
+
+def _fetch_reddit_comments(item: dict, reddit_id: str, max_comments: int, fetch) -> None:
+    try:
+        reddit_url = f"https://www.reddit.com/comments/{reddit_id}.json?limit={max_comments}&sort=top"
+        _public_url(reddit_url)
+        discussion = _json(fetch, reddit_url, 500_000)
+        for row in discussion[1].get("data", {}).get("children", [])[:max_comments]:
+            body = plain(row.get("data", {}).get("body", ""))[:400]
+            if row.get("kind") == "t1" and body:
+                item["discussion_excerpts"].append({"source_id": "reddit", "text": body})
+    except (OSError, ValueError, KeyError, IndexError, TypeError):  # noqa: S5713
+        item["discussion_issue"] = "Reddit comments unavailable"
+
+
+def _read_article(item: dict, defaults: dict, fetch) -> None:
+    if (item["full_text_available"] or item.get("evidence_kind") in
+            {"abstract", "benchmark_result", "model_metadata", "show_notes"}
+            or item["url"].startswith("https://github.com/")):
+        return
+    try:
+        body = fetch(item["url"], min(int(defaults.get("max_response_bytes", 5_242_880)), 2_000_000))
+        if body.startswith(b"%PDF"):
+            raise ValueError("PDF article is not supported")
+        article, region_found = article_plain(body.decode("utf-8", "replace"))
+        article = article[:int(defaults.get("max_article_chars", 4500))]
+        if len(article) >= 400 and region_found:
+            item["evidence"] = article
+            item["full_text_available"] = True
+        else:
+            item["read_issue"] = "article body unavailable or too short"
+    except (OSError, ValueError) as exc:  # noqa: S5713
+        item["read_issue"] = str(exc)[:120]
 
 
 def collect(config: dict, *, now: datetime | None = None, fetch=http_fetch,
@@ -407,8 +600,9 @@ def collect(config: dict, *, now: datetime | None = None, fetch=http_fetch,
     now = now or datetime.now(timezone.utc)
     defaults = dict(config.get("defaults", {}))
     profile = config.get("profiles", {}).get(mode, {})
-    defaults["window_hours"] = window_hours or int(profile.get("window_hours", defaults.get("window_hours", 24)))
-    limit = limit or int(profile.get("limit", defaults.get("limit", 5)))
+    defaults["window_hours"] = (window_hours if window_hours is not None else
+                                 int(profile.get("window_hours", defaults.get("window_hours", 24))))
+    limit = limit if limit is not None else int(profile.get("limit", defaults.get("limit", 5)))
     timeout = int(defaults.get("request_timeout_s", 12))
     if not 1 <= defaults["window_hours"] <= 720 or not 1 <= limit <= 20 or not 1 <= timeout <= 30:
         raise ValueError("window or limit outside supported range")
@@ -416,96 +610,14 @@ def collect(config: dict, *, now: datetime | None = None, fetch=http_fetch,
         def fetch(url: str, max_bytes: int) -> bytes:
             return http_fetch(url, max_bytes, timeout=timeout)
     sources = [source for source in config["sources"] if mode in source.get("modes", ["daily"])]
-    raw, issues = [], []
-    with ThreadPoolExecutor(max_workers=min(6, max(1, len(sources)))) as pool:
-        futures = {pool.submit(_source, source, defaults, now, fetch): source for source in sources}
-        for future in as_completed(futures):
-            source = futures[future]
-            try:
-                items, source_issues = future.result()
-                raw.extend(items)
-                issues.extend(source_issues)
-            except (ValueError, KeyError, TypeError, ET.ParseError, OSError) as exc:  # noqa: S5713
-                issues.append({"id": source.get("id", "unknown"), "kind": "failed", "reason": str(exc)[:160]})
+    raw, issues = _collect_sources(sources, defaults, now, fetch)
     in_window = len(raw)
     if topic:
         words = _topic_words(topic)
         raw = [item for item in raw if words & _topic_words(item["title"] + " " + item["evidence"])]
     merged = _deduplicate(raw)
-    def importance(item: dict) -> float:
-        published = _date(item.get("listed_at") or item["published_at"])
-        age_hours = max(0, (now - published).total_seconds() / 3600) if published else defaults["window_hours"]
-        freshness = 10 * max(0, 1 - age_hours / defaults["window_hours"])
-        popularity = 2 * min(6, math.log1p(max(0, item["score"])))
-        discussion = 2 * min(6, math.log1p(max(0, item["discussion_count"])))
-        return freshness + popularity + discussion + 10 * (len(item["source_ids"]) - 1)
-
-    merged.sort(key=lambda item: (-importance(item), item["title"]))
-    selected, source_counts = [], {}
-    max_per_source = max(1, math.ceil(limit / 3))
-    if mode == "weekly":
-        for category in ("research", "podcast", "benchmark"):
-            candidate = next((item for item in merged if item.get("category") == category), None)
-            if candidate is not None and candidate not in selected and len(selected) < limit:
-                selected.append(candidate)
-                primary = candidate["source_ids"][0]
-                source_counts[primary] = source_counts.get(primary, 0) + 1
-    for item in merged:
-        if len(selected) >= limit:
-            break
-        if item in selected:
-            continue
-        primary = item["source_ids"][0]
-        if source_counts.get(primary, 0) >= max_per_source and any(
-                source_counts.get(other["source_ids"][0], 0) < max_per_source
-                for other in merged if other not in selected):
-            continue
-        selected.append(item)
-        source_counts[primary] = source_counts.get(primary, 0) + 1
-        if len(selected) >= limit:
-            break
-    for item in selected:
-        for comment_id in item.pop("comment_ids", []):
-            try:
-                if not isinstance(comment_id, int) or comment_id <= 0:
-                    raise ValueError("invalid comment_id")
-                comment_url = f"https://hacker-news.firebaseio.com/v0/item/{comment_id}.json"
-                _public_url(comment_url)
-                comment = _json(fetch, comment_url, 100_000)
-                body = plain(comment.get("text", ""))[:400]
-                if body:
-                    item["discussion_excerpts"].append({"source_id": "hackernews", "text": body})
-            except (OSError, ValueError, TypeError) as exc:  # noqa: S5713
-                item["discussion_issue"] = f"Hacker News comment {comment_id} unavailable: {exc}"
-        reddit_id = item.pop("reddit_post_id", "")
-        max_comments = min(5, item.pop("max_comments", 5))
-        if reddit_id:
-            try:
-                reddit_url = f"https://www.reddit.com/comments/{reddit_id}.json?limit={max_comments}&sort=top"
-                _public_url(reddit_url)
-                discussion = _json(fetch, reddit_url, 500_000)
-                for row in discussion[1].get("data", {}).get("children", [])[:max_comments]:
-                    body = plain(row.get("data", {}).get("body", ""))[:400]
-                    if row.get("kind") == "t1" and body:
-                        item["discussion_excerpts"].append({"source_id": "reddit", "text": body})
-            except (OSError, ValueError, KeyError, IndexError, TypeError):  # noqa: S5713
-                item["discussion_issue"] = "Reddit comments unavailable"
-        if (not item["full_text_available"] and item.get("evidence_kind") not in
-                {"abstract", "benchmark_result", "model_metadata", "show_notes"}
-                and not item["url"].startswith("https://github.com/")):
-            try:
-                body = fetch(item["url"], min(int(defaults.get("max_response_bytes", 5_242_880)), 2_000_000))
-                if body.startswith(b"%PDF"):
-                    raise ValueError("PDF article is not supported")
-                article, article_region_found = article_plain(body.decode("utf-8", "replace"))
-                article = article[:int(defaults.get("max_article_chars", 4500))]
-                if len(article) >= 400 and article_region_found:
-                    item["evidence"] = article
-                    item["full_text_available"] = True
-                else:
-                    item["read_issue"] = "article body unavailable or too short"
-            except (OSError, ValueError) as exc:  # noqa: S5713
-                item["read_issue"] = str(exc)[:120]
+    selected = _select_items(merged, limit, mode, now, defaults["window_hours"])
+    _hydrate_items(selected, defaults, fetch)
     return {"schema_version": 1, "mode": mode, "generated_at": now.isoformat().replace(UTC_SUFFIX, "Z"),
             "window_hours": defaults["window_hours"], "limit": limit, "topic": topic or None,
             "items": selected, "source_issues": sorted(issues, key=lambda issue: issue["id"]),

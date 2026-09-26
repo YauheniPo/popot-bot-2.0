@@ -40,8 +40,10 @@ class FinalizeDigestTests(unittest.TestCase):
 
     def test_rejects_missing_role(self):
         with tempfile.TemporaryDirectory() as directory:
+            invalid_draft = VALID.replace("### Senior", "### Expert")
+            output_dir = Path(directory)
             with self.assertRaises(ValueError):
-                finalize(RAW, VALID.replace("### Senior", "### Expert"), Path(directory))
+                finalize(RAW, invalid_draft, output_dir)
 
     def test_rejects_fabricated_link(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -129,6 +131,31 @@ class FinalizeDigestTests(unittest.TestCase):
                 result = main(["--raw", str(raw_path), "--draft", str(draft_path)])
             self.assertEqual(result, 0)
             self.assertTrue((output / "digest-20260925-090000-abcdef12.md").exists())
+
+    def test_main_rejects_output_directory_override(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw_path = root / "raw.json"
+            raw_path.write_text(_json.dumps({**RAW, "source_issues": []}))
+            draft_path = root / "draft.md"
+            draft_path.write_text(VALID)
+            configured_output = root / "configured"
+            override_output = root / "override"
+            with patch.dict("os.environ", {"AI_DIGEST_OUTPUT_DIR": str(configured_output)}):
+                with self.assertRaises(SystemExit):
+                    from finalize_digest import main
+                    main(["--raw", str(raw_path), "--draft", str(draft_path),
+                          "--output-dir", str(override_output)])
+            self.assertFalse(configured_output.exists())
+            self.assertFalse(override_output.exists())
+
+    def test_finalize_cleans_temp_after_link_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch("os.link", side_effect=OSError("cross-device link")):
+                with self.assertRaises(OSError):
+                    finalize(RAW, VALID, Path(directory))
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_finalize_cleans_up_temp_on_exception(self):
         """Test that finalize cleans up temp file on BaseException during write."""

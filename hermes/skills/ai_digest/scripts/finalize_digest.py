@@ -32,23 +32,31 @@ def _validate_report(raw: dict, draft: str, items: list[dict]) -> None:
         raise ValueError("invalid run_id")
     if not isinstance(items, list) or not items:
         raise ValueError("report has no source items")
-    headings = list(re.finditer(r"^## ([1-9][0-9]*)\. (.+)$", draft, re.M))
+    headings = list(re.finditer(r"^## (\d+)\. (.+)$", draft, re.M))
     if len(headings) != len(items):
         raise ValueError("report item count does not match collected items")
+    _validate_citations(draft, items)
+    for index, (heading, item) in enumerate(zip(headings, items), 1):
+        section_end = headings[index].start() if index < len(headings) else len(draft)
+        _validate_section(heading, draft[heading.end():section_end], item, index)
+
+
+def _validate_citations(draft: str, items: list[dict]) -> None:
     allowed_urls = {url for item in items for url in item.get("urls", [])}
     cited_urls = {match.group().rstrip(".,;") for match in URL.finditer(draft)}
     if cited_urls - allowed_urls:
         raise ValueError("report cites a URL absent from collected sources")
-    for index, (heading, item) in enumerate(zip(headings, items), 1):
-        if heading.group(1) != str(index) or heading.group(2).strip() != item["title"]:
-            raise ValueError("report title or order differs from collected items")
-        section = draft[heading.end():headings[index].start() if index < len(headings) else len(draft)]
-        roles = re.findall(r"^### (Junior|Senior|Manager)$", section, re.M)
-        if roles != ["Junior", "Senior", "Manager"]:
-            raise ValueError("report requires Junior, Senior, Manager in that order")
-        section_urls = {match.group().rstrip(".,;") for match in URL.finditer(section)}
-        if not set(item.get("urls", [])) <= section_urls:
-            raise ValueError("report item is missing source URLs")
+
+
+def _validate_section(heading, section: str, item: dict, index: int) -> None:
+    if heading.group(1) != str(index) or heading.group(2).strip() != item["title"]:
+        raise ValueError("report title or order differs from collected items")
+    roles = re.findall(r"^### (Junior|Senior|Manager)$", section, re.M)
+    if roles != ["Junior", "Senior", "Manager"]:
+        raise ValueError("report requires Junior, Senior, Manager in that order")
+    section_urls = {match.group().rstrip(".,;") for match in URL.finditer(section)}
+    if not set(item.get("urls", [])) <= section_urls:
+        raise ValueError("report item is missing source URLs")
 
 
 def _validate_source_availability(draft: str, issues: list[dict]) -> None:
@@ -96,11 +104,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--raw", type=Path, required=True)
     parser.add_argument("--draft", type=Path, required=True)
-    parser.add_argument("--output-dir", type=Path,
-                        default=Path(os.environ.get("AI_DIGEST_OUTPUT_DIR", "~/workspace/digests")).expanduser())
     args = parser.parse_args(argv)
+    output_dir = Path(os.environ.get("AI_DIGEST_OUTPUT_DIR", "~/workspace/digests")).expanduser()
     raw = json.loads(args.raw.read_text(encoding="utf-8"))
-    print(finalize(raw, args.draft.read_text(encoding="utf-8"), args.output_dir))
+    print(finalize(raw, args.draft.read_text(encoding="utf-8"), output_dir))
     return 0
 
 

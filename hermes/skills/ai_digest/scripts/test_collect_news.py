@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from collect_news import (_deduplicate, _public_url, _Text, _date, canonical_url,
+from collect_news import (GITHUB_API_URL, _deduplicate, _public_url, _Text, _date, _trending_articles, canonical_url,
                            collect, parse_rss, UTC_SUFFIX, http_fetch)  # noqa: E402
 
 
@@ -19,6 +19,15 @@ NOW = datetime(2026, 9, 25, 12, tzinfo=timezone.utc)
 
 
 class CollectNewsTests(unittest.TestCase):
+    def test_trending_articles_extracts_repo_and_description(self):
+        html = '''<article class="Box-row"><h2><a href="/owner/repo">owner/repo</a></h2>
+        <p>A useful model</p></article>'''
+        self.assertEqual(_trending_articles(html), [("/owner/repo", "A useful model")])
+
+    def test_trending_articles_ignores_non_card_articles(self):
+        html = '<article class="other"><h2><a href="/owner/repo">repo</a></h2></article>'
+        self.assertEqual(_trending_articles(html), [])
+
     def test_config_covers_required_source_types(self):
         config = __import__("json").loads(Path(__file__).with_name("sources.json").read_text())
         self.assertEqual(config["version"], 1)
@@ -538,7 +547,7 @@ class CollectNewsTests(unittest.TestCase):
         call_count = [0]
         def fetch(url, max_bytes):
             call_count[0] += 1
-            if urlsplit(url).netloc == "api.github.com":
+            if url.startswith(GITHUB_API_URL + "/"):
                 return search_payload
             return f"<html>{block}</html>".encode()
         items, issues = _source(source, {}, NOW, fetch)
@@ -810,6 +819,16 @@ class CollectNewsTests(unittest.TestCase):
         config = {"version": 1, "defaults": {"window_hours": 24, "limit": 0}, "sources": []}
         with self.assertRaises(ValueError):
             collect(config, now=NOW)
+
+    def test_collect_rejects_zero_window_override(self):
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 5}, "sources": []}
+        with self.assertRaises(ValueError):
+            collect(config, now=NOW, window_hours=0)
+
+    def test_collect_rejects_zero_limit_override(self):
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 5}, "sources": []}
+        with self.assertRaises(ValueError):
+            collect(config, now=NOW, limit=0)
 
     def test_collect_with_http_fetch_creates_inner_fetch(self):
         """Test collect uses inner fetch wrapper when fetch is http_fetch."""
