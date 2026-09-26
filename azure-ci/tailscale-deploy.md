@@ -222,8 +222,11 @@ git check-ignore -v azure-ci/hermes-vps-known-hosts
 **Branch control проверяет все связанные repository resources**, включая
 `deploySource`, а не только ветку определения pipeline. Allowlist
 `refs/heads/*` разрешает любой branch ref репозитория, но не теги. Сохраните
-проверку защиты ветки, approval и остальные checks; это позволяет раскатывать
-feature-ветки без отключения production-gates.
+проверку защиты ветки, owner approval и остальные checks. Такое расширение
+allowlist разрешает выкатывать в production любой branch ref, включая ещё не
+проверенный; владелец должен явно одобрить это изменение настроек в Azure, а
+каждый run — конкретный SHA из Summary. Настройте защиту для всех deployable
+веток, если Branch control требует, чтобы source branch была protected.
 См. [Branch control в Azure](https://learn.microsoft.com/en-us/azure/devops/pipelines/process/approvals?view=azure-devops#branch-control).
 Код выбранной ветки получит production credentials после checks и approval —
 одобряйте только проверенный SHA из Summary, а не просто знакомое имя ветки.

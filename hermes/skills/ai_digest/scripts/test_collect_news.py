@@ -672,6 +672,18 @@ class CollectNewsTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     http_fetch("https://example.com", max_bytes=100)
 
+    def test_http_fetch_disables_environment_proxies(self):
+        from collect_news import http_fetch
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = b"ok"
+        opener = MagicMock()
+        opener.open.return_value = response
+        with patch("collect_news._public_url"), \
+                patch("collect_news.build_opener", return_value=opener) as build_opener:
+            self.assertEqual(http_fetch("https://example.test/news", max_bytes=10), b"ok")
+        self.assertEqual(build_opener.call_args.args[0].proxies, {})
+
     def test_http_fetch_connects_to_the_validated_address_without_resolving_again(self):
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
