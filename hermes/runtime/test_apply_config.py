@@ -284,17 +284,17 @@ class ApplyConfigTests(unittest.TestCase):
         chain = policy['default_routes']
         providers = {route['provider'] for route in chain}
         primary_provider = overlay['model']['provider']
-        self.assertTrue(
-            len(providers - {primary_provider}) >= 2,
+        self.assertGreaterEqual(
+            len(providers - {primary_provider}), 2,
             'quota recovery needs at least two providers independent of the primary',
         )
         self.assertLessEqual(providers, set(policy['allowed_providers']))
         for route in chain:
-            if route['provider'] == 'openrouter':
+            if route['provider'] in {'openrouter', 'nous'}:
                 with self.subTest(route=route):
                     self.assertTrue(
                         route['model'].endswith(':free'),
-                        'OpenRouter fallback routes must use free models',
+                        'OpenRouter and Nous fallback routes must use free models',
                     )
 
     def test_fallback_contract_rejects_entries_hermes_would_ignore(self) -> None:

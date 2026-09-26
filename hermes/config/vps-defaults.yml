@@ -314,8 +314,8 @@ vps_runtime:
     # Prune stale tool-call output from context without an extra LLM call.
     # Starting value; tune based on observed context growth.
     proactive_prune_tokens: 50000
-    # Match the pinned Hermes default: up to 500 tool-calling iterations for
-    # long VPS/ops tasks. This is still bounded; loop guardrails remain active.
+    # Keep long VPS/ops tasks bounded while allowing substantially more work
+    # than the previous 200-iteration cap. The pinned Hermes default is unlimited.
     agent.max_turns: 500
     goals.max_turns: 50
     # Match the agent-cache TTL to how long sessions actually stay idle

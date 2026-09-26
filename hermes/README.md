@@ -2119,6 +2119,8 @@ Prompt caching в Hermes работает автоматически. Skills з�
 
 Deploy задаёт бюджеты основного агента и `/goal` через `agent.max_turns` и
 `goals.max_turns` в [`config/vps-defaults.yml`](config/vps-defaults.yml).
+Лимит основного агента здесь задан намеренно как VPS guardrail и отличается от
+неограниченного default в закреплённом Hermes.
 Loop guardrails остаются активны; их значения и остальные runtime-лимиты
 определяются конфигурацией и закреплённой версией Hermes. Для Telegram включён
 подробный tool-progress, о background process приходит только итог, а сессия

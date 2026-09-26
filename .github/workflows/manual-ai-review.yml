@@ -390,6 +390,8 @@ jobs:
           BASE_REF: ${{ inputs.base_ref }}
           REQUESTED_MODEL: ${{ inputs.model }}
           REQUESTED_PROVIDER: ${{ inputs.provider }}
+          SELECTED_MODEL: ${{ steps.ai_review.outputs.selected_model }}
+          SELECTED_PROVIDER: ${{ steps.ai_review.outputs.selected_provider }}
           REQUESTED_PUBLISH_TARGET: ${{ inputs.publish }}
           TARGET_REF: ${{ inputs.target_ref }}
         run: |
@@ -402,12 +404,14 @@ jobs:
             --arg target_ref "${TARGET_REF}" \
             --arg base_sha "${BASE_SHA}" \
             --arg head_sha "${HEAD_SHA}" \
-            --arg model "${REQUESTED_MODEL}" \
-            --arg provider "${REQUESTED_PROVIDER}" \
+            --arg model "${SELECTED_MODEL}" \
+            --arg provider "${SELECTED_PROVIDER}" \
             --arg scope "${REVIEW_SCOPE}" \
             --arg base_ref "${BASE_REF}" \
             --arg requested_model "${REQUESTED_MODEL}" \
             --arg requested_provider "${REQUESTED_PROVIDER}" \
+            --arg effective_model "${SELECTED_MODEL}" \
+            --arg effective_provider "${SELECTED_PROVIDER}" \
             --arg requested_publish_target "${REQUESTED_PUBLISH_TARGET}" \
             --arg publish_target "${PUBLISH_TARGET}" \
             --arg pr_number "${PR_NUMBER}" \

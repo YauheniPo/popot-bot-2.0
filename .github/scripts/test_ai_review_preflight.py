@@ -833,6 +833,30 @@ class OllamaReviewTest(unittest.TestCase):
             "Request ID", "Scope:",
         ):
             self.assertIn(label, manual_summary["run"])
+        self.assertEqual(
+            manual_summary["env"]["SELECTED_PROVIDER"],
+            "${{ steps.ai_review.outputs.selected_provider }}",
+        )
+        self.assertEqual(
+            manual_summary["env"]["SELECTED_MODEL"],
+            "${{ steps.ai_review.outputs.selected_model }}",
+        )
+        package_report = next(
+            step for job in manual["jobs"].values() for step in job["steps"]
+            if step.get("name") == "Package the review report for the caller"
+        )
+        self.assertEqual(
+            package_report["env"]["SELECTED_PROVIDER"],
+            "${{ steps.ai_review.outputs.selected_provider }}",
+        )
+        self.assertEqual(
+            package_report["env"]["SELECTED_MODEL"],
+            "${{ steps.ai_review.outputs.selected_model }}",
+        )
+        self.assertIn('--arg provider "${SELECTED_PROVIDER}"', package_report["run"])
+        self.assertIn('--arg model "${SELECTED_MODEL}"', package_report["run"])
+        self.assertIn('--arg effective_provider "${SELECTED_PROVIDER}"', package_report["run"])
+        self.assertIn('--arg effective_model "${SELECTED_MODEL}"', package_report["run"])
 
     def test_claude_review_has_a_bounded_turn_and_wall_clock_budget(self):
         root = Path(__file__).resolve().parents[2]
