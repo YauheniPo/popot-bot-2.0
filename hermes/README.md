@@ -1141,9 +1141,10 @@ host key прямо внутри pipeline.
 проверяет все связанные repository resources. Шаблон `refs/heads/*` разрешает
 любую ветку кода `deploySource`, не разрешая теги; сохраните проверку защиты
 ветки, approvals и остальные checks. Это разрешает production deploy любого
-branch ref, включая ещё не проверенный; владелец должен явно одобрить изменение
-allowlist в Azure, а каждый run — конкретный SHA из Summary. Настройте защиту
-для всех deployable веток, если Branch control требует protected source branches.
+branch ref, включая ещё не проверенный; до сохранения allowlist в Azure владелец
+должен явно принять этот риск, а каждый run — одобрить по конкретному SHA из
+Summary. Настройте защиту для всех deployable веток, если Branch control требует
+protected source branches.
 Код выбранной ветки получит production credentials только после checks и approval.
 
 Repository resource `deploySource` использует GitHub service connection

@@ -56,8 +56,9 @@ separately after your final response.
    with `--raw <absolute JSON path> --draft <absolute draft path>`. It checks
    structure and links, then creates the final archive file exclusively in
    `$AI_DIGEST_OUTPUT_DIR`. If validation fails, correct the draft and retry at
-   most once; otherwise return `[CRON_FAILURE]` and the actual error. Never
-   replace an existing archive file.
+   most once; otherwise return `[CRON_FAILURE]` and the actual error. Do not
+   skip unsupported items or substitute a cached draft; no report is archived
+   after persistent validation failure. Never replace an existing archive file.
 5. Final answer: a concise summary of the archived report (at most 3000
    characters), followed by `MEDIA:<absolute archive path>` on its own line.
    The summary must be derived from the same report. Do not use `hermes send`:

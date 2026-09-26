@@ -33,8 +33,11 @@ JSON и журнал сборщика находятся в `$AI_DIGEST_STATE_DI
 `~/workspace/digests/`). Историю cron можно смотреть через `hermes cron runs
 <job_id>` и `hermes cron doctor`. Содержимое источников считается недоверенным
 вводом; сетевые URL проверяются на публичный адрес, соединение закрепляется за
-проверенным IP против DNS rebinding. Сборщик подключается напрямую и не
-использует `HTTP_PROXY`/`HTTPS_PROXY` переменные окружения.
+проверенным IP против DNS rebinding: `collect_news.py` получает адреса через
+`_public_addresses()`, и каждый HTTP(S) handler подключается к одному из тех же
+проверенных `sockaddr`; повторного DNS lookup при connect нет. Для HTTPS TLS
+проверка сохраняет исходное имя хоста. Сборщик подключается напрямую: `http_fetch`
+использует `ProxyHandler({})`, поэтому `HTTP_PROXY`/`HTTPS_PROXY` не применяются.
 
 ## Покрытие источников
 

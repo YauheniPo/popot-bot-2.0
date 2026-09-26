@@ -90,7 +90,8 @@ class PrometheusRulesTests(unittest.TestCase):
         self.assertIn("or vector(0)", failures["targets"][0]["expr"])
         self.assertNotIn("clamp_min", panels["Average model response time by route"]["targets"][0]["expr"])
         availability = panels["Successful API responses by model"]["targets"][0]["expr"]
-        self.assertIn("clamp_min(", availability)
+        self.assertNotIn("clamp_min", availability)
+        self.assertIn("sum by (provider, model) (rate(hermes_api_calls_total", availability)
         self.assertIn("rate(hermes_api_rate_limits_total[$__rate_interval])",
                       panels["Rate-limited requests per second"]["targets"][0]["expr"])
         self.assertIn("Host load", panels)
