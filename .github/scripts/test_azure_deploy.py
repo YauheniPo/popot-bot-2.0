@@ -397,6 +397,8 @@ sudo() { printf '%s\\n' "$@"; [[ "$*" != *'tailscale logout'* ]]; }
         self.assertIs(source_checkout["persistCredentials"], False)
         validate_branch = next(s for s in steps if "validate-deploy-branch.py" in s.get("bash", ""))
         self.assertEqual(validate_branch["env"]["DEPLOY_BRANCH"], "${{ parameters.deployBranch }}")
+        self.assertEqual(validate_branch["workingDirectory"], "$(Pipeline.Workspace)/s/pipeline")
+        self.assertLess(steps.index(checkout), steps.index(validate_branch))
         self.assertLess(steps.index(validate_branch), steps.index(source_checkout))
         self.assertEqual(source_checkout["checkout"], "deploySource")
         self.assertEqual(self.pipeline["resources"]["repositories"][0]["ref"],

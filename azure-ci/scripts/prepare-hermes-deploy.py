@@ -24,8 +24,8 @@ def main() -> int:
     # Limit input to ordinary branch names, not tags, SHAs, revision expressions
     # or strings interpreted by Azure logging / shell / Markdown syntax.
     if (not branch_ref.startswith("refs/heads/")
-            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", branch)
-            or branch.startswith("refs/") or branch.endswith("/")
+            or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9._/-]*[A-Za-z0-9._-])?", branch)
+            or branch.startswith("refs/")
             or any(part in {".", ".."} for part in branch.split("/"))):
         raise ValueError("Invalid deployment branch name")
     git("check-ref-format", f"refs/heads/{branch}")
