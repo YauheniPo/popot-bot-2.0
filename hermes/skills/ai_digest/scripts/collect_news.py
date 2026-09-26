@@ -166,26 +166,32 @@ def _has_audio_enclosure(node) -> bool:
 
 def _parse_rss_node(node, is_atom: bool, source_id: str, now: datetime,
                     window_hours: int, max_summary_chars: int, audio_only: bool) -> dict | None:
-    if is_atom:
-        link = next((a.get("href") for a in node.findall(ATOM + "link")
-                     if a.get("rel", "alternate") == "alternate"), "")
-        body = node.findtext(ATOM + "content") or node.findtext(ATOM + "summary") or ""
-        has_full_content = node.find(ATOM + "content") is not None
-        published = node.findtext(ATOM + "published") or node.findtext(ATOM + "updated")
-        title = node.findtext(ATOM + "title") or ""
-    else:
-        link = node.findtext("link") or ""
-        body = node.findtext(CONTENT + "encoded") or node.findtext("description") or ""
-        has_full_content = node.find(CONTENT + "encoded") is not None
-        published = node.findtext("pubDate") or node.findtext("date")
-        title = node.findtext("title") or ""
+    fields = _atom_fields(node) if is_atom else _rss_fields(node)
+    title, link, published, body, has_full_content = fields
     item = _item(title, link, _date(published), body, source_id, now, window_hours, max_summary_chars)
-    if item and item["title"]:
-        item["full_text_available"] = has_full_content and len(item["evidence"]) >= 400
-        if audio_only:
-            item["evidence_kind"] = "show_notes"
-            item["full_text_available"] = False
-    return item if item and item["title"] else None
+    if not item or not item["title"]:
+        return None
+    item["full_text_available"] = has_full_content and len(item["evidence"]) >= 400
+    if audio_only:
+        item["evidence_kind"] = "show_notes"
+        item["full_text_available"] = False
+    return item
+
+
+def _atom_fields(node) -> tuple[str, str, str | None, str, bool]:
+    link = next((entry.get("href") for entry in node.findall(ATOM + "link")
+                 if entry.get("rel", "alternate") == "alternate"), "")
+    body = node.findtext(ATOM + "content") or node.findtext(ATOM + "summary") or ""
+    published = node.findtext(ATOM + "published") or node.findtext(ATOM + "updated")
+    return (node.findtext(ATOM + "title") or "", link, published, body,
+            node.find(ATOM + "content") is not None)
+
+
+def _rss_fields(node) -> tuple[str, str, str | None, str, bool]:
+    body = node.findtext(CONTENT + "encoded") or node.findtext("description") or ""
+    published = node.findtext("pubDate") or node.findtext("date")
+    return (node.findtext("title") or "", node.findtext("link") or "", published, body,
+            node.find(CONTENT + "encoded") is not None)
 
 
 def _json(fetch, url: str, max_bytes: int):
@@ -331,25 +337,44 @@ def _collect_reddit(source: dict, source_id: str, now: datetime, fetch, limit: i
             issues.append({"id": source_id, "kind": "degraded",
                            "reason": f"r/{subreddit}: {str(exc)[:120]}"})
             continue
-        for row in listing.get("data", {}).get("children", [])[:limit]:
-            post = row.get("data", {})
-            created_utc = post.get("created_utc")
-            if not isinstance(created_utc, (int, float)) or created_utc <= 0:
-                issues.append({"id": source_id, "kind": "degraded",
-                               "reason": f"r/{subreddit}: item missing or invalid created_utc"})
-                continue
-            item = _item(post.get("title", ""), post.get("url", ""),
-                         datetime.fromtimestamp(created_utc, timezone.utc),
-                         post.get("selftext", ""), source_id, now, window, max_chars,
-                         score=int(post.get("score", 0)), discussion_count=int(post.get("num_comments", 0)))
-            if item:
-                item["discussion_url"] = "https://www.reddit.com" + post.get("permalink", "")
-                if post.get("permalink"):
-                    item["urls"].append(item["discussion_url"])
-                item["reddit_post_id"] = post.get("id", "")
-                item["max_comments"] = int(source.get("max_comments", 5))
-                items.append(item)
+        items.extend(_reddit_items(listing, source, source_id, subreddit, now, limit,
+                                   max_chars, window, issues))
     return items
+
+
+def _reddit_items(listing: dict, source: dict, source_id: str, subreddit: str,
+                  now: datetime, limit: int, max_chars: int, window: int,
+                  issues: list[dict]) -> list[dict]:
+    items = []
+    rows = listing.get("data", {}).get("children", [])[:limit]
+    for row in rows:
+        item = _reddit_item(row.get("data", {}), source, source_id, subreddit,
+                            now, max_chars, window, issues)
+        if item:
+            items.append(item)
+    return items
+
+
+def _reddit_item(post: dict, source: dict, source_id: str, subreddit: str,
+                 now: datetime, max_chars: int, window: int,
+                 issues: list[dict]) -> dict | None:
+    created_utc = post.get("created_utc")
+    if not isinstance(created_utc, (int, float)) or created_utc <= 0:
+        issues.append({"id": source_id, "kind": "degraded",
+                       "reason": f"r/{subreddit}: item missing or invalid created_utc"})
+        return None
+    item = _item(post.get("title", ""), post.get("url", ""),
+                 datetime.fromtimestamp(created_utc, timezone.utc),
+                 post.get("selftext", ""), source_id, now, window, max_chars,
+                 score=int(post.get("score", 0)), discussion_count=int(post.get("num_comments", 0)))
+    if not item:
+        return None
+    item["discussion_url"] = "https://www.reddit.com" + post.get("permalink", "")
+    if post.get("permalink"):
+        item["urls"].append(item["discussion_url"])
+    item["reddit_post_id"] = post.get("id", "")
+    item["max_comments"] = int(source.get("max_comments", 5))
+    return item
 
 
 def _collect_github_trending(source: dict, source_id: str, now: datetime, fetch, limit: int, max_bytes: int, max_chars: int, window: int, issues: list[dict]) -> list[dict]:
