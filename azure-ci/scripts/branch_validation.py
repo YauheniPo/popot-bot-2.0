@@ -20,7 +20,7 @@ def validate_deploy_branch(value: str, *, full_ref: bool = False) -> str:
         if branch.startswith("refs/"):
             raise ValueError("Enter a short branch name, not a ref")
     if (not branch or not BRANCH_PATTERN.fullmatch(branch)
-            or any(part in {".", ".."} for part in branch.split("/"))):
+            or any(not part or part in {".", ".."} for part in branch.split("/"))):
         raise ValueError("Invalid deployment branch name")
     try:
         subprocess.run(

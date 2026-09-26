@@ -70,7 +70,7 @@ class DeploymentSelectionTests(unittest.TestCase):
                     self.assertNotIn(branch, result.stderr)
                 self.assertNotIn("Traceback", result.stderr)
                 if branch == "a//b":
-                    self.assertIn("Git rejected the branch name", result.stderr)
+                    self.assertIn("Invalid deployment branch name", result.stderr)
 
     def test_snapshot_stays_pinned_when_branch_moves_and_excludes_local_files(self):
         (self.repo / "untracked-secret").write_text("must not be archived")

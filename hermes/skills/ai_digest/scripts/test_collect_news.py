@@ -667,9 +667,12 @@ class CollectNewsTests(unittest.TestCase):
         payload = _json.dumps({"results": results}).encode()
         env = {"AI_DIGEST_SEARCH_URL": "https://search.example.com/", "SEARXNG_URL": ""}
         with patch.dict("os.environ", env, clear=False):
-            with patch("collect_news._public_url", return_value="https://search.example.com/search?q=test&format=json"):
+            with patch("collect_news.socket.getaddrinfo", return_value=[
+                    (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "",
+                     ("93.184.216.34", 443))]) as getaddrinfo:
                 items, issues = _source({"id": "search", "type": "searxng", "query": "test"}, {}, NOW,
                                         lambda u, m: payload)
+        getaddrinfo.assert_called_once_with("search.example.com", 443, type=socket.SOCK_STREAM)
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["title"], "Article")
 
