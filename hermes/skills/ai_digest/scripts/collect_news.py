@@ -547,20 +547,24 @@ def _merge_duplicate(match: dict, item: dict) -> None:
     if len(item["evidence"]) > len(match["evidence"]):
         match["evidence"] = item["evidence"]
         match["full_text_available"] = item["full_text_available"]
-        for key in ("published_at", "listed_at", "observed_at"):
-            if item.get(key) is not None:
-                match[key] = item[key]
-        if item.get("published_at") or item.get("listed_at") or not (
-                match.get("published_at") or match.get("listed_at")):
-            if "time_basis" in item:
-                match["time_basis"] = item["time_basis"]
-            else:
-                match.pop("time_basis", None)
-        for key in ("evidence_kind", "category"):
-            if key in item:
-                match[key] = item[key]
+        _merge_duplicate_metadata(match, item)
     for key in ("comment_ids", "reddit_post_id", "max_comments", "discussion_url"):
         if key in item and key not in match:
+            match[key] = item[key]
+
+
+def _merge_duplicate_metadata(match: dict, item: dict) -> None:
+    for key in ("published_at", "listed_at", "observed_at"):
+        if item.get(key) is not None:
+            match[key] = item[key]
+    if item.get("published_at") or item.get("listed_at") or not (
+            match.get("published_at") or match.get("listed_at")):
+        if "time_basis" in item:
+            match["time_basis"] = item["time_basis"]
+        else:
+            match.pop("time_basis", None)
+    for key in ("evidence_kind", "category"):
+        if key in item:
             match[key] = item[key]
 
 
