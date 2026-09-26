@@ -55,6 +55,7 @@ class DeploymentSelectionTests(unittest.TestCase):
                     env={**os.environ, "DEPLOY_BRANCH": branch},
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, "")
         for branch in ("", "refs/heads/main", "../main", "a/b/../c", "main/", "a//b",
                        "a/./b", "a/b/.", "main\n", "main^{commit}"):
             with self.subTest(branch=branch):

@@ -4,17 +4,20 @@
 #
 # Azure setup required before the first run:
 #   1. Create an environment named `hermes-vps` and require an owner
-#      approval, branch control for refs/heads/*, and an exclusive lock.
+#      approval, branch control for refs/heads/main, and an exclusive lock.
+#      Change branch control to refs/heads/* only after owner sign-off is
+#      recorded in the change request/PR; see tailscale-deploy.md.
 #   2. Upload the two files referenced by DownloadSecureFile tasks below to
 #      Pipelines > Library > Secure files.
 #   3. Authorize only this pipeline to use those files. On every secure file,
-#      add branch control for refs/heads/* and an owner approval. Do not use
-#      "Open access".
+#      add branch control for refs/heads/main and an owner approval. Change to
+#      refs/heads/* only after owner sign-off is recorded. Do not use "Open access".
 #   4. Restrict the pipeline's Queue builds permission to the repository owner.
 #   5. Configure the CI tag and SSH policy described in tailscale-deploy.md.
 #   6. Create protected variable group `hermes-deploy-secrets` with secret
 #      HERMES_VAULT_PASSWORD and HERMES_TAILSCALE_AUTH_KEY; apply the same
-#      pipeline permissions, refs/heads/* branch control and owner approval as files.
+#      pipeline permissions, refs/heads/main branch control and owner approval
+#      as files. Change to refs/heads/* only after owner sign-off is recorded.
 #   7. Authorize this pipeline for `github.com_YauheniPo`. Branch control also
 #      checks deploySource. Keep the wildcard limited to branch refs; this YAML
 #      rejects tags. Do not remove approvals or other checks; see tailscale-deploy.md.

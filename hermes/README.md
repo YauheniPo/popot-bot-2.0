@@ -1132,10 +1132,12 @@ host key прямо внутри pipeline.
 1. В **Pipeline permissions** разрешите только production deployment pipeline;
    не включайте **Open access**.
 2. В **Approvals and checks** добавьте **Branch control** для
-   `refs/heads/*` и approval владельца репозитория.
+   `refs/heads/main` и approval владельца репозитория. Переключайте на
+   `refs/heads/*` только после зафиксированного sign-off владельца в change
+   request/PR.
 
 Создайте Azure Environment `hermes-vps`. В его **Approvals and checks**
-добавьте approval владельца, **Branch control** для `refs/heads/*` и
+добавьте approval владельца, **Branch control** для `refs/heads/main` и
 **Exclusive lock**. У самого pipeline оставьте право **Queue builds** только
 владельцу. Эти проверки задаются в Azure UI, а не в YAML. Branch control
 проверяет все связанные repository resources. Шаблон `refs/heads/*` разрешает
@@ -1143,7 +1145,8 @@ host key прямо внутри pipeline.
 ветки, approvals и остальные checks. Это разрешает production deploy любого
 branch ref, включая ещё не проверенный. Владелец должен зафиксировать принятие
 риска в change request/PR до merge и изменения allowlist; пока sign-off не записан,
-оставляйте `refs/heads/main`. Для каждого run проверяйте SHA в Summary и одобряйте
+оставляйте `refs/heads/main`. Только после sign-off переключите Environment
+Branch control на `refs/heads/*`. Для каждого run проверяйте SHA в Summary и одобряйте
 именно его. Настройте защиту всех deployable веток, если Branch control требует
 protected source branches. YAML фиксирует выбранный resource commit и публикует
 Summary до production stage; approval и Branch control задаются отдельно в Azure
