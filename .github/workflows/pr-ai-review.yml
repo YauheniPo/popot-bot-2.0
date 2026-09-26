@@ -78,7 +78,7 @@ jobs:
           include_sonar: true
           include_threads: true
           budget_seconds: ${{ env.OLLAMA_REVIEW_BUDGET_SECONDS }}
-          max_chunks: "40"
+          max_chunks: ${{ vars.PR_REVIEW_MAX_CHUNKS || '100' }}
           fallback_model: ${{ env.DIRECT_REVIEW_FALLBACK_MODEL }}
           fallback_provider: ${{ env.DIRECT_REVIEW_FALLBACK_PROVIDER }}
           rpm: ${{ env.OLLAMA_REVIEW_RPM }}
