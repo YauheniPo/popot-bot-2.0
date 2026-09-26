@@ -42,7 +42,9 @@ JSON и журнал сборщика находятся в `$AI_DIGEST_STATE_DI
 IP-адреса берутся из DNS системы и проверяются на публичную маршрутизируемость;
 это предотвращает подключение к private/loopback адресам и DNS rebinding между
 проверкой и connect, но не является статическим allowlist источников или защитой
-от скомпрометированного системного DNS.
+от скомпрометированного системного DNS. Считайте это best-effort защитой и
+дополняйте её исходящими сетевыми правилами VPS, ограничивающими доступ к
+private/loopback сетям.
 Реализация находится в `scripts/collect_news.py`; тест
 `test_http_fetch_connects_to_the_validated_address_without_resolving_again` в
 `scripts/test_collect_news.py` проверяет подключение по закреплённому адресу без

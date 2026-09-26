@@ -206,12 +206,15 @@ git check-ignore -v azure-ci/hermes-vps-known-hosts
 1. Откройте **Pipeline permissions** → разрешите только `popot-bot-2.0 Deploy`
    (pipeline №13). Не включайте **Open access**.
 2. В **Approvals and checks** добавьте approval владельца.
-3. Добавьте **Branch control** с разрешённым шаблоном `refs/heads/*`.
+3. Пока change request не одобрен, оставьте **Branch control** на
+   `refs/heads/main`. После зафиксированного sign-off переключите на
+   `refs/heads/*` отдельным изменением настроек Azure.
 
 В **Pipelines → Environments** создайте или откройте `hermes-vps`:
 
 - Разрешите использование только deployment pipeline.
-- Добавьте owner approval и Branch control `refs/heads/*`.
+- Добавьте owner approval и Branch control `refs/heads/main`; переключите на
+  `refs/heads/*` только после зафиксированного sign-off для change request.
 - Добавьте **Exclusive lock**; YAML использует `lockBehavior: sequential`,
   чтобы deploy не выполнялись одновременно.
 
