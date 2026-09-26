@@ -208,6 +208,7 @@ runs:
     # Main review step
     - name: Review and publish findings
       id: direct_review
+      shell: bash
       working-directory: target
       env:
         BASE_SHA: ${{ steps.direct_context.outputs.base_sha }}

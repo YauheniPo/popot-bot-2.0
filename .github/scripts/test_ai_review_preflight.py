@@ -165,6 +165,10 @@ class OllamaReviewTest(unittest.TestCase):
         action_text = (root / ".github/actions/ai-direct-review/action.yml").read_text()
         self.assertEqual(action["runs"]["using"], "composite")
         self.assertNotIn("${{ secrets.", action_text)
+        for step in action["runs"]["steps"]:
+            if "run" in step:
+                with self.subTest(action_step=step.get("name")):
+                    self.assertIn(step.get("shell"), {"bash", "sh", "pwsh", "powershell", "python"})
         for consumer in (direct_action, manual_action):
             self.assertNotIn("secrets", consumer)
             for input_name, secret_name in secret_inputs.items():
