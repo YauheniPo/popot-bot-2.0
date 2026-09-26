@@ -1,7 +1,8 @@
 # Route health rules for Prometheus alerts and the Hermes Overview dashboard.
-# A route is one provider/model pair. Ratios divide by a guarded denominator so
-# idle routes produce no sample instead of a misleading zero. Per-call analytics
-# (percentiles, finish reasons, fallbacks) are served by the SQLite datasource.
+# A route is one provider/model pair. The comparison denominator filters idle
+# routes while retaining each positive call count (no PromQL `bool` modifier).
+# Per-call analytics (percentiles, finish reasons, fallbacks) are served by the
+# SQLite datasource.
 groups:
   - name: hermes-routes
     interval: 1m

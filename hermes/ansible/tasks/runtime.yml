@@ -108,7 +108,16 @@
     - code-review
     - codebase-design
   register: hermes_matt_pocock_skill_sources
-  failed_when: not hermes_matt_pocock_skill_sources.stat.exists
+  when: vps_external_skills.matt_pocock_engineering.enabled | bool
+
+- name: Require all Matt Pocock engineering skill sources
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+    fail_msg: "Required Matt Pocock engineering skill source is missing: {{ item.item }}"
+  loop: "{{ hermes_matt_pocock_skill_sources.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
   when: vps_external_skills.matt_pocock_engineering.enabled | bool
 
 - name: Inspect the existing Hermes configuration

@@ -94,7 +94,7 @@ vps_hermes:
           - provider: openrouter
             model: nvidia/nemotron-3-ultra-550b-a55b:free
           - provider: nous
-            model: poolside/laguna-s-2.1:free
+            model: inclusionai/ling-3.0-flash-sante:free
         # Chat may only choose these existing integrations. No automatic keys,
         # endpoints or paid OpenRouter routes are added by the command.
         allowed_providers: [nvidia, openrouter, nous]
@@ -314,10 +314,9 @@ vps_runtime:
     # Prune stale tool-call output from context without an extra LLM call.
     # Starting value; tune based on observed context growth.
     proactive_prune_tokens: 50000
-    # Bounded instead of unlimited, so a stuck run fails instead of burning
-    # tokens indefinitely. Above the 20-turn default since this agent runs
-    # unattended VPS/ops tasks that can legitimately need more steps.
-    agent.max_turns: 200
+    # Match the pinned Hermes default: up to 500 tool-calling iterations for
+    # long VPS/ops tasks. This is still bounded; loop guardrails remain active.
+    agent.max_turns: 500
     goals.max_turns: 50
     # Match the agent-cache TTL to how long sessions actually stay idle
     # (session_reset.idle_minutes above) so a live session isn't evicted from

@@ -106,6 +106,7 @@ class PrometheusRulesTests(unittest.TestCase):
         for rule in self.rules:
             if "record" in rule and ":ratio" in rule["record"]:
                 self.assertIn("> 0)", rule["expr"], rule["record"])
+                self.assertNotIn("> bool 0", rule["expr"], rule["record"])
 
     def test_prometheus_configs_load_the_rules_directory(self) -> None:
         for path, directory in ((OBSERVABILITY / "prometheus.yml", "/etc/prometheus/rules/*.yml"),

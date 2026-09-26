@@ -12,8 +12,8 @@ env:
   # 1 = DirectAPI; 2 = ClaudeCodePlugin gating with Observable corroboration.
   PR_REVIEWER: ${{ vars.PR_REVIEWER || '0' }}
   # Both agent reviewers share CLAUDE_REVIEW_*; Direct API has its own route.
-  DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'openrouter' }}
-  DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'inclusionai/ling-3.0-flash-fin:free' }}
+  DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'nous' }}
+  DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'inclusionai/ling-3.0-flash-sante:free' }}
   DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'nvidia/nemotron-3-ultra-550b-a55b:free' }}
   DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'openrouter' }}
   CLAUDE_REVIEW_PROVIDER: ${{ vars.CLAUDE_REVIEW_PROVIDER || 'openrouter' }}
@@ -38,6 +38,7 @@ concurrency:
 
 jobs:
   # Direct API reviewer; the provider is selected through DIRECT_REVIEW_PROVIDER.
+  # Uses composite action ai-direct-review for shared logic with manual/ADO review.
   direct-api-review:
     # Runs alone in mode 1 and first in mode 0. This is also the validation path
     # for an invalid selector, so a typo cannot silently skip the workflow.
@@ -49,131 +50,44 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login == github.repository_owner
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
       issues: write
       pull-requests: write
-    # The direct reviewer covers the full eligible diff in bounded, rate-limited
-    # chunks. Allow 15 minutes for both four-attempt probes, 40 for review, and
-    # five for setup/publication; a failed preflight can end much earlier.
-    timeout-minutes: 60
-    outputs:
-      complete: ${{ steps.direct_review.outcome == 'success' }}
-
     steps:
-      - name: Validate reviewer selection
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "${PR_REVIEWER}" != "0" && "${PR_REVIEWER}" != "1" && "${PR_REVIEWER}" != "2" ]]; then
-            echo "::error::PR_REVIEWER must be 0 (DirectAPI + ClaudeCodePlugin), 1 (DirectAPI), or 2 (ClaudeCodePlugin). ObservableMessagesReview is corroborating and non-gating."
-            exit 1
-          fi
-
-      - name: Check out pull request
+      - name: Check out PR revision for local composite action
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Collect SonarCloud context for DirectAPI review
-        continue-on-error: true
-        shell: bash
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_PROJECT_KEY: YauheniPo_popot-bot-2.0
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          SONAR_REVIEW_CONTEXT_FILE: sonar-review-context.json
-        run: python3 .github/scripts/sonar_review_context.py
-
-      - name: Verify direct API JSON review
-        id: direct_models
-        shell: bash
-        env:
-          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-          NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
-          DIRECT_REVIEW_PROVIDER: ${{ env.DIRECT_REVIEW_PROVIDER }}
-          DIRECT_REVIEW_MODEL: ${{ env.DIRECT_REVIEW_MODEL }}
-          DIRECT_REVIEW_FALLBACK_MODEL: ${{ env.DIRECT_REVIEW_FALLBACK_MODEL }}
-          DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ env.DIRECT_REVIEW_FALLBACK_PROVIDER }}
-        # Preflight validates the selected provider/model response contract.
-        run: python3 .github/scripts/ai_review_preflight.py --probe json
-
-      - name: DirectAPI — review and publication
-        id: direct_review
-        env:
-          # The response mode is an internal preflight output, not a repository variable.
-          DIRECT_REVIEW_MODEL_MODE: ${{ steps.direct_models.outputs.selected_mode }}
-          DIRECT_REVIEW_FALLBACK_MODEL: ${{ steps.direct_models.outputs.secondary_model }}
-          DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ steps.direct_models.outputs.secondary_provider }}
-          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-          NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
-          DIRECT_REVIEW_PROVIDER: ${{ steps.direct_models.outputs.selected_provider }}
-          DIRECT_REVIEW_MODEL: ${{ steps.direct_models.outputs.selected_model }}
-          # Internal preflight metadata; this is not a repository variable.
-          DIRECT_REVIEW_PRIMARY_MODEL: ${{ steps.direct_models.outputs.primary_model }}
-          SONAR_REVIEW_CONTEXT_FILE: sonar-review-context.json
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 .github/scripts/ai_pr_review.py
-
-      - name: Report unavailable Direct API review
-        id: report_direct_unavailable
-        if: always() && !cancelled() && (steps.direct_models.outcome == 'failure' || steps.direct_review.outcome == 'failure')
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_RUN_ID: ${{ github.run_id }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PRIMARY_MODEL: ${{ env.DIRECT_REVIEW_MODEL }}
-          PRIMARY_PROVIDER: ${{ env.DIRECT_REVIEW_PROVIDER }}
-          FALLBACK_MODEL: ${{ env.DIRECT_REVIEW_FALLBACK_MODEL }}
-          FALLBACK_PROVIDER: ${{ env.DIRECT_REVIEW_FALLBACK_PROVIDER }}
-          PRIMARY_REASON: ${{ steps.direct_models.outputs.primary_reason || 'Preflight failed before readiness could be established; see logs.' }}
-          FALLBACK_REASON: ${{ steps.direct_models.outputs.fallback_reason || 'Readiness not established; see logs.' }}
-          REVIEW_FAILURE: ${{ steps.direct_review.outputs.failure_reason || '' }}
-          REVIEW_OUTCOME: ${{ steps.direct_review.outcome }}
-          SELECTED_PROVIDER: ${{ steps.direct_models.outputs.selected_provider }}
-          SELECTED_MODEL: ${{ steps.direct_models.outputs.selected_model }}
-        run: |
-          set -euo pipefail
-          report="${RUNNER_TEMP}/direct-unavailable.md"
-          marker="<!-- direct-api-review-unavailable:${GITHUB_RUN_ID} -->"
-          {
-            printf '%s\n' "$marker"
-            printf '## Direct API review unavailable\n\nNo completed, published review is confirmed. This is not a clean review.\n\n'
-            if [[ "$REVIEW_OUTCOME" == 'failure' ]]; then
-              printf -- '- Stage: review / validation / publication after successful preflight.\n'
-              printf -- '- Selected route: `%s` / `%s`.\n' "$SELECTED_PROVIDER" "$SELECTED_MODEL"
-              printf -- '- Failure: `%s`. See CI logs and the execution summary for attempt details.\n\n' "${REVIEW_FAILURE:-process_failed_without_diagnostic}"
-            else
-              printf -- '- Primary `%s` / `%s`: %s\n' "$PRIMARY_PROVIDER" "$PRIMARY_MODEL" "$PRIMARY_REASON"
-              printf -- '- Fallback `%s` / `%s`: %s\n\n' "$FALLBACK_PROVIDER" "$FALLBACK_MODEL" "$FALLBACK_REASON"
-            fi
-            printf '[CI attempt %s](https://github.com/%s/actions/runs/%s/attempts/%s)\n' "$GITHUB_RUN_ATTEMPT" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
-          } > "$report"
-          cat "$report" >> "$GITHUB_STEP_SUMMARY"
-          bodies_file="${RUNNER_TEMP}/direct-unavailable-comments.txt"
-          if gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
-               --jq '.[] | select(.user.login == "github-actions[bot]") | (.body // "")' \
-               >"${bodies_file}"; then
-            if grep -Fqx -- "$marker" "$bodies_file"; then
-              echo "Direct API unavailability comment already published for run ${GITHUB_RUN_ID}."
-            else
-              gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -F "body=@${report}" >/dev/null
-            fi
-          else
-            echo "::warning::Could not read existing pull-request comments; skipping duplicate-prone Direct API unavailability comment."
-          fi
+      - name: AI Direct Review
+        id: ai_review
+        uses: ./.github/actions/ai-direct-review
+        with:
+          model: ${{ env.DIRECT_REVIEW_MODEL }}
+          provider: ${{ env.DIRECT_REVIEW_PROVIDER }}
+          base_sha: ${{ github.event.pull_request.base.sha }}
+          head_sha: ${{ github.event.pull_request.head.sha }}
+          pr_number: ${{ github.event.pull_request.number }}
+          scope: branch_diff
+          publish_mode: auto
+          include_sonar: true
+          include_threads: true
+          budget_seconds: ${{ env.OLLAMA_REVIEW_BUDGET_SECONDS }}
+          max_chunks: ${{ vars.PR_REVIEW_MAX_CHUNKS || '100' }}
+          fallback_model: ${{ env.DIRECT_REVIEW_FALLBACK_MODEL }}
+          fallback_provider: ${{ env.DIRECT_REVIEW_FALLBACK_PROVIDER }}
+          rpm: ${{ env.OLLAMA_REVIEW_RPM }}
+          review_origin: github-actions
+          sonar_token: ${{ secrets.SONAR_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          ollama_api_key: ${{ secrets.OLLAMA_API_KEY }}
+          openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          nvidia_api_key: ${{ secrets.NVIDIA_API_KEY }}
+          nous_api_key: ${{ secrets.NOUS_API_KEY }}
 
   # Preserve the existing job id so configured required checks remain stable.
   claude-code-plugin-review:
@@ -934,7 +848,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions: {}
     env:
-      DIRECT_COMPLETE: ${{ needs.direct-api-review.outputs.complete }}
+      DIRECT_COMPLETE: ${{ needs.direct-api-review.result == 'success' }}
       CLAUDE_COMPLETE: ${{ needs.claude-code-plugin-review.outputs.complete }}
       OBSERVABLE_COMPLETE: ${{ needs.observable-claude-review.outputs.complete }}
       OBSERVABLE_PUBLISHED: ${{ needs.observable-claude-review.outputs.published }}

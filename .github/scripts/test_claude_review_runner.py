@@ -272,7 +272,8 @@ class ClaudeReviewRunnerTests(unittest.TestCase):
             self.assertEqual(result["stop_reason"], "end_turn")
             request = opener.open.call_args.args[0]
             self.assertTrue(json.loads(request.data)["stream"])
-            opener.open.side_effect = runner.urllib.error.HTTPError("https://example.test", 429, "secret-error", {}, None)
+            opener.open.side_effect = runner.urllib.error.HTTPError(
+                "https://example.test", 429, "secret-error", {}, io.BytesIO(b"secret body"))
             with self.assertRaisesRegex(runner.ReviewFailure, "^http_429$"):
                 runner.request_message("https://example.test", "secret-key", {}, 5)
 

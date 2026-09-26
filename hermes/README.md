@@ -1496,7 +1496,7 @@ Docs/Sheets.
 Hermes использует встроенный terminal и bundled skill `github` (auth, PR
 review, issues, workflow, repo management — с v0.21.0 объединены в один
 скилл вместо прежних шести отдельных). Отдельный GitHub MCP не нужен.
-`git` выполняет локальные операции, а `gh` — PR, unresolved review threads,
+`git` выполняет локальные операции; `gh` — PR, unresolved review threads,
 issues, Actions и API-запросы.
 
 Для Ansible deployment задайте fine-grained PAT в encrypted Vault:
@@ -2015,13 +2015,15 @@ chat-команда не принимает credentials или произвол�
 
 Базовый список проверен по публичным каталогам **23 сентября 2026**:
 
-| Порядок | Provider | Model ID | Основание выбора |
-| --- | --- | --- | --- |
-| 1 | `openrouter` | `inclusionai/ling-3.0-flash-fin:free` | Уже настроен основным Direct Review; поддерживает tools, используется Hermes |
-| 2 | `nous` | `meituan/longcat-2.0:free` | Официальная бесплатная рекомендация Portal, coding/agentic задачи, tools |
-| 3 | `nvidia` | `nvidia/nemotron-3-super-120b-a12b` | Уже настроен для compression Hermes; agentic reasoning/coding/tools |
-| 4 | `openrouter` | `nvidia/nemotron-3-ultra-550b-a55b:free` | Уже настроен резервом Direct Review, есть в curated-каталоге Hermes |
-| 5 | `nous` | `poolside/laguna-s-2.1:free` | Официальная бесплатная рекомендация Portal, модель для coding agents, tools |
+|| Порядок | Provider | Model ID | Основание выбора |
+|| --- | --- | --- | --- |
+|| 1 | `openrouter` | *см. текущий дефолт в `vps-defaults.yml`* | Быстрее всего (3.3s avg), 99.8% success rate в метриках Grafana |
+|| 2 | `ollama-cloud` | *см. текущий дефолт в `vps-defaults.yml`* | Workhorse для объёмных задач (9s avg, 99.1% success) |
+|| 3 | `nvidia` | `nvidia/nemotron-3-super-120b-a12b` | Уже настроен для compression Hermes; agentic reasoning/coding/tools |
+|| 4 | `openrouter` | `nvidia/nemotron-3-ultra-550b-a55b:free` | Уже настроен резервом Direct Review, есть в curated-каталоге Hermes |
+|| 5 | `nous` | `inclusionai/ling-3.0-flash-sante:free` | Validated для PR review (<15s, 0 retries, 88 runs) |
+
+*Актуальный список маршрутов — в `vps-defaults.yml` (`fallback_policy.default_routes`). README содержит устаревший снимок; при смене маршрутов обновляйте эту таблицу.*
 
 Источники: [каталог OpenRouter](https://openrouter.ai/api/v1/models),
 [бесплатные рекомендации Nous](https://portal.nousresearch.com/api/nous/recommended-models),
@@ -2115,14 +2117,14 @@ Prompt caching в Hermes работает автоматически. Skills з�
 набор. Объединяйте похожие cron-проверки в один отчёт вместо многих отдельных
 запусков.
 
-Скрипт удаляет пользовательские overrides `agent.max_turns` и
-`goals.max_turns`, поэтому обычные запросы и `/goal` используют полноценные
-встроенные бюджеты текущей версии Hermes. Hard-stop по-прежнему останавливает
-только повторяющиеся ошибки после трёх неудач; один turn ограничен 20 web
-searches и 10 subagents. Для Telegram включён подробный tool-progress, о
-background process приходит только итог, а сессия автоматически сбрасывается
-после 48 часов простоя. Метрики, health checks, backups и `hermes-ops-report` работают без
-LLM; автоматический анализ запускается только по вашему запросу.
+Deploy задаёт бюджеты основного агента и `/goal` через `agent.max_turns` и
+`goals.max_turns` в [`config/vps-defaults.yml`](config/vps-defaults.yml).
+Loop guardrails остаются активны; их значения и остальные runtime-лимиты
+определяются конфигурацией и закреплённой версией Hermes. Для Telegram включён
+подробный tool-progress, о background process приходит только итог, а сессия
+автоматически сбрасывается после настроенного периода простоя. Метрики, health
+checks, backups и `hermes-ops-report` работают без LLM; автоматический анализ
+запускается только по вашему запросу.
 
 #### Активность в `/status`
 

@@ -1,0 +1,328 @@
+name: "AI Direct Review"
+description: "Direct API JSON review with preflight, chunked diff processing, and publication"
+inputs:
+  model:
+    description: "Model for the direct reviewer"
+    required: true
+  provider:
+    description: "Provider for the direct reviewer"
+    required: true
+  base_sha:
+    description: "Base commit SHA for diff"
+    required: true
+  head_sha:
+    description: "Head commit SHA for diff"
+    required: true
+  pr_number:
+    description: "PR number for publication (empty = check_run mode)"
+    required: false
+    default: ""
+  scope:
+    description: "Review scope: branch_diff, last_commit, commit_range, full_branch"
+    required: true
+    default: "branch_diff"
+  publish_mode:
+    description: "Where to publish: auto, existing_pr, check_annotations, draft_pr"
+    required: true
+    default: "auto"
+  include_sonar:
+    description: "Include SonarCloud context"
+    required: false
+    default: "true"
+  include_threads:
+    description: "Include unresolved PR review threads"
+    required: false
+    default: "true"
+  budget_seconds:
+    description: "Review budget in seconds"
+    required: false
+    default: "2400"
+  max_chunks:
+    description: "Max chunks to review (0 = unlimited)"
+    required: false
+    default: "0"
+  fallback_model:
+    description: "Fallback model"
+    required: false
+    default: "nvidia/nemotron-3-ultra-550b-a55b:free"
+  fallback_provider:
+    description: "Fallback provider"
+    required: false
+    default: "openrouter"
+  rpm:
+    description: "Requests per minute limit"
+    required: false
+    default: "60"
+  cooldown_seconds:
+    description: "Cooldown between reviewers (sequential mode)"
+    required: false
+    default: "0"
+  review_origin:
+    description: "Origin label for reporting"
+    required: false
+    default: "github-actions"
+  request_id:
+    description: "External request ID"
+    required: false
+    default: ""
+  sonar_token:
+    description: "SonarCloud token for optional PR context"
+    required: false
+    default: ""
+  github_token:
+    description: "GitHub token for review publication"
+    required: false
+    default: ""
+  ollama_api_key:
+    description: "Ollama Cloud API key"
+    required: false
+    default: ""
+  openrouter_api_key:
+    description: "OpenRouter API key"
+    required: false
+    default: ""
+  nvidia_api_key:
+    description: "NVIDIA API key"
+    required: false
+    default: ""
+  nous_api_key:
+    description: "Nous API key"
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    # Trusted tooling checkout (reviewer scripts)
+    - name: Check out trusted reviewer tooling
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      with:
+        fetch-depth: 1
+        path: reviewer
+        persist-credentials: false
+        ref: main
+
+    # Target checkout (code under review)
+    - name: Check out the review target
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      with:
+        fetch-depth: 0
+        path: target
+        persist-credentials: false
+        ref: ${{ inputs.head_sha }}
+
+    # Collect Sonar context (optional)
+    - name: Collect SonarCloud context
+      if: ${{ inputs.include_sonar == 'true' }}
+      continue-on-error: true
+      shell: bash
+      env:
+        SONAR_TOKEN: ${{ inputs.sonar_token }}
+        SONAR_PROJECT_KEY: YauheniPo_popot-bot-2.0
+        PR_NUMBER: ${{ inputs.pr_number }}
+        BASE_SHA: ${{ inputs.base_sha }}
+        HEAD_SHA: ${{ inputs.head_sha }}
+        SONAR_REVIEW_CONTEXT_FILE: sonar-review-context.json
+      run: |
+        set -euo pipefail
+        python3 reviewer/.github/scripts/sonar_review_context.py
+
+    # Preflight: validate model/provider
+    - name: Verify direct API JSON review
+      id: direct_models
+      shell: bash
+      env:
+        OLLAMA_API_KEY: ${{ inputs.ollama_api_key }}
+        OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
+        NVIDIA_API_KEY: ${{ inputs.nvidia_api_key }}
+        NOUS_API_KEY: ${{ inputs.nous_api_key }}
+        DIRECT_REVIEW_PROVIDER: ${{ inputs.provider }}
+        DIRECT_REVIEW_MODEL: ${{ inputs.model }}
+        DIRECT_REVIEW_FALLBACK_MODEL: ${{ inputs.fallback_model }}
+        DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ inputs.fallback_provider }}
+      run: |
+        set -euo pipefail
+        python3 reviewer/.github/scripts/ai_review_preflight.py --probe json
+
+    # Resolve publication context (PR vs check_run)
+    - name: Resolve publication context
+      id: direct_context
+      shell: bash
+      env:
+        TARGET_REF: ${{ inputs.head_sha }}
+        BASE_REF: ${{ inputs.base_sha }}
+        SCOPE: ${{ inputs.scope }}
+        PUBLISH: ${{ inputs.publish_mode }}
+        PR_NUMBER_INPUT: ${{ inputs.pr_number }}
+        REQUEST_ID: ${{ inputs.request_id }}
+      run: |
+        set -euo pipefail
+
+        # Strip \r from workflow_dispatch inputs
+        TARGET_REF="${TARGET_REF//$'\r'/}"
+        BASE_REF="${BASE_REF//$'\r'/}"
+        SCOPE="${SCOPE//$'\r'/}"
+        PUBLISH="${PUBLISH//$'\r'/}"
+        REQUEST_ID="${REQUEST_ID//$'\r'/}"
+
+        # Determine base/head SHAs
+        if [[ "${SCOPE}" == "full_branch" ]]; then
+          # Compare against an empty tree so every tracked file is new.
+          # This matches the manual-ai-review.yml full_branch handling.
+          base_sha="$(git -C target hash-object -t tree -w --stdin </dev/null)"
+          head_sha="${TARGET_REF}"
+        elif [[ "${SCOPE}" == "last_commit" ]]; then
+          base_sha=$(git -C target rev-parse "${TARGET_REF}^" 2>/dev/null || echo "${BASE_REF}")
+          head_sha="${TARGET_REF}"
+        elif [[ "${SCOPE}" == "commit_range" ]]; then
+          base_sha="${BASE_REF}"
+          head_sha="${TARGET_REF}"
+        else
+          base_sha="${BASE_REF}"
+          head_sha="${TARGET_REF}"
+        fi
+
+        # Determine PR number and publication target
+        pr_number="${PR_NUMBER_INPUT}"
+        if [[ -z "${pr_number}" && "${SCOPE}" != "full_branch" && "${PUBLISH}" == "auto" ]]; then
+          # Try to find existing PR
+          pr_number=$(gh api "repos/${GITHUB_REPOSITORY}/pulls" --jq '.[] | select(.head.sha == "'"${head_sha}"'" and .base.sha == "'"${base_sha}"'" and .draft == false) | .number' 2>/dev/null | head -1 || echo "")
+        fi
+
+        if [[ "${SCOPE}" == "full_branch" ]]; then
+          pr_number=""
+        fi
+
+        if [[ -n "${pr_number}" ]]; then
+          echo 'publish_target=pull_request' >>"${GITHUB_OUTPUT}"
+          echo "Review findings will be published to pull request #${pr_number}."
+        else
+          echo 'publish_target=check_run' >>"${GITHUB_OUTPUT}"
+          echo "Review findings will be published as a Check Run on ${head_sha}."
+        fi
+
+        printf 'base_sha=%s\n' "${base_sha}" >>"${GITHUB_OUTPUT}"
+        printf 'head_sha=%s\n' "${head_sha}" >>"${GITHUB_OUTPUT}"
+        printf 'pr_number=%s\n' "${pr_number}" >>"${GITHUB_OUTPUT}"
+
+    # Main review step
+    - name: Review and publish findings
+      id: direct_review
+      shell: bash
+      working-directory: target
+      env:
+        BASE_SHA: ${{ steps.direct_context.outputs.base_sha }}
+        HEAD_SHA: ${{ steps.direct_context.outputs.head_sha }}
+        CHECK_RUN_NAME: ${{ startsWith(inputs.request_id, 'ado-') && 'Azure DevOps · Manual AI code review' || 'Manual AI code review' }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        OLLAMA_API_KEY: ${{ inputs.ollama_api_key }}
+        OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
+        NVIDIA_API_KEY: ${{ inputs.nvidia_api_key }}
+        NOUS_API_KEY: ${{ inputs.nous_api_key }}
+        DIRECT_REVIEW_PROVIDER: ${{ steps.direct_models.outputs.selected_provider }}
+        DIRECT_REVIEW_MODEL: ${{ steps.direct_models.outputs.selected_model }}
+        DIRECT_REVIEW_PRIMARY_MODEL: ${{ steps.direct_models.outputs.primary_model }}
+        DIRECT_REVIEW_FALLBACK_MODEL: ${{ steps.direct_models.outputs.secondary_model }}
+        DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ steps.direct_models.outputs.secondary_provider }}
+        DIRECT_REVIEW_MODEL_MODE: ${{ steps.direct_models.outputs.selected_mode }}
+        OLLAMA_MAX_REVIEW_CHUNKS: ${{ inputs.max_chunks }}
+        OLLAMA_REVIEW_BUDGET_SECONDS: ${{ inputs.budget_seconds }}
+        OLLAMA_REVIEW_RPM: ${{ inputs.rpm }}
+        PR_NUMBER: ${{ steps.direct_context.outputs.pr_number }}
+        REQUIRE_COMPLETE_REVIEW: ${{ steps.direct_context.outputs.pr_number != '' && inputs.scope == 'full_branch' && 'true' || 'false' }}
+        REQUIRE_REVIEW_RESULT: "true"
+        REVIEW_INCLUDE_REVIEWER_FILES: ${{ steps.direct_context.outputs.pr_number != '' && inputs.scope == 'full_branch' && 'true' || 'false' }}
+        REVIEW_ORIGIN: ${{ inputs.review_origin }}
+        REVIEW_REQUEST_ID: ${{ inputs.request_id }}
+        SONAR_REVIEW_CONTEXT_FILE: ${{ inputs.include_sonar == 'true' && 'sonar-review-context.json' || '' }}
+      run: |
+        set -euo pipefail
+        python3 ../reviewer/.github/scripts/ai_pr_review.py
+
+    # Report unavailable Direct API review
+    # Runs even when preflight or review fails (always), but not when
+    # the entire job is cancelled. Uses the same env vars and report
+    # template as the original inline version in pr-ai-review.yml.
+    - name: Report unavailable Direct API review
+      id: report_direct_unavailable
+      if: always() && !cancelled() && (steps.direct_models.outcome == 'failure' || steps.direct_review.outcome == 'failure')
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        GITHUB_RUN_ID: ${{ github.run_id }}
+        PR_NUMBER: ${{ steps.direct_context.outputs.pr_number }}
+        PRIMARY_MODEL: ${{ inputs.model }}
+        PRIMARY_PROVIDER: ${{ inputs.provider }}
+        FALLBACK_MODEL: ${{ steps.direct_models.outputs.secondary_model }}
+        FALLBACK_PROVIDER: ${{ steps.direct_models.outputs.secondary_provider }}
+        PRIMARY_REASON: ${{ steps.direct_models.outputs.primary_reason || 'Preflight failed before readiness could be established; see logs.' }}
+        FALLBACK_REASON: ${{ steps.direct_models.outputs.fallback_reason || 'Readiness not established; see logs.' }}
+        REVIEW_FAILURE: ${{ steps.direct_review.outputs.failure_reason || '' }}
+        REVIEW_OUTCOME: ${{ steps.direct_review.outcome }}
+        SELECTED_PROVIDER: ${{ steps.direct_models.outputs.selected_provider }}
+        SELECTED_MODEL: ${{ steps.direct_models.outputs.selected_model }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+      run: |
+        set -euo pipefail
+        target="${PR_NUMBER:-}"
+        report="${RUNNER_TEMP}/direct-unavailable.md"
+        marker="<!-- direct-api-review-unavailable:${GITHUB_RUN_ID} -->"
+        {
+          printf '%s\n' "$marker"
+          printf '## Direct API review unavailable\n\nNo completed, published review is confirmed. This is not a clean review.\n\n'
+          if [[ "$REVIEW_OUTCOME" == 'failure' ]]; then
+            printf -- '- Stage: review / validation / publication after successful preflight.\n'
+            printf -- '- Selected route: `%s` / `%s`.\n' "$SELECTED_PROVIDER" "$SELECTED_MODEL"
+            printf -- '- Failure: `%s`. See CI logs and the execution summary for attempt details.\n\n' "${REVIEW_FAILURE:-process_failed_without_diagnostic}"
+          else
+            printf -- '- Primary `%s` / `%s`: %s\n' "$PRIMARY_PROVIDER" "$PRIMARY_MODEL" "$PRIMARY_REASON"
+            printf -- '- Fallback `%s` / `%s`: %s\n\n' "$FALLBACK_PROVIDER" "$FALLBACK_MODEL" "$FALLBACK_REASON"
+          fi
+          printf '[CI attempt %s](https://github.com/%s/actions/runs/%s/attempts/%s)\n' "$GITHUB_RUN_ATTEMPT" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+        } > "$report"
+        cat "$report" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+        if [[ -n "$target" ]] && command -v gh >/dev/null 2>&1; then
+          bodies_file="${RUNNER_TEMP}/direct-unavailable-comments.txt"
+          if gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${target}/comments" \
+             --jq '.[] | select(.user.login == "github-actions[bot]") | (.body // "")' \
+             >"${bodies_file}"; then
+            if grep -Fqx -- "$marker" "$bodies_file"; then
+              echo "Direct API unavailability comment already published for run ${GITHUB_RUN_ID}."
+            else
+              gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${target}/comments" -F "body=@${report}" >/dev/null
+            fi
+          else
+            echo "::warning::Could not read existing pull-request comments; skipping duplicate-prone Direct API unavailability comment."
+          fi
+        fi
+
+    # Output findings count
+    - name: Output findings count
+      if: always()
+      shell: bash
+      run: |
+        echo "findings_count=${{ steps.direct_review.outputs.findings_count || 0 }}" >> "${GITHUB_OUTPUT}"
+
+outputs:
+  base_sha:
+    description: "Base SHA used for the diff"
+    value: ${{ steps.direct_context.outputs.base_sha }}
+  head_sha:
+    description: "Head SHA used for the diff"
+    value: ${{ steps.direct_context.outputs.head_sha }}
+  pr_number:
+    description: "PR number (empty = check_run mode)"
+    value: ${{ steps.direct_context.outputs.pr_number }}
+  findings_count:
+    description: "Number of findings"
+    value: ${{ steps.direct_review.outputs.findings_count || 0 }}
+  check_run_url:
+    description: "URL to the check run"
+    value: ${{ steps.direct_review.outputs.check_run_url }}
+  selected_provider:
+    description: "Provider selected by preflight"
+    value: ${{ steps.direct_models.outputs.selected_provider }}
+  selected_model:
+    description: "Model selected by preflight"
+    value: ${{ steps.direct_models.outputs.selected_model }}
