@@ -55,8 +55,6 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-    outputs:
-      findings_count: ${{ steps.ai_review.outputs.findings_count || 0 }}
     steps:
       - name: AI Direct Review
         id: ai_review
