@@ -50,7 +50,7 @@ parameters:
   - name: scope
     displayName: Review scope
     type: string
-    default: branch_diff
+    default: full_branch
     values:
       - branch_diff
       - last_commit
