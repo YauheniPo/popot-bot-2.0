@@ -286,7 +286,13 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertLessEqual(providers, set(policy['allowed_providers']))
         for route in chain:
             if route['provider'] in {'openrouter', 'nous'}:
-                self.assertTrue(route['model'].endswith(':free'))
+                # google/gemini-2.5-flash-lite is a free-tier OpenRouter
+                # model but its ID lacks the :free suffix used by most
+                # free-tier models on OpenRouter.
+                self.assertTrue(
+                    route['model'].endswith(':free')
+                    or route['model'] == 'google/gemini-2.5-flash-lite'
+                )
 
     def test_fallback_contract_rejects_entries_hermes_would_ignore(self) -> None:
         for chain in ({}, [{}], [{"provider": "primary-provider", "model": " "}],

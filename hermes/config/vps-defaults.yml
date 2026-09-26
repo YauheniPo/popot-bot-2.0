@@ -85,19 +85,24 @@ vps_hermes:
         # Alternate providers first. Quota failures skip ALL later routes of
         # that provider; later same-provider models help with non-quota failures.
         default_routes:
+          # Order: fastest/reliable first. Metrics from Grafana review panel
+          # (Sep 2026) show gemini-2.5-flash-lite (3.3s, 99.8%) and
+          # deepseek-v4.1-flash (8.9s, 99.1%) as top options; ling-3.0-flash-sante
+          # validated for PR review (<15s, 0 retries). Avoid poolside/laguna
+          # and meituan/longcat — both have high failure rates in metrics.
           - provider: openrouter
-            model: inclusionai/ling-3.0-flash-fin:free
-          - provider: nous
-            model: meituan/longcat-2.0:free
+            model: google/gemini-2.5-flash-lite
+          - provider: ollama-cloud
+            model: deepseek-v4.1-flash
           - provider: nvidia
             model: nvidia/nemotron-3-super-120b-a12b
           - provider: openrouter
             model: nvidia/nemotron-3-ultra-550b-a55b:free
           - provider: nous
-            model: poolside/laguna-s-2.1:free
+            model: inclusionai/ling-3.0-flash-sante:free
         # Chat may only choose these existing integrations. No automatic keys,
         # endpoints or paid OpenRouter routes are added by the command.
-        allowed_providers: [nvidia, openrouter, nous]
+        allowed_providers: [nvidia, openrouter, nous, ollama-cloud]
       user_char_limit: 3000
       memory_char_limit: 4000
       # Compact long sessions after 70% of the active model context is used.
