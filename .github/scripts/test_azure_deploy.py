@@ -55,7 +55,8 @@ class DeploymentSelectionTests(unittest.TestCase):
                     env={**os.environ, "DEPLOY_BRANCH": branch},
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
-        for branch in ("", "refs/heads/main", "../main", "main\n", "main^{commit}"):
+        for branch in ("", "refs/heads/main", "../main", "a/b/../c", "main/",
+                       "a/./b", "main\n", "main^{commit}"):
             with self.subTest(branch=branch):
                 result = subprocess.run(
                     [sys.executable, str(VALIDATE_BRANCH)], cwd=self.repo, text=True,

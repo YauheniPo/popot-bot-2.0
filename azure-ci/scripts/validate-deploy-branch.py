@@ -9,7 +9,8 @@ import sys
 def main() -> int:
     branch = os.environ.get("DEPLOY_BRANCH", "")
     if (not branch or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", branch)
-            or branch.startswith("refs/")):
+            or branch.startswith("refs/") or branch.endswith("/")
+            or any(part in {".", ".."} for part in branch.split("/"))):
         raise ValueError("Invalid deployment branch name")
     subprocess.run(
         ["git", "check-ref-format", f"refs/heads/{branch}"],
