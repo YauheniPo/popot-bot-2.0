@@ -13,6 +13,8 @@ class DigestDeployTests(unittest.TestCase):
     def test_repository_skills_are_copied_and_existing_paths_preserved(self):
         self.assertIn('src: "{{ playbook_dir }}/../skills/"', PLAYBOOK)
         self.assertIn("- --exclude=__pycache__\n", PLAYBOOK)
+        for pattern in (".env", ".env.*", "*.secret", "*.key", "*.pem", "node_modules"):
+            self.assertIn(f"- --exclude={pattern}\n", PLAYBOOK)
         self.assertIn("hermes_bundle_dir ~ '/skills'", RUNTIME)
         self.assertIn("hermes_existing_config.get('skills', {}).get('external_dirs', [])", RUNTIME)
 
