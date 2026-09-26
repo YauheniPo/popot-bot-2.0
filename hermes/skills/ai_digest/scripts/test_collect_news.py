@@ -837,6 +837,25 @@ class CollectNewsTests(unittest.TestCase):
         self.assertIn("comment_ids", result[0])
         self.assertEqual(result[0]["comment_ids"], [1, 2])
 
+    def test_deduplicate_keeps_event_dates_when_longer_trending_evidence_wins(self):
+        first = {"title": "Model release", "url": "https://example.com/release",
+                 "urls": ["https://example.com/release"], "source_ids": ["release"],
+                 "score": 1, "discussion_count": 0, "evidence": "Release date is known.",
+                 "full_text_available": False, "published_at": "2026-09-25T10:00:00Z",
+                 "time_basis": "submission"}
+        trending = {"title": "Model release", "url": "https://example.com/release",
+                    "urls": ["https://example.com/release"], "source_ids": ["trending"],
+                    "score": 2, "discussion_count": 0,
+                    "evidence": "Longer trending evidence about the model.",
+                    "full_text_available": False, "published_at": None,
+                    "observed_at": "2026-09-25T12:00:00Z",
+                    "time_basis": "trending_observation"}
+        merged = _deduplicate([first, trending])[0]
+        self.assertEqual(merged["evidence"], trending["evidence"])
+        self.assertEqual(merged["published_at"], first["published_at"])
+        self.assertEqual(merged["observed_at"], trending["observed_at"])
+        self.assertEqual(merged["time_basis"], "submission")
+
     def test_collect_rejects_invalid_window_range(self):
         """Test collect rejects invalid window or limit range."""
         from collect_news import collect
