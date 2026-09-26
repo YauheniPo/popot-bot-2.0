@@ -42,7 +42,7 @@ pool:
 
 parameters:
   - name: deployBranch
-    displayName: Branch to deploy
+    displayName: Branch to deploy (short name, e.g. feat/example)
     type: string
     default: main
   - name: deployMode

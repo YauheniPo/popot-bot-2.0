@@ -398,6 +398,9 @@ sudo() { printf '%s\\n' "$@"; [[ "$*" != *'tailscale logout'* ]]; }
         validate_branch = next(s for s in steps if "validate-deploy-branch.py" in s.get("bash", ""))
         self.assertEqual(validate_branch["env"]["DEPLOY_BRANCH"], "${{ parameters.deployBranch }}")
         self.assertLess(steps.index(validate_branch), steps.index(source_checkout))
+        self.assertEqual(source_checkout["checkout"], "deploySource")
+        self.assertEqual(self.pipeline["resources"]["repositories"][0]["ref"],
+                         "refs/heads/${{ parameters.deployBranch }}")
         prepare = next(s for s in steps if "prepare-hermes-deploy.py" in s.get("bash", ""))
         self.assertEqual(prepare["bash"],
                          'python3 "$(Pipeline.Workspace)/s/pipeline/azure-ci/scripts/prepare-hermes-deploy.py"')
