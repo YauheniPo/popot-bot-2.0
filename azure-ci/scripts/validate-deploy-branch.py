@@ -22,6 +22,14 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (ValueError, OSError, subprocess.SubprocessError):
-        print("ERROR: Deployment branch validation failed.", file=sys.stderr)
+    except ValueError as error:
+        print(f"ERROR: {error}.", file=sys.stderr)
+        raise SystemExit(1) from None
+    except subprocess.CalledProcessError as error:
+        print(f"ERROR: git check-ref-format rejected the branch (exit {error.returncode}).",
+              file=sys.stderr)
+        raise SystemExit(1) from None
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"ERROR: Git branch validation failed ({type(error).__name__}).",
+              file=sys.stderr)
         raise SystemExit(1) from None
