@@ -4,20 +4,20 @@
 #
 # Azure setup required before the first run:
 #   1. Create an environment named `hermes-vps` and require an owner
-#      approval, branch control for refs/heads/main, and an exclusive lock.
+#      approval, branch control for refs/heads/*, and an exclusive lock.
 #   2. Upload the two files referenced by DownloadSecureFile tasks below to
 #      Pipelines > Library > Secure files.
 #   3. Authorize only this pipeline to use those files. On every secure file,
-#      add branch control for refs/heads/main and an owner approval. Do not use
+#      add branch control for refs/heads/* and an owner approval. Do not use
 #      "Open access".
 #   4. Restrict the pipeline's Queue builds permission to the repository owner.
 #   5. Configure the CI tag and SSH policy described in tailscale-deploy.md.
 #   6. Create protected variable group `hermes-deploy-secrets` with secret
 #      HERMES_VAULT_PASSWORD and HERMES_TAILSCALE_AUTH_KEY; apply the same
-#      pipeline permissions, main branch control and owner approval as files.
+#      pipeline permissions, refs/heads/* branch control and owner approval as files.
 #   7. Authorize this pipeline for `github.com_YauheniPo`. Branch control also
-#      checks deploySource: a main-only allowlist rejects feature-branch deploys.
-#      Do not remove checks to bypass that policy; see tailscale-deploy.md.
+#      checks deploySource. Keep the wildcard limited to branch refs; this YAML
+#      rejects tags. Do not remove approvals or other checks; see tailscale-deploy.md.
 #
 # The encrypted Vault file supplies ansible_host, ansible_user, and Hermes
 # secrets. Secure files are never copied into the repository checkout.
@@ -29,18 +29,22 @@ pr: none
 
 resources:
   repositories:
-    # Select the deployment branch under Run pipeline > Resources. The pipeline
-    # definition itself stays on main; this checkout is data until approval.
+    # The selected parameter controls this checkout. The pipeline definition and
+    # deployment helper remain on main; this checkout is data until approval.
     - repository: deploySource
       type: github
       endpoint: github.com_YauheniPo
       name: YauheniPo/popot-bot-2.0
-      ref: refs/heads/main
+      ref: refs/heads/${{ parameters.deployBranch }}
 
 pool:
   vmImage: ubuntu-latest
 
 parameters:
+  - name: deployBranch
+    displayName: Branch to deploy
+    type: string
+    default: main
   - name: deployMode
     displayName: Ansible deployment mode
     type: string

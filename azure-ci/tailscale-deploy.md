@@ -97,7 +97,7 @@ tailnet policy/auth keys в Tailscale. Сохраняйте доступ к ко
 Значения задавайте без обрамляющих кавычек и Base64. Не используйте общий ключ
 VPS `tailscale_auth_key` и не добавляйте CI-ключ в Hermes `.env`, Git или чат.
 Для группы разрешите только deployment pipeline, добавьте owner approval и
-Branch control `refs/heads/main`, как для двух Secure Files. YAML подключает
+Branch control `refs/heads/*`, как для двух Secure Files. YAML подключает
 группу только на stage `DeployProduction`, после фиксации SHA исходников.
 При ротации обновляйте secret variable в группе, не загружайте новый файл.
 
@@ -206,12 +206,12 @@ git check-ignore -v azure-ci/hermes-vps-known-hosts
 1. Откройте **Pipeline permissions** → разрешите только `popot-bot-2.0 Deploy`
    (pipeline №13). Не включайте **Open access**.
 2. В **Approvals and checks** добавьте approval владельца.
-3. Добавьте **Branch control** с разрешённой веткой `refs/heads/main`.
+3. Добавьте **Branch control** с разрешённым шаблоном `refs/heads/*`.
 
 В **Pipelines → Environments** создайте или откройте `hermes-vps`:
 
 - Разрешите использование только deployment pipeline.
-- Добавьте owner approval и Branch control `refs/heads/main`.
+- Добавьте owner approval и Branch control `refs/heads/*`.
 - Добавьте **Exclusive lock**; YAML использует `lockBehavior: sequential`,
   чтобы deploy не выполнялись одновременно.
 
@@ -220,10 +220,10 @@ git check-ignore -v azure-ci/hermes-vps-known-hosts
 в ADO UI: одного YAML недостаточно.
 
 **Branch control проверяет все связанные repository resources**, включая
-`deploySource`, а не только ветку определения pipeline. При allowlist только
-`refs/heads/main` deploy feature-ветки будет заблокирован, даже если она доступна
-в picker. Изменение списка разрешённых веток требует отдельного согласования;
-не удаляйте checks ради обхода этой политики.
+`deploySource`, а не только ветку определения pipeline. Allowlist
+`refs/heads/*` разрешает любой branch ref репозитория, но не теги. Сохраните
+проверку защиты ветки, approval и остальные checks; это позволяет раскатывать
+feature-ветки без отключения production-gates.
 См. [Branch control в Azure](https://learn.microsoft.com/en-us/azure/devops/pipelines/process/approvals?view=azure-devops#branch-control).
 Код выбранной ветки получит production credentials после checks и approval —
 одобряйте только проверенный SHA из Summary, а не просто знакомое имя ветки.
@@ -240,14 +240,17 @@ Repository resource `deploySource` использует GitHub service connectio
 этому pipeline использование подключения, если оно ещё не авторизовано;
 **Open access** не требуется.
 
-В **Run pipeline** оставьте версию самого pipeline на `main`, затем откройте
-**Resources → deploySource** и выберите ветку исходников в штатном picker Azure.
-Ручного строкового параметра ветки больше нет.
+В **Run pipeline** оставьте версию самого pipeline на `main`. В параметре
+**Branch to deploy** укажите короткое имя ветки, например
+`feat/hermes-ai-digest-cron`; YAML добавит `refs/heads/` и передаст значение
+через compile-time выражение в `resources.repositories.deploySource.ref`.
+Runtime-переопределение
+`resources.repositories.deploySource.refName` для этого не используется.
 
 | Поле | Что выбрать |
 |---|---|
 | Branch/tag определения pipeline | `main` |
-| Resources → deploySource | `main` или проверенная ветка этого репозитория, разрешённая Branch control |
+| Checkout `deploySource` | Ветка из `Branch to deploy`; по умолчанию `main` |
 | Ansible deployment mode (`deployMode`) | `full`, `config-only` или `runtime-only` |
 
 Отдельного чекбокса подтверждения production нет: ручной **Run pipeline**

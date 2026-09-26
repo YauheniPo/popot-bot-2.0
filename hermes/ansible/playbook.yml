@@ -408,6 +408,8 @@
           - --exclude=test_*.py
           - --exclude=.env
           - --exclude=.env.*
+          - --exclude=.envrc
+          - --exclude=dotenv
           - --exclude=env
           - --exclude=env.*
           - --exclude=*.secret

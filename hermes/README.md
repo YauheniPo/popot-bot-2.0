@@ -1131,30 +1131,29 @@ host key прямо внутри pipeline.
 
 1. В **Pipeline permissions** разрешите только production deployment pipeline;
    не включайте **Open access**.
-2. В **Approvals and checks** добавьте **Branch control** только для
-   `refs/heads/main` и approval владельца репозитория.
+2. В **Approvals and checks** добавьте **Branch control** для
+   `refs/heads/*` и approval владельца репозитория.
 
 Создайте Azure Environment `hermes-vps`. В его **Approvals and checks**
-добавьте approval владельца, **Branch control** для `refs/heads/main` и
+добавьте approval владельца, **Branch control** для `refs/heads/*` и
 **Exclusive lock**. У самого pipeline оставьте право **Queue builds** только
 владельцу. Эти проверки задаются в Azure UI, а не в YAML. Branch control
-проверяет все связанные repository resources, включая выбранную ветку
-`deploySource`: при allowlist только `refs/heads/main` feature-ветки будут
-заблокированы. Изменение allowlist требует отдельного согласования; checks
-не отключайте. Код Ansible выбранной ветки получит production credentials
-после checks и approval, поэтому согласовывайте только проверенный commit,
+проверяет все связанные repository resources. Шаблон `refs/heads/*` разрешает
+любую ветку кода `deploySource`, не разрешая теги; сохраните проверку защиты
+ветки, approvals и остальные checks. Код выбранной ветки получит production
+credentials после checks и approval, поэтому согласовывайте только проверенный commit,
 показанный в отчёте запуска.
 
 Repository resource `deploySource` использует GitHub service connection
 `github.com_YauheniPo`; разрешите его использование deployment pipeline без
 **Open access**, если разрешение ещё не выдано.
-После попадания этой версии YAML в `main`, в **Run pipeline** откройте
-**Resources → deploySource** для выбора ветки исходников:
+После попадания этой версии YAML в `main`, в **Run pipeline** оставьте pipeline
+на `main` и укажите короткое имя ветки в параметре **Branch to deploy**:
 
 | Поле | Значение |
 |---|---|
 | Branch/tag (ветка самого pipeline) | `main` — не меняйте на feature-ветку |
-| Resources → deploySource | Ветка кода, разрешённая Branch control; по умолчанию `main` |
+| Branch to deploy | `<branch>` (например, `feat/hermes-ai-digest-cron`); по умолчанию `main` |
 | Ansible deployment mode (`deployMode`) | `full`, `config-only` или `runtime-only` |
 
 Отдельный чекбокс подтверждения production не требуется: достаточно ручного
@@ -1170,8 +1169,8 @@ triggers выключены; проверки ветки, доступа, сек
 Pipeline:
 
 1. проверит, что definition запущен из `main`;
-2. через GitHub connection скачает `self` и выбранную версию `deploySource`
-   в разные каталоги без сохранения credentials; helper из доверенного `main`
+2. через GitHub connection скачает `self` из `main` и выбранную параметром
+   ветку `deploySource` в разные каталоги без сохранения credentials; helper из доверенного `main`
    сверит checkout с SHA resource Azure и сохранит архив этого commit,
    не вычисляя вершину ветки заново;
 3. до approvals опубликует в Summary ветку, SHA и режим. Проверьте их перед

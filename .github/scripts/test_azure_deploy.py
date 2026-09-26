@@ -150,7 +150,7 @@ class DeploymentPipelineTests(unittest.TestCase):
         self.assertEqual(self.pipeline["trigger"], "none")
         self.assertEqual(self.pipeline["pr"], "none")
         self.assertCountEqual([p["name"] for p in self.pipeline["parameters"]],
-                              ["deployMode"])
+                              ["deployBranch", "deployMode"])
         content = json.dumps(self.pipeline)
         for obsolete in ("confirmProduction", "CONFIRM_PRODUCTION", "Validate production confirmation"):
             self.assertNotIn(obsolete, content)
@@ -392,20 +392,26 @@ sudo() { printf '%s\\n' "$@"; [[ "$*" != *'tailscale logout'* ]]; }
         download = next(s for s in deploy_steps if s.get("download") == "current")
         self.assertEqual(download["artifact"], publish["inputs"]["artifact"])
 
-    def test_deploy_source_uses_native_github_resource_picker(self):
+    def test_deploy_source_uses_queue_time_branch_parameter(self):
         self.assertEqual(self.pipeline["resources"]["repositories"], [{
             "repository": "deploySource", "type": "github",
             "endpoint": "github.com_YauheniPo", "name": "YauheniPo/popot-bot-2.0",
-            "ref": "refs/heads/main",
+            "ref": "refs/heads/${{ parameters.deployBranch }}",
         }])
+        parameters = {p["name"]: p for p in self.pipeline["parameters"]}
+        self.assertEqual(parameters["deployBranch"]["default"], "main")
+        self.assertEqual(self.pipeline["resources"]["repositories"][0]["ref"],
+                         "refs/heads/${{ parameters.deployBranch }}")
+        self.assertEqual(parameters["deployBranch"]["type"], "string")
         variables = self.pipeline["stages"][0]["jobs"][0]["variables"]
         self.assertEqual(variables["deploymentSourceRef"], "$[ resources.repositories.deploySource.ref ]")
         self.assertEqual(variables["deploymentSourceVersion"], "$[ resources.repositories.deploySource.version ]")
 
     def test_mode_parameters_reach_both_ansible_commands_after_vault(self):
         parameters = {p["name"]: p for p in self.pipeline["parameters"]}
+        self.assertEqual(parameters["deployBranch"]["type"], "string")
+        self.assertEqual(parameters["deployBranch"]["default"], "main")
         self.assertEqual(set(parameters["deployMode"]["values"]), {"full", "config-only", "runtime-only"})
-        self.assertNotIn("deployBranch", parameters)
         steps = self.pipeline["stages"][1]["jobs"][0]["strategy"]["runOnce"]["deploy"]["steps"]
         commands = [s for s in steps if "ansible-playbook \\" in s.get("bash", "")]
         self.assertEqual(len(commands), 2)

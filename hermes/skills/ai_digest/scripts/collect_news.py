@@ -480,6 +480,19 @@ def _collect_searxng(source: dict, source_id: str, now: datetime, fetch, limit: 
     return items
 
 
+SOURCE_COLLECTORS = {
+    "rss": _collect_rss,
+    "arxiv": _collect_arxiv,
+    "hf_papers": _collect_hf_papers,
+    "hf_trending": _collect_hf_trending,
+    "swebench": _collect_swebench,
+    "hackernews": _collect_hackernews,
+    "reddit": _collect_reddit,
+    "github_trending": _collect_github_trending,
+    "searxng": _collect_searxng,
+}
+
+
 def _source(source: dict, defaults: dict, now: datetime, fetch) -> tuple[list[dict], list[dict]]:
     source_id = source["id"]
     kind = source["type"]
@@ -488,18 +501,7 @@ def _source(source: dict, defaults: dict, now: datetime, fetch) -> tuple[list[di
     max_chars = int(defaults.get("max_summary_chars", 1200))
     window = int(defaults.get("window_hours", 24))
     issues = []
-    collectors = {
-        "rss": _collect_rss,
-        "arxiv": _collect_arxiv,
-        "hf_papers": _collect_hf_papers,
-        "hf_trending": _collect_hf_trending,
-        "swebench": _collect_swebench,
-        "hackernews": _collect_hackernews,
-        "reddit": _collect_reddit,
-        "github_trending": _collect_github_trending,
-        "searxng": _collect_searxng,
-    }
-    collector = collectors.get(kind)
+    collector = SOURCE_COLLECTORS.get(kind)
     if collector is None:
         raise ValueError("unknown source type: " + str(kind))
     items = collector(source, source_id, now, fetch, limit, max_bytes, max_chars, window, issues)

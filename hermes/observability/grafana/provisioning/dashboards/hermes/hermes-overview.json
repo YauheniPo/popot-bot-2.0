@@ -23,7 +23,7 @@
       "targets": [{"expr": "hermes_gateway_up", "refId": "A"}],
       "title": "Gateway status",
       "type": "stat",
-      "description": "Running means Prometheus has a healthy gateway sample; Down means the exporter reports the gateway offline. No data is not a healthy status: Prometheus has no sample, which can indicate the exporter or scrape is unavailable.",
+      "description": "Running means Prometheus has a healthy gateway sample; Down means the exporter reports the gateway offline. No data means Prometheus returned no sample; check exporter and scrape availability before concluding the gateway is down.",
       "id": 2
     },
     {

@@ -94,7 +94,7 @@ class PrometheusRulesTests(unittest.TestCase):
         self.assertIn("rate(hermes_api_rate_limits_total[$__rate_interval])",
                       panels["Rate-limited requests per second"]["targets"][0]["expr"])
         self.assertIn("Host load", panels)
-        self.assertIn("No data is not a healthy status", panels["Gateway status"]["description"])
+        self.assertIn("No data means Prometheus returned no sample", panels["Gateway status"]["description"])
         self.assertIn("Inodes used", panels)
         self.assertIn("Gateway CPU use (cores)", panels)
         self.assertIn("Host CPU used", panels)
