@@ -626,7 +626,7 @@ class CollectNewsTests(unittest.TestCase):
                     exit_code = main(["--sources", str(sources_path), "--state-dir", str(state_dir)])
             self.assertEqual(exit_code, 3)
             state = Path(state_dir)
-            self.assertTrue((state / "runs.jsonl").exists)
+            self.assertTrue((state / "runs.jsonl").exists())
             runs_lines = (state / "runs.jsonl").read_text().strip().split("\n")
             self.assertEqual(len(runs_lines), 1)
             run_record = _json.loads(runs_lines[0])
