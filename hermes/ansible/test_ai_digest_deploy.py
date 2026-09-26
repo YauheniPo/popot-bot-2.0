@@ -21,6 +21,7 @@ class DigestDeployTests(unittest.TestCase):
     def test_repository_skills_are_copied_and_existing_paths_preserved(self):
         self.assertIn('src: "{{ playbook_dir }}/../skills/"', PLAYBOOK)
         self.assertIn("- --exclude=__pycache__\n", PLAYBOOK)
+        self.assertEqual(PLAYBOOK.count("rsync_opts:"), 1)
         for pattern in (".env", ".env.*", ".envrc", "dotenv", "env", "env.*",
                         "*.secret", "*.key", "*.pem", "credentials.yml",
                         "credentials.yaml", "vault.yml", "vault.yaml", "id_rsa",
@@ -58,6 +59,28 @@ class DigestDeployTests(unittest.TestCase):
                   if line.startswith("AI_DIGEST_SEARCH_URL=")]
         self.assertEqual(len(values), 1)
         self.assertEqual(json.loads(values[0]), "https://search.example.test")
+
+    def test_digest_paths_are_json_quoted_for_env_file(self):
+        if Environment is None:
+            self.skipTest("Ansible controller dependencies are not installed")
+        template = Environment()
+        template.filters.update(FilterModule().filters())
+        rendered = template.from_string(ENV).render(
+            hermes_secret_env={}, hermes_home="/home/hermes user",
+            hermes_workspace="/home/hermes user/workspace",
+            hermes_bundle_dir="/opt/hermes bundle", hermes_searxng_url="",
+            vps_browser={"launch_args": ""},
+            vps_deploy={"features": {"workspace_ui": False}},
+        )
+        values = {key: json.loads(line.partition("=")[2])
+                  for line in rendered.splitlines()
+                  for key in ("AI_DIGEST_STATE_DIR", "AI_DIGEST_OUTPUT_DIR", "AI_DIGEST_SKILL_DIR")
+                  if line.startswith(f"{key}=")}
+        self.assertEqual(values, {
+            "AI_DIGEST_STATE_DIR": "/home/hermes user/ops/news",
+            "AI_DIGEST_OUTPUT_DIR": "/home/hermes user/workspace/digests",
+            "AI_DIGEST_SKILL_DIR": "/opt/hermes bundle/skills/ai_digest",
+        })
 
 
 if __name__ == "__main__":

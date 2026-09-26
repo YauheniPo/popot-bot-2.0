@@ -78,6 +78,11 @@ class FinalizeDigestTests(unittest.TestCase):
             _validate_output_dir(Path("/tmp/../evil"))
         with self.assertRaises(ValueError):
             _validate_output_dir(Path(".."))
+        with tempfile.TemporaryDirectory() as directory:
+            normalized_path = Path(directory) / ".." / Path(directory).name
+            self.assertEqual(normalized_path.resolve(), Path(directory).resolve())
+            with self.assertRaises(ValueError):
+                _validate_output_dir(normalized_path)
 
     def test_validate_output_dir_accepts_absolute(self):
         with tempfile.TemporaryDirectory() as directory:

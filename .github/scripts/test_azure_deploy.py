@@ -56,7 +56,7 @@ class DeploymentSelectionTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
         for branch in ("", "refs/heads/main", "../main", "a/b/../c", "main/",
-                       "a/./b", "main\n", "main^{commit}"):
+                       "a/./b", "a/b/.", "main\n", "main^{commit}"):
             with self.subTest(branch=branch):
                 result = subprocess.run(
                     [sys.executable, str(VALIDATE_BRANCH)], cwd=self.repo, text=True,
@@ -64,6 +64,9 @@ class DeploymentSelectionTests(unittest.TestCase):
                     env={**os.environ, "DEPLOY_BRANCH": branch},
                 )
                 self.assertNotEqual(result.returncode, 0)
+                if branch:
+                    self.assertNotIn(branch, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
 
     def test_snapshot_stays_pinned_when_branch_moves_and_excludes_local_files(self):
         (self.repo / "untracked-secret").write_text("must not be archived")

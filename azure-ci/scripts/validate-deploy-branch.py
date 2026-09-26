@@ -22,6 +22,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (ValueError, OSError, subprocess.SubprocessError) as error:
-        print(f"ERROR: Invalid deployment branch name: {error}", file=sys.stderr)
-        raise SystemExit(1) from error
+    except (ValueError, OSError, subprocess.SubprocessError):
+        print("ERROR: Deployment branch validation failed.", file=sys.stderr)
+        raise SystemExit(1) from None

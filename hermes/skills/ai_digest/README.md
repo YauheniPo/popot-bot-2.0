@@ -39,6 +39,10 @@ JSON и журнал сборщика находятся в `$AI_DIGEST_STATE_DI
 проверенных `sockaddr`; повторного DNS lookup при connect нет. Для HTTPS TLS
 проверка сохраняет исходное имя хоста. Сборщик подключается напрямую: `http_fetch`
 использует `ProxyHandler({})`, поэтому `HTTP_PROXY`/`HTTPS_PROXY` не применяются.
+IP-адреса берутся из DNS системы и проверяются на публичную маршрутизируемость;
+это предотвращает подключение к private/loopback адресам и DNS rebinding между
+проверкой и connect, но не является статическим allowlist источников или защитой
+от скомпрометированного системного DNS.
 Реализация находится в `scripts/collect_news.py`; тест
 `test_http_fetch_connects_to_the_validated_address_without_resolving_again` в
 `scripts/test_collect_news.py` проверяет подключение по закреплённому адресу без
