@@ -339,6 +339,56 @@ class CollectNewsTests(unittest.TestCase):
         self.assertEqual({item["category"] for item in result["items"]},
                          {"research", "podcast", "benchmark"})
 
+    def test_weekly_category_representatives_respect_per_source_cap(self):
+        from collect_news import _select_items
+        def item(title, source_id, category):
+            return {"title": title, "source_ids": [source_id], "category": category,
+                    "published_at": "2026-09-25T11:00:00Z", "score": 0,
+                    "discussion_count": 0}
+        items = [
+            item("A research", "source-a", "research"),
+            item("A podcast", "source-a", "podcast"),
+            item("B podcast", "source-b", "podcast"),
+            item("A benchmark", "source-a", "benchmark"),
+            item("B benchmark", "source-b", "benchmark"),
+            item("B extra one", "source-b", "news"),
+        ]
+        selected = _select_items(items, 5, "weekly", NOW, 168)
+        counts = {}
+        for selected_item in selected:
+            primary = selected_item["source_ids"][0]
+            counts[primary] = counts.get(primary, 0) + 1
+        self.assertEqual({selected_item["category"] for selected_item in selected
+                          if selected_item["category"] in {"research", "podcast", "benchmark"}},
+                         {"research", "podcast", "benchmark"})
+        benchmark = next(selected_item for selected_item in selected
+                         if selected_item["category"] == "benchmark")
+        self.assertEqual(benchmark["source_ids"][0], "source-b")
+        self.assertLessEqual(counts["source-a"], 2)
+
+    def test_collect_sources_isolates_malformed_hn_and_reddit_payloads(self):
+        from collect_news import _collect_sources
+        sources = [
+            {"id": "hn-overflow", "type": "hackernews"},
+            {"id": "reddit-malformed", "type": "reddit", "subreddits": ["test"]},
+            {"id": "healthy", "type": "rss", "url": "https://healthy.test/feed"},
+        ]
+        def fetch(url, _max_bytes):
+            if url.endswith("topstories.json"):
+                return b"[1]"
+            if url.endswith("item/1.json"):
+                return b'{"title":"bad timestamp","time":1e309}'
+            if "reddit.com/r/test/top.json" in url:
+                return b'{"data":{"children":[null]}}'
+            return (b"<rss><channel><item><title>Healthy feed</title>"
+                    b"<link>https://healthy.test/story</link>"
+                    b"<pubDate>Fri, 25 Sep 2026 11:00:00 GMT</pubDate>"
+                    b"<description>Available evidence</description></item></channel></rss>")
+        items, issues = _collect_sources(sources, {"window_hours": 24}, NOW, fetch)
+        self.assertEqual([item["title"] for item in items], ["Healthy feed"])
+        self.assertEqual({issue["id"] for issue in issues}, {"hn-overflow", "reddit-malformed"})
+        self.assertTrue(all(issue["kind"] == "failed" for issue in issues))
+
     def test_hugging_face_papers_use_curation_date_without_relabeling_publication(self):
         config = {"version": 1, "defaults": {"window_hours": 24, "limit": 1},
                   "sources": [{"id": "hf-papers", "type": "hf_papers"}]}
@@ -878,6 +928,22 @@ class CollectNewsTests(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["title"], "Test Article")
         self.assertEqual(items[0]["url"], "https://example.com/test")
+
+    def test_parse_rss_atom_xhtml_title_and_content(self):
+        from collect_news import parse_rss
+        feed = b'''<feed xmlns="http://www.w3.org/2005/Atom">
+          <entry>
+            <title type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml">Nested <b>Atom</b> title</div></title>
+            <link rel="alternate" href="https://example.com/xhtml"/>
+            <content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>Verified <em>Atom</em> evidence.</p></div></content>
+            <published>2026-09-25T11:00:00Z</published>
+          </entry>
+        </feed>'''
+        items = parse_rss(feed, "atom", NOW, 24, 5, 1200)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["title"], "Nested Atom title")
+        self.assertEqual(items[0]["evidence"], "Verified Atom evidence.")
+        self.assertNotIn("<", items[0]["title"] + items[0]["evidence"])
 
     def test_source_arxiv_with_categories(self):
         """Test _source arxiv with categories configured."""

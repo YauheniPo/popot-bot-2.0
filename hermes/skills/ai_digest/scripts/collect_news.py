@@ -237,10 +237,18 @@ def _parse_rss_node(node, is_atom: bool, source_id: str, now: datetime,
 def _atom_fields(node) -> tuple[str, str, str | None, str, bool]:
     link = next((entry.get("href") for entry in node.findall(ATOM + "link")
                  if entry.get("rel", "alternate") == "alternate"), "")
-    body = node.findtext(ATOM + "content") or node.findtext(ATOM + "summary") or ""
+    body = _element_text(node.find(ATOM + "content")) or _element_text(node.find(ATOM + "summary"))
     published = node.findtext(ATOM + "published") or node.findtext(ATOM + "updated")
-    return (node.findtext(ATOM + "title") or "", link, published, body,
+    return (_element_text(node.find(ATOM + "title")), link, published, body,
             node.find(ATOM + "content") is not None)
+
+
+def _element_text(element: ET.Element | None) -> str:
+    if element is None:
+        return ""
+    if len(element):
+        return " ".join(element.itertext())
+    return element.text or ""
 
 
 def _rss_fields(node) -> tuple[str, str, str | None, str, bool]:
@@ -585,16 +593,14 @@ def _select_items(items: list[dict], limit: int, mode: str, now: datetime,
     selected, counts = [], {}
     max_per_source = max(1, math.ceil(limit / 3))
     if mode == "weekly":
-        _select_weekly_categories(ranked, selected, counts, limit)
+        _select_weekly_categories(ranked, selected, counts, limit, max_per_source)
     for item in ranked:
         if len(selected) >= limit:
             break
         if item in selected:
             continue
         primary = item["source_ids"][0]
-        if counts.get(primary, 0) >= max_per_source and any(
-                counts.get(other["source_ids"][0], 0) < max_per_source
-                for other in ranked if other not in selected):
+        if not _source_capacity_available(item, ranked, selected, counts, max_per_source):
             continue
         selected.append(item)
         counts[primary] = counts.get(primary, 0) + 1
@@ -602,13 +608,25 @@ def _select_items(items: list[dict], limit: int, mode: str, now: datetime,
 
 
 def _select_weekly_categories(ranked: list[dict], selected: list[dict],
-                              counts: dict[str, int], limit: int) -> None:
+                              counts: dict[str, int], limit: int,
+                              max_per_source: int) -> None:
     for category in ("research", "podcast", "benchmark"):
-        candidate = next((item for item in ranked if item.get("category") == category), None)
+        candidate = next((item for item in ranked
+                          if item.get("category") == category and item not in selected
+                          and _source_capacity_available(item, ranked, selected, counts,
+                                                          max_per_source)), None)
         if candidate is not None and candidate not in selected and len(selected) < limit:
             selected.append(candidate)
             primary = candidate["source_ids"][0]
             counts[primary] = counts.get(primary, 0) + 1
+
+
+def _source_capacity_available(item: dict, ranked: list[dict], selected: list[dict],
+                               counts: dict[str, int], max_per_source: int) -> bool:
+    primary = item["source_ids"][0]
+    return counts.get(primary, 0) < max_per_source or not any(
+        counts.get(other["source_ids"][0], 0) < max_per_source
+        for other in ranked if other not in selected)
 
 
 def _collect_sources(sources: list[dict], defaults: dict, now: datetime, fetch) -> tuple[list[dict], list[dict]]:
@@ -621,7 +639,8 @@ def _collect_sources(sources: list[dict], defaults: dict, now: datetime, fetch) 
                 items, source_issues = future.result()
                 raw.extend(items)
                 issues.extend(source_issues)
-            except (ValueError, KeyError, TypeError, ET.ParseError, OSError) as exc:  # noqa: S5713
+            except (ValueError, KeyError, TypeError, AttributeError, IndexError,
+                    OverflowError, ET.ParseError, OSError) as exc:  # noqa: S5713
                 issues.append({"id": source.get("id", "unknown"), "kind": "failed", "reason": str(exc)[:160]})
     return raw, issues
 
