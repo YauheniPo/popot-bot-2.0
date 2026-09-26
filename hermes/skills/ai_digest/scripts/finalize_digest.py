@@ -107,14 +107,27 @@ def _read_raw(path: Path) -> dict:
     return raw
 
 
+def _validate_state_path(path: Path, state_dir: Path) -> Path:
+    state_root = state_dir.resolve()
+    resolved = path.resolve()
+    if not resolved.is_relative_to(state_root):
+        raise ValueError("input file outside state directory")
+    if not resolved.is_file():
+        raise ValueError("input path is not a file")
+    return resolved
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--raw", type=Path, required=True)
     parser.add_argument("--draft", type=Path, required=True)
     args = parser.parse_args(argv)
+    state_dir = Path(os.environ.get("AI_DIGEST_STATE_DIR", "~/.hermes/ops/news")).expanduser()
     output_dir = Path(os.environ.get("AI_DIGEST_OUTPUT_DIR", "~/workspace/digests")).expanduser()
-    raw = _read_raw(args.raw)
-    print(finalize(raw, args.draft.read_text(encoding="utf-8"), output_dir))
+    raw_path = _validate_state_path(args.raw, state_dir)
+    draft_path = _validate_state_path(args.draft, state_dir)
+    raw = _read_raw(raw_path)
+    print(finalize(raw, draft_path.read_text(encoding="utf-8"), output_dir))
     return 0
 
 

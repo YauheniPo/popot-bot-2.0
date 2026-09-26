@@ -127,7 +127,8 @@ class FinalizeDigestTests(unittest.TestCase):
             draft_path = Path(directory) / "draft.md"
             draft_path.write_text(VALID)
             output = Path(directory) / "out"
-            with patch.dict("os.environ", {"AI_DIGEST_OUTPUT_DIR": str(output)}):
+            with patch.dict("os.environ", {"AI_DIGEST_OUTPUT_DIR": str(output),
+                                             "AI_DIGEST_STATE_DIR": directory}):
                 from finalize_digest import main
                 result = main(["--raw", str(raw_path), "--draft", str(draft_path)])
             self.assertEqual(result, 0)
@@ -143,7 +144,8 @@ class FinalizeDigestTests(unittest.TestCase):
             draft_path.write_text(VALID)
             configured_output = root / "configured"
             override_output = root / "override"
-            with patch.dict("os.environ", {"AI_DIGEST_OUTPUT_DIR": str(configured_output)}):
+            with patch.dict("os.environ", {"AI_DIGEST_OUTPUT_DIR": str(configured_output),
+                                             "AI_DIGEST_STATE_DIR": str(root)}):
                 with self.assertRaises(SystemExit):
                     from finalize_digest import main
                     main(["--raw", str(raw_path), "--draft", str(draft_path),
@@ -181,9 +183,37 @@ class FinalizeDigestTests(unittest.TestCase):
             raw_path.write_text('"' + ("x" * 10_485_760) + '"', encoding="utf-8")
             draft_path = root / "draft.md"
             draft_path.write_text(VALID, encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "raw file too large"):
-                from finalize_digest import main
-                main(["--raw", str(raw_path), "--draft", str(draft_path)])
+            with patch.dict("os.environ", {"AI_DIGEST_STATE_DIR": str(root)}):
+                with self.assertRaisesRegex(ValueError, "raw file too large"):
+                    from finalize_digest import main
+                    main(["--raw", str(raw_path), "--draft", str(draft_path)])
+
+    def test_main_rejects_raw_file_outside_state_directory(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_dir = root / "state"
+            state_dir.mkdir()
+            raw_path = root / "outside.json"
+            raw_path.write_text(_json.dumps(RAW), encoding="utf-8")
+            draft_path = state_dir / "draft.md"
+            draft_path.write_text(VALID, encoding="utf-8")
+            with patch.dict("os.environ", {"AI_DIGEST_STATE_DIR": str(state_dir)}):
+                with self.assertRaisesRegex(ValueError, "outside state directory"):
+                    from finalize_digest import main
+                    main(["--raw", str(raw_path), "--draft", str(draft_path)])
+
+    def test_main_rejects_non_object_raw_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw_path = root / "raw.json"
+            raw_path.write_text("[]", encoding="utf-8")
+            draft_path = root / "draft.md"
+            draft_path.write_text(VALID, encoding="utf-8")
+            with patch.dict("os.environ", {"AI_DIGEST_STATE_DIR": str(root)}):
+                with self.assertRaisesRegex(ValueError, "JSON object"):
+                    from finalize_digest import main
+                    main(["--raw", str(raw_path), "--draft", str(draft_path)])
 
     def test_finalize_cleans_up_temp_on_exception(self):
         """Test that finalize cleans up temp file on BaseException during write."""
