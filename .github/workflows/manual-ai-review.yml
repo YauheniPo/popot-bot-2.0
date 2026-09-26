@@ -340,9 +340,9 @@ jobs:
           DIRECT_REVIEW_MODEL_MODE: ${{ steps.models.outputs.selected_mode }}
           OLLAMA_REVIEW_RPM: ${{ vars.OLLAMA_REVIEW_RPM || '60' }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
-          REQUIRE_COMPLETE_REVIEW: ${{ inputs.scope == 'full_branch' && 'true' || 'false' }}
+          REQUIRE_COMPLETE_REVIEW: ${{ steps.context.outputs.pr_number != '' && inputs.scope == 'full_branch' && 'true' || 'false' }}
           REQUIRE_REVIEW_RESULT: "true"
-          REVIEW_INCLUDE_REVIEWER_FILES: ${{ inputs.scope == 'full_branch' && 'true' || 'false' }}
+          REVIEW_INCLUDE_REVIEWER_FILES: ${{ steps.context.outputs.pr_number != '' && inputs.scope == 'full_branch' && 'true' || 'false' }}
           REVIEW_ORIGIN: ${{ startsWith(inputs.request_id, 'ado-') && 'azure-devops' || 'github-actions' }}
           REVIEW_REQUEST_ID: ${{ inputs.request_id }}
         run: python3 ../reviewer/.github/scripts/ai_pr_review.py
