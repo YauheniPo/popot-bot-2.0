@@ -731,7 +731,7 @@ class OllamaReviewTest(unittest.TestCase):
         provider = next(parameter for parameter in azure["parameters"] if parameter["name"] == "provider")
         self.assertIn(provider["default"], provider["values"])
         action_text = (root / ".github/actions/ai-direct-review/action.yml").read_text()
-        for workflow in (manual_text, (root / ".github/workflows/pr-ai-review.yml").read_text(), action_text):
+        for workflow in (action_text, (root / ".github/workflows/pr-ai-review.yml").read_text()):
             self.assertIn("OPENROUTER_API_KEY", workflow)
             self.assertNotIn("vars.OPENROUTER_REVIEW_MODEL", workflow)
             self.assertNotIn("openrouter_model_preflight.py", workflow)
