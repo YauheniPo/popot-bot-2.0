@@ -96,8 +96,9 @@ test -s hermes-vps-known-hosts
 - `hermes-vps-known-hosts`
 
 Не загружайте `.example` и `.pub`. Для каждого Secure File разрешите только
-Hermes deployment pipeline и добавьте owner approval вместе с Branch control
-для `refs/heads/main`.
+Hermes deployment pipeline и настройте Branch control для `refs/heads/*`.
+Сохраните owner approval там, где он уже настроен; `vault.yml` сейчас без
+отдельного approval check.
 
 ## Secret variables вместо двух дополнительных файлов
 
@@ -110,7 +111,7 @@ Hermes deployment pipeline и добавьте owner approval вместе с Br
 
 Обе переменные пометьте **Keep this value secret**. Вводите сами значения
 одной строкой, без обрамляющих кавычек или Base64. Для группы разрешите только
-deployment pipeline; добавьте owner approval и Branch control `refs/heads/main`.
+deployment pipeline; оставьте owner approval и Branch control `refs/heads/*`.
 Не включайте Open access. Подключение группы уже задано в YAML, только на
 stage `DeployProduction`, после фиксации SHA.
 
