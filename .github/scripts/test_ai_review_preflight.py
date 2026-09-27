@@ -731,22 +731,44 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertIsInstance(manual_inputs["model"]["default"], str)
         self.assertTrue(manual_inputs["model"]["default"].strip())
         self.assertIn(manual_inputs["provider"]["default"], manual_inputs["provider"]["options"])
+        validation_step = next(
+            step for job in manual["jobs"].values() for step in job["steps"]
+            if step.get("id") == "validated_inputs"
+        )
+        self.assertIn("target_ref=%s", validation_step["run"])
         context_step = next(
             step for job in manual["jobs"].values() for step in job["steps"]
             if step.get("id") == "context"
         )
         self.assertIn("head_sha=\"$(git -C target rev-parse 'HEAD^{commit}')\"", context_step["run"])
         self.assertIn('[[ ! "${head_sha}" =~ ^[0-9a-f]{40}$ ]]', context_step["run"])
-        checkout = next(
+        target_checkout = next(
+            step for job in manual["jobs"].values() for step in job["steps"]
+            if step.get("id") == "target_ref_checkout"
+        )
+        self.assertEqual(
+            target_checkout["with"]["ref"],
+            "${{ steps.validated_inputs.outputs.target_ref }}",
+        )
+        self.assertEqual(target_checkout["with"]["path"], "target")
+        self.assertEqual(target_checkout["with"]["fetch-depth"], "0")
+        self.assertEqual(target_checkout["with"]["persist-credentials"], "false")
+        workflow_checkout = next(
             step for job in manual["jobs"].values() for step in job["steps"]
             if step.get("uses", "").startswith("actions/checkout@")
+            and step.get("with", {}).get("ref") == "${{ github.sha }}"
         )
-        self.assertEqual(checkout["with"]["ref"], "${{ steps.context.outputs.head_sha }}")
+        self.assertLess(manual["jobs"]["review"]["steps"].index(target_checkout),
+                        manual["jobs"]["review"]["steps"].index(context_step))
+        self.assertEqual(workflow_checkout["with"]["ref"], "${{ github.sha }}")
         manual_review = next(
             step for job in manual["jobs"].values() for step in job["steps"]
             if step.get("id") == "ai_review"
         )
         self.assertEqual(manual_review["with"]["provider"], "${{ inputs.provider }}")
+        steps = manual["jobs"]["review"]["steps"]
+        self.assertLess(steps.index(context_step), steps.index(workflow_checkout))
+        self.assertLess(steps.index(workflow_checkout), steps.index(manual_review))
         validation = next(
             step for job in manual["jobs"].values() for step in job["steps"]
             if "REQUESTED_MODEL" in step.get("env", {})
@@ -895,6 +917,53 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertIn('--arg model "${SELECTED_MODEL}"', package_report["run"])
         self.assertIn('--arg effective_provider "${SELECTED_PROVIDER}"', package_report["run"])
         self.assertIn('--arg effective_model "${SELECTED_MODEL}"', package_report["run"])
+
+    def test_manual_context_runs_after_the_requested_target_checkout(self):
+        root = Path(__file__).resolve().parents[2]
+        manual = yaml.load(
+            (root / ".github/workflows/manual-ai-review.yml").read_text(),
+            Loader=yaml.BaseLoader,
+        )
+        steps = manual["jobs"]["review"]["steps"]
+        target_checkout = next(step for step in steps if step.get("id") == "target_ref_checkout")
+        context = next(step for step in steps if step.get("id") == "context")
+        self.assertLess(steps.index(target_checkout), steps.index(context))
+
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            target = workspace / "target"
+            subprocess.run(["git", "init", "-q", "-b", "main", str(target)], check=True)
+            subprocess.run(["git", "-C", str(target), "config", "user.name", "Workflow test"], check=True)
+            subprocess.run(["git", "-C", str(target), "config", "user.email", "workflow-test@example.invalid"], check=True)
+            (target / "tracked.txt").write_text("review target\n")
+            subprocess.run(["git", "-C", str(target), "add", "tracked.txt"], check=True)
+            subprocess.run(["git", "-C", str(target), "commit", "-q", "-m", "fixture"], check=True)
+
+            output = workspace / "github-output"
+            env = {
+                **os.environ,
+                "BASE_REF": "main",
+                "GH_TOKEN": "test-token",
+                "PUBLISH_MODE": "auto",
+                "REVIEW_SCOPE": "full_branch",
+                "TARGET_REF": "main",
+                "GITHUB_OUTPUT": str(output),
+                "GITHUB_REPOSITORY": "owner/repo",
+            }
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", "gh() { printf '%s\\n' '[]'; }\n" + context["run"]],
+                cwd=workspace,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+            self.assertEqual(outputs["head_sha"], subprocess.check_output(
+                ["git", "-C", str(target), "rev-parse", "HEAD"], text=True
+            ).strip())
+            self.assertEqual(outputs["publish_target"], "check_run")
 
     def test_claude_review_has_a_bounded_turn_and_wall_clock_budget(self):
         root = Path(__file__).resolve().parents[2]
