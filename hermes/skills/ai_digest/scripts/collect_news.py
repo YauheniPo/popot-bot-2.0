@@ -289,7 +289,8 @@ def _trending_star_count(article: str) -> int | None:
 
 def _trending_stars_today(article: str) -> int | None:
     for span in re.finditer(r'<span\b[^>]*>(.*?)</span\s*>', article, re.S | re.I):
-        match = re.search(r"\b([\d,]+)\s+stars?\s+today\b", plain(span.group(1)), re.I)
+        match = re.fullmatch(r"\s*([\d,]+)\s+stars?\s+today\s*",
+                             plain(span.group(1)), re.I)
         if match:
             return int(match.group(1).replace(",", ""))
     return None
@@ -740,7 +741,14 @@ def _collect_curated_readme(source: dict, source_id: str, now: datetime, fetch,
                             limit: int, max_bytes: int, max_chars: int, window: int,
                             issues: list[dict]) -> list[dict]:
     repository = source.get("repository", "")
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+    repository_parts = repository.split("/") if isinstance(repository, str) else []
+    valid_repository = (
+        len(repository_parts) == 2
+        and all(part not in {".", ".."}
+                and re.fullmatch(r"[A-Za-z0-9_.-]+", part)
+                for part in repository_parts)
+    )
+    if not valid_repository:
         raise ValueError("invalid curated-list repository")
     cutoff = (now - timedelta(hours=window)).isoformat().replace(UTC_SUFFIX, "Z")
     commits_url = f"{GITHUB_API_URL}/repos/{repository}/commits?" + urlencode(

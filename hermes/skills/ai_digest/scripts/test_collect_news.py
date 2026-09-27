@@ -16,7 +16,8 @@ from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from collect_news import (GITHUB_API_URL, _deduplicate, _public_url, _Text, _date, _trending_articles, canonical_url,
+from collect_news import (GITHUB_API_URL, _collect_curated_readme, _deduplicate, _public_url, _Text, _date,
+                           _trending_articles, _trending_stars_today, canonical_url,
                            _connect_resolved, _pinned_connection_class, _SafeHTTPSHandler,
                            collect, parse_rss, UTC_SUFFIX, http_fetch)  # noqa: E402
 
@@ -38,6 +39,21 @@ class CollectNewsTests(unittest.TestCase):
     def test_trending_articles_ignores_non_card_articles(self):
         html = '<article class="other"><h2><a href="/owner/repo">repo</a></h2></article>'
         self.assertEqual(_trending_articles(html), [])
+
+    def test_trending_stars_today_requires_exact_span_content(self):
+        self.assertIsNone(_trending_stars_today(
+            "<span>57 stars today in release notes</span>"
+        ))
+
+    def test_curated_readme_rejects_dot_repository_segments(self):
+        for repository in ("../repo", "owner/..", "./repo", "owner/."):
+            with self.subTest(repository=repository):
+                with self.assertRaisesRegex(ValueError, "invalid curated-list repository"):
+                    _collect_curated_readme(
+                        {"repository": repository}, "source", NOW,
+                        lambda *_: self.fail("invalid repository reached fetch"),
+                        5, 1024, 1000, 24, [],
+                    )
 
     def test_awesomeosai_collects_added_and_updated_projects_by_topic(self):
         config = {"version": 1, "defaults": {"window_hours": 24, "limit": 5},
