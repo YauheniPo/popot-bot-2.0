@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
+import json
 import os
 import sqlite3
 import sys
@@ -11,7 +13,6 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
-
 
 MODULE_PATH = Path(__file__).with_name("prune-observability.py")
 SPEC = importlib.util.spec_from_file_location("prune_observability", MODULE_PATH)
@@ -23,16 +24,18 @@ SPEC.loader.exec_module(prune_observability)
 
 def create_schema(root: Path) -> Path:
     """Create the plugin's real schema under root/ops/metrics.db."""
-    if "ops_observability" not in sys.modules:
-        spec = importlib.util.spec_from_file_location(
-            "ops_observability", Path(__file__).with_name("plugin") / "ops-observability" / "__init__.py")
-        assert spec is not None
-        assert spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "ops_observability",
+        Path(__file__).with_name("plugin") / "ops-observability" / "__init__.py",
+    )
+    assert spec is not None and spec.loader is not None
+    ops_observability = importlib.util.module_from_spec(spec)
+    # Register in sys.modules so relative imports (.storage) resolve
+    sys.modules["ops_observability"] = ops_observability
+    spec.loader.exec_module(ops_observability)
     with mock.patch.dict(os.environ, {"HERMES_HOME": str(root)}):
-        sys.modules["ops_observability"]._db().close()
+        ops_observability._db().close()
     return root / "ops" / "metrics.db"
 
 
@@ -176,3 +179,45 @@ class PruneObservabilityTests(unittest.TestCase):
             exit_code = prune_observability.main()
 
         self.assertEqual(exit_code, 2)
+
+    def test_positive_integer_invalid(self) -> None:
+        with self.assertRaises(argparse.ArgumentTypeError):
+            prune_observability.positive_integer("0")
+
+    def test_prune_database_not_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            database = Path(temp) / "metrics.db"
+            removed = prune_observability.prune_database(database, 90)
+            self.assertEqual(removed, 0)
+
+    def test_prune_database_tzinfo_none(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            database = Path(temp) / "metrics.db"
+            sqlite3.connect(database).close()
+            removed = prune_observability.prune_database(database, 90, now=datetime(2026, 1, 1))
+            self.assertEqual(removed, 0)
+
+    def test_main_rejects_wrong_database_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            database = Path(temp) / "other.db"
+            database.touch()
+            argv = ["prune-observability.py", "--database", str(database), "--retention-days", "90"]
+            with mock.patch("sys.argv", argv), mock.patch.dict("os.environ", {"HERMES_HOME": "/home/hermes/.hermes"}):
+                with mock.patch("pathlib.Path.home", return_value=Path("/home/hermes/.hermes")):
+                    exit_code = prune_observability.main()
+            self.assertEqual(exit_code, 2)
+
+    def test_prune_database_integrity_check_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            database = Path(temp) / "metrics.db"
+            sqlite3.connect(database).close()
+            with mock.patch("sqlite3.connect") as mock_connect:
+                mock_conn = mock.MagicMock()
+                mock_conn.execute.return_value.fetchone.return_value = ("FAIL",)
+                mock_connect.return_value = mock_conn
+                with self.assertRaises(RuntimeError):
+                    prune_observability.prune_database(database, 90)
+
+
+if __name__ == "__main__":
+    unittest.main()
