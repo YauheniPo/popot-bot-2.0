@@ -705,7 +705,7 @@ def _read_article(item: dict, defaults: dict, fetch) -> None:
 
 def collect(config: dict, *, now: datetime | None = None, fetch=http_fetch,
             window_hours: int | None = None, limit: int | None = None, topic: str = "",
-            mode: str = "daily") -> dict:
+            mode: str = "daily") -> dict:  # noqa: S3776
     if config.get("version") != 1 or not isinstance(config.get("sources"), list):
         raise ValueError("invalid sources.json schema")
     if mode not in {"daily", "weekly"}:
