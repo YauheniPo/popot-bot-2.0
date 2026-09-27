@@ -1131,31 +1131,26 @@ host key прямо внутри pipeline.
 
 1. В **Pipeline permissions** разрешите только production deployment pipeline;
    не включайте **Open access**.
-2. В **Approvals and checks** добавьте **Branch control** для
-   `refs/heads/main` и approval владельца репозитория. Переключайте на
-   `refs/heads/*` только после зафиксированного sign-off владельца в change
-   request/PR.
+2. В **Approvals and checks** установите **Branch control** для
+   `refs/heads/*` и оставьте approval владельца репозитория.
 
 Создайте Azure Environment `hermes-vps`. В его **Approvals and checks**
-добавьте approval владельца, **Branch control** для `refs/heads/main` и
+добавьте approval владельца, **Branch control** для `refs/heads/*` и
 **Exclusive lock**. У самого pipeline оставьте право **Queue builds** только
 владельцу. Эти проверки задаются в Azure UI, а не в YAML. Branch control
 проверяет все связанные repository resources. Шаблон `refs/heads/*` разрешает
-любую ветку кода `deploySource`, не разрешая теги; сохраните проверку защиты
-ветки, approvals и остальные checks. Это разрешает production deploy любого
-branch ref, включая ещё не проверенный. Владелец должен зафиксировать принятие
-риска в change request/PR до merge и изменения allowlist; пока sign-off не записан,
-оставляйте `refs/heads/main`. Только после sign-off переключите Environment
-Branch control на `refs/heads/*`. Для каждого run проверяйте SHA в Summary и одобряйте
-именно его. Настройте защиту всех deployable веток, если Branch control требует
-protected source branches. YAML фиксирует выбранный resource commit и публикует
-Summary до production stage; approval и Branch control задаются отдельно в Azure
-UI на Environment `hermes-vps` и Secure Files. Код выбранной ветки получит
-production credentials только после этих checks и approval.
-Перед первым production run с feature ref владелец сверяет в Azure UI, что
-Environment и оба Secure Files требуют owner approval и protected source branch;
-Queue builds остаётся только у владельца. Не запускайте такой run, пока эти
-checks не проверены.
+любую ветку кода `deploySource`, не разрешая теги. Текущие Environment, оба Secure Files и variable group
+`hermes-deploy-secrets` используют Branch control `refs/heads/*`; у `vault.yml`
+отдельного approval check сейчас нет. Любая ветка, включая ещё не проверенную,
+может быть выбрана для production deploy. Verify branch protection сейчас
+выключен, поэтому подходят и незащищённые ветки. Для каждого запуска сверяйте SHA в
+Summary и одобряйте только проверенный commit. Pipeline definition (`self`)
+по-прежнему запускается из `main`; `deployBranch` выбирает код `deploySource`.
+YAML фиксирует выбранный resource commit и публикует Summary до production stage;
+approval и Branch control задаются отдельно в Azure UI. Код выбранной ветки
+получит production credentials только после checks и owner approval.
+Queue builds остаётся только у владельца. Перед production run с feature ref
+владелец сверяет SHA и одобряет именно этот commit.
 
 Repository resource `deploySource` использует GitHub service connection
 `github.com_YauheniPo`; разрешите его использование deployment pipeline без

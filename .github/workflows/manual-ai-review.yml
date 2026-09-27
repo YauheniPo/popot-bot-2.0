@@ -88,6 +88,7 @@ jobs:
     timeout-minutes: 105
     steps:
       - name: Validate manual review inputs
+        id: validated_inputs
         shell: bash
         env:
           TARGET_REF: ${{ inputs.target_ref }}
@@ -128,6 +129,19 @@ jobs:
 
           validate_ref "${TARGET_REF}" target_ref
           validate_ref "${BASE_REF}" base_ref
+          printf 'target_ref=%s\n' "${TARGET_REF}" >>"${GITHUB_OUTPUT}"
+
+      # Resolve the requested branch/tag/commit in an isolated checkout before
+      # passing an immutable SHA to later checkouts. This directory is data only;
+      # reviewer code is loaded from the workflow revision below.
+      - name: Check out requested revision for resolution
+        id: target_ref_checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ steps.validated_inputs.outputs.target_ref }}
+          fetch-depth: 0
+          path: target
+          persist-credentials: false
 
       - name: Resolve the exact comparison and publication target
         id: context
@@ -295,14 +309,12 @@ jobs:
       # code runs here as in pr-ai-review.yml; only the inputs and
       # context resolution differ.
       #
-      # The composite action references local scripts via
-      # ${{ github.action_path }}, so the repository must be checked out
-      # before it runs. The ref is a trusted Git SHA resolved from the
-      # workflow inputs (not raw user text), so this is safe against ref
-      # injection.
+      # The local composite action must come from the same trusted revision
+      # that defined this workflow. The selected review target is checked out
+      # separately by the composite action using the resolved commit SHA.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ steps.context.outputs.head_sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - name: AI Direct Review
         id: ai_review
