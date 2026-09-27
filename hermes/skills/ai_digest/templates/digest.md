@@ -6,7 +6,7 @@ Mode: <daily or weekly>. Generated: <UTC timestamp>. Window: <hours> hours. Topi
 
 Sources: <exact URL(s) from this item>
 
-Category: <category from raw JSON>. Time: <publication, curation, observation or submission date as applicable>.
+Category: <category and subcategory from raw JSON when present>. Time: <publication, curation window, source event_date, observation, last push or submission date as applicable>.
 
 Evidence scope: <full article, abstract, feed description/show notes, model metadata or benchmark result>.
 
