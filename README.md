@@ -150,9 +150,12 @@ these values and chooses the corresponding GitHub Actions **Secret**:
 | `openrouter` | `OPENROUTER_API_KEY` |
 | `nous` (Nous Portal) | `NOUS_API_KEY` |
 
-The default provider is `nvidia`. If `DIRECT_REVIEW_PROVIDER` is omitted when
-running the preflight script directly, `NVIDIA_API_KEY` is therefore required;
-set the provider explicitly when only another provider is configured.
+The preflight script requires `DIRECT_REVIEW_PROVIDER` (or its compatibility
+alias `REVIEW_PROVIDER`) to be set explicitly. Older callers may have relied on
+an implicit NVIDIA default; that behavior was removed to prevent silently
+routing a review through an unexpected provider or credential. Set the provider
+before invoking the preflight directly. The GitHub workflows set their own
+provider from repository variables and documented workflow defaults.
 
 Add the keys for the providers you intend to use. VPS Ansible Vault credentials
 are separate and do not reach GitHub runners. Azure needs `GITHUB_ACTIONS_TOKEN`

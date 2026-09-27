@@ -291,6 +291,11 @@ class OllamaReviewTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "DIRECT_REVIEW_PROVIDER.*explicitly set"):
                 ai_review_preflight.main(["--probe", "json"])
 
+    def test_readme_documents_explicit_provider_migration(self):
+        readme = (Path(__file__).resolve().parents[2] / "README.md").read_text()
+        self.assertIn("requires `DIRECT_REVIEW_PROVIDER`", readme)
+        self.assertIn("implicit NVIDIA default", readme)
+
     def test_explicit_provider_requires_its_configured_api_key(self):
         with mock.patch.dict(os.environ, {"DIRECT_REVIEW_PROVIDER": "nvidia"}, clear=True):
             with self.assertRaisesRegex(RuntimeError, "NVIDIA_API_KEY"):
@@ -725,6 +730,17 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertIsInstance(manual_inputs["model"]["default"], str)
         self.assertTrue(manual_inputs["model"]["default"].strip())
         self.assertIn(manual_inputs["provider"]["default"], manual_inputs["provider"]["options"])
+        context_step = next(
+            step for job in manual["jobs"].values() for step in job["steps"]
+            if step.get("id") == "context"
+        )
+        self.assertIn("head_sha=\"$(git -C target rev-parse 'HEAD^{commit}')\"", context_step["run"])
+        self.assertIn('[[ ! "${head_sha}" =~ ^[0-9a-f]{40}$ ]]', context_step["run"])
+        checkout = next(
+            step for job in manual["jobs"].values() for step in job["steps"]
+            if step.get("uses", "").startswith("actions/checkout@")
+        )
+        self.assertEqual(checkout["with"]["ref"], "${{ steps.context.outputs.head_sha }}")
         validation = next(
             step for job in manual["jobs"].values() for step in job["steps"]
             if "REQUESTED_MODEL" in step.get("env", {})

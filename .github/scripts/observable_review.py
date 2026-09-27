@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -38,6 +39,9 @@ def _confine_report_path(raw: Path) -> Path:
     resolves symlinks in every component, including a non-existent trailing
     target, so a symlink cannot smuggle the report outside an allowed base.
     """
+    candidate = Path(os.path.abspath(str(raw)))
+    if candidate.is_symlink():
+        raise RuntimeError("report path must not be a symbolic link")
     resolved = Path(os.path.realpath(str(raw)))
     bases = [Path.cwd().resolve(), Path(tempfile.gettempdir()).resolve()]
     runner_temp = os.environ.get("RUNNER_TEMP")
@@ -53,6 +57,10 @@ def _secure_report_path(path: Path) -> None:
     flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags, 0o600)
     try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1):
+            raise RuntimeError("report file must be a regular file owned by the current user")
         os.fchmod(descriptor, 0o600)
     finally:
         os.close(descriptor)

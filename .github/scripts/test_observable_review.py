@@ -4,6 +4,7 @@ import io
 from contextlib import redirect_stdout, redirect_stderr
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import tempfile
@@ -480,6 +481,19 @@ class ObservableReviewTests(unittest.TestCase):
             close.assert_called_once()
             self.assertFalse(report_path.exists())
 
+    def test_secure_report_rejects_file_owned_by_another_user(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report_path = Path(directory) / "report.json"
+            report_path.write_text("private", encoding="utf-8")
+            foreign_owner = type("Stat", (), {
+                "st_uid": os.getuid() + 1,
+                "st_mode": stat.S_IFREG | 0o600,
+                "st_nlink": 1,
+            })()
+            with mock.patch.object(observer.os, "fstat", return_value=foreign_owner):
+                with self.assertRaisesRegex(RuntimeError, "current user"):
+                    observer._secure_report_path(report_path)
+
     def test_run_writes_step_summary(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -521,17 +535,15 @@ class ObservableReviewTests(unittest.TestCase):
                 inside = root / "inside.json"
                 self.assertEqual(observer._confine_report_path(inside), inside.resolve())
 
-    def test_confine_report_path_resolves_symlink(self):
-        # realpath must resolve a symlink to its target before the base check,
-        # so a symlink cannot smuggle a path past confinement.
+    def test_confine_report_path_rejects_symlink(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "real.json").write_text("{}")
             link = root / "link.json"
             link.symlink_to(root / "real.json")
             with mock.patch.object(observer.os, "environ", {"RUNNER_TEMP": str(root)}, create=True):
-                resolved = observer._confine_report_path(link)
-            self.assertEqual(resolved, (root / "real.json").resolve())
+                with self.assertRaisesRegex(RuntimeError, "symbolic link"):
+                    observer._confine_report_path(link)
 
     def test_load_report_rejects_missing_and_oversized(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -152,6 +152,10 @@ jobs:
           TARGET_REF="${TARGET_REF//$'\r'/}"
 
           head_sha="$(git -C target rev-parse 'HEAD^{commit}')"
+          if [[ ! "${head_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::target checkout did not resolve to a full commit SHA."
+            exit 1
+          fi
           if [[ "${REVIEW_SCOPE}" == "full_branch" ]]; then
             # Compare the current snapshot with an empty tree so every tracked
             # file is represented as added content with valid RIGHT-side lines.
