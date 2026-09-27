@@ -25,6 +25,14 @@ SPEC.loader.exec_module(reviewer)
 
 
 class AnnotatedDiffTest(unittest.TestCase):
+    def test_diff_line_slightly_over_four_thousand_characters_is_preserved(self):
+        line = "x" * 4024
+
+        rendered, shortened = reviewer._bounded_line(line)
+
+        self.assertFalse(shortened)
+        self.assertEqual(rendered, line)
+
     def test_github_requests_use_plain_json_and_close_responses(self):
         url = "https://api.github.com/repos/owner/repo/issues/48/comments"
         for method, body, expected in (("GET", None, [{"id": 1}]),

@@ -99,8 +99,43 @@ variables:
   githubWorkflowFile: manual-ai-review.yml
 
 jobs:
+  - job: ValidateReviewPipeline
+    displayName: Validate AI review scripts and pipeline contracts
+    timeoutInMinutes: 15
+    steps:
+      - template: azure-templates/validate-trusted-branch.yml
+        parameters:
+          errorMessage: Run this launcher from main; tests use the trusted pipeline revision.
+
+      - checkout: self
+        clean: true
+        fetchDepth: 1
+        fetchTags: false
+        persistCredentials: false
+
+      - task: UsePythonVersion@0
+        displayName: Use Python 3.12
+        inputs:
+          versionSpec: "3.12"
+
+      - bash: |
+          set -euo pipefail
+          python3 -m pip install \
+            --disable-pip-version-check \
+            --requirement hermes/requirements-dev.txt
+        displayName: Install repository test dependencies
+        workingDirectory: $(Build.SourcesDirectory)
+
+      - bash: |
+          set -euo pipefail
+          python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+        displayName: Test AI review and Azure pipeline contracts
+        workingDirectory: $(Build.SourcesDirectory)
+
   - job: RequestReview
     displayName: Azure DevOps → GitHub AI review
+    dependsOn: ValidateReviewPipeline
+    condition: succeeded()
     # The GitHub job allows up to 90 minutes, but a Microsoft-hosted agent in a
     # private project is capped at 60. Waiting is therefore bounded and always
     # ends with the run link, never with a lost review.

@@ -1166,6 +1166,28 @@ class NousReviewTest(unittest.TestCase):
         self.assertIn("${api}/actions/runs/${run_id}/artifacts", launcher)
         self.assertIn("##vso[artifact.upload", launcher)
 
+    def test_azure_launcher_runs_repository_tests_before_dispatch(self):
+        root = Path(__file__).resolve().parents[2]
+        pipeline = yaml.load(
+            (root / "azure-ci/azure-ai-code-review.yml").read_text(),
+            Loader=yaml.BaseLoader,
+        )
+        jobs = {job["job"]: job for job in pipeline["jobs"]}
+
+        validation = jobs["ValidateReviewPipeline"]
+        self.assertTrue(any(step.get("checkout") == "self" for step in validation["steps"]))
+        self.assertTrue(any(
+            step.get("template") == "azure-templates/validate-trusted-branch.yml"
+            for step in validation["steps"]
+        ))
+        test_step = next(
+            step for step in validation["steps"]
+            if "unittest discover -s .github/scripts" in step.get("bash", "")
+        )
+        self.assertEqual(test_step["workingDirectory"], "$(Build.SourcesDirectory)")
+        self.assertEqual(jobs["RequestReview"]["dependsOn"], "ValidateReviewPipeline")
+        self.assertEqual(jobs["RequestReview"]["condition"], "succeeded()")
+
     def test_github_review_report_has_no_broken_artifacts_page_link(self):
         root = Path(__file__).resolve().parents[2]
         workflow = (root / ".github/workflows/manual-ai-review.yml").read_text()

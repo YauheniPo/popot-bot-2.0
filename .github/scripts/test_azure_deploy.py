@@ -190,6 +190,29 @@ class DeploymentPipelineTests(unittest.TestCase):
         self.assertEqual(deploy["lockBehavior"], "sequential")
         self.assertEqual(deploy["jobs"][0]["environment"], "hermes-vps")
 
+    def test_validate_stage_runs_repo_tests_before_checkout_of_deploy_source(self):
+        steps = self.pipeline["stages"][0]["jobs"][0]["steps"]
+        self_index = next(i for i, step in enumerate(steps) if step.get("checkout") == "self")
+        branch_validation_index = next(
+            i for i, step in enumerate(steps)
+            if "validate-deploy-branch.py" in step.get("bash", "")
+        )
+        test_index = next(
+            i for i, step in enumerate(steps)
+            if "unittest discover -s .github/scripts" in step.get("bash", "")
+        )
+        deploy_source_index = next(
+            i for i, step in enumerate(steps) if step.get("checkout") == "deploySource"
+        )
+
+        self.assertLess(self_index, branch_validation_index)
+        self.assertLess(branch_validation_index, test_index)
+        self.assertLess(test_index, deploy_source_index)
+        self.assertEqual(
+            steps[test_index]["workingDirectory"],
+            "$(Pipeline.Workspace)/s/pipeline",
+        )
+
     def test_agent_temp_is_not_used_as_remote_vps_temp(self):
         steps = [step for step in self.deployment_steps()
                  if "ANSIBLE_LOCAL_TEMP" in step.get("env", {})]
