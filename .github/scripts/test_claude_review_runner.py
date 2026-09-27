@@ -272,9 +272,12 @@ class ClaudeReviewRunnerTests(unittest.TestCase):
             self.assertEqual(result["stop_reason"], "end_turn")
             request = opener.open.call_args.args[0]
             self.assertTrue(json.loads(request.data)["stream"])
-            opener.open.side_effect = runner.urllib.error.HTTPError("https://example.test", 429, "secret-error", {}, None)
-            with self.assertRaisesRegex(runner.ReviewFailure, "^http_429$"):
+            error_body = b"credential=secret-body-value"
+            opener.open.side_effect = runner.urllib.error.HTTPError(
+                "https://example.test", 429, "secret-error", {}, io.BytesIO(error_body))
+            with self.assertRaisesRegex(runner.ReviewFailure, "^http_429$") as raised:
                 runner.request_message("https://example.test", "secret-key", {}, 5)
+            self.assertNotIn(error_body.decode(), str(raised.exception))
 
     def test_stream_assembles_fragmented_tool_input_and_ignores_pings(self):
         events = [

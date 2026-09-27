@@ -43,7 +43,11 @@ def completion(document):
 
 class ReviewWorkflowTest(unittest.TestCase):
     def setUp(self):
-        self.enterContext(mock.patch.dict(reviewer.os.environ, {}, clear=True))
+        # Provider selection is intentionally explicit in production. Keep the
+        # workflow fixture configured so these tests reach the credential checks.
+        self.enterContext(mock.patch.dict(
+            reviewer.os.environ, {"DIRECT_REVIEW_PROVIDER": "nvidia"}, clear=True
+        ))
         self.enterContext(mock.patch.object(reviewer, "EXECUTION_REPORT", None))
         self.enterContext(mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(600)))
         self.enterContext(mock.patch.object(reviewer, "ACTIVE_PROVIDER", "nvidia"))
