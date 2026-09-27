@@ -205,9 +205,10 @@ class DeploymentPipelineTests(unittest.TestCase):
             i for i, step in enumerate(steps) if step.get("checkout") == "deploySource"
         )
 
-        self.assertLess(self_index, branch_validation_index)
-        self.assertLess(branch_validation_index, test_index)
+        self.assertLess(self_index, deploy_source_index)
+        self.assertLess(branch_validation_index, deploy_source_index)
         self.assertLess(test_index, deploy_source_index)
+        self.assertLess(branch_validation_index, test_index)
         self.assertEqual(
             steps[test_index]["workingDirectory"],
             "$(Pipeline.Workspace)/s/pipeline",
