@@ -45,8 +45,8 @@ class CollectNewsTests(unittest.TestCase):
                                "repository": "alvinreal/awesome-opensource-ai",
                                "max_items": 10, "category": "project"}]}
         commits = [{"sha": "a" * 40, "parents": [{"sha": "b" * 40}]}]
-        old_readme = """## Agents\n- [Toolkit Alpha](https://github.com/acme/agent) - Old description\n"""
-        new_readme = """## Agents\n- [Toolkit Alpha](https://github.com/acme/agent) - Updated agent toolkit\n- [Toolkit Beta](https://github.com/acme/agent-two) - New coding tool ![stars](https://img.shields.io/github/stars/acme/agent-two)\n"""
+        old_readme = """  ## Agents\n- [Toolkit Alpha](https://github.com/acme/agent) - Old description\n"""
+        new_readme = """  ## Agents\n- [Toolkit Alpha](https://github.com/acme/agent) - Updated agent toolkit\n- [Toolkit Beta](https://github.com/acme/agent-two) - New coding tool ![stars](https://img.shields.io/github/stars/acme/agent-two)\n"""
         requested = []
 
         def fetch(url, _limit):
@@ -87,13 +87,13 @@ class CollectNewsTests(unittest.TestCase):
                                "repository": "MrJev/awesome-jev", "max_items": 10,
                                "category": "project"}]}
         commits = [{"sha": "c" * 40, "parents": [{"sha": "d" * 40}]}]
-        old_readme = "## Agent Integrations\n"
-        new_readme = ("## Recent Developments\n"
+        old_readme = "  ## Agent Integrations\n"
+        new_readme = ("  ## Recent Developments\n"
                       "| Date | What changed | Source |\n"
                       "| --- | --- | --- |\n"
                       "| 2026-09-24 | Python SDK 0.8.0. Breaking: response changed. | "
                       "[Release notes](https://github.com/typesafe-ai/typesafe-sdk-python/releases/tag/v0.8.0) |\n"
-                      "## Agent Integrations\n"
+                      "  ## Agent Integrations\n"
                       "| [Jev Router](https://github.com/mrjev/jev-router) | MCP tool router |\n")
 
         def fetch(url, _limit):

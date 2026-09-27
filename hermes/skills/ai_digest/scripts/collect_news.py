@@ -262,6 +262,53 @@ def _json(fetch, url: str, max_bytes: int):
     return json.loads(fetch(url, max_bytes))
 
 
+def _trending_repository_path(article: str) -> str | None:
+    match = re.search(r'<h2\b[^>]*>\s*<a\b[^>]*\bhref="(/[^"/]+/[^"/]+)"',
+                      article, re.S | re.I)
+    return match.group(1) if match else None
+
+
+def _trending_language(article: str) -> str | None:
+    match = re.search(
+        r'<span\b[^>]*\bitemprop="programmingLanguage"[^>]*>(.*?)</span\s*>',
+        article, re.S | re.I,
+    )
+    return plain(match.group(1)) if match else None
+
+
+def _trending_star_count(article: str) -> int | None:
+    stars_link = re.search(
+        r'<a\b[^>]*\bhref="/[^"/]+/[^"/]+/stargazers(?:\?[^"]*)?"[^>]*>(.*?)</a\s*>',
+        article, re.S | re.I,
+    )
+    if not stars_link:
+        return None
+    count = re.search(r"\b[\d,]+\b", plain(stars_link.group(1)))
+    return int(count.group().replace(",", "")) if count else None
+
+
+def _trending_stars_today(article: str) -> int | None:
+    for span in re.finditer(r'<span\b[^>]*>(.*?)</span\s*>', article, re.S | re.I):
+        match = re.search(r"\b([\d,]+)\s+stars?\s+today\b", plain(span.group(1)), re.I)
+        if match:
+            return int(match.group(1).replace(",", ""))
+    return None
+
+
+def _trending_card(article: str) -> dict | None:
+    path = _trending_repository_path(article)
+    if not path:
+        return None
+    description = re.search(r"<p\b[^>]*>(.*?)</p\s*>", article, re.S | re.I)
+    return {
+        "path": path,
+        "description": plain(description.group(1)) if description else "",
+        "language": _trending_language(article),
+        "stars": _trending_star_count(article),
+        "stars_today": _trending_stars_today(article),
+    }
+
+
 def _trending_articles(html: str) -> list[dict]:
     """Extract repository details from GitHub Trending cards."""
     articles = re.findall(r"(<article\b[^>]*>)(.*?)</article\s*>", html, re.S | re.I)
@@ -270,35 +317,24 @@ def _trending_articles(html: str) -> list[dict]:
         class_attr = re.search(r'\bclass="([^"]*)"', opening_tag, re.I)
         if not class_attr or "Box-row" not in class_attr.group(1).split():
             continue
-        match = re.search(r'<h2\b[^>]*>\s*<a\b[^>]*\bhref="(/[^"/]+/[^"/]+)"',
-                          article, re.S | re.I)
-        if not match:
-            continue
-        description = re.search(r"<p\b[^>]*>(.*?)</p\s*>", article, re.S | re.I)
-        language = re.search(
-            r'<span\b[^>]*\bitemprop="programmingLanguage"[^>]*>(.*?)</span\s*>',
-            article, re.S | re.I,
-        )
-        stars_link = re.search(
-            r'<a\b[^>]*\bhref="/[^"/]+/[^"/]+/stargazers(?:\?[^"]*)?"[^>]*>(.*?)</a\s*>',
-            article, re.S | re.I,
-        )
-        stars_today = None
-        for span in re.finditer(r'<span\b[^>]*>(.*?)</span\s*>', article, re.S | re.I):
-            stars_today = re.search(
-                r"\b([\d,]+)\s+stars?\s+today\b", plain(span.group(1)), re.I,
-            )
-            if stars_today:
-                break
-        star_count = re.search(r"\b[\d,]+\b", plain(stars_link.group(1))) if stars_link else None
-        result.append({
-            "path": match.group(1),
-            "description": plain(description.group(1)) if description else "",
-            "language": plain(language.group(1)) if language else None,
-            "stars": int(star_count.group().replace(",", "")) if star_count else None,
-            "stars_today": int(stars_today.group(1).replace(",", "")) if stars_today else None,
-        })
+        card = _trending_card(article)
+        if card:
+            result.append(card)
     return result
+
+
+def _markdown_heading(line: str) -> str | None:
+    indentation = len(line) - len(line.lstrip(" "))
+    if indentation > 3:
+        return None
+    content = line[indentation:]
+    level = len(content) - len(content.lstrip("#"))
+    if not 1 <= level <= 4 or len(content) == level or not content[level].isspace():
+        return None
+    title = content[level:].strip()
+    while title.endswith("#"):
+        title = title[:-1].rstrip()
+    return plain(title) or None
 
 
 def _collect_rss(source: dict, source_id: str, now: datetime, fetch, limit: int, max_bytes: int, max_chars: int, window: int, issues: list[dict]) -> list[dict]:
@@ -463,60 +499,80 @@ def _reddit_item(post: dict, source: dict, source_id: str, subreddit: str,
     return item
 
 
-def _collect_github_trending(source: dict, source_id: str, now: datetime, fetch, limit: int, max_bytes: int, max_chars: int, window: int, issues: list[dict]) -> list[dict]:
+def _github_trending_item(repo: dict, source_id: str, now: datetime, window: int,
+                          max_chars: int) -> dict | None:
+    evidence = [repo["description"]] if repo["description"] else []
+    evidence.extend(f"{label}: {repo[key]:,}" for key, label in (
+        ("stars", "GitHub stars"), ("stars_today", "GitHub stars today")
+    ) if repo[key] is not None)
+    if repo["language"]:
+        evidence.append("Language: " + repo["language"])
+    item = _item(repo["path"].strip("/").replace("/", " / "),
+                 "https://github.com" + repo["path"], now,
+                 ". ".join(evidence), source_id, now, window, max_chars,
+                 score=repo["stars_today"] or 0)
+    if item:
+        item["published_at"] = None
+        item["observed_at"] = now.isoformat().replace(UTC_SUFFIX, "Z")
+        item["time_basis"] = "trending_observation"
+        item["programming_language"] = repo["language"]
+        item["stars"] = repo["stars"]
+        item["stars_today"] = repo["stars_today"]
+        item["full_text_available"] = False
+    return item
+
+
+def _collect_github_notable_fallback(source: dict, source_id: str, now: datetime,
+                                     fetch, limit: int, max_bytes: int,
+                                     max_chars: int, window: int,
+                                     issues: list[dict]) -> list[dict]:
+    fallback = source["fallback"]
+    query = (f'{fallback.get("query", "topic:ai")} '
+             f'pushed:>={now.date() - timedelta(hours=window)} '
+             f'stars:>={fallback.get("min_stars", 500)}')
+    url = GITHUB_API_URL + "/search/repositories?" + urlencode(
+        {"q": query, "sort": "stars", "per_page": limit}
+    )
     items = []
+    for repo in _json(fetch, url, max_bytes).get("items", [])[:limit]:
+        pushed_at = _date(repo.get("pushed_at"))
+        description = repo.get("description", "")
+        if pushed_at:
+            description += (". " if description else "") + "Last pushed: " + pushed_at.isoformat().replace(UTC_SUFFIX, "Z")
+        item = _item(repo.get("full_name", ""), repo.get("html_url", ""),
+                     pushed_at, description, source_id, now, window, max_chars,
+                     score=int(repo.get("stargazers_count", 0)))
+        if not item:
+            continue
+        item["published_at"] = None
+        item["observed_at"] = now.isoformat().replace(UTC_SUFFIX, "Z")
+        item["last_pushed_at"] = pushed_at.isoformat().replace(UTC_SUFFIX, "Z") if pushed_at else None
+        item["time_basis"] = "repository_update"
+        item["evidence_kind"] = "repository_metadata"
+        item["full_text_available"] = False
+        items.append(item)
+    issues.append({"id": source_id, "kind": "degraded",
+                   "reason": "GitHub Trending unavailable; used search fallback"})
+    return items
+
+
+def _collect_github_trending(source: dict, source_id: str, now: datetime, fetch,
+                             limit: int, max_bytes: int, max_chars: int, window: int,
+                             issues: list[dict]) -> list[dict]:
     query = {"since": source.get("since", "daily")}
     if source.get("topic"):
         query["topic"] = source["topic"]
     url = "https://github.com/trending?" + urlencode(query)
     html = fetch(url, max_bytes).decode("utf-8", "replace")
-    for repo in _trending_articles(html)[:limit]:
-        evidence = [repo["description"]] if repo["description"] else []
-        if repo["language"]:
-            evidence.append("Language: " + repo["language"])
-        if repo["stars"] is not None:
-            evidence.append(f"GitHub stars: {repo['stars']:,}")
-        if repo["stars_today"] is not None:
-            evidence.append(f"GitHub stars today: {repo['stars_today']:,}")
-        item = _item(repo["path"].strip("/").replace("/", " / "),
-                     "https://github.com" + repo["path"], now,
-                     ". ".join(evidence), source_id, now, window, max_chars,
-                     score=repo["stars_today"] or 0)
-        if item:
-            item["published_at"] = None
-            item["observed_at"] = now.isoformat().replace(UTC_SUFFIX, "Z")
-            item["time_basis"] = "trending_observation"
-            item["programming_language"] = repo["language"]
-            item["stars"] = repo["stars"]
-            item["stars_today"] = repo["stars_today"]
-            item["full_text_available"] = False
-            items.append(item)
-    if not items and source.get("fallback", {}).get("type") == "github_notable":
-        fallback = source["fallback"]
-        query = f'{fallback.get("query", "topic:ai")} pushed:>={now.date() - timedelta(hours=window)} stars:>={fallback.get("min_stars", 500)}'
-        url = GITHUB_API_URL + "/search/repositories?" + urlencode({"q": query, "sort": "stars", "per_page": limit})
-        for repo in _json(fetch, url, max_bytes).get("items", [])[:limit]:
-            pushed_at = _date(repo.get("pushed_at"))
-            item = _item(repo.get("full_name", ""), repo.get("html_url", ""),
-                         pushed_at,
-                         ". ".join(part for part in (
-                             repo.get("description", ""),
-                             "Last pushed: " + pushed_at.isoformat().replace(UTC_SUFFIX, "Z")
-                             if pushed_at else "",
-                         ) if part), source_id, now, window, max_chars,
-                         score=int(repo.get("stargazers_count", 0)))
-            if item:
-                item["published_at"] = None
-                item["observed_at"] = now.isoformat().replace(UTC_SUFFIX, "Z")
-                item["last_pushed_at"] = (
-                    pushed_at.isoformat().replace(UTC_SUFFIX, "Z") if pushed_at else None
-                )
-                item["time_basis"] = "repository_update"
-                item["evidence_kind"] = "repository_metadata"
-                item["full_text_available"] = False
-                items.append(item)
-        issues.append({"id": source_id, "kind": "degraded", "reason": "GitHub Trending unavailable; used search fallback"})
-    return items
+    items = [item for item in (
+        _github_trending_item(repo, source_id, now, window, max_chars)
+        for repo in _trending_articles(html)[:limit]
+    ) if item]
+    fallback = source.get("fallback", {})
+    if items or fallback.get("type") != "github_notable":
+        return items
+    return _collect_github_notable_fallback(source, source_id, now, fetch, limit,
+                                            max_bytes, max_chars, window, issues)
 
 
 def _curated_projects(markdown: str) -> dict[str, dict]:
@@ -525,9 +581,9 @@ def _curated_projects(markdown: str) -> dict[str, dict]:
     category = "Projects"
     link_pattern = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
     for line in markdown.splitlines():
-        heading = re.match(r"^#{1,4}\s+(.+?)\s*#*\s*$", line)
+        heading = _markdown_heading(line)
         if heading:
-            category = plain(heading.group(1))
+            category = heading
             continue
         for match in link_pattern.finditer(line):
             title = plain(match.group(1))
@@ -542,8 +598,11 @@ def _curated_projects(markdown: str) -> dict[str, dict]:
             except ValueError:
                 continue
             cleaned = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", line)
-            cleaned = link_pattern.sub(lambda link: "" if link.group(2) == match.group(2)
-                                      else link.group(1), cleaned)
+            target_url = url
+            cleaned = link_pattern.sub(
+                lambda link, target=target_url: "" if link.group(2) == target else link.group(1),
+                cleaned,
+            )
             cleaned = re.sub(r"^\s*[-*+]\s+", "", cleaned)
             description = plain(re.sub(r"[`*_~|]", " ", cleaned))
             description = re.sub(r"\s+", " ", description).strip(" -:")
@@ -562,9 +621,9 @@ def _curated_developments(markdown: str) -> dict[str, dict]:
     in_section = False
     link_pattern = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
     for line in markdown.splitlines():
-        heading = re.match(r"^#{1,4}\s+(.+?)\s*#*\s*$", line)
+        heading = _markdown_heading(line)
         if heading:
-            in_section = "recent developments" in plain(heading.group(1)).lower()
+            in_section = "recent developments" in heading.lower()
             continue
         if not in_section or not line.strip().startswith("|"):
             continue
@@ -590,6 +649,93 @@ def _curated_developments(markdown: str) -> dict[str, dict]:
     return updates
 
 
+def _curated_commit_pair(commits: object) -> tuple[str, str] | None:
+    if not isinstance(commits, list):
+        raise ValueError("invalid curated-list commit response")
+    if not commits:
+        return None
+    latest = commits[0].get("sha") if isinstance(commits[0], dict) else None
+    oldest = commits[-1] if isinstance(commits[-1], dict) else {}
+    parents = oldest.get("parents") or []
+    previous = parents[0].get("sha") if parents and isinstance(parents[0], dict) else None
+    valid_shas = all(isinstance(sha, str) and re.fullmatch(r"[0-9a-fA-F]{40}", sha)
+                     for sha in (latest, previous))
+    if not valid_shas:
+        raise ValueError("curated-list commit history has no comparable parent")
+    return latest, previous
+
+
+def _curated_readme_versions(repository: str, shas: tuple[str, str], fetch,
+                             max_bytes: int) -> tuple[str, str, str]:
+    latest, previous = shas
+    raw_base = f"https://raw.githubusercontent.com/{repository}/"
+    current = fetch(raw_base + latest + "/README.md", max_bytes).decode("utf-8", "replace")
+    baseline = fetch(raw_base + previous + "/README.md", max_bytes).decode("utf-8", "replace")
+    source_url = f"https://github.com/{repository}/blob/{latest}/README.md"
+    return current, baseline, source_url
+
+
+def _mark_curated_item(item: dict, now: datetime, readme_url: str, *,
+                       category: str, subcategory: str, evidence_kind: str,
+                       change_type: str, event_date: str | None = None) -> dict:
+    item["published_at"] = None
+    item["observed_at"] = now.isoformat().replace(UTC_SUFFIX, "Z")
+    item["time_basis"] = "curation_window"
+    item["evidence_kind"] = evidence_kind
+    item["change_type"] = change_type
+    item["category"] = category
+    item["subcategory"] = subcategory
+    item["urls"] = [item["url"], canonical_url(readme_url)]
+    item["full_text_available"] = False
+    if event_date:
+        item["event_date"] = event_date
+    return item
+
+
+def _curated_update_items(current: dict, baseline: dict, source_id: str,
+                          now: datetime, readme_url: str, max_chars: int,
+                          window: int) -> list[dict]:
+    items = []
+    for identity, update in current.items():
+        previous = baseline.get(identity)
+        if previous == update:
+            continue
+        evidence = f"Recent Developments entry dated {update['event_date']}: {update['summary']}"
+        item = _item(update["title"], update["url"], now, evidence,
+                     source_id, now, window, max_chars)
+        if item:
+            change = "added" if previous is None else "updated"
+            items.append(_mark_curated_item(
+                item, now, readme_url, category="release",
+                subcategory="Recent Developments", evidence_kind="curated_update",
+                change_type=change, event_date=update["event_date"],
+            ))
+    return items
+
+
+def _curated_project_items(current: dict, baseline: dict, source: dict,
+                           source_id: str, now: datetime, readme_url: str,
+                           max_chars: int, window: int) -> list[dict]:
+    items = []
+    for url, project in current.items():
+        previous = baseline.get(url)
+        if previous == project:
+            continue
+        change_type = "added" if previous is None else "updated"
+        evidence = f"{change_type.title()} in curated list under {project['category']}."
+        if project["description"]:
+            evidence += " " + project["description"]
+        item = _item(project["title"], url, now, evidence,
+                     source_id, now, window, max_chars)
+        if item:
+            items.append(_mark_curated_item(
+                item, now, readme_url, category=source.get("category", "project"),
+                subcategory=project["category"], evidence_kind="curated_project",
+                change_type=change_type,
+            ))
+    return items
+
+
 def _collect_curated_readme(source: dict, source_id: str, now: datetime, fetch,
                             limit: int, max_bytes: int, max_chars: int, window: int,
                             issues: list[dict]) -> list[dict]:
@@ -601,65 +747,20 @@ def _collect_curated_readme(source: dict, source_id: str, now: datetime, fetch,
         {"path": "README.md", "since": cutoff, "per_page": 100}
     )
     commits = _json(fetch, commits_url, max_bytes)
-    if not isinstance(commits, list):
-        raise ValueError("invalid curated-list commit response")
-    if not commits:
+    shas = _curated_commit_pair(commits)
+    if shas is None:
         return []
-    latest = commits[0].get("sha") if isinstance(commits[0], dict) else None
-    oldest = commits[-1] if isinstance(commits[-1], dict) else {}
-    parents = oldest.get("parents") or []
-    previous = parents[0].get("sha") if parents and isinstance(parents[0], dict) else None
-    if not all(isinstance(sha, str) and re.fullmatch(r"[0-9a-fA-F]{40}", sha)
-               for sha in (latest, previous)):
-        raise ValueError("curated-list commit history has no comparable parent")
-    raw_base = f"https://raw.githubusercontent.com/{repository}/"
-    current_markdown = fetch(raw_base + latest + "/README.md", max_bytes).decode("utf-8", "replace")
-    baseline_markdown = fetch(raw_base + previous + "/README.md", max_bytes).decode("utf-8", "replace")
-    current = _curated_projects(current_markdown)
-    baseline = _curated_projects(baseline_markdown)
+    current_markdown, baseline_markdown, readme_url = _curated_readme_versions(
+        repository, shas, fetch, max_bytes
+    )
+    current_projects = _curated_projects(current_markdown)
+    baseline_projects = _curated_projects(baseline_markdown)
     current_updates = _curated_developments(current_markdown)
     baseline_updates = _curated_developments(baseline_markdown)
-    readme_url = f"https://github.com/{repository}/blob/{latest}/README.md"
-    items = []
-    for identity, update in current_updates.items():
-        if baseline_updates.get(identity) == update:
-            continue
-        evidence = f"Recent Developments entry dated {update['event_date']}: {update['summary']}"
-        item = _item(update["title"], update["url"], now, evidence,
-                     source_id, now, window, max_chars)
-        if item:
-            item["published_at"] = None
-            item["observed_at"] = now.isoformat().replace(UTC_SUFFIX, "Z")
-            item["time_basis"] = "curation_window"
-            item["evidence_kind"] = "curated_update"
-            item["event_date"] = update["event_date"]
-            item["change_type"] = "added" if identity not in baseline_updates else "updated"
-            item["category"] = "release"
-            item["subcategory"] = "Recent Developments"
-            item["urls"] = [update["url"], canonical_url(readme_url)]
-            item["full_text_available"] = False
-            items.append(item)
-    for url, project in current.items():
-        prior = baseline.get(url)
-        if prior == project:
-            continue
-        change_type = "added" if prior is None else "updated"
-        detail = project["description"]
-        evidence = f"{change_type.title()} in curated list under {project['category']}."
-        if detail:
-            evidence += " " + detail
-        item = _item(project["title"], url, now, evidence, source_id, now, window, max_chars)
-        if item:
-            item["published_at"] = None
-            item["observed_at"] = now.isoformat().replace(UTC_SUFFIX, "Z")
-            item["time_basis"] = "curation_window"
-            item["evidence_kind"] = "curated_project"
-            item["change_type"] = change_type
-            item["category"] = source.get("category", "project")
-            item["subcategory"] = project["category"]
-            item["urls"] = [url, canonical_url(readme_url)]
-            item["full_text_available"] = False
-            items.append(item)
+    items = _curated_update_items(current_updates, baseline_updates, source_id,
+                                  now, readme_url, max_chars, window)
+    items.extend(_curated_project_items(current_projects, baseline_projects, source,
+                                        source_id, now, readme_url, max_chars, window))
     if len(commits) >= 100:
         issues.append({"id": source_id, "kind": "degraded",
                        "reason": "GitHub commit history reached the response cap; changes may be incomplete"})
