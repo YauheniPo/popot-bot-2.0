@@ -535,6 +535,13 @@ class ObservableReviewTests(unittest.TestCase):
                 inside = root / "inside.json"
                 self.assertEqual(observer._confine_report_path(inside), inside.resolve())
 
+    def test_confine_report_path_accepts_normal_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report_path = root / "report.json"
+            with mock.patch.object(observer.os, "environ", {"RUNNER_TEMP": str(root)}, create=True):
+                self.assertEqual(observer._confine_report_path(report_path), report_path.resolve())
+
     def test_confine_report_path_rejects_symlink(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -182,6 +182,12 @@ runs:
           head_sha="${TARGET_REF}"
         fi
 
+        if [[ "${SCOPE}" == "full_branch" ]]; then
+          echo 'full_branch_review_required=true' >>"${GITHUB_OUTPUT}"
+        else
+          echo 'full_branch_review_required=false' >>"${GITHUB_OUTPUT}"
+        fi
+
         # Determine PR number and publication target
         pr_number="${PR_NUMBER_INPUT}"
         if [[ -z "${pr_number}" && "${SCOPE}" != "full_branch" && "${PUBLISH}" == "auto" ]]; then
@@ -229,9 +235,9 @@ runs:
         OLLAMA_REVIEW_BUDGET_SECONDS: ${{ inputs.budget_seconds }}
         OLLAMA_REVIEW_RPM: ${{ inputs.rpm }}
         PR_NUMBER: ${{ steps.direct_context.outputs.pr_number }}
-        REQUIRE_COMPLETE_REVIEW: ${{ steps.direct_context.outputs.pr_number != '' && inputs.scope == 'full_branch' && 'true' || 'false' }}
+        REQUIRE_COMPLETE_REVIEW: ${{ steps.direct_context.outputs.full_branch_review_required }}
         REQUIRE_REVIEW_RESULT: "true"
-        REVIEW_INCLUDE_REVIEWER_FILES: ${{ steps.direct_context.outputs.pr_number != '' && inputs.scope == 'full_branch' && 'true' || 'false' }}
+        REVIEW_INCLUDE_REVIEWER_FILES: ${{ steps.direct_context.outputs.full_branch_review_required }}
         REVIEW_ORIGIN: ${{ inputs.review_origin }}
         REVIEW_REQUEST_ID: ${{ inputs.request_id }}
         SONAR_REVIEW_CONTEXT_FILE: ${{ inputs.include_sonar == 'true' && 'sonar-review-context.json' || '' }}

@@ -697,6 +697,7 @@ class OllamaReviewTest(unittest.TestCase):
             step for step in automatic["jobs"]["direct-api-review"]["steps"]
             if step.get("id") == "ai_review"
         )
+        self.assertEqual(direct_review["with"]["provider"], "${{ env.DIRECT_REVIEW_PROVIDER }}")
         self.assertEqual(
             direct_review["with"]["max_chunks"],
             "${{ vars.PR_REVIEW_MAX_CHUNKS || '100' }}",
@@ -741,6 +742,11 @@ class OllamaReviewTest(unittest.TestCase):
             if step.get("uses", "").startswith("actions/checkout@")
         )
         self.assertEqual(checkout["with"]["ref"], "${{ steps.context.outputs.head_sha }}")
+        manual_review = next(
+            step for job in manual["jobs"].values() for step in job["steps"]
+            if step.get("id") == "ai_review"
+        )
+        self.assertEqual(manual_review["with"]["provider"], "${{ inputs.provider }}")
         validation = next(
             step for job in manual["jobs"].values() for step in job["steps"]
             if "REQUESTED_MODEL" in step.get("env", {})
@@ -768,7 +774,23 @@ class OllamaReviewTest(unittest.TestCase):
             # delegate to it, so it must appear in at least one of these texts.
         self.assertIn("ai_review_preflight.py", action_text)
 
-        action = yaml.safe_load((root / ".github/actions/ai-direct-review/action.yml").read_text())
+        action = yaml.safe_load(action_text)
+        direct_context = next(
+            step for step in action["runs"]["steps"]
+            if step.get("id") == "direct_context"
+        )
+        review_step = next(
+            step for step in action["runs"]["steps"]
+            if "ai_pr_review.py" in step.get("run", "")
+        )
+        self.assertIn('full_branch_review_required=true', direct_context["run"])
+        self.assertIn('full_branch_review_required=false', direct_context["run"])
+        for key in ("REQUIRE_COMPLETE_REVIEW", "REVIEW_INCLUDE_REVIEWER_FILES"):
+            with self.subTest(key=key):
+                self.assertEqual(
+                    review_step["env"][key],
+                    "${{ steps.direct_context.outputs.full_branch_review_required }}",
+                )
         review_step = next(
             step for step in action["runs"]["steps"]
             if "ai_pr_review.py" in step.get("run", "")
