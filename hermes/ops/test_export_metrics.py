@@ -545,6 +545,60 @@ class ExportMetricsTests(unittest.TestCase):
         self.assertEqual(metrics._newest_archive_time(missing), 0.0)
         self.assertEqual(metrics._newest_scheduled_full_time(missing), 0.0)
 
+    def test_review_metrics_returns_empty_when_no_table(self) -> None:
+        """review_metrics returns empty list when review_runs table missing."""
+        database = self.root / "ops" / "metrics.db"
+        database.parent.mkdir()
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute("CREATE TABLE api_calls (ts)")
+        self.assertEqual(metrics.review_metrics(database), [])
+
+    def test_review_metrics_exports_prometheus_format(self) -> None:
+        """review_metrics outputs correct Prometheus format with all metrics."""
+        database = self.root / "ops" / "metrics.db"
+        database.parent.mkdir()
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.executescript("""
+                CREATE TABLE review_runs (
+                    source_id TEXT PRIMARY KEY, pr_number INTEGER NOT NULL,
+                    reviewer TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
+                    outcome TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                    validated_chunks INTEGER NOT NULL DEFAULT 0, total_chunks INTEGER NOT NULL DEFAULT 0,
+                    retries INTEGER NOT NULL DEFAULT 0, fallback_successes INTEGER NOT NULL DEFAULT 0,
+                    provider_seconds REAL NOT NULL DEFAULT 0
+                );
+            """)
+            connection.execute("""
+                INSERT INTO review_runs VALUES
+                ('abc123', 1, 'DirectAPI', 'openrouter', 'model-a', 'success', 1, 15, 15, 0, 0, 42.5),
+                ('def456', 2, 'ClaudeCodePlugin', 'nous', 'model-b', 'partial', 2, 10, 12, 1, 1, 30.0),
+                ('ghi789', 3, 'ObservableMessagesReview', 'openrouter', 'model-a', 'success', 1, 8, 8, 0, 0, 25.0)
+            """)
+
+        lines = metrics.review_metrics(database)
+
+        # Should have HELP/TYPE lines for all metrics (8 metrics)
+        help_lines = [l for l in lines if l.startswith('# HELP')]
+        type_lines = [l for l in lines if l.startswith('# TYPE')]
+        self.assertGreaterEqual(len(help_lines), 8)
+        self.assertGreaterEqual(len(type_lines), 8)
+
+        # Should have metric lines with proper tags (8 metrics * 2 unique outcomes)
+        metric_lines = [l for l in lines if not l.startswith('#')]
+        self.assertGreaterEqual(len(metric_lines), 16)  # 8 metrics * 2 unique provider/model/outcome groups
+
+        # Verify specific metrics exist
+        output = "\n".join(lines)
+        self.assertIn('hermes_review_runs_total{model="model-a",outcome="success",provider="openrouter"} 2', output)
+        self.assertIn('hermes_review_runs_total{model="model-b",outcome="partial",provider="nous"} 1', output)
+        self.assertIn('hermes_review_avg_provider_seconds{model="model-a",outcome="success",provider="openrouter"} 33.75', output)
+        self.assertIn('hermes_review_min_provider_seconds{model="model-a",outcome="success",provider="openrouter"} 25.0', output)
+        self.assertIn('hermes_review_max_provider_seconds{model="model-a",outcome="success",provider="openrouter"} 42.5', output)
+        self.assertIn('hermes_review_attempts_total{model="model-a",outcome="success",provider="openrouter"} 2', output)
+        self.assertIn('hermes_review_retries_total{model="model-b",outcome="partial",provider="nous"} 1', output)
+        self.assertIn('hermes_review_fallback_total{model="model-b",outcome="partial",provider="nous"} 1', output)
+        self.assertIn('hermes_review_validated_chunks_total{model="model-a",outcome="success",provider="openrouter"} 23', output)
+
 
 if __name__ == "__main__":
     unittest.main()
