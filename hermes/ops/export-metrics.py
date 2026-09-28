@@ -222,6 +222,60 @@ def activity_metrics(database: Path) -> list[str]:
     return lines
 
 
+def review_metrics(database: Path) -> list[str]:
+    """Publish review_run metrics for Grafana dashboards."""
+    tables = existing_tables(database)
+    if "review_runs" not in tables:
+        return []
+    source = (
+        "SELECT COALESCE(provider,'') AS provider, COALESCE(model,'') AS model, "
+        "COALESCE(outcome,'') AS outcome, "
+        "SUM(attempts) AS attempts, SUM(validated_chunks) AS validated, "
+        "SUM(total_chunks) AS total, SUM(retries) AS retries, "
+        "SUM(fallback_successes) AS fallback, "
+        "AVG(provider_seconds) AS avg_provider_s, "
+        "MIN(provider_seconds) AS min_provider_s, "
+        "MAX(provider_seconds) AS max_provider_s, "
+        "COUNT(*) AS runs "
+        "FROM review_runs GROUP BY provider, model, outcome"
+    )
+    lines: list[str] = [
+        '# HELP hermes_review_runs_total Total review runs by provider, model, outcome.',
+        '# TYPE hermes_review_runs_total counter',
+        '# HELP hermes_review_avg_provider_seconds Average provider latency by route.',
+        '# TYPE hermes_review_avg_provider_seconds gauge',
+        '# HELP hermes_review_min_provider_seconds Minimum provider latency by route.',
+        '# TYPE hermes_review_min_provider_seconds gauge',
+        '# HELP hermes_review_max_provider_seconds Maximum provider latency by route.',
+        '# TYPE hermes_review_max_provider_seconds gauge',
+        '# HELP hermes_review_attempts_total Total attempts by route.',
+        '# TYPE hermes_review_attempts_total counter',
+        '# HELP hermes_review_retries_total Total retries by route.',
+        '# TYPE hermes_review_retries_total counter',
+        '# HELP hermes_review_fallback_total Total fallback successes by route.',
+        '# TYPE hermes_review_fallback_total counter',
+        '# HELP hermes_review_validated_chunks_total Total validated chunks by route.',
+        '# TYPE hermes_review_validated_chunks_total counter',
+    ]
+    route = "metric_label(provider), metric_label(model), metric_label(outcome)"
+    for provider, model, outcome, attempts, validated, total, retries, fallback, avg_s, min_s, max_s, runs in rows(
+        database,
+        f"WITH c AS ({source}) SELECT {route}, attempts, validated, total, retries, fallback, avg_provider_s, min_provider_s, max_provider_s, runs FROM c",
+    ):
+        tags = {"provider": provider, "model": model, "outcome": outcome}
+        lines.extend([
+            metric("hermes_review_runs_total", runs, tags),
+            metric("hermes_review_avg_provider_seconds", avg_s, tags),
+            metric("hermes_review_min_provider_seconds", min_s, tags),
+            metric("hermes_review_max_provider_seconds", max_s, tags),
+            metric("hermes_review_attempts_total", attempts, tags),
+            metric("hermes_review_retries_total", retries, tags),
+            metric("hermes_review_fallback_total", fallback, tags),
+            metric("hermes_review_validated_chunks_total", validated, tags),
+        ])
+    return lines
+
+
 def analytics_file_mode() -> int:
     """Snapshot mode: group-readable for Grafana by default, never wider than 0644."""
     value = os.environ.get("HERMES_ANALYTICS_MODE", "0640").strip()
@@ -553,6 +607,7 @@ def main() -> int:
     lines.extend(api_metrics(database))
     lines.extend(activity_metrics(database))
     lines.extend(analytics_snapshot(database))
+    lines.extend(review_metrics(database))
     audit = root / "logs" / "ops-audit.jsonl"
     lines.append(metric("hermes_audit_log_bytes", audit.stat().st_size if audit.exists() else 0))
     database_bytes = sum(
