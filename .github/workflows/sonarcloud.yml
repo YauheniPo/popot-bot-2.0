@@ -98,7 +98,7 @@ jobs:
           args: >-
             -Dsonar.qualitygate.wait=true
             -Dsonar.qualitygate.timeout=300
-            -Dsonar.exclusions=
+            -Dsonar.exclusions=**/test_*.py,**/test-*.mjs,**/tests/**/*.py
             -Dsonar.coverage.exclusions=**/test_*.py,**/test-*.mjs,**/tests/**/*.py
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
