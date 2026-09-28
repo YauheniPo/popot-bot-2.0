@@ -44,13 +44,15 @@ class ClaudeReviewRunnerTests(unittest.TestCase):
             root = Path(directory)
             get_context_mock = mock.Mock(side_effect=AssertionError("context selected"))
             with mock.patch.object(runner.multiprocessing, "get_context", get_context_mock):
-                with self.assertRaisesRegex(AssertionError, "context selected"):
+                def call_run_review():
                     runner.run_review(
                         endpoint="https://example.test", api_key="key", model="m", prompt="p",
                         workspace=root, output=root / "out", max_turns=1,
                         attempt_timeout_seconds=1, inactivity_timeout_seconds=1,
                         heartbeat_seconds=1, log=io.StringIO(), allowed_files=set()
                     )
+                with self.assertRaisesRegex(AssertionError, "context selected"):
+                    call_run_review()
             get_context_mock.assert_called_once_with("spawn")
 
     def test_run_review_completes_end_to_end_with_spawn(self):
