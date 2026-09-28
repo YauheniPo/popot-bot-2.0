@@ -255,6 +255,9 @@ The model validated by preflight is passed to the review step automatically.
 The Azure summary links to the GitHub run, published review and available
 PR/findings pages. Review-report artifacts remain uploaded for collection and
 diagnostics; the summary does not include a separate artifact-page link.
+Before dispatching GitHub Actions, the Azure launcher checks out the trusted
+`main` revision and runs the repository's `.github/scripts` tests. A failed test
+stops the launch before provider requests or publication.
 
 For a pull request opened by someone else, use the `ai-review-approved` label
 after you have inspected the change. Only the repository owner adding that label

@@ -88,6 +88,25 @@ stages:
             env:
               DEPLOY_BRANCH: ${{ parameters.deployBranch }}
 
+          - task: UsePythonVersion@0
+            displayName: Use Python 3.12 for repository tests
+            inputs:
+              versionSpec: "3.12"
+
+          - bash: |
+              set -euo pipefail
+              python3 -m pip install \
+                --disable-pip-version-check \
+                --requirement hermes/requirements-dev.txt
+            displayName: Install repository test dependencies
+            workingDirectory: $(Pipeline.Workspace)/s/pipeline
+
+          - bash: |
+              set -euo pipefail
+              python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+            displayName: Test AI review and Azure pipeline contracts
+            workingDirectory: $(Pipeline.Workspace)/s/pipeline
+
           - checkout: deploySource
             path: s/deploy-source
             clean: true

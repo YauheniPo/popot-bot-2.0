@@ -16,7 +16,8 @@ from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from collect_news import (GITHUB_API_URL, _deduplicate, _public_url, _Text, _date, _trending_articles, canonical_url,
+from collect_news import (GITHUB_API_URL, _collect_curated_readme, _deduplicate, _public_url, _Text, _date,
+                           _trending_articles, _trending_stars_today, canonical_url,
                            _connect_resolved, _pinned_connection_class, _SafeHTTPSHandler,
                            collect, parse_rss, UTC_SUFFIX, http_fetch)  # noqa: E402
 
@@ -27,12 +28,112 @@ NOW = datetime(2026, 9, 25, 12, tzinfo=timezone.utc)
 class CollectNewsTests(unittest.TestCase):
     def test_trending_articles_extracts_repo_and_description(self):
         html = '''<article class="Box-row"><h2><a href="/owner/repo">owner/repo</a></h2>
-        <p>A useful model</p></article>'''
-        self.assertEqual(_trending_articles(html), [("/owner/repo", "A useful model")])
+        <p>A useful model</p><span itemprop="programmingLanguage">Python</span>
+        <a href="/owner/repo/stargazers">1,234</a><span><svg><path></path></svg>
+        57 stars today</span></article>'''
+        self.assertEqual(_trending_articles(html), [{
+            "path": "/owner/repo", "description": "A useful model",
+            "language": "Python", "stars": 1234, "stars_today": 57,
+        }])
 
     def test_trending_articles_ignores_non_card_articles(self):
         html = '<article class="other"><h2><a href="/owner/repo">repo</a></h2></article>'
         self.assertEqual(_trending_articles(html), [])
+
+    def test_trending_stars_today_requires_exact_span_content(self):
+        self.assertIsNone(_trending_stars_today(
+            "<span>57 stars today in release notes</span>"
+        ))
+
+    def test_curated_readme_rejects_dot_repository_segments(self):
+        for repository in ("../repo", "owner/..", "./repo", "owner/."):
+            with self.subTest(repository=repository):
+                with self.assertRaisesRegex(ValueError, "invalid curated-list repository"):
+                    _collect_curated_readme(
+                        {"repository": repository}, "source", NOW,
+                        lambda *_: self.fail("invalid repository reached fetch"),
+                        5, 1024, 1000, 24, [],
+                    )
+
+    def test_awesomeosai_collects_added_and_updated_projects_by_topic(self):
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 5},
+                  "sources": [{"id": "awesomeosai", "type": "curated_readme",
+                               "repository": "alvinreal/awesome-opensource-ai",
+                               "max_items": 10, "category": "project"}]}
+        commits = [{"sha": "a" * 40, "parents": [{"sha": "b" * 40}]}]
+        old_readme = """  ## Agents\n- [Toolkit Alpha](https://github.com/acme/agent) - Old description\n"""
+        new_readme = """  ## Agents\n- [Toolkit Alpha](https://github.com/acme/agent) - Updated agent toolkit\n- [Toolkit Beta](https://github.com/acme/agent-two) - New coding tool ![stars](https://img.shields.io/github/stars/acme/agent-two)\n"""
+        requested = []
+
+        def fetch(url, _limit):
+            requested.append(url)
+            if "/commits?" in url:
+                return json.dumps(commits).encode()
+            if url.endswith("/" + "a" * 40 + "/README.md"):
+                return new_readme.encode()
+            if url.endswith("/" + "b" * 40 + "/README.md"):
+                return old_readme.encode()
+            raise AssertionError(url)
+
+        result = collect(config, now=NOW, fetch=fetch)
+        self.assertEqual({item["title"] for item in result["items"]}, {"Toolkit Alpha", "Toolkit Beta"})
+        by_title = {item["title"]: item for item in result["items"]}
+        self.assertEqual(by_title["Toolkit Alpha"]["change_type"], "updated")
+        self.assertEqual(by_title["Toolkit Beta"]["change_type"], "added")
+        self.assertEqual(by_title["Toolkit Beta"]["category"], "project")
+        self.assertEqual(by_title["Toolkit Beta"]["subcategory"], "Agents")
+        self.assertIsNone(by_title["Toolkit Beta"]["published_at"])
+        self.assertEqual(by_title["Toolkit Beta"]["time_basis"], "curation_window")
+        self.assertIn("New coding tool", by_title["Toolkit Beta"]["evidence"])
+        self.assertNotIn("img.shields.io", by_title["Toolkit Beta"]["evidence"])
+        self.assertIn("raw.githubusercontent.com", " ".join(requested))
+
+    def test_awesomeosai_skips_unchanged_catalog_when_no_commits(self):
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 5},
+                  "sources": [{"id": "awesomeosai", "type": "curated_readme",
+                               "repository": "alvinreal/awesome-opensource-ai"}]}
+        result = collect(config, now=NOW,
+                         fetch=lambda _url, _limit: b"[]")
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["source_issues"][0]["kind"], "empty")
+
+    def test_awesome_jev_markdown_table_addition_is_collected(self):
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 5},
+                  "sources": [{"id": "awesome-jev", "type": "curated_readme",
+                               "repository": "MrJev/awesome-jev", "max_items": 10,
+                               "category": "project"}]}
+        commits = [{"sha": "c" * 40, "parents": [{"sha": "d" * 40}]}]
+        old_readme = "  ## Agent Integrations\n"
+        new_readme = ("  ## Recent Developments\n"
+                      "| Date | What changed | Source |\n"
+                      "| --- | --- | --- |\n"
+                      "| 2026-09-24 | Python SDK 0.8.0. Breaking: response changed. | "
+                      "[Release notes](https://github.com/typesafe-ai/typesafe-sdk-python/releases/tag/v0.8.0) |\n"
+                      "  ## Agent Integrations\n"
+                      "| [Jev Router](https://github.com/mrjev/jev-router) | MCP tool router |\n")
+
+        def fetch(url, _limit):
+            if "/commits?" in url:
+                return json.dumps(commits).encode()
+            if url.endswith("/" + "c" * 40 + "/README.md"):
+                return new_readme.encode()
+            if url.endswith("/" + "d" * 40 + "/README.md"):
+                return old_readme.encode()
+            raise AssertionError(url)
+
+        result = collect(config, now=NOW, fetch=fetch)
+        self.assertEqual(len(result["items"]), 2)
+        by_title = {item["title"]: item for item in result["items"]}
+        self.assertEqual(by_title["Jev Router"]["subcategory"], "Agent Integrations")
+        update = by_title["Python SDK 0.8.0"]
+        self.assertEqual(update["category"], "release")
+        self.assertEqual(update["subcategory"], "Recent Developments")
+        self.assertEqual(update["event_date"], "2026-09-24")
+        self.assertEqual(update["time_basis"], "curation_window")
+        self.assertIn("Breaking: response changed", update["evidence"])
+        self.assertIn("typesafe-sdk-python/releases/tag/v0.8.0", " ".join(update["urls"]))
+        priority_result = collect(config, now=NOW, fetch=fetch, limit=1)
+        self.assertEqual(priority_result["items"][0]["title"], "Python SDK 0.8.0")
 
     def test_config_covers_required_source_types(self):
         config = __import__("json").loads(Path(__file__).with_name("sources.json").read_text())
@@ -40,6 +141,7 @@ class CollectNewsTests(unittest.TestCase):
         self.assertGreaterEqual(len(config["sources"]), 14)
         self.assertLessEqual({"rss", "hackernews", "reddit", "arxiv", "github_trending", "searxng"},
                         {source["type"] for source in config["sources"]})
+        self.assertIn("curated_readme", {source["type"] for source in config["sources"]})
         self.assertEqual(config["profiles"]["weekly"]["window_hours"], 168)
         by_id = {source["id"]: source for source in config["sources"]}
         self.assertLessEqual({"openai", "anthropic", "deepmind", "meta-ai", "hf-papers",
@@ -47,6 +149,8 @@ class CollectNewsTests(unittest.TestCase):
                          "the-batch", "latent-space", "dwarkesh", "swebench"}, by_id.keys())
         self.assertIn("weekly", by_id["swebench"]["modes"])
         self.assertNotIn("daily", by_id["swebench"]["modes"])
+        self.assertEqual(by_id["awesomeosai"]["repository"], "alvinreal/awesome-opensource-ai")
+        self.assertEqual(by_id["awesome-jev"]["repository"], "MrJev/awesome-jev")
 
     def test_rss_uses_article_body_and_discard_old_items(self):
         feed = b"""<rss version="2.0"><channel>
@@ -202,17 +306,30 @@ class CollectNewsTests(unittest.TestCase):
 
     def test_trending_observation_is_not_claimed_as_publication_time(self):
         config = {"version": 1, "defaults": {"window_hours": 24, "limit": 1},
-                  "sources": [{"id": "github", "type": "github_trending", "max_items": 1}]}
+                  "sources": [{"id": "github", "type": "github_trending", "max_items": 1,
+                               "topic": "artificial-intelligence", "category": "project"}]}
         html = (b'<article class="Box-row"><h2><a data-view-component="true" '
-                b'href="/acme/repo">repo</a></h2><p>AI tool</p></article>')
+                b'href="/acme/repo">repo</a></h2><p>AI tool</p>'
+                b'<span itemprop="programmingLanguage">Python</span>'
+                b'<a href="/acme/repo/stargazers">1,234</a>'
+                b'<span><svg><path></path></svg>57 stars today</span></article>')
+        requested = []
         def fetch(url, _limit):
             if "github.com/trending" in url:
+                requested.append(url)
                 return html
             raise ValueError("article unavailable")
         result = collect(config, now=NOW, fetch=fetch)
         self.assertEqual(len(result["items"]), 1)
-        self.assertIsNone(result["items"][0]["published_at"])
-        self.assertEqual(result["items"][0]["time_basis"], "trending_observation")
+        item = result["items"][0]
+        self.assertIn("topic=artificial-intelligence", requested[0])
+        self.assertIsNone(item["published_at"])
+        self.assertEqual(item["time_basis"], "trending_observation")
+        self.assertEqual(item["category"], "project")
+        self.assertEqual(item["programming_language"], "Python")
+        self.assertEqual(item["stars"], 1234)
+        self.assertEqual(item["stars_today"], 57)
+        self.assertIn("GitHub stars today: 57", item["evidence"])
 
     def test_optional_social_search_is_reported_as_unavailable(self):
         config = {"version": 1, "defaults": {"window_hours": 24, "limit": 1},
@@ -656,6 +773,10 @@ class CollectNewsTests(unittest.TestCase):
         items, issues = _source(source, {}, NOW, fetch)
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["url"], "https://github.com/test/repo")
+        self.assertIsNone(items[0]["published_at"])
+        self.assertEqual(items[0]["last_pushed_at"], "2026-09-25T10:00:00Z")
+        self.assertEqual(items[0]["observed_at"], NOW.isoformat().replace("+00:00", "Z"))
+        self.assertEqual(items[0]["time_basis"], "repository_update")
         self.assertTrue(any(i["kind"] == "degraded" for i in issues))
 
     def test_source_searxng_with_valid_endpoint(self):

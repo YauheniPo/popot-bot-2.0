@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
-
+from unittest import mock
 
 MODULE_PATH = Path(__file__).with_name("prune-backups.py")
 SPEC = importlib.util.spec_from_file_location("prune_backups", MODULE_PATH)
@@ -136,6 +137,107 @@ class PruneBackupsTests(unittest.TestCase):
                 self.create_snapshot(root, str(index), "scheduled", now - index * day / 3)
             self.assertEqual(prune_backups.prune_scheduled_quick_snapshots(root, 14, now=now), 0)
             self.assertEqual(len(list(root.iterdir())), 21)
+
+
+    def test_positive_integer_valid(self) -> None:
+        self.assertEqual(prune_backups.positive_integer("5"), 5)
+
+    def test_positive_integer_invalid(self) -> None:
+        with self.assertRaises(argparse.ArgumentTypeError):
+            prune_backups.positive_integer("0")
+        with self.assertRaises(argparse.ArgumentTypeError):
+            prune_backups.positive_integer("-1")
+
+    def test_prune_scheduled_full_backups_dir_not_found(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            backup_dir = Path(temp) / "missing"
+            removed = prune_backups.prune_scheduled_full_backups(backup_dir, keep=5)
+            self.assertEqual(removed, 0)
+
+    def test_prune_deployment_backups_dir_not_found(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            backup_dir = Path(temp) / "missing"
+            removed = prune_backups.prune_deployment_backups(backup_dir, keep=5)
+            self.assertEqual(removed, 0)
+
+    def test_is_scheduled_snapshot_manifest_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "snapshot"
+            path.mkdir()
+            self.assertFalse(prune_backups.is_scheduled_snapshot(path))
+
+    def test_is_scheduled_snapshot_not_scheduled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "snapshot"
+            path.mkdir()
+            (path / "manifest.json").write_text('{"label": "manual"}', encoding="utf-8")
+            self.assertFalse(prune_backups.is_scheduled_snapshot(path))
+
+    def test_is_scheduled_snapshot_malformed_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "snapshot"
+            path.mkdir()
+            (path / "manifest.json").write_text("not json", encoding="utf-8")
+            self.assertFalse(prune_backups.is_scheduled_snapshot(path))
+
+    def test_prune_scheduled_quick_snapshots_dir_not_found(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots_dir = Path(temp) / "missing"
+            removed = prune_backups.prune_scheduled_quick_snapshots(
+                snapshots_dir, retention_days=7, now=2_000_000_000.0,
+            )
+            self.assertEqual(removed, 0)
+
+    def test_prune_scheduled_quick_snapshots_skips_non_scheduled(self) -> None:
+        now = 2_000_000_000.0
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots_dir = Path(temp)
+            manual = snapshots_dir / "manual-snapshot"
+            manual.mkdir()
+            (manual / "manifest.json").write_text(
+                json.dumps({"label": "manual"}), encoding="utf-8",
+            )
+            os.utime(manual, (now - 30 * 86400, now - 30 * 86400))
+            removed = prune_backups.prune_scheduled_quick_snapshots(
+                snapshots_dir, retention_days=14, now=now,
+            )
+            self.assertEqual(removed, 0)
+            self.assertTrue(manual.exists())
+
+    def test_build_parser_has_expected_arguments(self) -> None:
+        parser = prune_backups.build_parser()
+        args = parser.parse_args([
+            "--backup-dir", "/tmp/b", "--snapshots-dir", "/tmp/s",
+            "--quick-retention-days", "7", "--full-keep", "5",
+            "--deployment-keep", "3",
+        ])
+        self.assertEqual(args.quick_retention_days, 7)
+        self.assertEqual(args.full_keep, 5)
+        self.assertEqual(args.deployment_keep, 3)
+
+    def test_main_returns_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            backup_dir = Path(temp) / "backups"
+            backup_dir.mkdir()
+            snapshots_dir = Path(temp) / "snapshots"
+            snapshots_dir.mkdir()
+            argv = ["prune-backups.py", "--backup-dir", str(backup_dir),
+                    "--snapshots-dir", str(snapshots_dir),
+                    "--quick-retention-days", "7", "--full-keep", "5",
+                    "--deployment-keep", "3"]
+            with mock.patch("sys.argv", argv):
+                self.assertEqual(prune_backups.main(), 0)
+
+    def test_quick_snapshots_removes_scheduled_old(self) -> None:
+        now = 2_000_000_000.0
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots_dir = Path(temp)
+            old_scheduled = self.create_snapshot(snapshots_dir, "old-scheduled", "scheduled", now - 15 * 86400)
+            removed = prune_backups.prune_scheduled_quick_snapshots(
+                snapshots_dir, retention_days=14, now=now,
+            )
+            self.assertEqual(removed, 1)
+            self.assertFalse(old_scheduled.exists())
 
 
 if __name__ == "__main__":
