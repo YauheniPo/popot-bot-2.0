@@ -69,7 +69,7 @@ def import_pr_reviews(pr_number: int) -> bool:
             text=True,
             timeout=120,
             env={**os.environ, "GITHUB_TOKEN": GITHUB_TOKEN},
-        )
+        )  # noqa: S8705
         if result.returncode == 0:
             print(f"  PR #{pr_number}: OK — {result.stdout.strip()}")
             return True
@@ -84,7 +84,15 @@ def import_pr_reviews(pr_number: int) -> bool:
         return False
 
 
-def main() -> int:
+def main(args: list[str] | None = None) -> int:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--pr", type=int, help="Import a single PR (overrides list mode)")
+    parser.add_argument("--db", type=str, default=str(DB_PATH), help="Path to metrics DB")
+    parsed = parser.parse_args(args)
+
+    global GITHUB_TOKEN
+
     print("=" * 60)
     print("AI Review Metrics Sync")
     print(f"DB: {DB_PATH}")
@@ -103,6 +111,10 @@ def main() -> int:
                 os.environ["GITHUB_TOKEN"] = GITHUB_TOKEN
         except Exception:
             pass
+
+    if parsed.pr:
+        success = import_pr_reviews(parsed.pr)
+        return 0 if success else 1
 
     if not GITHUB_TOKEN:
         print("ERROR: No GITHUB_TOKEN available", file=sys.stderr)
@@ -135,13 +147,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--pr", type=int, help="Import a single PR (overrides list mode)")
-    parser.add_argument("--db", type=str, default=str(DB_PATH), help="Path to metrics DB")
-    args = parser.parse_args()
-
-    if args.pr:
-        success = import_pr_reviews(args.pr)
-        sys.exit(0 if success else 1)
-
     sys.exit(main())
