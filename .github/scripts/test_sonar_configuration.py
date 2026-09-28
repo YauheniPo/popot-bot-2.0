@@ -29,6 +29,20 @@ class SonarConfigurationTests(unittest.TestCase):
         if omit is not None:
             self.assertNotIn("bot.py", omit.group(1))
 
+    def test_hermes_coverage_has_a_failure_threshold_after_tests(self) -> None:
+        workflow = (
+            Path(__file__).resolve().parents[1] / "workflows" / "sonarcloud.yml"
+        ).read_text(encoding="utf-8")
+        hermes_step = workflow.split(
+            "      - name: Run Hermes tests with coverage", 1
+        )[1].split("\n      - name:", 1)[0]
+        test_command = hermes_step.index("coverage run")
+        threshold_command = hermes_step.index("coverage report --fail-under=")
+        report_command = hermes_step.index("coverage xml")
+
+        self.assertLess(test_command, threshold_command)
+        self.assertLess(threshold_command, report_command)
+
 
 if __name__ == "__main__":
     unittest.main()

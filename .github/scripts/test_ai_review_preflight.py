@@ -703,6 +703,13 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertEqual(automatic["env"]["OLLAMA_REVIEW_RPM"], "${{ vars.OLLAMA_REVIEW_RPM || '60' }}")
         self.assertEqual(automatic["env"]["OLLAMA_REVIEW_COOLDOWN_SECONDS"], "${{ vars.OLLAMA_REVIEW_COOLDOWN_SECONDS || '0' }}")
         self.assertEqual(automatic["env"]["OLLAMA_REVIEW_BUDGET_SECONDS"], "${{ vars.OLLAMA_REVIEW_BUDGET_SECONDS || '2400' }}")
+        self.assertIn("vars.CLAUDE_CODE_REVIEW_MODEL", automatic["env"]["CLAUDE_CODE_REVIEW_MODEL"])
+        self.assertIn("||", automatic["env"]["CLAUDE_CODE_REVIEW_MODEL"])
+        checkout_line = next(
+            line for line in (root / ".github/workflows/pr-ai-review.yml").read_text().splitlines()
+            if "uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" in line
+        )
+        self.assertIn("# v7", checkout_line)
         direct_review = next(
             step for step in automatic["jobs"]["direct-api-review"]["steps"]
             if step.get("id") == "ai_review"

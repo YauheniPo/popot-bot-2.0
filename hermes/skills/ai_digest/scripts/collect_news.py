@@ -835,8 +835,8 @@ def _collect_searxng(source: dict, source_id: str, now: datetime, fetch, limit: 
     # Only an explicit loopback SearXNG endpoint is allowed to reach the private
     # local service. Search-result URLs and redirects still require public IPs.
     allow_loopback = urlsplit(endpoint).hostname == "127.0.0.1"
-    _public_url(endpoint.rstrip("/") + "/search?q=test&format=json", allow_loopback=allow_loopback)
     url = endpoint.rstrip("/") + "/search?" + urlencode({"q": source["query"], "format": "json"})
+    _public_url(url, allow_loopback=allow_loopback)
     if allow_loopback and getattr(fetch, "supports_loopback_search", False):
         results = json.loads(fetch(url, max_bytes, allow_loopback=True)).get("results", [])
     else:

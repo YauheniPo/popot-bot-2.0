@@ -644,15 +644,22 @@ class CollectNewsTests(unittest.TestCase):
                    b'MachineLearning/comments/abc/new_model/","publishedDate":"2026-09-25T11:00:00Z",'
                    b'"content":"Community discussion about a new model."}]}')
 
-        def fetch(url, _limit):
+        calls = []
+
+        def fetch(url, max_bytes, *, allow_loopback=False):
+            calls.append((url, max_bytes, allow_loopback))
             if "reddit.com/r/MachineLearning/top.json" in url:
                 raise ValueError("HTTP Error 403: Blocked")
             if "/search?" in url:
+                self.assertGreater(max_bytes, 0)
+                self.assertTrue(allow_loopback)
                 return payload
             raise ValueError("article fetch is not needed")
 
-        with patch("collect_news._public_url", return_value=None), patch.dict("os.environ", {
-            "AI_DIGEST_SEARCH_URL": "https://search.example.test", "SEARXNG_URL": "",
+        fetch.supports_loopback_search = True
+
+        with patch.dict("os.environ", {
+            "AI_DIGEST_SEARCH_URL": "http://127.0.0.1:8080", "SEARXNG_URL": "",
         }):
             result = collect(config, now=NOW, fetch=fetch)
         self.assertEqual([item["title"] for item in result["items"]], ["New model discussion"])
@@ -661,6 +668,15 @@ class CollectNewsTests(unittest.TestCase):
         self.assertNotIn("read_issue", result["items"][0])
         self.assertTrue(any(issue["kind"] == "degraded" and "search fallback" in issue["reason"]
                             for issue in result["source_issues"]))
+        self.assertEqual(len(calls), 2)
+        self.assertIn("q=site%3Areddit.com%2Fr%2FMachineLearning", calls[1][0])
+
+    def test_loopback_search_rejects_mixed_dns_results(self):
+        loopback = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", 8080))
+        non_loopback = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("192.0.2.1", 8080))
+        with patch("collect_news.socket.getaddrinfo", return_value=[loopback, non_loopback]):
+            with self.assertRaisesRegex(ValueError, "only to loopback"):
+                _public_url("http://127.0.0.1:8080/search?q=test", allow_loopback=True)
 
     def test_utc_suffix_constant_is_correct(self):
         self.assertEqual(UTC_SUFFIX, "+00:00")

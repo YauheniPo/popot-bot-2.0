@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import importlib.util
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 import time
 import multiprocessing
 import sys
@@ -21,6 +23,7 @@ SPEC = importlib.util.spec_from_file_location("claude_review_runner", MODULE_PAT
 assert SPEC is not None
 assert SPEC.loader is not None
 runner = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = runner
 SPEC.loader.exec_module(runner)
 
 
@@ -47,6 +50,54 @@ class ClaudeReviewRunnerTests(unittest.TestCase):
                         workspace=root, output=root / "out", max_turns=1, attempt_timeout_seconds=1,
                         inactivity_timeout_seconds=1, heartbeat_seconds=1, log=io.StringIO(), allowed_files=set())
             get_context.assert_called_once_with("spawn")
+
+    def test_run_review_completes_end_to_end_with_spawn(self):
+        self.context_patch.stop()
+        responses = [
+            {"content": [{"type": "tool_use", "id": "read-diff", "name": "Read",
+                           "input": {"path": runner.REVIEW_DIFF_PATH}}], "stop_reason": "tool_use"},
+            {"content": [{"type": "text", "text":
+                           '{"summary":"Reviewed diff evidence","findings":[],"thread_verdicts":[]}'}],
+             "stop_reason": "end_turn"},
+        ]
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                response = responses.pop(0)
+                body = json.dumps(response).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, _format, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server_thread.join, 2)
+        self.addCleanup(server.shutdown)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / runner.REVIEW_DIFF_PATH).write_text("-old()\n+new()\n", encoding="utf-8")
+            output = root / "result.json"
+            result = runner.run_review(
+                endpoint=f"http://127.0.0.1:{server.server_port}/v1/messages",
+                api_key="test-key", model="test/model", prompt="Review the changed code.",
+                workspace=root, output=output, allowed_files={runner.REVIEW_DIFF_PATH},
+                max_turns=3, attempt_timeout_seconds=15, inactivity_timeout_seconds=10,
+                heartbeat_seconds=1, log=io.StringIO(),
+            )
+            self.assertEqual(result["turns"], 2)
+            execution = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(execution[-1]["type"], "result")
+            self.assertIn("Reviewed diff evidence", execution[-1]["result"])
+        self.assertEqual(responses, [])
 
     def bounded_worker(self, *, max_turns=4, repeat=False, ignore_final=False, read_diff=True):
         payloads = []

@@ -271,9 +271,10 @@ stages:
                       exit 1
                     fi
                     chmod 600 "$HERMES_TAILSCALE_KEY_FILE"
+                    tailscale_hostname="ado-hermes-$(python3 -c 'import secrets; print(secrets.token_hex(8))')"
                     if ! sudo timeout --kill-after=5s 75s tailscale up \
                       --auth-key="file:${HERMES_TAILSCALE_KEY_FILE}" \
-                      --hostname="$TAILSCALE_HOSTNAME" \
+                      --hostname="$tailscale_hostname" \
                       --advertise-tags=tag:hermes-deploy \
                       --accept-dns=true --accept-routes=false --ssh=false --timeout=60s; then
                       echo '##vso[task.logissue type=error]Tailscale join failed or timed out. Check auth-key expiry, tag ownership, device approval/Tailnet Lock and outbound connectivity. Deploy was not started.'
@@ -285,7 +286,6 @@ stages:
                   timeoutInMinutes: 2
                   env:
                     HERMES_TAILSCALE_KEY_FILE: $(Agent.TempDirectory)/hermes-deploy-secrets/tailscale-auth-key
-                    TAILSCALE_HOSTNAME: ado-hermes-$(Build.BuildId)-$(System.JobAttempt)
 
                 - task: UsePythonVersion@0
                   displayName: Use Python 3.12

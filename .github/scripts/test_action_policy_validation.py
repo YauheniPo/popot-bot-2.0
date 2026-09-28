@@ -52,7 +52,7 @@ class ActionPolicyValidationTests(unittest.TestCase):
             with self.subTest(raw=raw):
                 code, output, request = self.run_validation(raw)
                 self.assertEqual(code, 0)
-                # The workflow now warns but continues with empty allow-list, so it still calls the API
+                # Assert the warning path still checks the tree with an empty allow-list.
                 request.assert_called_once()
                 sent = request.call_args.args[0]
                 self.assertTrue(sent.full_url.endswith("/git/trees/test?recursive=1"))
@@ -65,8 +65,7 @@ class ActionPolicyValidationTests(unittest.TestCase):
             with self.subTest(raw=raw):
                 code, output, request = self.run_validation(raw)
                 self.assertEqual(code, 0)
-                # Invalid JSON or missing variable triggers warning but continues with empty allow-list
-                # The API is still called with empty allow-list (no hard exit)
+                # Invalid or missing configuration still checks the tree with no allowed actions.
                 request.assert_called_once()
                 sent = request.call_args.args[0]
                 self.assertTrue(sent.full_url.endswith("/git/trees/test?recursive=1"))

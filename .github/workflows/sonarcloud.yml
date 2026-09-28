@@ -31,6 +31,7 @@ jobs:
           python -m pip install --requirement hermes/requirements-dev.txt coverage==7.16.0
           mapfile -t hermes_tests < <(find hermes -type f -name 'test_*.py' | sort)
           coverage run --source=hermes --omit='**/test_*.py' -m unittest "${hermes_tests[@]}"
+          coverage report --fail-under=80
           coverage xml -o hermes-coverage.xml
 
       - name: Run review-script tests with coverage

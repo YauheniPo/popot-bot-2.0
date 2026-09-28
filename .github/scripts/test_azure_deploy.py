@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tarfile
@@ -355,23 +356,31 @@ class DeploymentPipelineTests(unittest.TestCase):
 
     def test_join_passes_key_as_file_and_reports_failure_without_leaking_secret(self):
         join = next(s for s in self.deployment_steps() if s.get("name") == "JoinTailnet")
+        self.assertNotIn("TAILSCALE_HOSTNAME", join.get("env", {}))
+        self.assertNotIn("Build.BuildId", join["bash"])
+        self.assertNotIn("System.JobAttempt", join["bash"])
         with tempfile.TemporaryDirectory() as temp:
             key = Path(temp) / "key"
             key.write_text("tskey-auth-TESTSECRET\n")
+            hostnames = []
             for rc in (0, 124, 1):
                 result = subprocess.run(
                     ["bash", "-c", 'sudo() { printf "%s\\n" "$@"; return "$MOCK_RC"; }\n' + join["bash"]],
                     capture_output=True, text=True, check=False,
                     env={**os.environ, "HERMES_TAILSCALE_KEY_FILE": str(key),
-                         "TAILSCALE_HOSTNAME": "ado-hermes-test", "MOCK_RC": str(rc)},
+                         "MOCK_RC": str(rc)},
                 )
                 self.assertEqual(result.returncode == 0, rc == 0, result.stderr)
                 self.assertIn(f"--auth-key=file:{key}", result.stdout)
+                hostname = re.search(r"--hostname=(ado-hermes-[0-9a-f]{16})", result.stdout)
+                self.assertIsNotNone(hostname)
+                hostnames.append(hostname.group(1))
                 self.assertIn("--advertise-tags=tag:hermes-deploy", result.stdout)
                 self.assertIn("--ssh=false", result.stdout)
                 self.assertNotIn("TESTSECRET", result.stdout + result.stderr)
                 if rc:
                     self.assertIn("task.logissue type=error", result.stdout)
+            self.assertEqual(len(hostnames), len(set(hostnames)))
 
     def test_join_rejects_empty_key_without_invoking_sudo(self):
         join = next(s for s in self.deployment_steps() if s.get("name") == "JoinTailnet")
@@ -382,7 +391,7 @@ class DeploymentPipelineTests(unittest.TestCase):
                 ["bash", "-c", 'sudo() { echo UNEXPECTED_SUDO; }\n' + join["bash"]],
                 capture_output=True, text=True, check=False,
                 env={**os.environ, "HERMES_TAILSCALE_KEY_FILE": str(key),
-                     "TAILSCALE_HOSTNAME": "ado-hermes-test"},
+                     },
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn("UNEXPECTED_SUDO", result.stdout)
