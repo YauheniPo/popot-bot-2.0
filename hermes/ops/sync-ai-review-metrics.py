@@ -23,7 +23,7 @@ from typing import Any
 
 try:
     import urllib.request
-except ImportError:
+except ImportError:  # pragma: no cover - urllib.request always exists in Python 3
     pass
 
 GITHUB_REPO = "YauheniPo/popot-bot-2.0"
@@ -158,5 +158,5 @@ def main(args: list[str] | None = None) -> int:
     return _run_list_mode()
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover - entry point
     sys.exit(main())
