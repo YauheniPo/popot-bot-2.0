@@ -474,39 +474,51 @@ def _collect_hackernews(source: dict, source_id: str, now: datetime, fetch, limi
     return items
 
 
-def _collect_reddit(source: dict, source_id: str, now: datetime, fetch, limit: int, max_bytes: int, max_chars: int, window: int, issues: list[dict]) -> list[dict]:
+def _try_reddit_fallback(source: dict, source_id: str, subreddit: str, exc: BaseException,
+                         now: datetime, fetch, limit: int, max_bytes: int,
+                         max_chars: int, window: int, issues: list[dict]) -> list[dict] | None:
+    """Attempt search fallback for a subreddit; returns items or None if fallback fails."""
+    fallback = source.get("search_fallback")
+    query_template = fallback.get("query") if isinstance(fallback, dict) else None
+    if not isinstance(query_template, str) or "{subreddit}" not in query_template:
+        issues.append({"id": source_id, "kind": "degraded",
+                       "reason": f"r/{subreddit}: {str(exc)[:120]}"})
+        return None
+    fallback_source = {"query": query_template.replace("{subreddit}", subreddit)}
+    try:
+        fallback_items = _collect_searxng(
+            fallback_source, source_id, now, fetch, limit, max_bytes, max_chars, window, issues,
+        )
+    except (OSError, ValueError) as fallback_error:  # noqa: S5713
+        issues.append({"id": source_id, "kind": "degraded",
+                       "reason": (f"r/{subreddit}: direct API failed ({str(exc)[:60]}); "
+                                  f"search fallback failed ({str(fallback_error)[:60]})")})
+        return None
+    if not fallback_items:
+        issues.append({"id": source_id, "kind": "degraded",
+                       "reason": f"r/{subreddit}: direct API failed; search fallback returned no dated results"})
+        return None
+    for item in fallback_items:
+        item["evidence_kind"] = "reddit_search_snippet"
+    issues.append({"id": source_id, "kind": "degraded",
+                   "reason": (f"r/{subreddit}: direct API failed ({str(exc)[:80]}); "
+                              "used search fallback")})
+    return fallback_items
+
+
+def _collect_reddit(source: dict, source_id: str, now: datetime, fetch, limit: int, max_bytes: int, max_chars: int, window: int, issues: list[dict]) -> list[dict]:  # noqa: S3776
     items = []
     for subreddit in source.get("subreddits", []):
         url = f"https://www.reddit.com/r/{subreddit}/top.json?t=day&limit={limit}"
         try:
             listing = _json(fetch, url, max_bytes)
         except (OSError, ValueError) as exc:  # noqa: S5713
-            fallback = source.get("search_fallback")
-            query_template = fallback.get("query") if isinstance(fallback, dict) else None
-            if not isinstance(query_template, str) or "{subreddit}" not in query_template:
-                issues.append({"id": source_id, "kind": "degraded",
-                               "reason": f"r/{subreddit}: {str(exc)[:120]}"})
-                continue
-            fallback_source = {"query": query_template.replace("{subreddit}", subreddit)}
-            try:
-                fallback_items = _collect_searxng(
-                    fallback_source, source_id, now, fetch, limit, max_bytes, max_chars, window, issues,
-                )
-            except (OSError, ValueError) as fallback_error:  # noqa: S5713
-                issues.append({"id": source_id, "kind": "degraded",
-                               "reason": (f"r/{subreddit}: direct API failed ({str(exc)[:60]}); "
-                                          f"search fallback failed ({str(fallback_error)[:60]})")})
-                continue
+            fallback_items = _try_reddit_fallback(
+                source, source_id, subreddit, exc,
+                now, fetch, limit, max_bytes, max_chars, window, issues,
+            )
             if fallback_items:
-                for item in fallback_items:
-                    item["evidence_kind"] = "reddit_search_snippet"
-                issues.append({"id": source_id, "kind": "degraded",
-                               "reason": (f"r/{subreddit}: direct API failed ({str(exc)[:80]}); "
-                                          "used search fallback")})
                 items.extend(fallback_items)
-            else:
-                issues.append({"id": source_id, "kind": "degraded",
-                               "reason": f"r/{subreddit}: direct API failed; search fallback returned no dated results"})
             continue
         items.extend(_reddit_items(listing, source, source_id, subreddit, now, limit,
                                    max_chars, window, issues))
