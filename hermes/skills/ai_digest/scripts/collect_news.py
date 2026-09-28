@@ -86,7 +86,7 @@ def _public_url(url: str, *, allow_loopback: bool = False) -> None:
     _public_addresses(url, allow_loopback=allow_loopback)
 
 
-def _public_addresses(url: str, *, allow_loopback: bool = False) -> list[tuple]:
+def _public_addresses(url: str, *, allow_loopback: bool = False) -> list[tuple]:  # noqa: S3776
     parsed = urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username:
         raise ValueError("unsafe source URL")
@@ -528,7 +528,7 @@ def _reddit_items(listing: dict, source: dict, source_id: str, subreddit: str,
 
 def _reddit_item(post: dict, source: dict, source_id: str, subreddit: str,
                  now: datetime, max_chars: int, window: int,
-                 issues: list[dict]) -> dict | None:
+                 issues: list[dict]) -> dict | None:  # noqa: S3776
     created_utc = post.get("created_utc")
     if not isinstance(created_utc, (int, float)) or created_utc <= 0:
         issues.append({"id": source_id, "kind": "degraded",
@@ -1069,9 +1069,11 @@ def _read_article(item: dict, defaults: dict, fetch) -> None:
         item["read_issue"] = str(exc)[:120]
 
 
-def collect(config: dict, *, now: datetime | None = None, fetch=http_fetch,
+def collect(config: dict, *, now: datetime | None = None, fetch=None,
             window_hours: int | None = None, limit: int | None = None, topic: str = "",
             mode: str = "daily") -> dict:  # noqa: S3776
+    if fetch is None:
+        fetch = http_fetch
     if config.get("version") != 1 or not isinstance(config.get("sources"), list):
         raise ValueError("invalid sources.json schema")
     if mode not in {"daily", "weekly"}:

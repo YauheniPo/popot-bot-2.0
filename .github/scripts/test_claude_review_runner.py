@@ -42,14 +42,16 @@ class ClaudeReviewRunnerTests(unittest.TestCase):
     def test_run_review_uses_spawn_context(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            with mock.patch.object(
-                runner.multiprocessing, "get_context", side_effect=AssertionError("context selected")
-            ) as get_context:
+            get_context_mock = mock.Mock(side_effect=AssertionError("context selected"))
+            with mock.patch.object(runner.multiprocessing, "get_context", get_context_mock):
                 with self.assertRaisesRegex(AssertionError, "context selected"):
-                    runner.run_review(endpoint="https://example.test", api_key="key", model="m", prompt="p",
-                        workspace=root, output=root / "out", max_turns=1, attempt_timeout_seconds=1,
-                        inactivity_timeout_seconds=1, heartbeat_seconds=1, log=io.StringIO(), allowed_files=set())
-            get_context.assert_called_once_with("spawn")
+                    runner.run_review(
+                        endpoint="https://example.test", api_key="key", model="m", prompt="p",
+                        workspace=root, output=root / "out", max_turns=1,
+                        attempt_timeout_seconds=1, inactivity_timeout_seconds=1,
+                        heartbeat_seconds=1, log=io.StringIO(), allowed_files=set()
+                    )
+            get_context_mock.assert_called_once_with("spawn")
 
     def test_run_review_completes_end_to_end_with_spawn(self):
         self.context_patch.stop()
