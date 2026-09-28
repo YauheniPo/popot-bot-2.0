@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from collect_news import (GITHUB_API_URL, _collect_curated_readme, _deduplicate, _public_url, _Text, _date,
                            _trending_articles, _trending_stars_today, canonical_url,
                            _connect_resolved, _pinned_connection_class, _SafeHTTPSHandler,
-                           collect, parse_rss, UTC_SUFFIX, http_fetch)  # noqa: E402
+                           collect, parse_rss, UTC_SUFFIX, http_fetch, _try_reddit_fallback)  # noqa: E402
 
 
 NOW = datetime(2026, 9, 25, 12, tzinfo=timezone.utc)
@@ -606,6 +606,17 @@ class CollectNewsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _public_url("http://192.168.1.5:8888/search?q=test", allow_loopback=True)
 
+    def test_public_url_loopback_dns_resolution_fails(self):
+        with patch("collect_news.socket.getaddrinfo", side_effect=OSError("dns failed")):
+            with self.assertRaisesRegex(ValueError, "local search host could not be resolved"):
+                _public_url("http://127.0.0.1:8888/search?q=test", allow_loopback=True)
+
+    def test_public_url_loopback_dns_returns_non_loopback(self):
+        non_loopback = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("192.0.2.1", 8080))
+        with patch("collect_news.socket.getaddrinfo", return_value=[non_loopback]):
+            with self.assertRaisesRegex(ValueError, "only to loopback"):
+                _public_url("http://127.0.0.1:8888/search?q=test", allow_loopback=True)
+
     def test_default_collector_uses_configured_loopback_searxng(self):
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
@@ -677,6 +688,34 @@ class CollectNewsTests(unittest.TestCase):
         with patch("collect_news.socket.getaddrinfo", return_value=[loopback, non_loopback]):
             with self.assertRaisesRegex(ValueError, "only to loopback"):
                 _public_url("http://127.0.0.1:8080/search?q=test", allow_loopback=True)
+
+    def test_public_url_allows_loopback_when_all_addresses_are_loopback(self):
+        loopback1 = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", 8080))
+        loopback2 = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", 8081))
+        with patch("collect_news.socket.getaddrinfo", return_value=[loopback1, loopback2]):
+            self.assertIsNone(_public_url("http://127.0.0.1:8080/search?q=test", allow_loopback=True))
+
+    def test_try_reddit_fallback_handles_collect_searxng_failure(self):
+        issues = []
+        with patch("collect_news._collect_searxng", side_effect=ValueError("searxng failed")):
+            result = _try_reddit_fallback(
+                {"search_fallback": {"query": "site:reddit.com/r/{subreddit}"}},
+                "test_source", "MachineLearning", ValueError("reddit blocked"),
+                NOW, lambda *a, **k: b"", 1, 1000, 100, 24, issues,
+            )
+        self.assertIsNone(result)
+        self.assertTrue(any(i["kind"] == "degraded" and "search fallback failed" in i["reason"] for i in issues))
+
+    def test_try_reddit_fallback_handles_empty_searxng_results(self):
+        issues = []
+        with patch("collect_news._collect_searxng", return_value=[]):
+            result = _try_reddit_fallback(
+                {"search_fallback": {"query": "site:reddit.com/r/{subreddit}"}},
+                "test_source", "MachineLearning", ValueError("reddit blocked"),
+                NOW, lambda *a, **k: b"", 1, 1000, 100, 24, issues,
+            )
+        self.assertIsNone(result)
+        self.assertTrue(any(i["kind"] == "degraded" and "search fallback returned no dated results" in i["reason"] for i in issues))
 
     def test_utc_suffix_constant_is_correct(self):
         self.assertEqual(UTC_SUFFIX, "+00:00")
