@@ -63,13 +63,13 @@ def get_last_5_prs() -> list[dict[str, Any]]:
 def import_pr_reviews(pr_number: int) -> bool:
     """Import review metrics for a single PR. Returns True on success."""
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S8705
             ["python3", EXTRACTOR, "--pr", str(pr_number)],
             capture_output=True,
             text=True,
             timeout=120,
             env={**os.environ, "GITHUB_TOKEN": GITHUB_TOKEN},
-        )  # noqa: S8705
+        )
         if result.returncode == 0:
             print(f"  PR #{pr_number}: OK — {result.stdout.strip()}")
             return True
@@ -82,6 +82,46 @@ def import_pr_reviews(pr_number: int) -> bool:
     except Exception as e:
         print(f"  PR #{pr_number}: ERROR — {e}")
         return False
+
+
+def _run_single_pr_mode(parsed) -> int:
+    """Run single PR import mode."""
+    success = import_pr_reviews(parsed.pr)
+    return 0 if success else 1
+
+
+def _run_list_mode() -> int:
+    """Run list mode: fetch PRs and import review metrics."""
+    global GITHUB_TOKEN
+
+    if not GITHUB_TOKEN:
+        print("ERROR: No GITHUB_TOKEN available", file=sys.stderr)
+        return 1
+
+    prs = get_last_5_prs()
+    if not prs:
+        print("No PRs found or failed to fetch.")
+        return 1
+
+    print(f"\nFound {len(prs)} PRs to process:")
+    for pr in prs:
+        print(f"  PR #{pr['number']}: {pr['title'][:60]}...")
+
+    print("\nImporting review metrics...")
+    ok = 0
+    fail = 0
+    for pr in prs:
+        success = import_pr_reviews(pr["number"])
+        if success:
+            ok += 1
+        else:
+            fail += 1
+
+    print(f"\n{'=' * 60}")
+    print(f"Done: {ok} succeeded, {fail} failed out of {len(prs)} PRs")
+    print(f"{'=' * 60}")
+
+    return 0 if fail == 0 else 1
 
 
 def main(args: list[str] | None = None) -> int:
@@ -113,37 +153,9 @@ def main(args: list[str] | None = None) -> int:
             pass
 
     if parsed.pr:
-        success = import_pr_reviews(parsed.pr)
-        return 0 if success else 1
+        return _run_single_pr_mode(parsed)
 
-    if not GITHUB_TOKEN:
-        print("ERROR: No GITHUB_TOKEN available", file=sys.stderr)
-        return 1
-
-    prs = get_last_5_prs()
-    if not prs:
-        print("No PRs found or failed to fetch.")
-        return 1
-
-    print(f"\nFound {len(prs)} PRs to process:")
-    for pr in prs:
-        print(f"  PR #{pr['number']}: {pr['title'][:60]}...")
-
-    print("\nImporting review metrics...")
-    ok = 0
-    fail = 0
-    for pr in prs:
-        success = import_pr_reviews(pr["number"])
-        if success:
-            ok += 1
-        else:
-            fail += 1
-
-    print(f"\n{'=' * 60}")
-    print(f"Done: {ok} succeeded, {fail} failed out of {len(prs)} PRs")
-    print(f"{'=' * 60}")
-
-    return 0 if fail == 0 else 1
+    return _run_list_mode()
 
 
 if __name__ == "__main__":

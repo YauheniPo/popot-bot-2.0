@@ -665,3 +665,48 @@ class SyncAiReviewMetricsTests(unittest.TestCase):
             self.mod.subprocess.run = original_gh
             self.mod.get_last_5_prs = original_get
             self.mod.import_pr_reviews = original_import
+
+    def test_main_gh_cli_fails_returns_error(self):
+        """main returns 1 when gh CLI fails and no token."""
+        original_token = self.mod.GITHUB_TOKEN
+        original_gh = self.mod.subprocess.run
+
+        self.mod.GITHUB_TOKEN = ""
+
+        def mock_run(cmd, **kwargs):
+            if cmd[0] == "gh":
+                mock = unittest.mock.MagicMock()
+                mock.returncode = 1
+                mock.stdout = ""
+                return mock
+            return original_run(cmd, **kwargs)
+
+        self.mod.subprocess.run = mock_run
+
+        try:
+            exit_code = self.mod.main([])
+            self.assertEqual(exit_code, 1)
+        finally:
+            self.mod.GITHUB_TOKEN = original_token
+            self.mod.subprocess.run = original_gh
+
+    def test_main_gh_cli_raises_exception(self):
+        """main handles exception from gh CLI gracefully."""
+        original_token = self.mod.GITHUB_TOKEN
+        original_gh = self.mod.subprocess.run
+
+        self.mod.GITHUB_TOKEN = ""
+
+        def mock_run(cmd, **kwargs):
+            if cmd[0] == "gh":
+                raise FileNotFoundError("gh not found")
+            return original_run(cmd, **kwargs)
+
+        self.mod.subprocess.run = mock_run
+
+        try:
+            exit_code = self.mod.main([])
+            self.assertEqual(exit_code, 1)
+        finally:
+            self.mod.GITHUB_TOKEN = original_token
+            self.mod.subprocess.run = original_gh
