@@ -73,7 +73,7 @@ jobs:
               blob = api(f"/repos/{repository}/git/blobs/{sha}")
               text = base64.b64decode(blob["content"]).decode("utf-8")
               references.update(re.findall(
-                  r"^\s*uses:\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[^\s#]+)",
+                  r"^\s*-?\s*uses:\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[^\s#]+)",
                   text,
                   flags=re.MULTILINE,
               ))

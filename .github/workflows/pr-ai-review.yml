@@ -56,10 +56,20 @@ jobs:
       issues: write
       pull-requests: write
     steps:
+      - name: Validate pull request head SHA
+        shell: bash
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Pull request head SHA must be a full commit SHA."
+            exit 1
+          fi
       # Checkout before the composite action — it references local
       # scripts via ${{ github.action_path }}.
-      # The ref is a trusted Git SHA from the pull_request event
-      # (not raw user text), so ref injection is not possible.
+      # The job is restricted to same-repository PRs authored and triggered by
+      # the repository owner, and the event SHA is validated above.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.event.pull_request.head.sha }}

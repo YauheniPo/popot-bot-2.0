@@ -147,6 +147,13 @@ class OllamaReviewTest(unittest.TestCase):
         direct_job = workflow["jobs"]["direct-api-review"]
         self.assertIn("steps", direct_job)
         self.assertNotIn("uses", direct_job)
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", direct_job["if"])
+        self.assertIn("github.event.pull_request.user.login == github.repository_owner", direct_job["if"])
+        sha_check = next(step for step in direct_job["steps"] if step.get("name") == "Validate pull request head SHA")
+        self.assertEqual(sha_check["env"]["HEAD_SHA"], "${{ github.event.pull_request.head.sha }}")
+        self.assertIn("^[0-9a-f]{40}$", sha_check["run"])
+        checkout_index = next(i for i, step in enumerate(direct_job["steps"]) if step.get("uses", "").startswith("actions/checkout@"))
+        self.assertLess(direct_job["steps"].index(sha_check), checkout_index)
         direct_job_text = (root / ".github/workflows/pr-ai-review.yml").read_text().split("  direct-api-review:\n", 1)[1].split("\n  # Preserve the existing job id", 1)[0]
         self.assertEqual(direct_job_text.count("\n    steps:\n"), 1)
         self.assertNotIn("\n    secrets:\n", direct_job_text)
@@ -620,6 +627,9 @@ class OllamaReviewTest(unittest.TestCase):
             if step.get("id") == "claude_models"
         )
         self.assertEqual(step["env"].get("DIRECT_REVIEW_FALLBACK_MODEL"), "${{ env.CLAUDE_REVIEW_FALLBACK_MODEL }}")
+        self.assertEqual(step["env"].get("DIRECT_REVIEW_PROVIDER"), "${{ env.CLAUDE_REVIEW_PROVIDER }}")
+        for key in ("OLLAMA_API_KEY", "OPENROUTER_API_KEY", "NVIDIA_API_KEY", "NOUS_API_KEY"):
+            self.assertIn(key, step["env"])
 
     def test_ai_review_action_policy_check_is_independent_of_claude_action(self):
         root = Path(__file__).resolve().parents[2]

@@ -82,15 +82,26 @@ def canonical_url(url: str) -> str:
     return urlunsplit((parsed.scheme, netloc, parsed.path.rstrip("/") or "/", query, ""))
 
 
-def _public_url(url: str) -> None:
-    _public_addresses(url)
+def _public_url(url: str, *, allow_loopback: bool = False) -> None:
+    _public_addresses(url, allow_loopback=allow_loopback)
 
 
-def _public_addresses(url: str) -> list[tuple]:
+def _public_addresses(url: str, *, allow_loopback: bool = False) -> list[tuple]:
     parsed = urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username:
         raise ValueError("unsafe source URL")
     host = parsed.hostname.lower()
+    if allow_loopback and host == "127.0.0.1":
+        try:
+            addresses = socket.getaddrinfo(
+                host, parsed.port or (443 if parsed.scheme == "https" else 80),
+                type=socket.SOCK_STREAM,
+            )
+        except OSError as exc:
+            raise ValueError("local search host could not be resolved") from exc
+        if not addresses or any(not ipaddress.ip_address(row[4][0]).is_loopback for row in addresses):
+            raise ValueError("local search host did not resolve only to loopback")
+        return addresses
     if host in {"localhost", "localhost.localdomain", "127.0.0.1"} or host.endswith((".local", ".internal")):
         raise ValueError("private source URL")
     try:
@@ -121,8 +132,8 @@ def _connect_resolved(addresses: list[tuple], timeout: float) -> socket.socket:
     raise OSError("no resolved source addresses")
 
 
-def _pinned_connection_class(connection_type, url: str):
-    addresses = _public_addresses(url)
+def _pinned_connection_class(connection_type, url: str, *, allow_loopback: bool = False):
+    addresses = _public_addresses(url, allow_loopback=allow_loopback)
 
     class PinnedConnection(connection_type):
         def connect(self):
@@ -140,14 +151,26 @@ def _pinned_connection_class(connection_type, url: str):
 
 
 class _SafeHTTPHandler(HTTPHandler):
+    def __init__(self, *, allow_loopback: bool = False):
+        super().__init__()
+        self.allow_loopback = allow_loopback
+
     def http_open(self, req):
-        connection_type = _pinned_connection_class(http.client.HTTPConnection, req.full_url)
+        connection_type = _pinned_connection_class(
+            http.client.HTTPConnection, req.full_url, allow_loopback=self.allow_loopback,
+        )
         return self.do_open(connection_type, req)
 
 
 class _SafeHTTPSHandler(HTTPSHandler):
+    def __init__(self, *, allow_loopback: bool = False):
+        super().__init__()
+        self.allow_loopback = allow_loopback
+
     def https_open(self, req):
-        connection_type = _pinned_connection_class(http.client.HTTPSConnection, req.full_url)
+        connection_type = _pinned_connection_class(
+            http.client.HTTPSConnection, req.full_url, allow_loopback=self.allow_loopback,
+        )
         return self.do_open(connection_type, req, context=self._context,
                             check_hostname=getattr(self, "_check_hostname", None))
 
@@ -158,9 +181,10 @@ class _SafeRedirect(HTTPRedirectHandler):
         return super().redirect_request(request, fp, code, msg, headers, newurl)
 
 
-def http_fetch(url: str, max_bytes: int, timeout: int = 12) -> bytes:
-    _public_url(url)
-    opener = build_opener(ProxyHandler({}), _SafeHTTPHandler(), _SafeHTTPSHandler(), _SafeRedirect())
+def http_fetch(url: str, max_bytes: int, timeout: int = 12, *, allow_loopback: bool = False) -> bytes:
+    _public_url(url, allow_loopback=allow_loopback)
+    opener = build_opener(ProxyHandler({}), _SafeHTTPHandler(allow_loopback=allow_loopback),
+                          _SafeHTTPSHandler(allow_loopback=allow_loopback), _SafeRedirect())
     request = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json, application/xml, text/xml, text/html, */*"})
     with opener.open(request, timeout=timeout) as response:
         data = response.read(max_bytes + 1)
@@ -457,8 +481,32 @@ def _collect_reddit(source: dict, source_id: str, now: datetime, fetch, limit: i
         try:
             listing = _json(fetch, url, max_bytes)
         except (OSError, ValueError) as exc:  # noqa: S5713
-            issues.append({"id": source_id, "kind": "degraded",
-                           "reason": f"r/{subreddit}: {str(exc)[:120]}"})
+            fallback = source.get("search_fallback")
+            query_template = fallback.get("query") if isinstance(fallback, dict) else None
+            if not isinstance(query_template, str) or "{subreddit}" not in query_template:
+                issues.append({"id": source_id, "kind": "degraded",
+                               "reason": f"r/{subreddit}: {str(exc)[:120]}"})
+                continue
+            fallback_source = {"query": query_template.replace("{subreddit}", subreddit)}
+            try:
+                fallback_items = _collect_searxng(
+                    fallback_source, source_id, now, fetch, limit, max_bytes, max_chars, window, issues,
+                )
+            except (OSError, ValueError) as fallback_error:  # noqa: S5713
+                issues.append({"id": source_id, "kind": "degraded",
+                               "reason": (f"r/{subreddit}: direct API failed ({str(exc)[:60]}); "
+                                          f"search fallback failed ({str(fallback_error)[:60]})")})
+                continue
+            if fallback_items:
+                for item in fallback_items:
+                    item["evidence_kind"] = "reddit_search_snippet"
+                issues.append({"id": source_id, "kind": "degraded",
+                               "reason": (f"r/{subreddit}: direct API failed ({str(exc)[:80]}); "
+                                          "used search fallback")})
+                items.extend(fallback_items)
+            else:
+                issues.append({"id": source_id, "kind": "degraded",
+                               "reason": f"r/{subreddit}: direct API failed; search fallback returned no dated results"})
             continue
         items.extend(_reddit_items(listing, source, source_id, subreddit, now, limit,
                                    max_chars, window, issues))
@@ -784,10 +832,16 @@ def _collect_searxng(source: dict, source_id: str, now: datetime, fetch, limit: 
     if not endpoint:
         issues.append({"id": source_id, "kind": "unavailable", "reason": "search endpoint is not configured"})
         return items
-    # Validate the configured endpoint once (it's deployment-controlled, not user-supplied)
-    _public_url(endpoint.rstrip("/") + "/search?q=test&format=json")
+    # Only an explicit loopback SearXNG endpoint is allowed to reach the private
+    # local service. Search-result URLs and redirects still require public IPs.
+    allow_loopback = urlsplit(endpoint).hostname == "127.0.0.1"
+    _public_url(endpoint.rstrip("/") + "/search?q=test&format=json", allow_loopback=allow_loopback)
     url = endpoint.rstrip("/") + "/search?" + urlencode({"q": source["query"], "format": "json"})
-    for result in _json(fetch, url, max_bytes).get("results", [])[:limit]:
+    if allow_loopback and getattr(fetch, "supports_loopback_search", False):
+        results = json.loads(fetch(url, max_bytes, allow_loopback=True)).get("results", [])
+    else:
+        results = _json(fetch, url, max_bytes).get("results", [])
+    for result in results[:limit]:
         item = _item(result.get("title", ""), result.get("url", ""),
                      _date(result.get("publishedDate") or result.get("published_at")),
                      result.get("content", ""), source_id, now, window, max_chars)
@@ -997,7 +1051,7 @@ def _fetch_reddit_comments(item: dict, reddit_id: str, max_comments: int, fetch)
 
 def _read_article(item: dict, defaults: dict, fetch) -> None:
     if (item["full_text_available"] or item.get("evidence_kind") in
-            {"abstract", "benchmark_result", "model_metadata", "show_notes"}
+            {"abstract", "benchmark_result", "model_metadata", "show_notes", "reddit_search_snippet"}
             or item["url"].startswith("https://github.com/")):
         return
     try:
@@ -1032,8 +1086,9 @@ def collect(config: dict, *, now: datetime | None = None, fetch=http_fetch,
     if not 1 <= defaults["window_hours"] <= 720 or not 1 <= limit <= 20 or not 1 <= timeout <= 30:
         raise ValueError("window or limit outside supported range")
     if fetch is http_fetch:
-        def fetch(url: str, max_bytes: int) -> bytes:
-            return http_fetch(url, max_bytes, timeout=timeout)
+        def fetch(url: str, max_bytes: int, *, allow_loopback: bool = False) -> bytes:
+            return http_fetch(url, max_bytes, timeout=timeout, allow_loopback=allow_loopback)
+        fetch.supports_loopback_search = True
     sources = [source for source in config["sources"] if mode in source.get("modes", ["daily"])]
     raw, issues = _collect_sources(sources, defaults, now, fetch)
     in_window = len(raw)

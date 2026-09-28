@@ -25,6 +25,29 @@ SPEC.loader.exec_module(runner)
 
 
 class ClaudeReviewRunnerTests(unittest.TestCase):
+    def setUp(self):
+        # Existing worker integration tests patch request_message in-process;
+        # keep those unit fixtures on fork while checking spawn selection below.
+        get_context = multiprocessing.get_context
+        self.context_patch = mock.patch.object(
+            runner.multiprocessing, "get_context",
+            side_effect=lambda _method=None: get_context("fork"),
+        )
+        self.context_patch.start()
+        self.addCleanup(self.context_patch.stop)
+
+    def test_run_review_uses_spawn_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(
+                runner.multiprocessing, "get_context", side_effect=AssertionError("context selected")
+            ) as get_context:
+                with self.assertRaisesRegex(AssertionError, "context selected"):
+                    runner.run_review(endpoint="https://example.test", api_key="key", model="m", prompt="p",
+                        workspace=root, output=root / "out", max_turns=1, attempt_timeout_seconds=1,
+                        inactivity_timeout_seconds=1, heartbeat_seconds=1, log=io.StringIO(), allowed_files=set())
+            get_context.assert_called_once_with("spawn")
+
     def bounded_worker(self, *, max_turns=4, repeat=False, ignore_final=False, read_diff=True):
         payloads = []
         final = '{"summary":"Checked available evidence","findings":[],"thread_verdicts":[]}'

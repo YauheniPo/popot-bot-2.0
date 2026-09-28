@@ -227,6 +227,12 @@ class StreamTest(unittest.TestCase):
         self.assertIn("provider_processing=unknown", log.getvalue())
         self.assertIn('"outcome": "inactivity_timeout"', log.getvalue())
 
+        # Once the context has unwound, a new request can install its own watchdog.
+        next_log = io.StringIO()
+        with stream.watchdog(total=1, idle=1, heartbeat=1, log=next_log):
+            pass
+        self.assertIn('"outcome": "received"', next_log.getvalue())
+
     def test_total_deadline_wins_even_when_provider_keeps_thinking(self):
         log = io.StringIO()
         watchdog = stream.watchdog(total=.08, idle=1, heartbeat=.02, log=log)

@@ -149,6 +149,7 @@ class CollectNewsTests(unittest.TestCase):
                          "the-batch", "latent-space", "dwarkesh", "swebench"}, by_id.keys())
         self.assertIn("weekly", by_id["swebench"]["modes"])
         self.assertNotIn("daily", by_id["swebench"]["modes"])
+        self.assertIn("{subreddit}", by_id["reddit"]["search_fallback"]["query"])
         self.assertEqual(by_id["awesomeosai"]["repository"], "alvinreal/awesome-opensource-ai")
         self.assertEqual(by_id["awesome-jev"]["repository"], "MrJev/awesome-jev")
 
@@ -598,6 +599,69 @@ class CollectNewsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _public_url("http://localhost:8080/search")
 
+    def test_public_url_allows_only_explicit_loopback_opt_in(self):
+        self.assertIsNone(_public_url("http://127.0.0.1:8888/search?q=test", allow_loopback=True))
+        with self.assertRaises(ValueError):
+            _public_url("http://localhost:8888/search?q=test", allow_loopback=True)
+        with self.assertRaises(ValueError):
+            _public_url("http://192.168.1.5:8888/search?q=test", allow_loopback=True)
+
+    def test_default_collector_uses_configured_loopback_searxng(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = (b'{"results":[{"title":"AI release","url":"https://vendor.test/release",'
+                        b'"publishedDate":"2026-09-25T11:00:00Z","content":"Release details"}]}')
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, _format, *_args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 1},
+                  "sources": [{"id": "social", "type": "searxng", "query": "AI"}]}
+        try:
+            with patch.dict("os.environ", {
+                "AI_DIGEST_SEARCH_URL": f"http://127.0.0.1:{server.server_port}", "SEARXNG_URL": "",
+            }):
+                result = collect(config, now=NOW)
+            self.assertEqual([item["title"] for item in result["items"]], ["AI release"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=2)
+
+    def test_reddit_uses_search_fallback_after_direct_api_is_blocked(self):
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 3},
+                  "sources": [{"id": "reddit", "type": "reddit", "subreddits": ["MachineLearning"],
+                               "search_fallback": {"query": "site:reddit.com/r/{subreddit}"}}]}
+        payload = (b'{"results":[{"title":"New model discussion","url":"https://www.reddit.com/r/'
+                   b'MachineLearning/comments/abc/new_model/","publishedDate":"2026-09-25T11:00:00Z",'
+                   b'"content":"Community discussion about a new model."}]}')
+
+        def fetch(url, _limit):
+            if "reddit.com/r/MachineLearning/top.json" in url:
+                raise ValueError("HTTP Error 403: Blocked")
+            if "/search?" in url:
+                return payload
+            raise ValueError("article fetch is not needed")
+
+        with patch("collect_news._public_url", return_value=None), patch.dict("os.environ", {
+            "AI_DIGEST_SEARCH_URL": "https://search.example.test", "SEARXNG_URL": "",
+        }):
+            result = collect(config, now=NOW, fetch=fetch)
+        self.assertEqual([item["title"] for item in result["items"]], ["New model discussion"])
+        self.assertIn("reddit", result["items"][0]["source_ids"])
+        self.assertEqual(result["items"][0]["evidence_kind"], "reddit_search_snippet")
+        self.assertNotIn("read_issue", result["items"][0])
+        self.assertTrue(any(issue["kind"] == "degraded" and "search fallback" in issue["reason"]
+                            for issue in result["source_issues"]))
+
     def test_utc_suffix_constant_is_correct(self):
         self.assertEqual(UTC_SUFFIX, "+00:00")
 
@@ -936,7 +1000,7 @@ class CollectNewsTests(unittest.TestCase):
         with patch("collect_news._pinned_connection_class", return_value=connection_type) as factory:
             with patch.object(handler, "do_open", return_value=MagicMock()) as do_open:
                 handler.https_open(request)
-        factory.assert_called_once_with(http.client.HTTPSConnection, request.full_url)
+        factory.assert_called_once_with(http.client.HTTPSConnection, request.full_url, allow_loopback=False)
         self.assertIs(do_open.call_args.args[0], connection_type)
 
     def test_safe_redirect_validates_newurl(self):

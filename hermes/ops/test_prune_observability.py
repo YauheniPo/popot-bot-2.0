@@ -29,7 +29,8 @@ def create_schema(root: Path) -> Path:
         "ops_observability",
         Path(__file__).with_name("plugin") / "ops-observability" / "__init__.py",
     )
-    assert spec is not None and spec.loader is not None
+    assert spec is not None
+    assert spec.loader is not None
     ops_observability = importlib.util.module_from_spec(spec)
     # Register in sys.modules so relative imports (.storage) resolve
     sys.modules["ops_observability"] = ops_observability
