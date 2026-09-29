@@ -1084,6 +1084,171 @@ _PATCHES.extend([
     ),
 ])
 
+_PATCHES.extend([
+    (
+        "cron/scheduler_delivery.py", _PREFIX + " digest feedback loader",
+        '''    from gateway.config import load_gateway_config
+
+    # Wrap with header/footer unless cron.wrap_response: false.
+''',
+        '''    # Local Hermes: digest feedback loader
+    digest_marker_seen = "NEWS_CARDS:" in content
+    digest_feedback = None
+    digest_cards_path = None
+    if digest_marker_seen:
+        import importlib.util
+        from pathlib import Path
+        skill_dir = os.environ.get("AI_DIGEST_SKILL_DIR", "")
+        if skill_dir:
+            spec = importlib.util.spec_from_file_location(
+                "ai_digest_feedback", Path(skill_dir) / "scripts" / "feedback.py")
+            if spec is not None and spec.loader is not None:
+                digest_feedback = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(digest_feedback)
+                state_dir = Path(os.environ.get("AI_DIGEST_STATE_DIR", "~/.hermes/ops/news")).expanduser()
+                content, digest_cards_path = digest_feedback.extract_cards_marker(content, job, state_dir)
+        if digest_feedback is None:
+            content = "\\n".join(line for line in content.splitlines()
+                                if not line.startswith("NEWS_CARDS:"))
+
+    from gateway.config import load_gateway_config
+
+    # Wrap with header/footer unless cron.wrap_response: false.
+''',
+    ),
+    (
+        "cron/scheduler_delivery.py", _PREFIX + " digest card prerequisites",
+        '''    delivery_errors = []
+    suppressed_targets = 0  # local: `job` is snapshotted into durable deferred records mid-loop
+''',
+        '''    delivery_errors = []
+    # Local Hermes: digest card prerequisites
+    if digest_marker_seen and digest_cards_path is None:
+        delivery_errors.append("digest cards marker is invalid or unavailable")
+    digest_target_ok = (digest_cards_path is not None and sum(
+        target["platform"] == "telegram" for target in targets) == 1)
+    if digest_cards_path is not None and not digest_target_ok:
+        delivery_errors.append("digest cards require exactly one Telegram delivery target")
+    suppressed_targets = 0  # local: `job` is snapshotted into durable deferred records mid-loop
+''',
+    ),
+    (
+        "cron/scheduler_delivery.py", _PREFIX + " digest card delivery",
+        '''        target_errors: list = []
+        delivered = t.live_adapter_ready and _deliver_via_live_adapter(
+            t, cleaned_delivery_content, media_files,
+            target_errors=target_errors, delivery_errors=delivery_errors,
+            unverified_targets=unverified_targets,
+        )
+        if not delivered:
+            _deliver_standalone(
+                t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
+
+    # Filter-time drops apply to every target; report them once. A run whose every target was
+''',
+        '''        target_errors: list = []
+        errors_before = len(delivery_errors)
+        delivered = t.live_adapter_ready and _deliver_via_live_adapter(
+            t, cleaned_delivery_content, media_files,
+            target_errors=target_errors, delivery_errors=delivery_errors,
+            unverified_targets=unverified_targets,
+        )
+        if not delivered:
+            _deliver_standalone(
+                t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
+        # Local Hermes: digest card delivery
+        if (digest_target_ok and digest_feedback is not None
+                and target["platform"] == "telegram" and len(delivery_errors) == errors_before):
+            try:
+                from gateway.platforms._shared import get_scoped_secret
+                origin = job.get("origin") or {}
+                owner_id = origin.get("user_id") if isinstance(origin, dict) else None
+                if not owner_id:
+                    raise ValueError("digest origin user missing")
+                token = get_scoped_secret("TELEGRAM_BOT_TOKEN")
+                digest_feedback.deliver_cards_to_telegram(
+                    digest_cards_path, state_dir, target, str(owner_id), token)
+            except Exception as exc:
+                delivery_errors.append(f"digest cards failed for {t.where}: {type(exc).__name__}")
+
+    # Filter-time drops apply to every target; report them once. A run whose every target was
+''',
+    ),
+    (
+        "plugins/platforms/telegram/adapter.py", _PREFIX + " digest feedback callback",
+        '''        cb = self._callback_ctx(query)
+        # Model picker / generic choice picker (/reasoning, /fast) need a chat id.
+''',
+        '''        cb = self._callback_ctx(query)
+        # Local Hermes: digest feedback callback
+        if data.startswith("nd:"):
+            if not await self._callback_authorized(query, cb, "Not allowed to rate this digest."):
+                return
+            match = re.fullmatch(r"nd:([0-9a-f]{16}):([123])", data)
+            if match is None or query.message is None:
+                await query.answer(text="Invalid digest rating.")
+                return
+            try:
+                import importlib.util
+                from pathlib import Path
+                skill_dir = os.environ.get("AI_DIGEST_SKILL_DIR", "")
+                spec = importlib.util.spec_from_file_location(
+                    "ai_digest_feedback", Path(skill_dir) / "scripts" / "feedback.py")
+                if spec is None or spec.loader is None:
+                    raise ValueError("digest feedback unavailable")
+                feedback = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(feedback)
+                state_dir = Path(os.environ.get("AI_DIGEST_STATE_DIR", "~/.hermes/ops/news")).expanduser()
+                output_dir = Path(os.environ.get("AI_DIGEST_OUTPUT_DIR", "~/workspace/digests")).expanduser()
+                card_id, rating = match.group(1), int(match.group(2))
+                chat_id, message_id, user_id = str(query.message.chat_id), query.message.message_id, str(query.from_user.id)
+
+                def save_rating():
+                    store = feedback.FeedbackStore(state_dir / "feedback.db")
+                    store.rate(card_id, chat_id, message_id, user_id, rating)
+                    card = store.card(card_id)
+                    report = feedback.complete_if_ready(store, card_id, state_dir, output_dir)
+                    return card, report, store
+
+                card, report, store = await asyncio.to_thread(save_rating)
+            except PermissionError:
+                await query.answer(text="Only the digest owner can rate this item.", show_alert=True)
+                return
+            except Exception as exc:
+                logger.warning("Digest rating failed: %s", type(exc).__name__)
+                await query.answer(text=f"Rating unavailable: {type(exc).__name__}", show_alert=True)
+                return
+            try:
+                await query.answer(text=f"Saved: {rating}/3")
+            except Exception:
+                logger.warning("Digest rating saved but Telegram acknowledgement failed")
+            try:
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton(("✓ " if choice == rating else "") + str(choice),
+                                         callback_data=f"nd:{card_id}:{choice}")
+                    for choice in (1, 2, 3)]])
+                await query.edit_message_reply_markup(reply_markup=keyboard)
+            except Exception:
+                logger.warning("Digest rating saved but button highlight failed")
+            if report is not None:
+                try:
+                    kwargs = {"chat_id": int(chat_id), "caption": "Итоговый AI digest: новости с оценкой 3"}
+                    if card["thread_id"]:
+                        kwargs["message_thread_id"] = int(card["thread_id"])
+                    with report.open("rb") as stream:
+                        sent = await _await_with_thread_deadline(
+                            self._bot.send_document(document=stream, **kwargs),
+                            timeout=60, label="digest-report", dump_on_blocked_loop=False)
+                    await asyncio.to_thread(store.mark_completion_sent, card["run_id"],
+                                            chat_id, card["thread_id"], user_id, sent.message_id)
+                except Exception as exc:
+                    logger.error("Digest report delivery failed: %s", _redact_telegram_error_text(exc))
+            return
+        # Model picker / generic choice picker (/reasoning, /fast) need a chat id.
+''',
+    ),
+])
+
 
 def _migrate_installed_portal_info() -> int:
     """Repair the first portal-info rollout, which used invalid multiline literals."""

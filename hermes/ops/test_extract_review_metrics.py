@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import runpy
 import sqlite3
 import tempfile
@@ -112,6 +113,81 @@ Summary: Reviewed the PR in 1 bounded chunk(s); found no new actionable issues.
                         f"Result: **{result}**\n")
                 self.assertEqual(metrics.parse_review(body)["outcome"], result)
 
+    def test_imports_all_three_published_reviewer_summaries(self):
+        head = "a" * 40
+        items = [
+            {"id": 1, "body": (f"<!-- openrouter-pr-review:{head} -->\n## DirectAPI\n"
+             "### Technical metadata\n> Connection: `nous` · API: `https://example`\n"
+             "> Successful models: `direct-model`\n> Attempts: 2 · Validated: 2 · Retries: 0 · Fallback successes: 0\n"
+             "> Provider time: 12.5s\n> Coverage: complete — 2/2 eligible changed files\n"
+             "Summary: Reviewed the PR in 2 bounded chunk(s); found no new actionable issues.\n"),
+             "submitted_at": "2026-09-23T10:00:00Z", "commit_id": head},
+            {"id": 2, "body": ("## ClaudeCodePlugin\n\n### Technical metadata\n"
+             "> Connection: `openrouter` · API: `https://example`\n"
+             "> Successful models: `claude-model`\n> Attempts: 2 · Validated: 1 · Retries: 1 · Fallback successes: 0\n"
+             "> Provider time: 0.0s\n\n### Review scope\nComplete base-to-head diff supplied.\n"
+             "Existing DirectAPI findings were checked.\n"
+             f"<!-- claude-pr-review:{head}:123 -->\n"),
+             "created_at": "2026-09-23T10:01:00Z"},
+            {"id": 3, "body": ("## ObservableMessagesReview\n\n### Technical metadata\n"
+             "> Connection: `openrouter` · API: `https://example`\n"
+             "> Successful models: `observable-model`\n> Attempts: 2 · Validated: 1 · Retries: 1 · Fallback successes: 0\n"
+             "> Provider time: 10.0s\n\nResult: **partial**\n"
+             "Validated chunks: 1/2; failed: 1; skipped: 0.\n\n"
+             f"[CI run](https://github.com/org/repo/actions/runs/123)\n<!-- observable-pr-review:{head}:123:1 -->"),
+             "created_at": "2026-09-23T10:02:00Z"},
+        ]
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(metrics, "fetch_reviews", return_value=items):
+            database = Path(directory) / "metrics.db"
+            self.assertEqual(metrics.import_pr("org/repo", 43, "secret", database), 3)
+            self.assertEqual(metrics.import_pr("org/repo", 43, "secret", database), 3)
+            with sqlite3.connect(database) as connection:
+                rows = connection.execute(
+                    "SELECT reviewer, model, outcome, validated_chunks, total_chunks, head_sha, run_id "
+                    "FROM review_runs ORDER BY source_id"
+                ).fetchall()
+        self.assertEqual(rows, [
+            ("DirectAPI", "direct-model", "success", 2, 2, head, ""),
+            ("ClaudeCodePlugin", "claude-model", "success", 1, 1, head, "123"),
+            ("ObservableMessagesReview", "observable-model", "partial", 1, 2, head, "123"),
+        ])
+
+    def test_imports_azure_direct_review_with_its_run_identity(self):
+        head = "b" * 40
+        body = (f"<!-- openrouter-pr-review:azure-devops:{head}:nous:model-a:456 -->\n"
+                "## Azure DevOps · DirectAPI\n\n### Technical metadata\n"
+                "> Connection: `nous` · API: `https://example`\n"
+                "> Successful models: `model-a`\n"
+                "> Attempts: 1 · Validated: 1 · Retries: 0 · Fallback successes: 0\n"
+                "> Provider time: 2.0s\n> Coverage: complete — 1/1 eligible changed files\n"
+                "Summary: Reviewed the PR in 1 bounded chunk(s); found no new actionable issues.\n")
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(metrics, "fetch_reviews", return_value=[{
+                 "id": 4, "body": body, "submitted_at": "2026-09-23T10:03:00Z"
+             }]):
+            database = Path(directory) / "metrics.db"
+            self.assertEqual(metrics.import_pr("org/repo", 43, "", database), 1)
+            with sqlite3.connect(database) as connection:
+                row = connection.execute(
+                    "SELECT reviewer, outcome, head_sha, run_id FROM review_runs"
+                ).fetchone()
+        self.assertEqual(row, ("DirectAPI", "success", head, "456"))
+
+    def test_fetch_reviews_reads_later_comment_pages(self):
+        payloads = [[], [{"id": number} for number in range(100)], [{"id": 101}]]
+        responses = []
+        for payload in payloads:
+            response = mock.Mock()
+            response.__enter__ = lambda self: self
+            response.__exit__ = mock.Mock(return_value=False)
+            response.read.return_value = json.dumps(payload).encode()
+            responses.append(response)
+        with mock.patch.object(metrics.urllib.request, "urlopen", side_effect=responses) as urlopen:
+            items = metrics.fetch_reviews("org/repo", 43, "secret")
+        self.assertEqual(len(items), 101)
+        self.assertIn("page=2", urlopen.call_args.args[0].full_url)
+
     def test_reimport_corrects_partial_review_without_duplicate(self):
         body = ("## DirectAPI\n### Technical metadata\n"
                 "> Connection: `provider` · API: `https://example`\n"
@@ -181,12 +257,30 @@ Summary: Reviewed the PR in 1 bounded chunk(s); found no new actionable issues.
             self.assertEqual(metrics.main(), 0)
         self.assertEqual(importer.call_args.args[1:3], (43, "secret"))
 
-    def test_main_rejects_missing_token(self):
+    def test_main_defaults_to_hermes_home_database(self):
+        with mock.patch.object(metrics, "import_pr", return_value=0) as importer, \
+             mock.patch.dict(metrics.os.environ, {
+                 "GITHUB_TOKEN": "secret", "HERMES_HOME": "/srv/hermes-state"
+             }), \
+             mock.patch("sys.argv", ["extract-review-metrics.py", "--pr", "63"]):
+            self.assertEqual(metrics.main(), 0)
+        self.assertEqual(importer.call_args.args[3], Path("/srv/hermes-state/ops/metrics.db"))
+
+    def test_main_allows_public_import_without_token(self):
         with mock.patch.dict(metrics.os.environ, {}, clear=True), \
              mock.patch("sys.argv", ["extract-review-metrics.py", "--pr", "43"]), \
-             self.assertRaises(SystemExit) as result:
-            metrics.main()
-        self.assertEqual(result.exception.code, 2)
+             mock.patch.object(metrics, "import_pr", return_value=1) as importer:
+            self.assertEqual(metrics.main(), 0)
+        self.assertEqual(importer.call_args.args[2], "")
+
+    def test_fetch_reviews_omits_auth_header_without_token(self):
+        response = mock.Mock()
+        response.__enter__ = lambda self: self
+        response.__exit__ = mock.Mock(return_value=False)
+        response.read.return_value = b"[]"
+        with mock.patch.object(metrics.urllib.request, "urlopen", return_value=response) as urlopen:
+            metrics.fetch_reviews("org/repo", 43, "")
+        self.assertNotIn("Authorization", urlopen.call_args.args[0].headers)
 
     def test_script_entrypoint_runs(self):
         response = mock.Mock()

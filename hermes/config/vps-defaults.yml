@@ -294,8 +294,19 @@ vps_runtime:
     tool_loop_guardrails.hard_stop_after.idempotent_no_progress: 6
     tool_loop_guardrails.loop_caps.max_web_searches: 20
     tool_loop_guardrails.loop_caps.max_subagents: 10
+    # Tool progress: off = no tool messages; new = tool changes only;
+    # all = every call; verbose = full details; log = audit file only.
+    # Keep CLI verbose. Telegram shows compact live progress in one message,
+    # then removes progress bubbles after success; final answers and warnings stay.
     display.tool_progress: "verbose"
+    display.platforms.telegram.tool_progress: "new"
+    display.platforms.telegram.tool_progress_grouping: "accumulate"
+    display.platforms.telegram.cleanup_progress: true
     display.platforms.telegram.interim_assistant_messages: false
+    display.platforms.telegram.long_running_notifications: true
+    display.platforms.telegram.busy_ack_detail: false
+    display.platforms.telegram.show_reasoning: false
+    display.platforms.telegram.suppress_warning_notifications: false
     display.background_process_notifications: result
     # Local Hermes: keep /gw_restart and /model_global visible in the
     # Telegram menu — the default 60-command cap would hide them.

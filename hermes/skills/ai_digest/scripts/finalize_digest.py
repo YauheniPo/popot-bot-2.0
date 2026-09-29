@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate an agent-written digest and archive it without overwriting a run."""
+"""Validate an agent-written digest, stage it, and publish rated selections."""
 
 from __future__ import annotations
 
@@ -75,6 +75,30 @@ def _validate_source_availability(draft: str, issues: list[dict]) -> None:
             raise ValueError("report omits unavailable or degraded sources")
 
 
+def _complete_source_availability(draft: str, issues: list[dict]) -> str:
+    """Add missing source IDs from collected metadata to a staged report."""
+    if not issues:
+        return draft
+    marker = "\n## Source availability\n"
+    if marker not in draft:
+        draft = draft.rstrip() + "\n" + marker
+    availability = draft.split(marker, 1)[1]
+    missing: dict[str, set[str]] = {}
+    for issue in issues:
+        issue_id = issue.get("id")
+        if not isinstance(issue_id, str) or not issue_id:
+            raise ValueError("malformed source issue entry: missing 'id'")
+        if not re.search(rf"(?<![\w-]){re.escape(issue_id)}(?![\w-])", availability):
+            kind = issue.get("kind")
+            missing.setdefault(issue_id, set()).add(
+                kind if isinstance(kind, str) and kind in {"failed", "empty", "degraded", "unavailable"}
+                else "issue")
+    if missing:
+        lines = [f"- {issue_id}: {'/'.join(sorted(kinds))}" for issue_id, kinds in missing.items()]
+        draft = draft.rstrip() + "\n\n" + "\n".join(lines) + "\n"
+    return draft
+
+
 def finalize(raw: dict, draft: str, output_dir: Path) -> Path:
     items = raw.get("items", [])
     _validate_report(raw, draft, items)
@@ -90,6 +114,68 @@ def finalize(raw: dict, draft: str, output_dir: Path) -> Path:
         with temporary.open("x", encoding="utf-8") as stream:
             os.chmod(temporary, 0o600)
             stream.write(draft)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, target)
+    return target
+
+
+def stage(raw: dict, draft: str, state_dir: Path) -> Path:
+    """Keep the full analysis private until its Telegram cards have been rated."""
+    _validate_report(raw, draft, raw.get("items", []))
+    draft = _complete_source_availability(draft, raw.get("source_issues", []))
+    _validate_source_availability(draft, raw.get("source_issues", []))
+    state_dir = _validate_output_dir(state_dir)
+    state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    target = state_dir / f"staged-{raw['run_id']}.md"
+    with tempfile.TemporaryDirectory(prefix=".staged-", dir=state_dir) as directory:
+        temporary = Path(directory) / "draft.md"
+        with temporary.open("x", encoding="utf-8") as stream:
+            os.chmod(temporary, 0o600)
+            stream.write(draft)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, target)
+    return target
+
+
+def finalize_selected(raw: dict, staged_path: Path, selected_indexes: list[int],
+                      output_dir: Path) -> Path:
+    """Publish only score-3 items, preserving the validated detailed sections."""
+    staged = _validate_state_path(staged_path, staged_path.parent)
+    draft = staged.read_text(encoding="utf-8")
+    items = raw.get("items", [])
+    _validate_report(raw, draft, items)
+    _validate_source_availability(draft, raw.get("source_issues", []))
+    if selected_indexes != sorted(set(selected_indexes)) or any(
+            not isinstance(index, int) or index < 0 or index >= len(items)
+            for index in selected_indexes):
+        raise ValueError("invalid selected item indexes")
+    headings = list(re.finditer(r"^## (\d+)\. (.+)$", draft, re.M))
+    availability_start = draft.find("\n## Source availability\n")
+    report_end = availability_start if availability_start >= 0 else len(draft)
+    sections = [draft[heading.start():min(
+        headings[index + 1].start() if index + 1 < len(headings) else report_end,
+        report_end)].strip() for index, heading in enumerate(headings)]
+    header = draft[:headings[0].start()].rstrip()
+    footer = draft[availability_start:].strip() if availability_start >= 0 else ""
+    selected = [re.sub(r"^## \d+\.", f"## {order}.", sections[index], count=1)
+                for order, index in enumerate(selected_indexes, 1)]
+    if selected:
+        content = "\n\n".join([header, *selected, footer]).strip() + "\n"
+        _validate_report({"run_id": raw["run_id"]}, content,
+                         [items[index] for index in selected_indexes])
+    else:
+        content = "\n\n".join([header, "## No news rated 3\n\nВ этом выпуске нет новостей с оценкой 3.", footer]).strip() + "\n"
+    _validate_source_availability(content, raw.get("source_issues", []))
+    output_dir = _validate_output_dir(output_dir)
+    output_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
+    target = output_dir / f"digest-{raw['run_id']}.md"
+    with tempfile.TemporaryDirectory(prefix=".digest-", dir=output_dir) as directory:
+        temporary = Path(directory) / "selected.md"
+        with temporary.open("x", encoding="utf-8") as stream:
+            os.chmod(temporary, 0o600)
+            stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
         os.link(temporary, target)
@@ -122,12 +208,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--raw", type=Path, required=True)
     parser.add_argument("--draft", type=Path, required=True)
+    parser.add_argument("--stage", action="store_true",
+                        help="validate and stage analysis for Telegram ratings")
     args = parser.parse_args(argv)
     state_dir = Path(os.environ.get("AI_DIGEST_STATE_DIR", "~/.hermes/ops/news")).expanduser()
     output_dir = Path(os.environ.get("AI_DIGEST_OUTPUT_DIR", "~/workspace/digests")).expanduser()
     draft_path = _validate_state_path(args.draft, state_dir)
     raw = _read_raw(args.raw, state_dir)
-    print(finalize(raw, draft_path.read_text(encoding="utf-8"), output_dir))
+    draft = draft_path.read_text(encoding="utf-8")
+    print(stage(raw, draft, state_dir) if args.stage else finalize(raw, draft, output_dir))
     return 0
 
 

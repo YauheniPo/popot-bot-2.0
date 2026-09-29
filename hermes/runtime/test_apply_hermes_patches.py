@@ -25,6 +25,18 @@ SPEC.loader.exec_module(apply_hermes_patches)
 
 
 class ApplyHermesPatchesTests(unittest.TestCase):
+    def test_digest_feedback_is_wired_into_cron_delivery_and_telegram_callbacks(self):
+        patches = {marker: (path, old, new)
+                   for path, marker, old, new in apply_hermes_patches._PATCHES}
+        self.assertIn("# Local Hermes: digest feedback loader", patches)
+        self.assertIn("# Local Hermes: digest card prerequisites", patches)
+        self.assertIn("# Local Hermes: digest card delivery", patches)
+        self.assertIn("# Local Hermes: digest feedback callback", patches)
+        self.assertEqual(patches["# Local Hermes: digest card delivery"][0],
+                         "cron/scheduler_delivery.py")
+        self.assertEqual(patches["# Local Hermes: digest feedback callback"][0],
+                         "plugins/platforms/telegram/adapter.py")
+
     def test_backup_only_cli_dispatch_and_repeat(self):
         script_path = str(MODULE_PATH)
         with tempfile.TemporaryDirectory() as directory:

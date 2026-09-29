@@ -26,6 +26,65 @@ NOW = datetime(2026, 9, 25, 12, tzinfo=timezone.utc)
 
 
 class CollectNewsTests(unittest.TestCase):
+    def test_ratings_change_selection_between_equally_fresh_candidates(self):
+        from collect_news import _select_items
+
+        items = [
+            {"title": "Stock options dispute", "url": "https://example.org/stocks-new",
+             "source_ids": ["hackernews"], "category": "business", "subcategory": "Equity",
+             "evidence": "More stock options", "score": 0, "discussion_count": 0,
+             "published_at": NOW.isoformat()},
+            {"title": "Coding agent toolkit", "url": "https://example.org/tool-new",
+             "source_ids": ["github-trending"], "category": "project", "subcategory": "Agents",
+             "evidence": "Coding agent toolkit", "score": 0, "discussion_count": 0,
+             "published_at": NOW.isoformat()},
+        ]
+        history = [
+            {**items[0], "url": "https://example.org/stocks-old", "score": 1,
+             "updated_at": NOW.isoformat()},
+            {**items[1], "url": "https://example.org/tool-old", "score": 3,
+             "updated_at": NOW.isoformat()},
+        ]
+        self.assertEqual(_select_items(items, 1, "daily", NOW, 24, history=history)[0]["title"],
+                         "Coding agent toolkit")
+
+    def test_personalized_digest_keeps_one_unrated_topic(self):
+        from collect_news import _select_items
+
+        items = [{"title": f"Agent toolkit {index}", "url": f"https://example.org/tool-{index}",
+                  "source_ids": [f"source-{index}"], "category": "project", "subcategory": "Agents",
+                  "evidence": "Coding agent toolkit", "score": 0, "discussion_count": 0,
+                  "published_at": NOW.isoformat()} for index in range(3)]
+        items.append({"title": "Database research", "url": "https://example.org/database",
+                      "source_ids": ["source-new"], "category": "research", "subcategory": "Databases",
+                      "evidence": "New database design", "score": 0, "discussion_count": 0,
+                      "published_at": NOW.isoformat()})
+        history = [{**items[0], "url": "https://example.org/old-tool", "score": 3,
+                    "updated_at": NOW.isoformat()}]
+        selected = _select_items(items, 3, "daily", NOW, 24, history=history)
+        self.assertIn("Database research", [item["title"] for item in selected])
+
+    def test_corrupt_feedback_keeps_collection_running_with_issue(self):
+        import tempfile
+        from unittest.mock import patch
+        from collect_news import main
+
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "home"
+            state = Path(directory) / "state"
+            (home / "cron").mkdir(parents=True)
+            state.mkdir()
+            (home / "cron" / "jobs.json").write_text(json.dumps({"jobs": [
+                {"skill": "ai_digest", "origin": {"user_id": "9"}}]}))
+            (state / "feedback.db").write_bytes(b"invalid database")
+            source = Path(directory) / "sources.json"
+            source.write_text(json.dumps({"version": 1, "defaults": {"window_hours": 24,
+                "limit": 10}, "sources": []}))
+            with patch.dict("os.environ", {"HERMES_HOME": str(home)}):
+                self.assertEqual(main(["--sources", str(source), "--state-dir", str(state)]), 3)
+            raw = json.loads(next(state.glob("raw-*.json")).read_text())
+            self.assertIn("feedback", [issue["id"] for issue in raw["source_issues"]])
+
     def test_trending_articles_extracts_repo_and_description(self):
         html = '''<article class="Box-row"><h2><a href="/owner/repo">owner/repo</a></h2>
         <p>A useful model</p><span itemprop="programmingLanguage">Python</span>

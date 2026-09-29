@@ -9,7 +9,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from finalize_digest import finalize, _validate_output_dir, _validate_report, _validate_source_availability  # noqa: E402
+from finalize_digest import (finalize, finalize_selected, stage, _validate_output_dir,
+                             _validate_report, _validate_source_availability)  # noqa: E402
 
 
 RAW = {"run_id": "20260925-090000-abcdef12", "items": [
@@ -32,6 +33,45 @@ Impact. Use: estimate cost.
 
 
 class FinalizeDigestTests(unittest.TestCase):
+    def test_staged_analysis_yields_only_three_rated_news_in_final_report(self):
+        raw = {"run_id": RAW["run_id"], "items": [
+            RAW["items"][0], {"title": "Other news", "urls": ["https://vendor.test/other"]}],
+            "source_issues": []}
+        draft = VALID + """
+## 2. Other news
+
+Sources: https://vendor.test/other
+
+### Junior
+What happened. Use: inspect it.
+
+### Senior
+What changed. Use: test it.
+
+### Manager
+Impact. Use: plan it.
+
+## Source availability
+
+All configured sources responded.
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            state, output = Path(directory) / "state", Path(directory) / "output"
+            staged = stage(raw, draft, state)
+            self.assertFalse(output.exists())
+            final = finalize_selected(raw, staged, [1], output)
+            report = final.read_text()
+            self.assertIn("## 1. Other news", report)
+            self.assertNotIn("AI release", report)
+            self.assertIn("### Junior", report)
+            self.assertIn("### Senior", report)
+            self.assertIn("### Manager", report)
+            with self.assertRaises(FileExistsError):
+                finalize_selected(raw, staged, [1], output)
+            empty = finalize_selected(raw, staged, [], Path(directory) / "empty")
+            self.assertIn("В этом выпуске нет новостей с оценкой 3", empty.read_text())
+            self.assertNotIn("## 1. AI release", empty.read_text())
+
     def test_writes_exclusive_report(self):
         with tempfile.TemporaryDirectory() as directory:
             path = finalize(RAW, VALID, Path(directory))
@@ -72,6 +112,41 @@ class FinalizeDigestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(ValueError):
                 finalize(raw, VALID, Path(directory))
+
+    def test_stage_adds_missing_source_availability_from_collected_issues(self):
+        raw = {**RAW, "source_issues": [
+            {"id": "reddit", "kind": "failed", "reason": "HTTP 403"},
+            {"id": "reddit", "kind": "degraded", "reason": "search fallback"},
+            {"id": "arxiv-ai", "kind": "empty", "reason": "no items in window"}]}
+        with tempfile.TemporaryDirectory() as directory:
+            staged = stage(raw, VALID, Path(directory))
+            content = staged.read_text()
+            published = finalize_selected(raw, staged, [0], Path(directory) / "output").read_text()
+        self.assertIn("\n## Source availability\n", content)
+        self.assertIn("- reddit: degraded/failed", content)
+        self.assertEqual(content.count("- reddit:"), 1)
+        self.assertIn("- arxiv-ai: empty", content)
+        self.assertIn("- reddit: degraded/failed", published)
+        self.assertIn("- arxiv-ai: empty", published)
+
+    def test_stage_completes_partial_source_availability_without_duplicates(self):
+        raw = {**RAW, "source_issues": [
+            {"id": "reddit", "kind": "failed", "reason": "HTTP 403"},
+            {"id": "reddit", "kind": "degraded", "reason": "search fallback"},
+            {"id": "arxiv-ai", "kind": "empty", "reason": "no items in window"}]}
+        draft = VALID + "\n## Source availability\n\n- reddit: failed/degraded\n"
+        with tempfile.TemporaryDirectory() as directory:
+            content = stage(raw, draft, Path(directory)).read_text()
+        self.assertEqual(content.count("## Source availability"), 1)
+        self.assertEqual(content.count("- reddit:"), 1)
+        self.assertIn("- arxiv-ai: empty", content)
+
+    def test_stage_keeps_malformed_source_issues_rejected(self):
+        raw = {**RAW, "source_issues": [{"kind": "failed", "reason": "HTTP 403"}]}
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "malformed source issue"):
+                stage(raw, VALID, Path(directory))
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_validate_output_dir_rejects_traversal(self):
         with self.assertRaises(ValueError):

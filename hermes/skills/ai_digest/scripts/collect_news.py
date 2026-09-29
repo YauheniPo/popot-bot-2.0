@@ -966,14 +966,21 @@ def _importance(item: dict, now: datetime, window_hours: int) -> float:
 
 
 def _select_items(items: list[dict], limit: int, mode: str, now: datetime,
-                  window_hours: int) -> list[dict]:
-    ranked = sorted(items, key=lambda item: (-_importance(item, now, window_hours), item["title"]))
+                  window_hours: int, *, history: list[dict] | None = None) -> list[dict]:
+    from feedback import preference_bonus
+
+    bonuses = {id(item): preference_bonus(item, history or []) for item in items}
+    ranked = sorted(items, key=lambda item: (
+        -(_importance(item, now, window_hours) + bonuses[id(item)]),
+        item["title"]))
     selected, counts = [], {}
     max_per_source = max(1, math.ceil(limit / 3))
+    reserve_exploration = bool(history) and limit > 1
+    main_limit = limit - int(reserve_exploration)
     if mode == "weekly":
-        _select_weekly_categories(ranked, selected, counts, limit, max_per_source)
+        _select_weekly_categories(ranked, selected, counts, main_limit, max_per_source)
     for item in ranked:
-        if len(selected) >= limit:
+        if len(selected) >= main_limit:
             break
         if item in selected:
             continue
@@ -982,6 +989,26 @@ def _select_items(items: list[dict], limit: int, mode: str, now: datetime,
             continue
         selected.append(item)
         counts[primary] = counts.get(primary, 0) + 1
+    if reserve_exploration:
+        by_base = sorted(items, key=lambda item: (-_importance(item, now, window_hours),
+                                                  item["title"]))
+        for candidates in ([item for item in by_base if abs(bonuses[id(item)]) < 0.5], by_base):
+            candidate = next((item for item in candidates if item not in selected
+                              and _source_capacity_available(item, ranked, selected, counts,
+                                                             max_per_source)), None)
+            if candidate is not None:
+                selected.append(candidate)
+                primary = candidate["source_ids"][0]
+                counts[primary] = counts.get(primary, 0) + 1
+                break
+    for item in ranked:
+        if len(selected) >= limit:
+            break
+        if item not in selected and _source_capacity_available(
+                item, ranked, selected, counts, max_per_source):
+            selected.append(item)
+            primary = item["source_ids"][0]
+            counts[primary] = counts.get(primary, 0) + 1
     return selected
 
 
@@ -1083,7 +1110,7 @@ def _read_article(item: dict, defaults: dict, fetch) -> None:
 
 def collect(config: dict, *, now: datetime | None = None, fetch=None,
             window_hours: int | None = None, limit: int | None = None, topic: str = "",
-            mode: str = "daily") -> dict:  # noqa: S3776
+            mode: str = "daily", history: list[dict] | None = None) -> dict:  # noqa: S3776
     if fetch is None:
         fetch = http_fetch
     if config.get("version") != 1 or not isinstance(config.get("sources"), list):
@@ -1110,7 +1137,7 @@ def collect(config: dict, *, now: datetime | None = None, fetch=None,
         words = _topic_words(topic)
         raw = [item for item in raw if words & _topic_words(item["title"] + " " + item["evidence"])]
     merged = _deduplicate(raw)
-    selected = _select_items(merged, limit, mode, now, defaults["window_hours"])
+    selected = _select_items(merged, limit, mode, now, defaults["window_hours"], history=history)
     _hydrate_items(selected, defaults, fetch)
     return {"schema_version": 1, "mode": mode, "generated_at": now.isoformat().replace(UTC_SUFFIX, "Z"),
             "window_hours": defaults["window_hours"], "limit": limit, "topic": topic or None,
@@ -1131,8 +1158,24 @@ def main(argv: list[str] | None = None) -> int:
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
     try:
         config = json.loads(args.sources.read_text())
+        from feedback import FeedbackStore, owner_for_digest_jobs
+        import sqlite3
+
+        hermes_home = Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser()
+        owner = owner_for_digest_jobs(hermes_home / "cron" / "jobs.json")
+        feedback_path = args.state_dir / "feedback.db"
+        history = []
+        feedback_issue = None
+        if owner and feedback_path.is_file():
+            try:
+                history = FeedbackStore(feedback_path).history(owner)
+            except (sqlite3.DatabaseError, OSError, ValueError):
+                feedback_issue = {"id": "feedback", "kind": "degraded",
+                                  "reason": "stored ratings unavailable; used base ranking"}
         result = collect(config, window_hours=args.window_hours, limit=args.limit,
-                         topic=args.topic, mode=args.mode)
+                         topic=args.topic, mode=args.mode, history=history)
+        if feedback_issue:
+            result["source_issues"].append(feedback_issue)
         result["run_id"] = run_id
         args.state_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
         output = args.state_dir / f"raw-{run_id}.json"

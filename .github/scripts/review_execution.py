@@ -174,13 +174,14 @@ def claude_execution_report(environment: Mapping[str, str]) -> ExecutionReport:
         environment.get("CLAUDE_REVIEW_PROVIDER", "unknown"),
         environment.get("CLAUDE_REVIEW_ENDPOINT", ""), primary, kind="claude",
     )
-    for stage in ("PRIMARY", "RETRY", "FALLBACK"):
+    for stage in ("PRIMARY", "RETRY", "FALLBACK", "FALLBACK_RETRY"):
         outcome = environment.get(f"CLAUDE_REVIEW_{stage}_OUTCOME", "skipped")
         if outcome not in {"success", "failure", "cancelled"}:
             continue
         validation = environment.get(f"CLAUDE_REVIEW_{stage}_VALIDATION", "skipped")
-        model = environment.get("CLAUDE_REVIEW_FALLBACK_MODEL", "unknown") if stage == "FALLBACK" else primary
-        attempt = report.begin({"model": model}, route="fallback" if stage == "FALLBACK" else "primary")
+        fallback = stage.startswith("FALLBACK")
+        model = environment.get("CLAUDE_REVIEW_FALLBACK_MODEL", "unknown") if fallback else primary
+        attempt = report.begin({"model": model}, route="fallback" if fallback else "primary")
         result = "execution_failed"
         if outcome == "success":
             result = "valid_json" if validation == "success" else "validation_failed"
