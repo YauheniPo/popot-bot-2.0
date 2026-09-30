@@ -15,7 +15,8 @@
   },
   "sources": [
     {"id": "hackernews", "type": "hackernews", "max_items": 10, "max_comments": 5},
-    {"id": "reddit", "type": "reddit", "subreddits": ["MachineLearning", "LocalLLaMA", "programming"], "max_items": 10},
+    {"id": "reddit", "type": "reddit", "subreddits": ["MachineLearning", "LocalLLaMA", "programming"], "max_items": 10,
+      "search_fallback": {"query": "site:reddit.com/r/{subreddit}"}},
     {"id": "techcrunch", "type": "rss", "url": "https://techcrunch.com/feed/"},
     {"id": "theverge", "type": "rss", "url": "https://www.theverge.com/rss/index.xml"},
     {"id": "arstechnica", "type": "rss", "url": "https://feeds.arstechnica.com/arstechnica/index"},

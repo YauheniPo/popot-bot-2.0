@@ -204,3 +204,156 @@ Summary: Reviewed the PR in 1 bounded chunk(s); found no new actionable issues.
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExtractReviewMetricsHelperTests(unittest.TestCase):
+    """Tests for helper functions in extract-review-metrics.py"""
+
+    def setUp(self):
+        import importlib.util
+        import sys
+        SCRIPT = Path(__file__).parent / "extract-review-metrics.py"
+        spec = importlib.util.spec_from_file_location("extract_review_metrics", SCRIPT)
+        self.metrics = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.metrics)
+
+    def test_review_identity_returns_empty_group_when_lastindex_not_2(self):
+        """_review_identity returns empty string for second group when lastindex != 2."""
+        # DirectAPI marker has only 1 group (sha), so lastindex == 1
+        body = "<!-- openrouter-pr-review:" + "a" * 40 + " -->"
+        reviewer, sha, pr = self.metrics._review_identity(body)
+        self.assertEqual(reviewer, "DirectAPI")
+        self.assertEqual(sha, "a" * 40)
+        self.assertEqual(pr, "")  # lastindex == 1, so group(2) returns ""
+
+    def test_apply_claude_validated_marker_false_for_wrong_reviewer(self):
+        """_apply_claude_validated_marker returns False for non-Claude reviewers."""
+        result = self.metrics._apply_claude_validated_marker(
+            "DirectAPI", "unknown", 5, "body"
+        )
+        self.assertFalse(result)
+
+    def test_apply_claude_validated_marker_false_when_outcome_known(self):
+        """_apply_claude_validated_marker returns False when default_outcome != unknown."""
+        result = self.metrics._apply_claude_validated_marker(
+            "ClaudeCodePlugin", "success", 5, "body"
+        )
+        self.assertFalse(result)
+
+    def test_apply_claude_validated_marker_false_when_no_validated_chunks(self):
+        """_apply_claude_validated_marker returns False when validated_chunks == 0."""
+        result = self.metrics._apply_claude_validated_marker(
+            "ClaudeCodePlugin", "unknown", 0, "body"
+        )
+        self.assertFalse(result)
+
+    def test_apply_claude_validated_marker_true_when_marker_found(self):
+        """_apply_claude_validated_marker returns True when marker found in body."""
+        body = "<!-- claude-pr-review:" + "a" * 40 + ":123 -->"
+        result = self.metrics._apply_claude_validated_marker(
+            "ClaudeCodePlugin", "unknown", 5, body
+        )
+        self.assertTrue(result)
+
+    def test_apply_claude_validated_marker_false_when_marker_not_found(self):
+        """_apply_claude_validated_marker returns False when marker not in body."""
+        body = "no marker here"
+        result = self.metrics._apply_claude_validated_marker(
+            "ClaudeCodePlugin", "unknown", 5, body
+        )
+        self.assertFalse(result)
+
+    def test_compute_total_chunks_from_scope(self):
+        """_compute_total_chunks uses scope when available."""
+        scope = mock.MagicMock()
+        scope.group.return_value = "2"
+        result = self.metrics._compute_total_chunks(scope, None, "DirectAPI", "unknown")
+        self.assertEqual(result, 2)
+
+    def test_compute_total_chunks_from_direct_chunks(self):
+        """_compute_total_chunks uses direct_chunks when scope missing."""
+        direct_chunks = mock.MagicMock()
+        direct_chunks.group.return_value = "3"
+        result = self.metrics._compute_total_chunks(None, direct_chunks, "DirectAPI", "unknown")
+        self.assertEqual(result, 3)
+
+    def test_compute_total_chunks_claude_success(self):
+        """_compute_total_chunks returns 1 for ClaudeCodePlugin with success."""
+        result = self.metrics._compute_total_chunks(
+            None, None, "ClaudeCodePlugin", "success"
+        )
+        self.assertEqual(result, 1)
+
+    def test_compute_total_chunks_claude_not_success(self):
+        """_compute_total_chunks returns 0 for ClaudeCodePlugin without success."""
+        result = self.metrics._compute_total_chunks(
+            None, None, "ClaudeCodePlugin", "partial"
+        )
+        self.assertEqual(result, 0)
+
+    def test_compute_total_chunks_other_reviewer(self):
+        """_compute_total_chunks returns 0 for other reviewers."""
+        result = self.metrics._compute_total_chunks(
+            None, None, "DirectAPI", "unknown"
+        )
+        self.assertEqual(result, 0)
+
+    def test_parse_review_applies_claude_marker(self):
+        """parse_review sets outcome to success when Claude marker applies."""
+        # Use proper metadata format with Technical metadata block
+        body = (
+            "## ClaudeCodePlugin\n\n"
+            "### Technical metadata\n"
+            "> Connection: `nous` · API: `https://api.example.com`\n"
+            "> Successful models: `inclusionai/ling-3.0-flash-sante:free`\n"
+            "> Validated: 5\n"
+            "<!-- claude-pr-review:" + "a" * 40 + ":1 -->"
+        )
+        result = self.metrics.parse_review(body, "ClaudeCodePlugin")
+        self.assertIsNotNone(result)
+        # default_outcome should be "success" due to claude marker
+        self.assertEqual(result.get("outcome"), "success")
+
+    def test_fetch_reviews_invalid_payload_raises(self):
+        """fetch_reviews raises ValueError for non-list payload."""
+        import urllib.request
+        original_open = urllib.request.urlopen
+
+        def mock_open(req, timeout):
+            response = mock.MagicMock()
+            response.__enter__ = lambda s: s
+            response.__exit__ = mock.Mock(return_value=False)
+            response.read.return_value = b'"not a list"'
+            return response
+
+        urllib.request.urlopen = mock_open
+        try:
+            with self.assertRaises(ValueError) as cm:
+                self.metrics.fetch_reviews("YauheniPo/popot-bot-2.0", 1, "token")
+            self.assertIn("invalid review/comment list", str(cm.exception))
+        finally:
+            urllib.request.urlopen = original_open
+
+    def test_fetch_reviews_exceeds_limit_raises(self):
+        """fetch_reviews raises RuntimeError when exceeding 50 pages."""
+        import urllib.request
+        original_open = urllib.request.urlopen
+
+        call_count = [0]
+
+        def mock_open(req, timeout):
+            call_count[0] += 1
+            response = mock.MagicMock()
+            response.__enter__ = lambda s: s
+            response.__exit__ = mock.Mock(return_value=False)
+            # Return 100 items for all 50 pages to trigger the limit
+            response.read.return_value = b'[' + b', '.join([b'{"id": %d}' % i for i in range(100)]) + b']'
+            return response
+
+        urllib.request.urlopen = mock_open
+        try:
+            with self.assertRaises(RuntimeError) as cm:
+                self.metrics.fetch_reviews("YauheniPo/popot-bot-2.0", 1, "token")
+            self.assertIn("exceeded the 50-page import limit", str(cm.exception))
+        finally:
+            urllib.request.urlopen = original_open

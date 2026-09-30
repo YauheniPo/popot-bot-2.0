@@ -34,7 +34,47 @@ FIELD_RE = {
     "outcome": re.compile(r"(?:^|> )Result:\s*([^\n]+)", re.M | re.I),
     "coverage": re.compile(r"^(?:> )?Coverage:[ \t]*(complete|partial)\b", re.M | re.I),
     "scope": re.compile(r"Validated chunks:\s*(\d+)\s*/\s*(\d+)", re.I),
+    "direct_chunks": re.compile(r"Reviewed the PR in\s*(\d+)\s*bounded chunk", re.I),
 }
+REVIEW_MARKERS = (
+    ("DirectAPI", re.compile(r"<!-- openrouter-pr-review:([0-9a-f]{40}) -->")),
+    ("ClaudeCodePlugin", re.compile(r"<!-- claude-pr-review:([0-9a-f]{40}):(\d+) -->")),
+    ("ObservableMessagesReview", re.compile(r"<!-- observable-pr-review:([0-9a-f]{40}):(\d+):\d+ -->")),
+)
+
+
+def _review_identity(body: str) -> tuple[str, str, str]:
+    for reviewer, pattern in REVIEW_MARKERS:
+        if match := pattern.search(body):
+            return reviewer, match.group(1), match.group(2) if match.lastindex == 2 else ""
+    for reviewer in ("DirectAPI", "ClaudeCodePlugin", "ObservableMessagesReview"):
+        if re.search(rf"^## {reviewer}\s*$", body, re.M):
+            return reviewer, "", ""
+    return "unknown", "", ""
+
+
+def _apply_claude_validated_marker(
+    reviewer: str, default_outcome: str, validated_chunks: int, body: str
+) -> bool:
+    """Return True if Claude validated-chunks marker should set outcome to success."""
+    if reviewer != "ClaudeCodePlugin":
+        return False
+    if default_outcome != "unknown" or validated_chunks == 0:
+        return False
+    return bool(REVIEW_MARKERS[1][1].search(body))
+
+
+def _compute_total_chunks(
+    scope: Any, direct_chunks: Any, reviewer: str, default_outcome: str
+) -> int:
+    """Compute total_chunks from scope, direct_chunks, or reviewer defaults."""
+    if scope:
+        return int(scope.group(2))
+    if direct_chunks:
+        return int(direct_chunks.group(1))
+    if reviewer == "ClaudeCodePlugin" and default_outcome == "success":
+        return 1
+    return 0
 
 
 def parse_review(body: str, reviewer_hint: str = "") -> dict[str, Any] | None:
@@ -48,11 +88,8 @@ def parse_review(body: str, reviewer_hint: str = "") -> dict[str, Any] | None:
         return None
     provider = connection.group(1).strip().strip("`").strip()
     model_name = model.group(1).split(",", 1)[0].strip().strip("`").strip()
-    reviewer = reviewer_hint.strip() or next(
-        (candidate for candidate in ("DirectAPI", "ClaudeCodePlugin", "ObservableMessagesReview")
-         if candidate.lower() in body.lower()),
-        "unknown",
-    )
+    identity, _, _ = _review_identity(body)
+    reviewer = reviewer_hint.strip() or identity
     numbers = {
         name: int(found.group(1)) if (found := FIELD_RE[name].search(block)) else 0
         for name in ("attempts", "validated_chunks", "retries", "fallback_successes")
@@ -66,14 +103,20 @@ def parse_review(body: str, reviewer_hint: str = "") -> dict[str, Any] | None:
     default_outcome = {"complete": "success", "partial": "partial"}.get(
         coverage.group(1).lower() if coverage else "", "unknown"
     )
+    # Claude publishes this marker only after a validated review result. Its
+    # summary has no separate Result/Coverage line.
+    if _apply_claude_validated_marker(reviewer, default_outcome, numbers["validated_chunks"], body):
+        default_outcome = "success"
     raw_outcome = outcome.group(1).strip().strip("*_`").strip() if outcome else default_outcome
+    direct_chunks = FIELD_RE["direct_chunks"].search(body) if reviewer == "DirectAPI" else None
+    total_chunks = _compute_total_chunks(scope, direct_chunks, reviewer, default_outcome)
     return {
         "reviewer": reviewer,
         "provider": provider,
         "model": model_name,
         "attempts": numbers["attempts"],
         "validated_chunks": numbers["validated_chunks"],
-        "total_chunks": int(scope.group(2)) if scope else 0,
+        "total_chunks": total_chunks,
         "retries": numbers["retries"],
         "fallback_successes": numbers["fallback_successes"],
         "provider_seconds": float(seconds.group(1)) if seconds else 0.0,
@@ -88,15 +131,21 @@ def _api_url(repository: str, path: str) -> str:
 def fetch_reviews(repository: str, pr: int, token: str) -> list[dict[str, Any]]:
     """Fetch both review and issue-comment bodies; callers deduplicate by id."""
     result: list[dict[str, Any]] = []
-    for path in (f"pulls/{pr}/reviews?per_page=100", f"issues/{pr}/comments?per_page=100"):
-        request = urllib.request.Request(_api_url(repository, path), headers={
-            "Accept": "application/vnd.github+json", "Authorization": f"Bearer {token}",
-            "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "hermes-review-metrics",
-        })
-        with urllib.request.urlopen(request, timeout=20) as response:
-            payload = json.load(response)
-        if isinstance(payload, list):
+    for resource in (f"pulls/{pr}/reviews", f"issues/{pr}/comments"):
+        for page in range(1, 51):
+            request = urllib.request.Request(_api_url(repository, f"{resource}?per_page=100&page={page}"), headers={
+                "Accept": "application/vnd.github+json", "Authorization": f"Bearer {token}",
+                "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "hermes-review-metrics",
+            })
+            with urllib.request.urlopen(request, timeout=20) as response:
+                payload = json.load(response)
+            if not isinstance(payload, list):
+                raise ValueError("GitHub returned an invalid review/comment list")
             result.extend(item for item in payload if isinstance(item, dict))
+            if len(payload) < 100:
+                break
+        else:
+            raise RuntimeError(f"GitHub {resource} exceeded the 50-page import limit")
     return result
 
 
@@ -142,6 +191,7 @@ def import_pr(repository: str, pr: int, token: str, database: Path) -> int:
         parsed = parse_review(body)
         if not parsed:
             continue
+        _, marker_head, marker_run = _review_identity(body)
         parsed.update({
             "source_id": f"{item.get('html_url') or item.get('id')}",
             "pr_number": pr,
@@ -149,8 +199,8 @@ def import_pr(repository: str, pr: int, token: str, database: Path) -> int:
             # created_at/updated_at; the fallback chain covers both shapes.
             "observed_at": (item.get("updated_at") or item.get("created_at")
                             or item.get("submitted_at") or ""),
-            "head_sha": item.get("commit_id") or "",
-            "run_id": "",
+            "head_sha": item.get("commit_id") or marker_head,
+            "run_id": marker_run,
         })
         upsert(database, parsed)
         imported += 1
@@ -161,7 +211,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Import GitHub AI review metadata into Hermes metrics")
     parser.add_argument("--pr", type=int, required=True)
     parser.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", "YauheniPo/popot-bot-2.0"))
-    parser.add_argument("--database", type=Path, default=Path.home() / ".hermes/ops/metrics.db")
+    hermes_home = os.environ.get("HERMES_HOME", "").strip()
+    database = (Path(hermes_home).expanduser() if hermes_home else Path.home() / ".hermes") / "ops/metrics.db"
+    parser.add_argument("--database", type=Path, default=database)
     args = parser.parse_args()
     token = os.environ.get("GITHUB_TOKEN", "").strip()
     if not token:

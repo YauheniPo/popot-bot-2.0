@@ -663,6 +663,27 @@ provider/model, результат, coverage чанков, retries и время
 После deploy исправленного импортёра повторный импорт PR обновляет ранее ошибочный результат
 в той же записи без создания дубликата.
 
+### Автоматическая синхронизация (cron)
+
+Каждые 12 часов cron job «AI Review Metrics Sync» находит последние 5 PR репозитория
+(по времени обновления, включая открытые и закрытые) и импортирует их опубликованные
+reviews и комментарии через `extract-review-metrics.py`. Обрабатывает все типы
+ревьюверов: DirectAPI, Azure DirectAPI, ClaudeCodePlugin, ObservableMessagesReview.
+
+Скрипт: `hermes/ops/sync-ai-review-metrics.py`
+
+```bash
+# Ручной запуск для последних 5 PR:
+GITHUB_TOKEN="$(gh auth token)" python3 hermes/ops/sync-ai-review-metrics.py
+
+# Один PR:
+GITHUB_TOKEN="$(gh auth token)" python3 hermes/ops/sync-ai-review-metrics.py --pr 43
+```
+
+Повторный запуск не создаёт дубликаты (extractor использует `INSERT OR IGNORE`).
+Сбой одного PR не прерывает остальные. После импорта метрики автоматически
+экспортируются в Prometheus через `export-metrics.py`.
+
 Панели **Requests by profile** показывают обращения к основному `default` и
 именованным профилям. Одно обращение — одна сохранённая запись `role=user`
 в `state.db` соответствующего профиля, а не запуск tmux, tool call или запрос

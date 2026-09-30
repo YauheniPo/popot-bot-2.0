@@ -38,8 +38,8 @@ class DigestDeployTests(unittest.TestCase):
         self.assertNotIn("Ensure the repository-owned AI digest cron job", RUNTIME)
 
     def test_digest_search_url_is_rendered_once_when_configured(self):
-        self.assertIn("prefers AI_DIGEST_SEARCH_URL and falls back to SEARXNG_URL", ENV)
-        self.assertEqual(ENV.count("AI_DIGEST_SEARCH_URL={{"), 1)
+        self.assertIn("AI_DIGEST_SEARCH_URL", ENV)
+        self.assertEqual(ENV.count("AI_DIGEST_SEARCH_URL={{"), 2)
         runtime = (ANSIBLE / "tasks" / "runtime.yml").read_text()
         self.assertIn('owner: "{{ hermes_user }}"', runtime)
         self.assertIn('group: "{{ hermes_user }}"', runtime)
@@ -53,12 +53,29 @@ class DigestDeployTests(unittest.TestCase):
             hermes_workspace="/home/hermes/workspace", hermes_bundle_dir="/opt/hermes",
             hermes_searxng_url="https://search.example.test",
             vps_browser={"launch_args": ""},
-            vps_deploy={"features": {"workspace_ui": False}},
+            vps_deploy={"features": {"workspace_ui": False, "host_admin": False, "searxng": False}},
         )
         values = [line.partition("=")[2] for line in rendered.splitlines()
                   if line.startswith("AI_DIGEST_SEARCH_URL=")]
         self.assertEqual(len(values), 1)
         self.assertEqual(json.loads(values[0]), "https://search.example.test")
+
+    def test_digest_uses_private_managed_searxng_without_changing_hermes_search(self):
+        if Environment is None:
+            self.skipTest("Ansible controller dependencies are not installed")
+        template = Environment()
+        template.filters.update(FilterModule().filters())
+        rendered = template.from_string(ENV).render(
+            hermes_secret_env={}, hermes_home="/home/hermes",
+            hermes_workspace="/home/hermes/workspace", hermes_bundle_dir="/opt/hermes",
+            hermes_searxng_url="", vps_browser={"launch_args": ""},
+            vps_deploy={"features": {"workspace_ui": False, "host_admin": True, "searxng": True}},
+            vps_searxng={"enabled": True, "host_port": 8888},
+        )
+        values = [line.partition("=")[2] for line in rendered.splitlines()
+                  if line.startswith("AI_DIGEST_SEARCH_URL=")]
+        self.assertEqual([json.loads(value) for value in values], ["http://127.0.0.1:8888"])
+        self.assertFalse(any(line.startswith("SEARXNG_URL=") for line in rendered.splitlines()))
 
     def test_digest_paths_are_json_quoted_for_env_file(self):
         if Environment is None:
@@ -70,7 +87,7 @@ class DigestDeployTests(unittest.TestCase):
             hermes_workspace="/home/hermes user/workspace",
             hermes_bundle_dir="/opt/hermes bundle", hermes_searxng_url="",
             vps_browser={"launch_args": ""},
-            vps_deploy={"features": {"workspace_ui": False}},
+            vps_deploy={"features": {"workspace_ui": False, "host_admin": False, "searxng": False}},
         )
         values = {key: json.loads(line.partition("=")[2])
                   for line in rendered.splitlines()

@@ -538,7 +538,7 @@ def run_review(*, endpoint: str, api_key: str, model: str, prompt: str, workspac
     _validate_limits(max_turns, attempt_timeout_seconds, inactivity_timeout_seconds, heartbeat_seconds, max_tokens)
     workspace = workspace.resolve()
     allowed = _resolve_allowed(workspace, allowed_files)
-    ctx = multiprocessing.get_context("fork")
+    ctx = multiprocessing.get_context("spawn")
     receive, send = ctx.Pipe(duplex=False)
     worker = ctx.Process(target=_worker, args=(send, endpoint, api_key, model, prompt, workspace,
         allowed, max_turns, inactivity_timeout_seconds, max_tokens))

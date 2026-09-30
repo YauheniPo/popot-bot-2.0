@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from collect_news import (GITHUB_API_URL, _collect_curated_readme, _deduplicate, _public_url, _Text, _date,
                            _trending_articles, _trending_stars_today, canonical_url,
                            _connect_resolved, _pinned_connection_class, _SafeHTTPSHandler,
-                           collect, parse_rss, UTC_SUFFIX, http_fetch)  # noqa: E402
+                           collect, parse_rss, UTC_SUFFIX, http_fetch, _try_reddit_fallback)  # noqa: E402
 
 
 NOW = datetime(2026, 9, 25, 12, tzinfo=timezone.utc)
@@ -149,6 +149,7 @@ class CollectNewsTests(unittest.TestCase):
                          "the-batch", "latent-space", "dwarkesh", "swebench"}, by_id.keys())
         self.assertIn("weekly", by_id["swebench"]["modes"])
         self.assertNotIn("daily", by_id["swebench"]["modes"])
+        self.assertIn("{subreddit}", by_id["reddit"]["search_fallback"]["query"])
         self.assertEqual(by_id["awesomeosai"]["repository"], "alvinreal/awesome-opensource-ai")
         self.assertEqual(by_id["awesome-jev"]["repository"], "MrJev/awesome-jev")
 
@@ -598,6 +599,124 @@ class CollectNewsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _public_url("http://localhost:8080/search")
 
+    def test_public_url_allows_only_explicit_loopback_opt_in(self):
+        self.assertIsNone(_public_url("http://127.0.0.1:8888/search?q=test", allow_loopback=True))
+        with self.assertRaises(ValueError):
+            _public_url("http://localhost:8888/search?q=test", allow_loopback=True)
+        with self.assertRaises(ValueError):
+            _public_url("http://192.168.1.5:8888/search?q=test", allow_loopback=True)
+
+    def test_public_url_loopback_dns_resolution_fails(self):
+        with patch("collect_news.socket.getaddrinfo", side_effect=OSError("dns failed")):
+            with self.assertRaisesRegex(ValueError, "local search host could not be resolved"):
+                _public_url("http://127.0.0.1:8888/search?q=test", allow_loopback=True)
+
+    def test_public_url_loopback_dns_returns_non_loopback(self):
+        non_loopback = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("192.0.2.1", 8080))
+        with patch("collect_news.socket.getaddrinfo", return_value=[non_loopback]):
+            with self.assertRaisesRegex(ValueError, "only to loopback"):
+                _public_url("http://127.0.0.1:8888/search?q=test", allow_loopback=True)
+
+    def test_default_collector_uses_configured_loopback_searxng(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = (b'{"results":[{"title":"AI release","url":"https://vendor.test/release",'
+                        b'"publishedDate":"2026-09-25T11:00:00Z","content":"Release details"}]}')
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, _format, *_args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 1},
+                  "sources": [{"id": "social", "type": "searxng", "query": "AI"}]}
+        try:
+            with patch.dict("os.environ", {
+                "AI_DIGEST_SEARCH_URL": f"http://127.0.0.1:{server.server_port}", "SEARXNG_URL": "",
+            }):
+                result = collect(config, now=NOW)
+            self.assertEqual([item["title"] for item in result["items"]], ["AI release"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=2)
+
+    def test_reddit_uses_search_fallback_after_direct_api_is_blocked(self):
+        config = {"version": 1, "defaults": {"window_hours": 24, "limit": 3},
+                  "sources": [{"id": "reddit", "type": "reddit", "subreddits": ["MachineLearning"],
+                               "search_fallback": {"query": "site:reddit.com/r/{subreddit}"}}]}
+        payload = (b'{"results":[{"title":"New model discussion","url":"https://www.reddit.com/r/'
+                   b'MachineLearning/comments/abc/new_model/","publishedDate":"2026-09-25T11:00:00Z",'
+                   b'"content":"Community discussion about a new model."}]}')
+
+        calls = []
+
+        def fetch(url, max_bytes, *, allow_loopback=False):
+            calls.append((url, max_bytes, allow_loopback))
+            if "reddit.com/r/MachineLearning/top.json" in url:
+                raise ValueError("HTTP Error 403: Blocked")
+            if "/search?" in url:
+                self.assertGreater(max_bytes, 0)
+                self.assertTrue(allow_loopback)
+                return payload
+            raise ValueError("article fetch is not needed")
+
+        fetch.supports_loopback_search = True
+
+        with patch.dict("os.environ", {
+            "AI_DIGEST_SEARCH_URL": "http://127.0.0.1:8080", "SEARXNG_URL": "",
+        }):
+            result = collect(config, now=NOW, fetch=fetch)
+        self.assertEqual([item["title"] for item in result["items"]], ["New model discussion"])
+        self.assertIn("reddit", result["items"][0]["source_ids"])
+        self.assertEqual(result["items"][0]["evidence_kind"], "reddit_search_snippet")
+        self.assertNotIn("read_issue", result["items"][0])
+        self.assertTrue(any(issue["kind"] == "degraded" and "search fallback" in issue["reason"]
+                            for issue in result["source_issues"]))
+        self.assertEqual(len(calls), 2)
+        self.assertIn("q=site%3Areddit.com%2Fr%2FMachineLearning", calls[1][0])
+
+    def test_loopback_search_rejects_mixed_dns_results(self):
+        loopback = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", 8080))
+        non_loopback = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("192.0.2.1", 8080))
+        with patch("collect_news.socket.getaddrinfo", return_value=[loopback, non_loopback]):
+            with self.assertRaisesRegex(ValueError, "only to loopback"):
+                _public_url("http://127.0.0.1:8080/search?q=test", allow_loopback=True)
+
+    def test_public_url_allows_loopback_when_all_addresses_are_loopback(self):
+        loopback1 = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", 8080))
+        loopback2 = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", 8081))
+        with patch("collect_news.socket.getaddrinfo", return_value=[loopback1, loopback2]):
+            self.assertIsNone(_public_url("http://127.0.0.1:8080/search?q=test", allow_loopback=True))
+
+    def test_try_reddit_fallback_handles_collect_searxng_failure(self):
+        issues = []
+        with patch("collect_news._collect_searxng", side_effect=ValueError("searxng failed")):
+            result = _try_reddit_fallback(
+                {"search_fallback": {"query": "site:reddit.com/r/{subreddit}"}},
+                "test_source", "MachineLearning", ValueError("reddit blocked"),
+                NOW, lambda *a, **k: b"", 1, 1000, 100, 24, issues,
+            )
+        self.assertIsNone(result)
+        self.assertTrue(any(i["kind"] == "degraded" and "search fallback failed" in i["reason"] for i in issues))
+
+    def test_try_reddit_fallback_handles_empty_searxng_results(self):
+        issues = []
+        with patch("collect_news._collect_searxng", return_value=[]):
+            result = _try_reddit_fallback(
+                {"search_fallback": {"query": "site:reddit.com/r/{subreddit}"}},
+                "test_source", "MachineLearning", ValueError("reddit blocked"),
+                NOW, lambda *a, **k: b"", 1, 1000, 100, 24, issues,
+            )
+        self.assertIsNone(result)
+        self.assertTrue(any(i["kind"] == "degraded" and "search fallback returned no dated results" in i["reason"] for i in issues))
+
     def test_utc_suffix_constant_is_correct(self):
         self.assertEqual(UTC_SUFFIX, "+00:00")
 
@@ -936,7 +1055,7 @@ class CollectNewsTests(unittest.TestCase):
         with patch("collect_news._pinned_connection_class", return_value=connection_type) as factory:
             with patch.object(handler, "do_open", return_value=MagicMock()) as do_open:
                 handler.https_open(request)
-        factory.assert_called_once_with(http.client.HTTPSConnection, request.full_url)
+        factory.assert_called_once_with(http.client.HTTPSConnection, request.full_url, allow_loopback=False)
         self.assertIs(do_open.call_args.args[0], connection_type)
 
     def test_safe_redirect_validates_newurl(self):
