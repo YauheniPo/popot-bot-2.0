@@ -67,14 +67,18 @@ def prune_large_caches(home: Path, max_bytes: int, busy: bool) -> int:
         if not checked_directory(root):
             continue
         targets = [root / name for name in children if checked_directory(root / name)]
-        if sum(directory_size(path) for path in targets) < max_bytes:
+        total_size = 0
+        for path in targets:
+            total_size += directory_size(path)
+        if total_size == 0:
+            # Nothing to prune if there are no regular files (symlinks are skipped)
+            continue
+        if total_size < max_bytes:
             continue
         for path in targets:
             shutil.rmtree(path)
             removed += 1
     return removed
-
-
 def active_processes(home: Path, proc: Path = Path("/proc")) -> tuple[set[str], bool]:
     """Keep Chrome builds in use and defer cache cleanup while installers run."""
     if not proc.is_dir():
