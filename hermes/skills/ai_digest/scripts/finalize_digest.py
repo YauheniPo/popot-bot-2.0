@@ -37,7 +37,7 @@ def _validate_report(raw: dict, draft: str, items: list[dict], *,
         raise ValueError("invalid run_id")
     if not isinstance(items, list) or not items:
         raise ValueError("report has no source items")
-    headings = list(re.finditer(r"^## (\d+)\. (.+)$", draft, re.M))
+    headings = list(HEADING_PATTERN.finditer(draft))
     if len(headings) != len(items):
         raise ValueError("report item count does not match collected items")
     _validate_citations(draft, citation_items if citation_items is not None else items)
@@ -82,7 +82,7 @@ def _validate_source_availability(draft: str, issues: list[dict]) -> None:
 def complete_missing_analysis(raw: dict, draft: str) -> str:
     """Keep valid item sections and mark missing analysis explicitly."""
     items = raw.get("items", [])
-    headings = list(re.finditer(r"^## (\d+)\. (.+)$", draft, re.M))
+    headings = list(HEADING_PATTERN.finditer(draft))
     sections: dict[tuple[str, str], tuple[re.Match, str]] = {}
     for heading in headings:
         next_heading = re.search(r"^## ", draft[heading.end():], re.M)
@@ -194,7 +194,7 @@ def finalize_selected(raw: dict, staged_path: Path, selected_indexes: list[int],
             not isinstance(index, int) or index < 0 or index >= len(items)
             for index in selected_indexes):
         raise ValueError("invalid selected item indexes")
-    headings = list(re.finditer(r"^## (\d+)\. (.+)$", draft, re.M))
+    headings = list(HEADING_PATTERN.finditer(draft))
     availability_start = draft.find(SOURCE_AVAILABILITY_HEADER)
     report_end = availability_start if availability_start >= 0 else len(draft)
     sections = [draft[heading.start():min(

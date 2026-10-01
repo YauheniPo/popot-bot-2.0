@@ -347,7 +347,7 @@ All configured sources responded.
         self.assertIn("Item 2", result3)
         # Should start with the title and have two items sections
         self.assertTrue(result3.startswith("# AI/IT News Digest\n\n## 1. Item 1"))
-        self.assertTrue("## 2. Item 2" in result3)
+        self.assertIn("## 2. Item 2", result3)
 
     def test_finalize_selected_invalid_indexes(self):
         from finalize_digest import finalize_selected, stage
