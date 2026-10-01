@@ -47,20 +47,17 @@ REVIEW_MARKERS = (
 
 def _review_identity(body: str) -> tuple[str, str, str]:
     """Return (reviewer, sha, pr) from the first matching marker in the body.
+    If multiple markers are present, the one that appears first in the body is used.
     If no marker is found, fall back to header-style lines.
     """
-    # First, try to find any marker in the body
     matches = []
     for reviewer, pattern in REVIEW_MARKERS:
         for match in pattern.finditer(body):
             matches.append((match.start(), reviewer, match))
     if matches:
-        # Sort by start position to get the earliest match
         matches.sort(key=lambda x: x[0])
         _, reviewer, match = matches[0]
         return reviewer, match.group(1), match.group(2) if match.lastindex == 2 else ""
-    
-    # Fallback to header-style lines
     for reviewer in ("DirectAPI", "ClaudeCodePlugin", "ObservableMessagesReview"):
         if re.search(rf"^## {reviewer}\s*$", body, re.M):
             return reviewer, "", ""
