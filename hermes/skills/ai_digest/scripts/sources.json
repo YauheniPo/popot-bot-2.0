@@ -3,6 +3,7 @@
   "defaults": {
     "window_hours": 24,
     "limit": 10,
+    "repeat_cooldown_hours": 168,
     "request_timeout_s": 12,
     "max_summary_chars": 1200,
     "max_article_chars": 4500,

@@ -13,6 +13,8 @@ Covered customizations (not yet upstream):
  * gateway commands: /gw-restart (canonical, with /restart and /gw_restart
    aliases so the Telegram menu entry resolves), /model_global, /fallback, and /doctor
  * quota fallback skips the exhausted provider; chat list edits survive cooldown
+ * attached cron skills retain read tools under restricted toolsets, without
+   granting skill management or overriding global toolset denies
  * /status shows reasoning, models, and session-scoped background activity
  * Telegram final replies show the actual provider/model in a copyable block
  * /model accepts an explicit built-in provider/model pair
@@ -1008,6 +1010,54 @@ def _clamp_command_names(
 ''',
     ),
 ]
+
+# Attached skills may read references through skill_view even though their main
+# document is preloaded. Expose only the readers, not skill_manage. Native
+# disabled_toolsets subtraction still applies after this selection.
+_PATCHES.extend([
+    (
+        "toolsets.py", _PREFIX + " cron skill readers",
+        '    "skills": _ts(\n',
+        '''    # Local Hermes: cron skill readers
+    "cron-skills": _ts("Read skill instructions for attached cron skills", ["skills_list", "skill_view"]),
+    "skills": _ts(
+''',
+    ),
+    (
+        "cron/scheduler.py", _PREFIX + " cron skill toolsets",
+        'def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:\n',
+        '''# Local Hermes: cron skill toolsets
+def _with_cron_skill_tools(job: dict, toolsets: list[str]) -> list[str]:
+    result = list(toolsets)
+    skills = job.get("skills")
+    if skills is None:
+        skills = job.get("skill") or []
+    if isinstance(skills, str):
+        skills = [skills]
+    if (result and not job.get("no_agent") and any(str(name).strip() for name in skills)
+            and "skills" not in result and "cron-skills" not in result):
+        result.append("cron-skills")
+    return result
+
+
+def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
+''',
+    ),
+    (
+        "cron/scheduler.py", _PREFIX + " cron skill per-job tools",
+        '        return _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {})\n',
+        '''        # Local Hermes: cron skill per-job tools
+        return _with_cron_skill_tools(job, _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {}))
+''',
+    ),
+    (
+        "cron/scheduler.py", _PREFIX + " cron skill platform tools",
+        '        return sorted(_get_platform_tools(cfg or {}, "cron"))\n',
+        '''        # Local Hermes: cron skill platform tools
+        return _with_cron_skill_tools(job, sorted(_get_platform_tools(cfg or {}, "cron")))
+''',
+    ),
+])
 
 # Keep the implementation testable as ordinary Python; install it through the
 # same fingerprinted source-patch mechanism, not a sys.path/bootstrap hook.

@@ -98,6 +98,55 @@ class HermesUpstreamTests(unittest.TestCase):
                 source = source.replace(old, new, 1)
         return source
 
+    def test_attached_cron_skills_use_native_selection_and_global_denies(self):
+        # Execute the pinned scheduler and model_tools selectors rather than a
+        # second implementation of their allow/deny logic. Avoid importing the
+        # unrelated providers, databases, and gateway dependency graph.
+        toolsets = {}
+        exec(self.patched_source("toolsets.py"), toolsets)
+        namespace = {"os": os, "_LEGACY_TOOLSET_MAP": {},
+                     "_is_delegated_child_context": lambda: False,
+                     "_is_dispatcher_owned_worker": lambda: False}
+        names = {"_with_cron_skill_tools", "_resolve_cron_enabled_toolsets",
+                 "_resolve_cron_disabled_toolsets", "_merge_mcp_into_per_job_toolsets",
+                 "_apply_toolset_selection", "_select_tool_names"}
+        for path in ("cron/scheduler.py", "model_tools.py"):
+            tree = ast.parse(self.patched_source(path))
+            selected = [node for node in tree.body if getattr(node, "name", "") in names]
+            exec("from __future__ import annotations\n" +
+                 ast.unparse(ast.Module(body=selected, type_ignores=[])), namespace)
+        static_tools = SimpleNamespace(
+            get_toolset=lambda name: toolsets["TOOLSETS"].get(name),
+            resolve_toolset=lambda name: toolsets["resolve_toolset"](name, include_registry=False),
+            validate_toolset=lambda name: name in toolsets["TOOLSETS"],
+            bundle_non_core_tools=toolsets["bundle_non_core_tools"])
+        namespace.update(resolve_toolset=static_tools.resolve_toolset,
+                         validate_toolset=static_tools.validate_toolset)
+        modules = {"toolsets": static_tools,
+                   "hermes_cli.tools_config": SimpleNamespace(
+                       enabled_mcp_server_names=lambda cfg: set(),
+                       _get_platform_tools=lambda cfg, platform: cfg["platform_toolsets"][platform]),
+                   "agent.skill_utils": SimpleNamespace(parse_config_string_list=lambda value: value or [])}
+        cfg = {"platform_toolsets": {"cron": ["web", "file"]}}
+        with mock.patch.dict(sys.modules, modules), mock.patch.dict(os.environ, {}, clear=True):
+            for enabled in (["terminal", "web", "file"], None):
+                job = {"skills": ["competitor-news-monitor"]}
+                if enabled is not None:
+                    job["enabled_toolsets"] = enabled
+                with self.subTest(enabled=enabled):
+                    selected = namespace["_resolve_cron_enabled_toolsets"](job, cfg)
+                    disabled = namespace["_resolve_cron_disabled_toolsets"](cfg)
+                    effective = namespace["_select_tool_names"](selected, disabled, True)
+                    self.assertTrue({"skill_view", "skills_list", "web_search", "web_extract"} <= effective)
+                    self.assertNotIn("skill_manage", effective)
+                    denied_cfg = {**cfg, "agent": {"disabled_toolsets": ["skills", "terminal"]}}
+                    denied = namespace["_resolve_cron_disabled_toolsets"](denied_cfg)
+                    effective = namespace["_select_tool_names"](selected, denied, True)
+                    self.assertNotIn("skill_view", effective)
+                    self.assertNotIn("skills_list", effective)
+                    self.assertNotIn("terminal", effective)
+                    self.assertIn("web_search", effective)
+
     def test_split_gateway_dispatch_preserves_custom_commands(self):
         tree = ast.parse(self.patched_source("gateway/run_busy.py"))
         gateway = next(node for node in tree.body if isinstance(node, ast.ClassDef)

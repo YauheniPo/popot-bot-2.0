@@ -1,5 +1,6 @@
 """Offline contracts for the cron-backed news collector."""
 
+import base64
 from datetime import datetime, timezone
 import gzip
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -26,6 +27,50 @@ NOW = datetime(2026, 9, 25, 12, tzinfo=timezone.utc)
 
 
 class CollectNewsTests(unittest.TestCase):
+    def test_read_article_fetches_github_readme_for_project(self):
+        from collect_news import _read_article
+
+        item = {"url": "https://github.com/acme/agent", "evidence": "Agent toolkit",
+                "full_text_available": False}
+        readme = "# Agent toolkit\n\nAn agent orchestrator with persistent teams and shared terminal sessions."
+        response = json.dumps({"encoding": "base64", "content":
+                               base64.b64encode(readme.encode()).decode()}).encode()
+        calls = []
+
+        def fetch(url, limit):
+            calls.append((url, limit))
+            return response
+
+        _read_article(item, {"max_article_chars": 4500}, fetch)
+        self.assertEqual(calls[0][0], GITHUB_API_URL + "/repos/acme/agent/readme")
+        self.assertIn("persistent teams", item["evidence"])
+        self.assertEqual(item["evidence_kind"], "repository_readme")
+
+    def test_read_article_keeps_project_listing_when_readme_unavailable(self):
+        from collect_news import _read_article
+
+        item = {"url": "https://github.com/acme/agent", "evidence": "Local agent orchestrator",
+                "full_text_available": False}
+
+        def fetch(_url, _limit):
+            raise OSError("rate limited")
+
+        _read_article(item, {}, fetch)
+        self.assertEqual(item["evidence"], "Local agent orchestrator")
+        self.assertIn("README unavailable", item["read_issue"])
+
+    def test_read_article_uses_long_page_body_without_article_tag(self):
+        from collect_news import _read_article
+
+        item = {"url": "https://example.org/news", "evidence": "Short teaser",
+                "full_text_available": False}
+        paragraphs = " ".join(["The release adds local model support and command line tools."] * 10)
+        html = f"<html><body><div>{paragraphs}</div></body></html>".encode()
+        _read_article(item, {"max_article_chars": 4500}, lambda _url, _limit: html)
+        self.assertIn("local model support", item["evidence"])
+        self.assertEqual(item["evidence_kind"], "page_text")
+        self.assertFalse(item["full_text_available"])
+
     def test_ratings_change_selection_between_equally_fresh_candidates(self):
         from collect_news import _select_items
 
@@ -126,6 +171,10 @@ class CollectNewsTests(unittest.TestCase):
 
         def fetch(url, _limit):
             requested.append(url)
+            if url.endswith("/readme"):
+                return json.dumps({"encoding": "base64", "content":
+                    base64.b64encode(
+                        b"An agent toolkit with persistent teams and shared terminal sessions.").decode()}).encode()
             if "/commits?" in url:
                 return json.dumps(commits).encode()
             if url.endswith("/" + "a" * 40 + "/README.md"):
@@ -172,6 +221,10 @@ class CollectNewsTests(unittest.TestCase):
                       "| [Jev Router](https://github.com/mrjev/jev-router) | MCP tool router |\n")
 
         def fetch(url, _limit):
+            if url.endswith("/readme"):
+                return json.dumps({"encoding": "base64", "content":
+                    base64.b64encode(
+                        b"A tool router for integrating agent workflows with multiple providers.").decode()}).encode()
             if "/commits?" in url:
                 return json.dumps(commits).encode()
             if url.endswith("/" + "c" * 40 + "/README.md"):
@@ -338,7 +391,8 @@ class CollectNewsTests(unittest.TestCase):
                 b'{"text":"Second discussion","time":1790334001}',
             "https://vendor.test/release": b"<article><p>" + b"Article body. " * 40 + b"</p></article>",
         }
-        result = collect(config, now=NOW, fetch=lambda url, _limit: responses[url])
+        with patch("collect_news._public_url"):
+            result = collect(config, now=NOW, fetch=lambda url, _limit: responses[url])
         self.assertEqual(len(result["items"]), 1)
         self.assertEqual([c["text"] for c in result["items"][0]["discussion_excerpts"]],
                          ["Useful technical discussion", "Second discussion"])
@@ -1176,7 +1230,8 @@ class CollectNewsTests(unittest.TestCase):
                 b'{"text":"Second discussion","time":1790334001}',
             "https://vendor.test/release": b"<article><p>Article body.</p></article>",
         }
-        result = collect(config, now=NOW, fetch=lambda url, _limit: responses[url])
+        with patch("collect_news._public_url"):
+            result = collect(config, now=NOW, fetch=lambda url, _limit: responses[url])
         self.assertEqual(len(result["items"]), 1)
         self.assertIn("discussion_issue", result["items"][0])
         self.assertIn("Hacker News comment 201", result["items"][0]["discussion_issue"])
@@ -1416,7 +1471,8 @@ class CollectNewsTests(unittest.TestCase):
             if "reddit.com/comments" in url:
                 raise OSError("comment fetch failed")
             return listing
-        result = collect(config, now=NOW, fetch=fetch)
+        with patch("collect_news._public_url"):
+            result = collect(config, now=NOW, fetch=fetch)
         self.assertEqual(len(result["items"]), 1)
         self.assertIn("Reddit comments unavailable: comment fetch failed",
                       result["items"][0]["discussion_issue"])

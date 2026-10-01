@@ -226,6 +226,19 @@ class DeploymentStatePolicyTests(unittest.TestCase):
         self.assertLess(check_position, gateway_position)
         self.assertIn("ANSIBLE MANAGED RESPONSE LANGUAGE", services)
 
+    def test_source_patch_changes_notify_gateway_restart_but_repeats_do_not(self):
+        from jinja2 import Environment
+
+        tasks = yaml.safe_load((HERMES_ROOT / "ansible/tasks/services.yml").read_text())
+        task = next(item for item in tasks if item.get("register") == "hermes_local_patches")
+        self.assertEqual(task.get("notify"), "restart Hermes gateway")
+        expression = Environment().compile_expression(task["changed_when"])
+        for output, expected in (("[hermes-patch] changed\n", True),
+                                 ("[hermes-patch] done: 0 patch(es) applied\n", False)):
+            with self.subTest(output=output):
+                self.assertEqual(expression(hermes_local_patches={"stdout": output}), expected)
+        self.assertEqual(task["failed_when"], "hermes_local_patches.rc != 0")
+
     def test_searxng_is_loopback_only_and_secret_free(self) -> None:
         playbook = (HERMES_ROOT / "ansible" / "playbook.yml").read_text()
         tasks = (HERMES_ROOT / "ansible" / "tasks" / "searxng.yml").read_text()

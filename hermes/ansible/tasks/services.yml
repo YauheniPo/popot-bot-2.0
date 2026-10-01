@@ -54,6 +54,7 @@
   register: hermes_local_patches
   changed_when: "'[hermes-patch] changed' in hermes_local_patches.stdout"
   failed_when: hermes_local_patches.rc != 0
+  notify: restart Hermes gateway
 
 - name: Remove the legacy unmanaged response-language rule from SOUL
   ansible.builtin.lineinfile:

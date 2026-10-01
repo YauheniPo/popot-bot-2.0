@@ -914,7 +914,8 @@ HERMES_UPSTREAM_DIR=/path/to/hermes-agent python3.11 -m unittest \
 
 Проверка сверяет commit/version/installer checksum, применяет gateway-патчи
 к временным копиям, компилирует результат и проверяет идемпотентность,
-маршрутизацию команд, приоритеты Telegram menu и совместимость проверки backup
+маршрутизацию команд, доступ cron к прикреплённым skills с сохранением
+глобальных запретов, приоритеты Telegram menu и совместимость проверки backup
 со штатным обходчиком файлов закреплённой версии. Она не устанавливает Hermes,
 не обращается к VPS и не заменяет backup и post-deploy проверки.
 
@@ -1837,8 +1838,8 @@ Deploy применяет модельную политику из `vps_hermes.c
 [`config/vps-defaults.yml`](config/vps-defaults.yml): основной provider и модель,
 вспомогательные модели, настройки cron и `fallback_policy.default_routes`. Для каждого
 используемого provider нужны его credentials; наличие записи fallback не
-заменяет авторизацию. Следующий deploy снова применит модельную политику, но
-сохранит существующий `fallback_providers`, включая пустой список. Hermes также
+заменяет авторизацию. Следующий deploy снова применит модельную политику и
+заменит действующий `fallback_providers` списком из `default_routes`. Hermes также
 поддерживает built-in providers с API key/OAuth, named custom providers и
 локальные OpenAI-compatible endpoints.
 Для Ansible укажите нужные ENV keys в `hermes_secret_env`, а non-secret
@@ -1906,6 +1907,36 @@ skill. Время, имя задачи и адрес доставки выбир
 закреплённой здесь версии Hermes часовой пояс расписания общий для инстанса,
 а не отдельный параметр задачи. Этот deploy его не меняет.
 
+Для мониторинга по skill прикрепите его к задаче, укажите в prompt путь к её
+состоянию и разрешите нужные инструменты. Название задачи само по себе skill
+не подключает. Режим `no_agent` выполняет только script и доставляет его stdout;
+skill и оценка результатов агентом в этом режиме не выполняются. При переводе
+задачи на штатный агент отключите `no_agent` и очистите поле script через cron
+API/CLI, если он больше не нужен: иначе script выполняется перед агентом.
+После пробного tick проверьте источники и фактическую запись состояния:
+`last_status=ok` отражает завершение запуска. Ошибки покрытия должны оставаться
+в журнале, а cutoff — продвигаться только после успешной проверки источников.
+
+Managed runtime добавляет к агентным задачам с прикреплённым skill инструменты
+`skills_list` и `skill_view`, даже если собственный `enabled_toolsets` задачи
+или набор `cron` содержит только `terminal`, `web` и `file`. Это позволяет
+повторно читать инструкции и вложенные файлы skill. `skill_manage` автоматически
+не разрешается; глобальный `agent.disabled_toolsets: [skills]` по-прежнему
+исключает инструменты skills. Остальные инструменты, расписание, pin модели,
+адрес доставки и состояние задачи не меняются. Для `no_agent` это правило
+не применяется; явно пустой набор инструментов остаётся пустым.
+Нужные для самого исследования `web`/`file`/`terminal`
+разрешаются отдельно.
+
+Эта правка входит в [managed patches](runtime/apply-hermes-patches.py), которые
+Ansible применяет после установки закреплённой версии Hermes. Повторный deploy
+не дублирует её; замена исходников при обновлении применяет её заново.
+Изменённые runtime-патчи уведомляют handler перезапуска gateway, чтобы процесс
+загрузил новый код; повторное применение без изменений перезапуск не вызывает.
+Если upstream изменит нужный участок кода, deploy завершится ошибкой совместимости,
+а не пропустит обязательную правку. Перед сменой pin запускайте проверки
+совместимости с `HERMES_UPSTREAM_DIR` (см. раздел локальных проверок).
+
 Репозиторий устанавливает пример этого подхода — skill `ai_digest` для новостей
 IT/AI. Попросите бота создать cron-задачу с этим skill, нужным расписанием и
 доставкой в нужный Telegram-топик. Prompt выбирает режим: `daily` по умолчанию
@@ -1920,7 +1951,12 @@ IT/AI. Попросите бота создать cron-задачу с этим 
 сохраняет сырой JSON, подробный черновик, SQLite-оценки и журнал сбора в
 `~/.hermes/ops/news/`, а итоговый проверенный отчёт — в
 `~/workspace/digests/`. Оценки доступны следующему запуску для ранжирования
-похожих тем и источников. Недоступный источник отмечается в отчёте;
+похожих тем и источников. Уже отправленные владельцу новости (по URL или
+похожему заголовку) не выбираются повторно в течение 168 часов, заданных
+`repeat_cooldown_hours` в `sources.json`; поэтому карточек может быть меньше
+лимита. Описание карточки берётся из русского блока Junior, а последняя оценка
+формирует отчёт с выбранными пунктами и проверенными общими ссылками.
+Недоступный источник отмечается в отчёте;
 при отсутствии пригодных материалов задача завершается ошибкой. Для новых
 подобных задач используйте тот же контракт: ограниченный сбор и явная
 атрибуция данных, skill для анализа, проверка файла перед выдачей и штатный
@@ -1971,8 +2007,8 @@ sudo -u hermes -H /home/hermes/.local/bin/hermes cron status
 
 В формате `provider/model` префикс известного встроенного провайдера выбирает
 именно его, а оставшаяся часть передаётся как model ID. Например,
-`/model nous/meituan/longcat-2.0:free` выбирает provider `nous` и модель
-`meituan/longcat-2.0:free`; `/model_global` делает тот же выбор глобальным.
+`/model nous/stepfun/step-3.7-flash:free` выбирает provider `nous` и модель
+`stepfun/step-3.7-flash:free`; `/model_global` делает тот же выбор глобальным.
 Буквальная команда `/global-model` не существует: используйте `/model_global`
 или `/model <provider>/<model> --global`. Если нужна модель агрегатора, чей
 vendor-префикс совпадает с именем встроенного провайдера, явно укажите
@@ -2019,30 +2055,37 @@ Managed Hermes использует нативную цепочку fallback б�
 которые можно выбирать через чат. Ключи остаются в Vault/штатной авторизации;
 chat-команда не принимает credentials или произвольные endpoint URL.
 
+`vps_runtime.set.agent.api_max_retries: 6` задаёт общий лимит повторов API и
+перезапусков сообщения при переключении fallback. Он действует и для cron, и
+для обычных запросов; на уже выполняющийся запуск изменение не влияет.
+
 Каждый элемент `default_routes` содержит **оба** поля: `provider` и `model`.
 Один provider может встречаться несколько раз с разными моделями; запрещён
 только повтор одинаковой пары. `allowed_providers` — разрешения chat-команды,
-не список моделей для автоматического выбора. Deploy формирует нативный
-`fallback_providers` из `default_routes` при первой установке, а затем сохраняет
-активный список пользователя. Старый deploy-ключ `fallback_providers` читается
+не список моделей для автоматического выбора. Каждый deploy формирует действующий
+`fallback_providers` из `default_routes`. Ручные изменения через `/fallback`
+работают до следующего deploy. Старый deploy-ключ `fallback_providers` читается
 для совместимости, только если `fallback_policy.default_routes` не задан.
 
-Базовый список проверен по публичным каталогам **23 сентября 2026**:
+Базовый список сверён с каталогами **29 сентября 2026**. Бесплатные варианты
+`inclusionai/ling-3.0-flash-fin:free` и `meituan/longcat-2.0:free` вернули 404
+при фактическом запуске, хотя каталог Nous всё ещё показывает второй ID.
+NVIDIA Super сохранил бесплатный endpoint; его ошибка в том запуске была
+перегрузкой, а не удалением модели.
 
-|| Порядок | Provider | Model ID | Основание выбора |
-|| --- | --- | --- | --- |
-|| 1 | `openrouter` | *см. текущий дефолт в `vps-defaults.yml`* | Быстрее всего (3.3s avg), 99.8% success rate в метриках Grafana |
-|| 2 | `ollama-cloud` | *см. текущий дефолт в `vps-defaults.yml`* | Workhorse для объёмных задач (9s avg, 99.1% success) |
-|| 3 | `nvidia` | `nvidia/nemotron-3-super-120b-a12b` | Уже настроен для compression Hermes; agentic reasoning/coding/tools |
-|| 4 | `openrouter` | `nvidia/nemotron-3-ultra-550b-a55b:free` | Уже настроен резервом Direct Review, есть в curated-каталоге Hermes |
-|| 5 | `nous` | `inclusionai/ling-3.0-flash-sante:free` | Validated для PR review (<15s, 0 retries, 88 runs) |
-
-*Актуальный список маршрутов — в `vps-defaults.yml` (`fallback_policy.default_routes`). README содержит устаревший снимок; при смене маршрутов обновляйте эту таблицу.*
+| Порядок | Provider | Model ID | Основание выбора |
+| --- | --- | --- | --- |
+| 1 | `openrouter` | `google/gemma-4-31b-it:free` | Бесплатная мультиязычная модель с tools для общего анализа |
+| 2 | `nous` | `stepfun/step-3.7-flash:free` | Бесплатная рекомендация Nous, tools и длинный контекст |
+| 3 | `openrouter` | `cohere/north-mini-code:free` | Быстрый бесплатный резерв для агентных задач с tools |
+| 4 | `nous` | `inclusionai/ling-3.0-flash-sante:free` | Доступен в каталоге Nous, ранее работал для PR review |
+| 5 | `nvidia` | `nvidia/nemotron-3-super-120b-a12b` | Бесплатный NIM endpoint с поддержкой tools |
 
 Источники: [каталог OpenRouter](https://openrouter.ai/api/v1/models),
+[Gemma 4 free](https://openrouter.ai/google/gemma-4-31b-it:free),
+[North Mini Code free](https://openrouter.ai/cohere/north-mini-code:free),
 [бесплатные рекомендации Nous](https://portal.nousresearch.com/api/nous/recommended-models),
 [каталог API Nous](https://inference-api.nousresearch.com/v1/models),
-[curated-каталог Hermes](https://hermes-agent.nousresearch.com/docs/api/model-catalog.json),
 [NVIDIA Super endpoint](https://build.nvidia.com/nvidia/nemotron-3-super-120b-a12b).
 У выбранных OpenRouter/Nous routes на дату проверки нулевые input/output цены
 и есть `tools` в supported parameters. NVIDIA предоставляет бесплатный endpoint
@@ -2055,8 +2098,8 @@ OAuth login, для остальных — их API keys; ключи этой п
 Проверялись публичные каталоги, не inference с вашими credentials. Free-квоты,
 модели и доступность могут меняться; для чувствительных данных учитывайте условия
 free endpoint (в частности, NVIDIA предупреждает о логировании запросов).
-Разные API providers также могут использовать общий upstream: запасной Ultra
-через OpenRouter не гарантирует независимость от сбоя NVIDIA. При quota
+Разные API providers также могут использовать общий upstream, поэтому
+независимость от общего сбоя не гарантируется. При quota
 переключение идёт между providers, а повторные модели того же provider
 пригодятся при других ошибках, не для обхода его общей квоты.
 
@@ -2095,10 +2138,9 @@ credentials и реальный API-вызов выполняются натив
 без бесконечного перебора. При других ошибках штатные критерии fallback
 сохраняются, но платные OpenRouter-маршруты также пропускаются.
 
-Повторный Ansible deploy сохраняет выбранный список даже без Workspace UI и
-обновляет только baseline `fallback_policy.default_routes` для `/fallback reset`.
-Чтобы заменить активный список новым deploy-default, выполните `reset` после
-раскатки. Для отдельного routed profile нужны собственные
+Повторный Ansible deploy применяет `fallback_policy.default_routes` к активному
+`fallback_providers` даже без Workspace UI. Ручной выбор через `/fallback`
+перезаписывается при следующем deploy. Для отдельного routed profile задайте свои
 `fallback_policy.allowed_providers` и `fallback_policy.default_routes` в его
 конфигурации. Команды изменения списка также убирают legacy `fallback_model`,
 чтобы он не включил скрытый резерв после `off`.

@@ -262,9 +262,9 @@
            recursive=true, list_merge='replace'
          ) |
          combine(
-           {'fallback_providers': hermes_existing_config.get('fallback_providers',
-             hermes_managed_config.get('fallback_policy', {}).get(
-               'default_routes', hermes_managed_config.get('fallback_providers', [])))},
+           {'fallback_providers': hermes_managed_config.get('fallback_policy', {}).get(
+             'default_routes', hermes_managed_config.get('fallback_providers',
+               hermes_existing_config.get('fallback_providers', [])))},
            recursive=true, list_merge='replace'
          ) |
          combine(

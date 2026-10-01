@@ -167,6 +167,13 @@ class FeedbackStore:
                 (str(user_id), limit)).fetchall()
         return [{**dict(row), "source_ids": json.loads(row["source_ids"])} for row in rows]
 
+    def recently_sent_items(self, user_id: str, since: str) -> list[dict]:
+        with self._connect() as db:
+            rows = db.execute("""SELECT title, url FROM cards
+                WHERE owner_id=? AND status='sent' AND sent_at>=?
+                ORDER BY sent_at DESC LIMIT 3000""", (str(user_id), since)).fetchall()
+        return [dict(row) for row in rows]
+
     def stats(self, user_id: str) -> dict:
         with self._connect() as db:
             rows = db.execute("""SELECT score, COUNT(*) AS total FROM ratings
@@ -227,13 +234,29 @@ def extract_cards_marker(content: str, job: dict, state_dir: Path) -> tuple[str,
     root = state_dir.resolve()
     if candidate.resolve().parent != root or not candidate.is_file():
         return clean, None
+    try:
+        raw = _finalizer()._read_raw(candidate, root)
+    except (OSError, ValueError):
+        return clean, candidate.resolve()
+    items = raw.get("items")
+    if isinstance(items, list) and 1 <= len(items) <= 20:
+        count = len(items)
+        noun = "новость" if count == 1 else "новости" if count <= 4 else "новостей"
+        clean = f"Собрано {count} {noun}. Оцените каждую Telegram-карточку от 1 до 3."
     return clean, candidate.resolve()
 
 
 def _card_text(item: dict, index: int, total: int, analysis: str = "") -> str:
     category = item.get("subcategory") or item.get("category") or "AI/IT"
-    evidence = re.sub(r"\s+", " ", analysis or item.get("evidence") or "").strip()[:650]
-    return f"{index}/{total} · {item['title']}\n{category}\n\n{evidence}\n\n{item['url']}\n\nОцени релевантность: 1–3"
+    description = re.sub(r"\s+", " ", analysis).strip()[:650]
+    if not description or "Анализ недоступен" in description or not re.search(r"[А-Яа-яЁё]", description):
+        evidence = re.sub(r"\s+", " ", item.get("evidence") or "").strip()[:550]
+        if not evidence:
+            raise ValueError(f"source description unavailable for item {index}")
+        scope = {"abstract": "аннотации", "repository_readme": "README проекта",
+                 "page_text": "страницы"}.get(item.get("evidence_kind"), "источника")
+        description = f"По тексту {scope}: {evidence} Анализ недоступен."
+    return f"{index}/{total} · {item['title']}\n{category}\n\n{description}\n\n{item['url']}\n\nОцени релевантность: 1–3"
 
 
 def _keyboard(card_id: str) -> dict:
@@ -269,18 +292,39 @@ def telegram_send(token: str, method: str, payload: dict, *, timeout: int = 15) 
 
 def deliver_cards(raw_path: Path, state_dir: Path, target: dict, owner_id: str, send) -> int:
     """Send one silent Telegram card per item, without retrying uncertain sends."""
-    raw = _finalizer()._read_raw(Path(raw_path), Path(state_dir))
+    finalizer = _finalizer()
+    raw = finalizer._read_raw(Path(raw_path), Path(state_dir))
     run_id = raw.get("run_id", "")
     if not _RUN_ID.fullmatch(run_id):
         raise ValueError("invalid digest run")
-    if not (Path(state_dir) / f"staged-{run_id}.md").is_file():
-        raise ValueError("digest analysis has not been staged")
     items = raw.get("items")
     if not isinstance(items, list) or not items or len(items) > 20:
         raise ValueError("invalid digest card count")
+    staged_path = Path(state_dir) / f"staged-{run_id}.md"
+    if not staged_path.is_file():
+        draft_path = Path(state_dir) / f"draft-{run_id}.md"
+        draft = (finalizer._validate_state_path(draft_path, Path(state_dir)).read_text(encoding="utf-8")
+                 if draft_path.is_file() else "")
+        try:
+            finalizer._validate_report(raw, draft, items)
+        except ValueError:
+            draft = finalizer.complete_missing_analysis(raw, draft)
+        try:
+            finalizer.stage(raw, draft, Path(state_dir))
+        except FileExistsError:
+            if not staged_path.is_file():
+                raise
     store = FeedbackStore(Path(state_dir) / "feedback.db")
-    staged_text = (Path(state_dir) / f"staged-{run_id}.md").read_text(encoding="utf-8")
+    staged_text = staged_path.read_text(encoding="utf-8")
     sections = re.split(r"^## \d+\. .+$", staged_text, flags=re.M)[1:]
+    card_texts = []
+    for index, item in enumerate(items):
+        analysis = ""
+        if index < len(sections):
+            match = re.search(r"^### Junior[ \t]*\n(.*?)(?=^### Senior[ \t]*$)",
+                              sections[index], flags=re.M | re.S)
+            analysis = match.group(1).strip() if match else ""
+        card_texts.append(_card_text(item, index + 1, len(items), analysis))
     count = 0
     for index, item in enumerate(items):
         card_id, fresh = store.reserve_card(run_id, item, target["chat_id"],
@@ -289,13 +333,8 @@ def deliver_cards(raw_path: Path, state_dir: Path, target: dict, owner_id: str, 
             continue
         if count:
             time.sleep(1)
-        analysis = ""
-        if index < len(sections):
-            match = re.search(r"^### Junior\s*\n(.*?)(?=^### Senior|\Z)",
-                              sections[index], flags=re.M | re.S)
-            analysis = match.group(1).strip() if match else ""
         message_id = send(target["chat_id"], target.get("thread_id"),
-                          _card_text(item, index + 1, len(items), analysis), _keyboard(card_id))
+                          card_texts[index], _keyboard(card_id))
         store.mark_sent(card_id, int(message_id))
         count += 1
     return count

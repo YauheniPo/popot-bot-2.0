@@ -176,7 +176,7 @@ class FallbackPolicyTests(unittest.TestCase):
                         if failing is reader:
                             writer.assert_not_called()
 
-    def test_deploy_preserves_chat_routes_even_without_workspace_and_refreshes_defaults(self):
+    def test_deploy_reapplies_managed_fallback_routes_with_or_without_workspace(self):
         from ansible.plugins.filter.core import FilterModule
         from jinja2 import Environment
         tasks = yaml.safe_load((ROOT / 'ansible/tasks/runtime.yml').read_text())
@@ -195,7 +195,7 @@ class FallbackPolicyTests(unittest.TestCase):
                     hermes_managed_config=managed, hermes_external_skill_dirs=[],
                     vps_hermes=settings['vps_hermes'], vps_deploy={'features': {'workspace_ui': workspace}})
                 result = yaml.safe_load(template.render(**values))
-                self.assertEqual(result['fallback_providers'], selected)
+                self.assertEqual(result['fallback_providers'], defaults)
                 self.assertEqual(result['fallback_policy']['default_routes'], defaults)
                 values['hermes_existing_config'] = result
                 self.assertEqual(yaml.safe_load(template.render(**values)), result)

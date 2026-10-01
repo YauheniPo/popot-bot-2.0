@@ -396,7 +396,8 @@ Deploy обновляет ролевые managed-блоки SOUL, но не со
 | Настройки | Источник и поведение deploy |
 |---|---|
 | Основной provider/model, модель делегирования и cron по умолчанию | Единый источник `vps_hermes.config.managed_overlay.model`; повторно применяется при каждом deploy |
-| Остальные параметры model/cron, fallback, auxiliary, compression, memory limits, display, session reset | Общий `config.yaml`; существующие значения сохраняются, отсутствующие инициализируются из репозитория |
+| Действующий fallback | `fallback_policy.default_routes` из Ansible; повторно применяется при каждом deploy |
+| Остальные параметры model/cron, auxiliary, compression, memory limits, display, session reset | Общий `config.yaml`; существующие значения сохраняются, отсутствующие инициализируются из репозитория |
 | Approvals, ограничения инструментов, disabled skills, сеть и bind/порты | Политика Ansible повторно применяется при deploy |
 | API keys, токены, пароль Workspace | Vault → общий `.env`; изменения `.env` через UI будут заменены при deploy |
 | Sessions, память, skills, OAuth | Существующий Hermes home; отдельная копия для Workspace не создаётся |

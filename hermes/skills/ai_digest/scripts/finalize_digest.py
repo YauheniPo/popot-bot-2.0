@@ -26,7 +26,8 @@ def _validate_output_dir(output_dir: Path) -> Path:
     return resolved
 
 
-def _validate_report(raw: dict, draft: str, items: list[dict]) -> None:
+def _validate_report(raw: dict, draft: str, items: list[dict], *,
+                     citation_items: list[dict] | None = None) -> None:
     """Validate report structure and content against collected items."""
     run_id = raw.get("run_id", "")
     if not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id):
@@ -36,7 +37,7 @@ def _validate_report(raw: dict, draft: str, items: list[dict]) -> None:
     headings = list(re.finditer(r"^## (\d+)\. (.+)$", draft, re.M))
     if len(headings) != len(items):
         raise ValueError("report item count does not match collected items")
-    _validate_citations(draft, items)
+    _validate_citations(draft, citation_items if citation_items is not None else items)
     for index, (heading, item) in enumerate(zip(headings, items), 1):
         section_end = headings[index].start() if index < len(headings) else len(draft)
         _validate_section(heading, draft[heading.end():section_end], item, index)
@@ -73,6 +74,45 @@ def _validate_source_availability(draft: str, issues: list[dict]) -> None:
             raise ValueError("malformed source issue entry: missing 'id'")
         if not re.search(rf"(?<![\w-]){re.escape(issue_id)}(?![\w-])", availability[1]):
             raise ValueError("report omits unavailable or degraded sources")
+
+
+def complete_missing_analysis(raw: dict, draft: str) -> str:
+    """Keep valid item sections and mark missing analysis explicitly."""
+    items = raw.get("items", [])
+    headings = list(re.finditer(r"^## (\d+)\. (.+)$", draft, re.M))
+    sections: dict[tuple[str, str], tuple[re.Match, str]] = {}
+    for heading in headings:
+        next_heading = re.search(r"^## ", draft[heading.end():], re.M)
+        end = heading.end() + next_heading.start() if next_heading else len(draft)
+        key = heading.group(1), heading.group(2).strip()
+        sections[key] = heading, draft[heading.end():end]
+
+    output = ["# AI/IT News Digest"]
+    for index, item in enumerate(items, 1):
+        existing = sections.get((str(index), item["title"]))
+        if existing:
+            heading, body = existing
+            try:
+                _validate_section(heading, body, item, index)
+                _validate_citations(body, items)
+            except ValueError:
+                existing = None
+        if existing:
+            output.append(f"## {index}. {item['title']}{body.rstrip()}")
+            continue
+        urls = item.get("urls") or []
+        sources = "\n".join(f"Sources: {url}" for url in urls)
+        output.append(f"""## {index}. {item['title']}
+{sources}
+### Junior
+Анализ недоступен. Откройте источник по ссылке в карточке.
+### Senior
+Анализ недоступен. Проверьте первоисточник перед использованием.
+### Manager
+Анализ недоступен. Решение по этой новости требует проверки источника.""")
+    completed = "\n\n".join(output) + "\n"
+    _validate_report(raw, completed, items)
+    return completed
 
 
 def _complete_source_availability(draft: str, issues: list[dict]) -> str:
@@ -164,7 +204,7 @@ def finalize_selected(raw: dict, staged_path: Path, selected_indexes: list[int],
     if selected:
         content = "\n\n".join([header, *selected, footer]).strip() + "\n"
         _validate_report({"run_id": raw["run_id"]}, content,
-                         [items[index] for index in selected_indexes])
+                         [items[index] for index in selected_indexes], citation_items=items)
     else:
         content = "\n\n".join([header, "## No news rated 3\n\nВ этом выпуске нет новостей с оценкой 3.", footer]).strip() + "\n"
     _validate_source_availability(content, raw.get("source_issues", []))
