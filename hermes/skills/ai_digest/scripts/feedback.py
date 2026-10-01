@@ -234,16 +234,10 @@ def extract_cards_marker(content: str, job: dict, state_dir: Path) -> tuple[str,
     candidate = Path(matches[0].group(1).strip())
     if not candidate.is_absolute() or not _RUN_ID.fullmatch(candidate.stem.removeprefix("raw-")):
         return clean, None
-    if count == 1:
-        noun = "новость"
-    elif count <= 4:
-        noun = "новости"
-    else:
-        noun = "новостей"
-    if candidate.resolve().parent != root or not candidate.is_file():
+    if candidate.resolve().parent != state_dir or not candidate.is_file():
         return clean, None
     try:
-        raw = _finalizer()._read_raw(candidate, root)
+        raw = _finalizer()._read_raw(candidate, state_dir)
     except (OSError, ValueError):
         return clean, candidate.resolve()
     items = raw.get("items")
