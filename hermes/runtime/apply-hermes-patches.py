@@ -44,6 +44,9 @@ HERMES_AGENT_DIR = Path(
 )
 
 _PREFIX = "# Local Hermes:"
+_CRON_SCHEDULER_PATH = "cron/scheduler.py"
+_TELEGRAM_ADAPTER_PATH = "plugins/platforms/telegram/adapter.py"
+_CRON_SCHEDULER_DELIVERY_PATH = "cron/scheduler_delivery.py"
 # Relative paths patched by multiple migrations/patches below; named once so
 # the literal isn't duplicated across the file (SonarCloud: duplicated string).
 _HERMES_CLI_COMMANDS_PATH = "hermes_cli/commands.py"
@@ -925,7 +928,7 @@ def _clamp_command_names(
 ''',
     ),
     (
-        "plugins/platforms/telegram/adapter.py",
+        _TELEGRAM_ADAPTER_PATH,
         _PREFIX + " telegram usage refresh",
         '''    def _effective_update_message(self, update: Update) -> Optional[Message]:
 ''',
@@ -989,7 +992,7 @@ def _clamp_command_names(
 ''',
     ),
     (
-        "plugins/platforms/telegram/adapter.py",
+        _TELEGRAM_ADAPTER_PATH,
         _PREFIX + " telegram usage record",
         '''        event = await self._build_triggered_event(msg, update, MessageType.COMMAND)
 ''',
@@ -1024,7 +1027,7 @@ _PATCHES.extend([
 ''',
     ),
     (
-        "cron/scheduler.py", _PREFIX + " cron skill toolsets",
+        _CRON_SCHEDULER_PATH, _PREFIX + " cron skill toolsets",
         'def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:\n',
         '''# Local Hermes: cron skill toolsets
 def _with_cron_skill_tools(job: dict, toolsets: list[str]) -> list[str]:
@@ -1044,14 +1047,14 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
 ''',
     ),
     (
-        "cron/scheduler.py", _PREFIX + " cron skill per-job tools",
+        _CRON_SCHEDULER_PATH, _PREFIX + " cron skill per-job tools",
         '        return _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {})\n',
         '''        # Local Hermes: cron skill per-job tools
         return _with_cron_skill_tools(job, _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {}))
 ''',
     ),
     (
-        "cron/scheduler.py", _PREFIX + " cron skill platform tools",
+        _CRON_SCHEDULER_PATH, _PREFIX + " cron skill platform tools",
         '        return sorted(_get_platform_tools(cfg or {}, "cron"))\n',
         '''        # Local Hermes: cron skill platform tools
         return _with_cron_skill_tools(job, sorted(_get_platform_tools(cfg or {}, "cron")))
@@ -1136,7 +1139,7 @@ _PATCHES.extend([
 
 _PATCHES.extend([
     (
-        "cron/scheduler_delivery.py", _PREFIX + " digest feedback loader",
+        _CRON_SCHEDULER_DELIVERY_PATH, _PREFIX + " digest feedback loader",
         '''    from gateway.config import load_gateway_config
 
     # Wrap with header/footer unless cron.wrap_response: false.
@@ -1167,7 +1170,7 @@ _PATCHES.extend([
 ''',
     ),
     (
-        "cron/scheduler_delivery.py", _PREFIX + " digest card prerequisites",
+        _CRON_SCHEDULER_DELIVERY_PATH, _PREFIX + " digest card prerequisites",
         '''    delivery_errors = []
     suppressed_targets = 0  # local: `job` is snapshotted into durable deferred records mid-loop
 ''',
@@ -1183,7 +1186,7 @@ _PATCHES.extend([
 ''',
     ),
     (
-        "cron/scheduler_delivery.py", _PREFIX + " digest card delivery",
+        _CRON_SCHEDULER_DELIVERY_PATH, _PREFIX + " digest card delivery",
         '''        target_errors: list = []
         delivered = t.live_adapter_ready and _deliver_via_live_adapter(
             t, cleaned_delivery_content, media_files,
@@ -1225,7 +1228,7 @@ _PATCHES.extend([
 ''',
     ),
     (
-        "plugins/platforms/telegram/adapter.py", _PREFIX + " digest feedback callback",
+        _TELEGRAM_ADAPTER_PATH, _PREFIX + " digest feedback callback",
         '''        cb = self._callback_ctx(query)
         # Model picker / generic choice picker (/reasoning, /fast) need a chat id.
 ''',

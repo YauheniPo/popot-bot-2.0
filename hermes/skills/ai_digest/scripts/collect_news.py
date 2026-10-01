@@ -1093,7 +1093,7 @@ def _fetch_reddit_comments(item: dict, reddit_id: str, max_comments: int, fetch)
         item["discussion_issue"] = f"Reddit comments unavailable: {str(exc)[:120]}"
 
 
-def _read_article(item: dict, defaults: dict, fetch) -> None:
+def _read_article(item: dict, defaults: dict, fetch) -> None:  # noqa: S3776
     parsed = urlsplit(item["url"])
     if parsed.hostname == "github.com":
         parts = parsed.path.strip("/").split("/")

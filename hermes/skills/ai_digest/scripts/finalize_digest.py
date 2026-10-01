@@ -8,6 +8,9 @@ import json
 import os
 from pathlib import Path
 import re
+
+HEADING_PATTERN = re.compile(r"^## (\\d+)\. (.+)$")
+SOURCE_AVAILABILITY_HEADER = "\n## Source availability\n"
 import tempfile
 
 
@@ -65,7 +68,7 @@ def _validate_source_availability(draft: str, issues: list[dict]) -> None:
     """Verify all source issues are documented in the availability block."""
     if not issues:
         return
-    availability = draft.split("\n## Source availability\n", 1)
+    availability = draft.split(SOURCE_AVAILABILITY_HEADER, 1)
     if len(availability) != 2:
         raise ValueError("report omits unavailable or degraded sources")
     for issue in issues:
@@ -119,7 +122,7 @@ def _complete_source_availability(draft: str, issues: list[dict]) -> str:
     """Add missing source IDs from collected metadata to a staged report."""
     if not issues:
         return draft
-    marker = "\n## Source availability\n"
+    marker = SOURCE_AVAILABILITY_HEADER
     if marker not in draft:
         draft = draft.rstrip() + "\n" + marker
     availability = draft.split(marker, 1)[1]
@@ -192,7 +195,7 @@ def finalize_selected(raw: dict, staged_path: Path, selected_indexes: list[int],
             for index in selected_indexes):
         raise ValueError("invalid selected item indexes")
     headings = list(re.finditer(r"^## (\d+)\. (.+)$", draft, re.M))
-    availability_start = draft.find("\n## Source availability\n")
+    availability_start = draft.find(SOURCE_AVAILABILITY_HEADER)
     report_end = availability_start if availability_start >= 0 else len(draft)
     sections = [draft[heading.start():min(
         headings[index + 1].start() if index + 1 < len(headings) else report_end,

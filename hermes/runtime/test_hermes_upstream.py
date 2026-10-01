@@ -137,7 +137,7 @@ class HermesUpstreamTests(unittest.TestCase):
                     selected = namespace["_resolve_cron_enabled_toolsets"](job, cfg)
                     disabled = namespace["_resolve_cron_disabled_toolsets"](cfg)
                     effective = namespace["_select_tool_names"](selected, disabled, True)
-                    self.assertTrue({"skill_view", "skills_list", "web_search", "web_extract"} <= effective)
+                    self.assertLessEqual({"skill_view", "skills_list", "web_search", "web_extract"}, effective)
                     self.assertNotIn("skill_manage", effective)
                     denied_cfg = {**cfg, "agent": {"disabled_toolsets": ["skills", "terminal"]}}
                     denied = namespace["_resolve_cron_disabled_toolsets"](denied_cfg)

@@ -12,6 +12,8 @@ import math
 import os
 from pathlib import Path
 import re
+
+GET_CARD_SQL = "SELECT * FROM cards WHERE card_id=?"
 import secrets
 import sqlite3
 import stat
@@ -131,7 +133,7 @@ class FeedbackStore:
 
     def card(self, card_id: str) -> dict | None:
         with self._connect() as db:
-            row = db.execute("SELECT * FROM cards WHERE card_id=?", (card_id,)).fetchone()
+            row = db.execute(GET_CARD_SQL, (card_id,)).fetchone()
             return dict(row) if row else None
 
     def rate(self, card_id: str, chat_id: str, message_id: int, user_id: str,
@@ -140,7 +142,7 @@ class FeedbackStore:
             raise ValueError("invalid rating")
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT * FROM cards WHERE card_id=?", (card_id,)).fetchone()
+            row = db.execute(GET_CARD_SQL, (card_id,)).fetchone()
             if not row or row["status"] != "sent" or row["chat_id"] != str(chat_id) or row["message_id"] != message_id:
                 raise ValueError("unknown digest card")
             if row["owner_id"] != str(user_id):
@@ -226,7 +228,8 @@ def extract_cards_marker(content: str, job: dict, state_dir: Path) -> tuple[str,
     """Remove internal marker from delivery; accept only a direct raw file in state."""
     matches = list(_MARKER.finditer(content))
     clean = _MARKER.sub("", content).strip()
-    if len(matches) != 1 or "ai_digest" not in ([job.get("skill")] + (job.get("skills") or [])):
+    is_valid_match = len(matches) == 1 and "ai_digest" in ([job.get("skill")] + (job.get("skills") or []))
+    if not is_valid_match:
         return clean, None
     candidate = Path(matches[0].group(1).strip())
     if not candidate.is_absolute() or not _RUN_ID.fullmatch(candidate.stem.removeprefix("raw-")):
@@ -321,7 +324,7 @@ def deliver_cards(raw_path: Path, state_dir: Path, target: dict, owner_id: str, 
     for index, item in enumerate(items):
         analysis = ""
         if index < len(sections):
-            match = re.search(r"^### Junior[ \t]*\n(.*?)(?=^### Senior[ \t]*$)",
+            match = re.search(r"^### Junior[ \t]*\n(.*)(?=^### Senior[ \t]*$)",
                               sections[index], flags=re.M | re.S)
             analysis = match.group(1).strip() if match else ""
         card_texts.append(_card_text(item, index + 1, len(items), analysis))
@@ -361,7 +364,7 @@ def complete_if_ready(store: FeedbackStore, card_id: str, state_dir: Path,
     finalizer = _finalizer()
     with store._connect() as db:
         db.execute("BEGIN IMMEDIATE")
-        card = db.execute("SELECT * FROM cards WHERE card_id=?", (card_id,)).fetchone()
+        card = db.execute(GET_CARD_SQL, (card_id,)).fetchone()
         if not card:
             raise ValueError("unknown digest card")
         run_id = card["run_id"]
