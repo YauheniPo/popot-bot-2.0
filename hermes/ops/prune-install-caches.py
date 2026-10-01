@@ -11,14 +11,15 @@ from pathlib import Path
 
 
 CHROME_BUILD = re.compile(r"chrome-(\d+)\.(\d+)\.(\d+)\.(\d+)\Z")
-CACHE_CHILDREN = {
-    ".npm": ("_cacache", "_npx"),
-    ".cache": ("uv", "ms-playwright", "electron", "node-gyp", "pip", "pnpm"),
-    ".sonar": ("cache", "js", "_tmp"),
-}
 DOT_CACHE = ".cache"
 DOT_AGENT_BROWSER = ".agent-browser"
 MAX_CACHE_BYTES = 512 * 1024 * 1024
+
+CACHE_CHILDREN = {
+    ".npm": ("_cacache", "_npx"),
+    DOT_CACHE: ("uv", "ms-playwright", "electron", "node-gyp", "pip", "pnpm"),
+    ".sonar": ("cache", "js", "_tmp"),
+}
 
 
 def checked_directory(path: Path) -> bool:

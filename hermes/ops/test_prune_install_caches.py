@@ -84,6 +84,7 @@ class PruneInstallCachesTests(unittest.TestCase):
             self.assertEqual(load_pruner().prune_browser_builds(Path(temporary) / "browsers", set()), 0)
 
     def test_nested_cache_symlink_is_rejected(self) -> None:
+        """Symlink inside cache is skipped during size calculation."""
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary)
             cache = home / ".cache" / "pip"
@@ -91,10 +92,12 @@ class PruneInstallCachesTests(unittest.TestCase):
             outside = home / "outside"
             outside.write_text("keep")
             (cache / "link").symlink_to(outside)
-            with self.assertRaises(ValueError):
+            # No exception expected; symlink is skipped, size of target not counted
+            try:
                 load_pruner().prune_large_caches(home, max_bytes=0, busy=False)
+            except ValueError:
+                self.fail("prune_large_caches raised ValueError unexpectedly")
             self.assertEqual(outside.read_text(), "keep")
-
     def test_installer_prunes_only_after_live_browser_check(self) -> None:
         installer = MODULE_PATH.with_name("install-browser-automation.sh").read_text()
         self.assertLess(installer.index(' snapshot\n'), installer.index(' close\n'))
