@@ -2270,6 +2270,16 @@ workspace, реализуй задачу, запусти тесты и созд�
 изменений сети и production-сервисов. Для ограниченного VPS задайте
 `vps_deploy.features.host_admin: false`.
 
+Новая установка задаёт `display.busy_input_mode: steer`: текст, отправленный во
+время длинного запуска, поступает агенту после очередного вызова инструмента и
+не отменяет текущую работу. Это начальное UI-owned значение; повторный Ansible
+deploy сохраняет выбор в Dashboard. Уже установленный Hermes нужно переключить
+в настройках Dashboard или через `hermes config set display.busy_input_mode steer`;
+работающий gateway применит его после штатного перезапуска. Ответ
+`Redirected current run` означает, что прежний режим `interrupt` принял новое
+сообщение как коррекцию, а не что задача завершилась. Повторные одинаковые
+сообщения во время активной работы не ускоряют её.
+
 [Безопасность gateway](https://hermes-agent.nousresearch.com/docs/user-guide/security/)
 
 ### 3. Изоляция команд через rootless Podman

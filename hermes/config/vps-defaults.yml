@@ -299,6 +299,9 @@ vps_runtime:
     # all = every call; verbose = full details; log = audit file only.
     # Keep CLI verbose. Telegram shows compact live progress in one message,
     # then removes progress bubbles after success; final answers and warnings stay.
+    # Seed the UI-owned choice only when missing. Follow-ups reach the active
+    # run at a message boundary without cancelling its current call.
+    display.busy_input_mode: steer
     display.tool_progress: "verbose"
     display.platforms.telegram.tool_progress: "new"
     display.platforms.telegram.tool_progress_grouping: "accumulate"

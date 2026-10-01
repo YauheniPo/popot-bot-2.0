@@ -95,6 +95,17 @@ class ApplyConfigTests(unittest.TestCase):
         settings['vps_deploy']['features']['workspace_ui'] = False
         self.assertIn('model.max_tokens', [op.key for op in apply_config.build_operations(settings, current, {}, set())])
 
+    def test_busy_input_mode_is_seeded_without_overwriting_ui_choice(self) -> None:
+        settings = apply_config.load_settings(MODULE_PATH.parent.parent / 'config/vps-defaults.yml')
+        variables = {'HERMES_WORKSPACE': '/tmp/hermes-workspace'}
+        missing = {'display': {'tool_progress': 'verbose'}}
+        operations = apply_config.build_operations(settings, missing, variables, set())
+        self.assertIn(apply_config.Operation('set', 'display.busy_input_mode', 'steer'), operations)
+
+        chosen = {'display': {'busy_input_mode': 'queue'}}
+        operations = apply_config.build_operations(settings, chosen, variables, set())
+        self.assertNotIn('display.busy_input_mode', [op.key for op in operations])
+
     def test_workspace_cannot_move_security_sections_to_ui_ownership(self) -> None:
         settings = {
             'vps_deploy': {'features': {'workspace_ui': True}},
@@ -184,6 +195,7 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertEqual(routes['cron.model_provider'], overlay['model']['provider'])
         self.assertEqual(routes['cron.model'], overlay['model']['default'])
         self.assertIsInstance(overlay["cron"]["model_drift_guard"], bool)
+        self.assertEqual(settings["vps_runtime"]["set"]["display.busy_input_mode"], "steer")
         self.assertEqual(settings["vps_runtime"]["set"]["model.max_tokens"], 32768)
         self.assertIsInstance(overlay["web"]["search_backend"], str)
         self.assertIsInstance(overlay["web"]["extract_backend"], str)
