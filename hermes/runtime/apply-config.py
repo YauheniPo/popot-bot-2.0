@@ -380,7 +380,8 @@ def build_operations(
                       op.key.split('.')[0] not in owned or not nested_value(current_config, op.key)[0]]
         # The legacy interrupt mode cancels long-running work on every follow-up.
         # Keep queue/steer user-owned, but repair interrupt at deploy time.
-        if nested_value(current_config, 'display.busy_input_mode') == (True, 'interrupt'):
+        exists, value = nested_value(current_config, 'display.busy_input_mode')
+        if exists and value == 'interrupt':
             desired_mode = runtime.get('set', {}).get('display.busy_input_mode')
             if desired_mode == 'steer':
                 operations.append(Operation('set', 'display.busy_input_mode', desired_mode))
