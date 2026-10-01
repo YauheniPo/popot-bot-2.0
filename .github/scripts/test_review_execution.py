@@ -137,7 +137,7 @@ class ExecutionReportTest(unittest.TestCase):
             "CLAUDE_REVIEW_FALLBACK_RETRY_VALIDATION": "failure",
         })
         self.assertIn("Attempts: 3", report.summary())
-        self.assertIn("validation_failed", report.summary())
+        self.assertIn("validation_failed", report.details())
         self.assertEqual(report.attempts[-1].model, "backup")
     def test_long_history_is_bounded_while_totals_remain_exact(self):
         report = ExecutionReport("nvidia", "https://integrate.api.nvidia.com", "primary")
