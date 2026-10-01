@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from contextlib import closing
 from pathlib import Path
 
@@ -288,3 +289,424 @@ os.execvp(sys.argv[4], sys.argv[4:])
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SyncAiReviewMetricsTests(unittest.TestCase):
+    """Tests for sync-ai-review-metrics.py"""
+
+    def setUp(self):
+        import importlib.util
+        import sys
+        spec = importlib.util.spec_from_file_location(
+            "sync_ai_review_metrics",
+            OPS_DIR / "sync-ai-review-metrics.py"
+        )
+        self.mod = importlib.util.module_from_spec(spec)
+        sys.modules["sync_ai_review_metrics"] = self.mod
+        spec.loader.exec_module(self.mod)
+        self.original_subprocess_run = self.mod.subprocess.run
+
+    def tearDown(self):
+        import sys
+        self.mod.subprocess.run = self.original_subprocess_run
+        sys.modules.pop("sync_ai_review_metrics", None)
+
+    def test_import_pr_reviews_calls_extractor_with_correct_args(self):
+        """import_pr_reviews calls extractor with PR number."""
+        calls = []
+
+        def mock_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            mock = unittest.mock.MagicMock()
+            mock.returncode = 0
+            mock.stdout = "OK"
+            mock.stderr = ""
+            return mock
+
+        self.mod.subprocess.run = mock_run
+        try:
+            result = self.mod.import_pr_reviews(42)
+            self.assertTrue(result)
+            # Verify extractor was called with correct args (second call after gh auth)
+            extractor_calls = [c for c in calls if c[0][0] == "python3"]
+            self.assertEqual(len(extractor_calls), 1)
+            self.assertEqual(extractor_calls[0][0], ["python3", self.mod.EXTRACTOR, "--pr", "42"])
+            self.assertEqual(extractor_calls[0][1].get("timeout"), 120)
+            self.assertIn("GITHUB_TOKEN", extractor_calls[0][1].get("env", {}))
+        finally:
+            self.mod.subprocess.run = self.original_subprocess_run
+
+    def test_import_pr_reviews_handles_failure(self):
+        """import_pr_reviews returns False on extractor failure."""
+        def mock_run(cmd, **kwargs):
+            mock = unittest.mock.MagicMock()
+            mock.returncode = 1
+            mock.stdout = ""
+            mock.stderr = "extractor failed"
+            return mock
+
+        self.mod.subprocess.run = mock_run
+        try:
+            result = self.mod.import_pr_reviews(42)
+            self.assertFalse(result)
+        finally:
+            self.mod.subprocess.run = self.original_subprocess_run
+
+    def test_import_pr_reviews_handles_timeout(self):
+        """import_pr_reviews returns False on timeout."""
+        import subprocess
+        def mock_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, 120)
+
+        self.mod.subprocess.run = mock_run
+        try:
+            result = self.mod.import_pr_reviews(42)
+            self.assertFalse(result)
+        finally:
+            self.mod.subprocess.run = self.original_subprocess_run
+
+    def test_get_last_5_prs_requires_token(self):
+        """get_last_5_prs returns empty list without token."""
+        original_token = self.mod.GITHUB_TOKEN
+        self.mod.GITHUB_TOKEN = ""
+        try:
+            prs = self.mod.get_last_5_prs()
+            self.assertEqual(prs, [])
+        finally:
+            self.mod.GITHUB_TOKEN = original_token
+
+    def test_main_single_pr_mode(self):
+        """main with --pr imports single PR."""
+        original_import = self.mod.import_pr_reviews
+
+        def mock_import(pr_num):
+            self.assertEqual(pr_num, 123)
+            return True
+
+        self.mod.import_pr_reviews = mock_import
+        try:
+            import sys
+            original_argv = sys.argv
+            sys.argv = ["sync-ai-review-metrics.py", "--pr", "123"]
+            try:
+                exit_code = self.mod.main()
+                self.assertEqual(exit_code, 0)
+            finally:
+                sys.argv = original_argv
+        finally:
+            self.mod.import_pr_reviews = original_import
+
+    def test_main_single_pr_mode_failure(self):
+        """main with --pr returns 1 on failure."""
+        original_import = self.mod.import_pr_reviews
+
+        def mock_import(pr_num):
+            return False
+
+        self.mod.import_pr_reviews = mock_import
+        try:
+            import sys
+            original_argv = sys.argv
+            sys.argv = ["sync-ai-review-metrics.py", "--pr", "123"]
+            try:
+                exit_code = self.mod.main()
+                self.assertEqual(exit_code, 1)
+            finally:
+                sys.argv = original_argv
+        finally:
+            self.mod.import_pr_reviews = original_import
+
+    def test_main_list_mode_no_token(self):
+        """main list mode returns 1 when no token available."""
+        original_token = self.mod.GITHUB_TOKEN
+        original_gh = self.mod.subprocess.run
+
+        def mock_gh(cmd, **kwargs):
+            mock = unittest.mock.MagicMock()
+            mock.returncode = 1
+            return mock
+
+        self.mod.GITHUB_TOKEN = ""
+        self.mod.subprocess.run = mock_gh
+        try:
+            import sys
+            original_argv = sys.argv
+            sys.argv = ["sync-ai-review-metrics.py"]
+            try:
+                exit_code = self.mod.main()
+                self.assertEqual(exit_code, 1)
+            finally:
+                sys.argv = original_argv
+        finally:
+            self.mod.GITHUB_TOKEN = original_token
+            self.mod.subprocess.run = original_gh
+
+    def test_main_uses_gh_cli_for_token(self):
+        """main falls back to gh auth token."""
+        original_token = self.mod.GITHUB_TOKEN
+        original_gh = self.mod.subprocess.run
+        calls = []
+
+        def mock_run(cmd, **kwargs):
+            calls.append(cmd)
+            mock = unittest.mock.MagicMock()
+            if cmd[0] == "gh":
+                mock.returncode = 0
+                mock.stdout = "gh-token-123"
+            else:
+                mock.returncode = 0
+                mock.stdout = "OK"
+            mock.stderr = ""
+            return mock
+
+        self.mod.GITHUB_TOKEN = ""
+        self.mod.subprocess.run = mock_run
+        try:
+            exit_code = self.mod.main(["--pr", "1"])
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(self.mod.GITHUB_TOKEN, "gh-token-123")
+            # Verify gh auth token was called first
+            self.assertEqual(calls[0], ["gh", "auth", "token"])
+        finally:
+            self.mod.GITHUB_TOKEN = original_token
+            self.mod.subprocess.run = original_gh
+
+    def test_get_last_5_prs_success(self):
+        """get_last_5_prs returns PRs on successful API call."""
+        import urllib.request
+        original_open = urllib.request.urlopen
+
+        def mock_open(req, timeout):
+            self.assertIn("Authorization", req.headers)
+            response = unittest.mock.MagicMock()
+            response.__enter__ = lambda s: s
+            response.__exit__ = unittest.mock.Mock(return_value=False)
+            response.read.return_value = json.dumps([
+                {"number": 1, "title": "PR 1"},
+                {"number": 2, "title": "PR 2"},
+            ]).encode()
+            return response
+
+        urllib.request.urlopen = mock_open
+        try:
+            original_token = self.mod.GITHUB_TOKEN
+            self.mod.GITHUB_TOKEN = "test-token"
+            try:
+                prs = self.mod.get_last_5_prs()
+                self.assertEqual(len(prs), 2)
+                self.assertEqual(prs[0]["number"], 1)
+                self.assertEqual(prs[1]["number"], 2)
+            finally:
+                self.mod.GITHUB_TOKEN = original_token
+        finally:
+            urllib.request.urlopen = original_open
+
+    def test_get_last_5_prs_exception(self):
+        """get_last_5_prs returns empty list on exception."""
+        import urllib.request
+        original_open = urllib.request.urlopen
+
+        def mock_open(req, timeout):
+            raise Exception("network error")
+
+        urllib.request.urlopen = mock_open
+        try:
+            original_token = self.mod.GITHUB_TOKEN
+            self.mod.GITHUB_TOKEN = "test-token"
+            try:
+                prs = self.mod.get_last_5_prs()
+                self.assertEqual(prs, [])
+            finally:
+                self.mod.GITHUB_TOKEN = original_token
+        finally:
+            urllib.request.urlopen = original_open
+
+    def test_import_pr_reviews_timeout(self):
+        """import_pr_reviews returns False on timeout."""
+        import subprocess
+        original_run = self.mod.subprocess.run
+
+        def mock_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, 120)
+
+        self.mod.subprocess.run = mock_run
+        try:
+            result = self.mod.import_pr_reviews(42)
+            self.assertFalse(result)
+        finally:
+            self.mod.subprocess.run = original_run
+
+    def test_import_pr_reviews_exception(self):
+        """import_pr_reviews returns False on exception."""
+        original_run = self.mod.subprocess.run
+
+        def mock_run(cmd, **kwargs):
+            raise Exception("some error")
+
+        self.mod.subprocess.run = mock_run
+        try:
+            result = self.mod.import_pr_reviews(42)
+            self.assertFalse(result)
+        finally:
+            self.mod.subprocess.run = original_run
+
+    def test_main_list_mode_with_prs(self):
+        """main list mode processes multiple PRs."""
+        original_token = self.mod.GITHUB_TOKEN
+        original_gh = self.mod.subprocess.run
+        original_get = self.mod.get_last_5_prs
+        original_import = self.mod.import_pr_reviews
+
+        self.mod.GITHUB_TOKEN = "test-token"
+
+        def mock_get_last_5_prs():
+            return [
+                {"number": 1, "title": "First PR"},
+                {"number": 2, "title": "Second PR"},
+                {"number": 3, "title": "Third PR"},
+            ]
+
+        def mock_import(pr_num):
+            return pr_num != 2  # Fail on PR #2
+
+        self.mod.get_last_5_prs = mock_get_last_5_prs
+        self.mod.import_pr_reviews = mock_import
+
+        try:
+            exit_code = self.mod.main([])
+            # Should fail because PR #2 failed
+            self.assertEqual(exit_code, 1)
+        finally:
+            self.mod.GITHUB_TOKEN = original_token
+            self.mod.subprocess.run = original_gh
+            self.mod.get_last_5_prs = original_get
+            self.mod.import_pr_reviews = original_import
+
+    def test_main_list_mode_all_succeed(self):
+        """main list mode returns 0 when all PRs succeed."""
+        original_token = self.mod.GITHUB_TOKEN
+        original_gh = self.mod.subprocess.run
+        original_get = self.mod.get_last_5_prs
+        original_import = self.mod.import_pr_reviews
+
+        self.mod.GITHUB_TOKEN = "test-token"
+
+        def mock_get_last_5_prs():
+            return [
+                {"number": 1, "title": "First PR"},
+                {"number": 2, "title": "Second PR"},
+            ]
+
+        def mock_import(pr_num):
+            return True
+
+        self.mod.get_last_5_prs = mock_get_last_5_prs
+        self.mod.import_pr_reviews = mock_import
+
+        try:
+            exit_code = self.mod.main([])
+            self.assertEqual(exit_code, 0)
+        finally:
+            self.mod.GITHUB_TOKEN = original_token
+            self.mod.subprocess.run = original_gh
+            self.mod.get_last_5_prs = original_get
+            self.mod.import_pr_reviews = original_import
+
+    def test_main_list_mode_no_prs(self):
+        """main list mode returns 1 when no PRs found."""
+        original_token = self.mod.GITHUB_TOKEN
+        original_gh = self.mod.subprocess.run
+        original_get = self.mod.get_last_5_prs
+
+        self.mod.GITHUB_TOKEN = "test-token"
+        self.mod.get_last_5_prs = lambda: []
+
+        try:
+            exit_code = self.mod.main([])
+            self.assertEqual(exit_code, 1)
+        finally:
+            self.mod.GITHUB_TOKEN = original_token
+            self.mod.subprocess.run = original_gh
+            self.mod.get_last_5_prs = original_get
+
+    def test_main_list_mode_gh_fallback_success(self):
+        """main list mode uses gh CLI for token when env var not set."""
+        original_token = self.mod.GITHUB_TOKEN
+        original_gh = self.mod.subprocess.run
+        original_get = self.mod.get_last_5_prs
+        original_import = self.mod.import_pr_reviews
+
+        self.mod.GITHUB_TOKEN = ""
+
+        def mock_run(cmd, **kwargs):
+            if cmd[0] == "gh":
+                mock = unittest.mock.MagicMock()
+                mock.returncode = 0
+                mock.stdout = "gh-token-456"
+                return mock
+            return original_run(cmd, **kwargs)
+
+        def mock_get_last_5_prs():
+            return [{"number": 1, "title": "PR 1"}]
+
+        def mock_import(pr_num):
+            return True
+
+        self.mod.subprocess.run = mock_run
+        self.mod.get_last_5_prs = mock_get_last_5_prs
+        self.mod.import_pr_reviews = mock_import
+
+        try:
+            exit_code = self.mod.main([])
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(self.mod.GITHUB_TOKEN, "gh-token-456")
+        finally:
+            self.mod.GITHUB_TOKEN = original_token
+            self.mod.subprocess.run = original_gh
+            self.mod.get_last_5_prs = original_get
+            self.mod.import_pr_reviews = original_import
+
+    def test_main_gh_cli_fails_returns_error(self):
+        """main returns 1 when gh CLI fails and no token."""
+        original_token = self.mod.GITHUB_TOKEN
+        original_gh = self.mod.subprocess.run
+
+        self.mod.GITHUB_TOKEN = ""
+
+        def mock_run(cmd, **kwargs):
+            if cmd[0] == "gh":
+                mock = unittest.mock.MagicMock()
+                mock.returncode = 1
+                mock.stdout = ""
+                return mock
+            return original_run(cmd, **kwargs)
+
+        self.mod.subprocess.run = mock_run
+
+        try:
+            exit_code = self.mod.main([])
+            self.assertEqual(exit_code, 1)
+        finally:
+            self.mod.GITHUB_TOKEN = original_token
+            self.mod.subprocess.run = original_gh
+
+    def test_main_gh_cli_raises_exception(self):
+        """main handles exception from gh CLI gracefully."""
+        original_token = self.mod.GITHUB_TOKEN
+        original_gh = self.mod.subprocess.run
+
+        self.mod.GITHUB_TOKEN = ""
+
+        def mock_run(cmd, **kwargs):
+            if cmd[0] == "gh":
+                raise FileNotFoundError("gh not found")
+            return original_run(cmd, **kwargs)
+
+        self.mod.subprocess.run = mock_run
+
+        try:
+            exit_code = self.mod.main([])
+            self.assertEqual(exit_code, 1)
+        finally:
+            self.mod.GITHUB_TOKEN = original_token
+            self.mod.subprocess.run = original_gh

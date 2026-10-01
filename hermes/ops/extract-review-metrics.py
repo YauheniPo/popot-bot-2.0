@@ -55,6 +55,30 @@ def _review_identity(body: str) -> tuple[str, str, str]:
     return "unknown", "", ""
 
 
+def _apply_claude_validated_marker(
+    reviewer: str, default_outcome: str, validated_chunks: int, body: str
+) -> bool:
+    """Return True if Claude validated-chunks marker should set outcome to success."""
+    if reviewer != "ClaudeCodePlugin":
+        return False
+    if default_outcome != "unknown" or validated_chunks == 0:
+        return False
+    return bool(REVIEW_MARKERS[1][1].search(body))
+
+
+def _compute_total_chunks(
+    scope: Any, direct_chunks: Any, reviewer: str, default_outcome: str
+) -> int:
+    """Compute total_chunks from scope, direct_chunks, or reviewer defaults."""
+    if scope:
+        return int(scope.group(2))
+    if direct_chunks:
+        return int(direct_chunks.group(1))
+    if reviewer == "ClaudeCodePlugin" and default_outcome == "success":
+        return 1
+    return 0
+
+
 def parse_review(body: str, reviewer_hint: str = "") -> dict[str, Any] | None:
     match = METADATA_RE.search(body or "")
     if not match:
@@ -83,13 +107,11 @@ def parse_review(body: str, reviewer_hint: str = "") -> dict[str, Any] | None:
     )
     # Claude publishes this marker only after a validated review result. Its
     # summary has no separate Result/Coverage line.
-    if reviewer == "ClaudeCodePlugin" and default_outcome == "unknown" and numbers["validated_chunks"]:
-        if REVIEW_MARKERS[1][1].search(body):
-            default_outcome = "success"
+    if _apply_claude_validated_marker(reviewer, default_outcome, numbers["validated_chunks"], body):
+        default_outcome = "success"
     raw_outcome = outcome.group(1).strip().strip("*_`").strip() if outcome else default_outcome
     direct_chunks = FIELD_RE["direct_chunks"].search(body) if reviewer == "DirectAPI" else None
-    total_chunks = (int(scope.group(2)) if scope else int(direct_chunks.group(1)) if direct_chunks
-                    else 1 if reviewer == "ClaudeCodePlugin" and default_outcome == "success" else 0)
+    total_chunks = _compute_total_chunks(scope, direct_chunks, reviewer, default_outcome)
     return {
         "reviewer": reviewer,
         "provider": provider,
