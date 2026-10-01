@@ -176,8 +176,7 @@ class _SafeHTTPSHandler(HTTPSHandler):
         connection_type = _pinned_connection_class(
             http.client.HTTPSConnection, req.full_url, allow_loopback=self.allow_loopback,
         )
-        return self.do_open(connection_type, req, context=self._context,
-                            check_hostname=getattr(self, "_check_hostname", None))
+        return self.do_open(connection_type, req, context=self._context)
 
 
 class _SafeRedirect(HTTPRedirectHandler):

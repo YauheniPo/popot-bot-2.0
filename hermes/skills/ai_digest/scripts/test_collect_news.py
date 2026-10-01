@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import gzip
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import http.client
+import io
 import json
 from pathlib import Path
 import socket
@@ -13,6 +14,7 @@ import sys
 import threading
 import unittest
 from unittest.mock import patch, MagicMock
+from urllib.error import URLError
 from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -1170,6 +1172,37 @@ class CollectNewsTests(unittest.TestCase):
                 handler.https_open(request)
         factory.assert_called_once_with(http.client.HTTPSConnection, request.full_url, allow_loopback=False)
         self.assertIs(do_open.call_args.args[0], connection_type)
+
+    def test_https_fetch_uses_real_connection_with_verified_tls_context(self):
+        address = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "",
+                    ("93.184.216.34", 443))]
+        pinned_socket = MagicMock()
+        tls_socket = MagicMock()
+        tls_socket.makefile.return_value = io.BytesIO(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+        )
+        with patch("collect_news._public_addresses", return_value=address), \
+                patch("collect_news._connect_resolved", return_value=pinned_socket) as connect, \
+                patch("ssl.SSLContext.wrap_socket", autospec=True, return_value=tls_socket) as wrap, \
+                patch("socket.getaddrinfo", side_effect=AssertionError("unexpected DNS lookup")):
+            self.assertEqual(http_fetch("https://example.test/news", max_bytes=10, timeout=3), b"ok")
+        connect.assert_called_once_with(address, 3)
+        context, connection = wrap.call_args.args
+        self.assertIs(connection, pinned_socket)
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertEqual(wrap.call_args.kwargs["server_hostname"], "example.test")
+
+    def test_https_fetch_reports_certificate_failure_and_closes_socket(self):
+        pinned_socket = MagicMock()
+        error = ssl.SSLCertVerificationError("certificate verify failed")
+        with patch("collect_news._public_addresses", return_value=[]), \
+                patch("collect_news._connect_resolved", return_value=pinned_socket), \
+                patch("ssl.SSLContext.wrap_socket", side_effect=error):
+            with self.assertRaises(URLError) as result:
+                http_fetch("https://example.test/news", max_bytes=10)
+        self.assertIs(result.exception.reason, error)
+        pinned_socket.close.assert_called_once()
 
     def test_safe_redirect_validates_newurl(self):
         """Test _SafeRedirect validates the redirect URL and delegates on success."""
