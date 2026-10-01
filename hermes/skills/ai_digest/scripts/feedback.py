@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import argparse
+import secrets
 from datetime import datetime, timezone
 import hashlib
 import importlib.util
@@ -12,9 +13,6 @@ import math
 import os
 from pathlib import Path
 import re
-
-GET_CARD_SQL = "SELECT * FROM cards WHERE card_id=?"
-import secrets
 import sqlite3
 import stat
 import time
@@ -22,6 +20,7 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
 
+GET_CARD_SQL = "SELECT * FROM cards WHERE card_id=?"
 _MARKER = re.compile(r"^NEWS_CARDS:(.+)$", re.M)
 _WORDS = re.compile(r"[\w]{3,}", re.UNICODE)
 _RUN_ID = re.compile(r"\d{8}-\d{6}-[0-9a-f]{8}")
