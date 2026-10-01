@@ -323,5 +323,59 @@ All configured sources responded.
             self.assertEqual(list(Path(directory).iterdir()), [])
 
 
+    def test_complete_missing_analysis(self):
+        from finalize_digest import complete_missing_analysis
+        raw = {"run_id": "20260925-090000-abcdef12", "items": [{"title": "Item 1"}, {"title": "Item 2"}]}
+        draft = "# AI/IT News Digest\n## 1. Item 1\n### Junior\nAnalysis 1\n### Senior\nAnalysis 1\n### Manager\nAnalysis 1\n## 2. Item 2\n### Junior\nAnalysis 2\n### Senior\nAnalysis 2\n### Manager\nAnalysis 2"
+        # Case 1: all sections present -> should return the same draft
+        result = complete_missing_analysis(raw, draft)
+        expected = "# AI/IT News Digest\n\n## 1. Item 1\n### Junior\nAnalysis 1\n### Senior\nAnalysis 1\n### Manager\nAnalysis 1\n\n## 2. Item 2\n### Junior\nAnalysis 2\n### Senior\nAnalysis 2\n### Manager\nAnalysis 2\n"
+        self.assertEqual(result, expected)
+        # Case 2: missing section for item 2 -> should mark missing analysis
+        draft_missing = "# AI/IT News Digest\n## 1. Item 1\n### Junior\nAnalysis 1\n### Senior\nAnalysis 1\n### Manager\nAnalysis 1\n## 2. Item 2"
+        result2 = complete_missing_analysis(raw, draft_missing)
+        self.assertIn("Анализ недоступен", result2)
+        self.assertIn("Item 2", result2)
+        # Check that the first section is unchanged
+        self.assertIn("## 1. Item 1", result2)
+        self.assertIn("### Junior\nAnalysis 1", result2)
+        # Case 3: no headings at all
+        draft_no_headings = "# AI/IT News Digest\nSome text"
+        result3 = complete_missing_analysis(raw, draft_no_headings)
+        self.assertIn("Анализ недоступен", result3)
+        self.assertIn("Item 1", result3)
+        self.assertIn("Item 2", result3)
+        # Should start with the title and have two items sections
+        self.assertTrue(result3.startswith("# AI/IT News Digest\n\n## 1. Item 1"))
+        self.assertTrue("## 2. Item 2" in result3)
+
+    def test_finalize_selected_invalid_indexes(self):
+        from finalize_digest import finalize_selected, stage
+        raw = {"run_id": "20260925-090000-abcdef12", "items": [{"title": "Item 1"}, {"title": "Item 2"}]}
+        draft = "# AI/IT News Digest\n## 1. Item 1\n### Junior\nA\n### Senior\nB\n### Manager\nC\n## 2. Item 2\n### Junior\nD\n### Senior\nE\n### Manager\nF"
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            state_dir = Path(directory) / "state"
+            state_dir.mkdir()
+            output_dir = Path(directory) / "output"
+            output_dir.mkdir()
+            staged = stage(raw, draft, state_dir)
+            # Test negative index
+            with self.assertRaises(ValueError):
+                finalize_selected(raw, staged, [-1], output_dir)
+            # Test index out of range
+            with self.assertRaises(ValueError):
+                finalize_selected(raw, staged, [5], output_dir)
+            # Test non-integer
+            with self.assertRaises(ValueError):
+                finalize_selected(raw, staged, [1.5], output_dir)
+            # Test duplicate indexes (should be invalid because we check sorted(set))
+            with self.assertRaises(ValueError):
+                finalize_selected(raw, staged, [1, 1], output_dir)
+            # Test not sorted
+            with self.assertRaises(ValueError):
+                finalize_selected(raw, staged, [2, 1], output_dir)
+
 if __name__ == "__main__":
     unittest.main()

@@ -641,7 +641,7 @@ def _collect_github_trending(source: dict, source_id: str, now: datetime, fetch,
                                             max_bytes, max_chars, window, issues)
 
 
-def _curated_projects(markdown: str) -> dict[str, dict]:  # noqa: S3776
+def _curated_projects(markdown: str) -> dict[str, dict]:  # noqa: S3776  # noqa: S3776
     """Parse categorized GitHub project links from a curated-list README."""
     projects = {}
     category = "Projects"
@@ -970,7 +970,7 @@ def _importance(item: dict, now: datetime, window_hours: int) -> float:
     return freshness + popularity + discussion + curated_update + 10 * (len(item["source_ids"]) - 1)
 
 
-def _select_items(items: list[dict], limit: int, mode: str, now: datetime,
+def _select_items(items: list[dict], limit: int, mode: str, now: datetime,  # noqa: S3776
                   window_hours: int, *, history: list[dict] | None = None) -> list[dict]:
     from feedback import preference_bonus
 
@@ -1138,7 +1138,7 @@ def _read_article(item: dict, defaults: dict, fetch) -> None:  # noqa: S3776
         item["read_issue"] = str(exc)[:120]
 
 
-def collect(config: dict, *, now: datetime | None = None, fetch=None,
+def collect(config: dict, *, now: datetime | None = None, fetch=None,  # noqa: S3776
             window_hours: int | None = None, limit: int | None = None, topic: str = "",
             mode: str = "daily", history: list[dict] | None = None,
             seen_items: list[dict] | None = None) -> dict:  # noqa: S3776

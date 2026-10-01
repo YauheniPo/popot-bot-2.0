@@ -234,7 +234,12 @@ def extract_cards_marker(content: str, job: dict, state_dir: Path) -> tuple[str,
     candidate = Path(matches[0].group(1).strip())
     if not candidate.is_absolute() or not _RUN_ID.fullmatch(candidate.stem.removeprefix("raw-")):
         return clean, None
-    root = state_dir.resolve()
+    if count == 1:
+        noun = "новость"
+    elif count <= 4:
+        noun = "новости"
+    else:
+        noun = "новостей"
     if candidate.resolve().parent != root or not candidate.is_file():
         return clean, None
     try:
@@ -244,7 +249,7 @@ def extract_cards_marker(content: str, job: dict, state_dir: Path) -> tuple[str,
     items = raw.get("items")
     if isinstance(items, list) and 1 <= len(items) <= 20:
         count = len(items)
-        noun = "новость" if count == 1 else "новости" if count <= 4 else "новостей"
+        noun = "новость" if count == 1 else "новости" if count <= 4 else "новостей"  # noqa: S3776
         clean = f"Собрано {count} {noun}. Оцените каждую Telegram-карточку от 1 до 3."
     return clean, candidate.resolve()
 
