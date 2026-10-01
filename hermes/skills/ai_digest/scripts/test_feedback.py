@@ -1,6 +1,8 @@
 """Ratings and personalized selection for Telegram news cards."""
 
 import json
+import io
+from contextlib import redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sys
@@ -8,12 +10,14 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
+from urllib.error import URLError
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from feedback import (FeedbackStore, complete_if_ready, deliver_cards,
                       deliver_cards_to_telegram,
-                      extract_cards_marker, preference_bonus, telegram_send)  # noqa: E402
+                      extract_cards_marker, owner_for_digest_jobs,
+                      preference_bonus, telegram_send)  # noqa: E402
 
 
 class FeedbackTests(unittest.TestCase):
@@ -42,6 +46,45 @@ class FeedbackTests(unittest.TestCase):
         self.assertEqual(self.store.history("9")[0]["score"], 1)
         self.assertEqual(self.store.history("10"), [])
         self.assertEqual(self.store.stats("9")["ratings"], {"1": 1, "2": 0, "3": 0})
+
+    def test_store_refuses_symlinked_database_and_reservation_is_idempotent(self):
+        other = self.state / "other.db"
+        other.write_text("do not overwrite")
+        alias = self.state / "alias.db"
+        alias.symlink_to(other)
+        with self.assertRaisesRegex(ValueError, "owner-controlled regular file"):
+            FeedbackStore(alias)
+        self.assertEqual(other.read_text(), "do not overwrite")
+        first, fresh = self.store.reserve_card(self.RUN_ID, self.item, "-1001", "42", "9")
+        second, repeated = self.store.reserve_card(self.RUN_ID, self.item, "-1001", "42", "9")
+        self.assertEqual(first, second)
+        self.assertTrue(fresh)
+        self.assertFalse(repeated)
+
+    def test_rating_rejects_invalid_unknown_and_finalized_cards(self):
+        card_id, _ = self.store.reserve_card(self.RUN_ID, self.item, "-1001", "42", "9")
+        self.store.mark_sent(card_id, 100)
+        with self.assertRaisesRegex(ValueError, "invalid rating"):
+            self.store.rate(card_id, "-1001", 100, "9", 4)
+        with self.assertRaisesRegex(ValueError, "unknown digest card"):
+            self.store.rate("missing", "-1001", 100, "9", 3)
+        with self.store._connect() as db:
+            db.execute("INSERT INTO completions (run_id,chat_id,thread_id,owner_id,path) "
+                       "VALUES (?,?,?,?,?)", (self.RUN_ID, "-1001", "42", "9", "report.md"))
+        with self.assertRaisesRegex(ValueError, "already finalized"):
+            self.store.rate(card_id, "-1001", 100, "9", 3)
+
+    def test_delivery_history_and_stats_only_include_owner_sent_cards(self):
+        card_id, _ = self.store.reserve_card(self.RUN_ID, self.item, "-1001", "42", "9")
+        self.assertEqual(self.store.recently_sent_items("9", "2000-01-01"), [])
+        self.store.mark_sent(card_id, 100)
+        self.assertEqual(self.store.card(card_id)["title"], self.item["title"])
+        self.assertIsNone(self.store.card("missing"))
+        self.assertEqual(self.store.recently_sent_items("9", "2000-01-01")[0]["url"],
+                         self.item["url"])
+        self.assertEqual(self.store.recently_sent_items("10", "2000-01-01"), [])
+        self.assertEqual(self.store.stats("9")["delivered_cards"], 1)
+        self.assertEqual(self.store.stats("10")["delivered_cards"], 0)
 
     def test_similar_good_news_ranks_above_bad_news(self):
         positive = dict(self.item)
@@ -257,6 +300,139 @@ Other planning.
             with self.assertRaises(RuntimeError) as caught:
                 telegram_send(token, "sendMessage", {"chat_id": 1, "text": "hello"})
         self.assertNotIn(token, str(caught.exception))
+
+    def test_marker_rejects_multiple_and_external_paths_but_keeps_private_delivery(self):
+        raw = self.state / f"raw-{self.RUN_ID}.json"
+        raw.write_text(json.dumps({"run_id": self.RUN_ID, "items": [self.item]}))
+        marker = f"NEWS_CARDS:{raw}"
+        clean, path = extract_cards_marker(f"Summary\n{marker}", {"skill": "ai_digest"}, self.state)
+        self.assertEqual(path, raw.resolve())
+        self.assertIn("Собрано 1 новость", clean)
+        self.assertNotIn(str(raw), clean)
+        for content in (f"{marker}\n{marker}", "NEWS_CARDS:/tmp/raw-invalid.json"):
+            clean, path = extract_cards_marker(content, {"skill": "ai_digest"}, self.state)
+            self.assertIsNone(path)
+            self.assertNotIn("NEWS_CARDS:", clean)
+        outside = self.state.parent / f"raw-{self.RUN_ID}.json"
+        clean, path = extract_cards_marker(f"NEWS_CARDS:{outside}",
+                                           {"skill": "ai_digest"}, self.state)
+        self.assertIsNone(path)
+        self.assertEqual(clean, "")
+        raw.write_text("invalid json")
+        clean, path = extract_cards_marker(marker, {"skill": "ai_digest"}, self.state)
+        self.assertEqual(path, raw.resolve())
+
+    def test_telegram_retries_429_once_and_sanitizes_transport_errors(self):
+        rate_limited = HTTPError("https://api.telegram.org/botsecret/sendMessage", 429,
+                                 "rate limit", {"Retry-After": "2"}, None)
+        with patch("feedback.urlopen", side_effect=[rate_limited,
+                                                    io.BytesIO(b'{"ok":true,"result":{"message_id":7}}')]) as request, \
+                patch("feedback.time.sleep") as sleep:
+            self.assertEqual(telegram_send("secret", "sendMessage", {"chat_id": 1})["message_id"], 7)
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once_with(2)
+        with patch("feedback.urlopen", side_effect=URLError("secret")):
+            with self.assertRaisesRegex(RuntimeError, "URLError") as caught:
+                telegram_send("secret", "sendMessage", {"chat_id": 1})
+        self.assertNotIn("secret", str(caught.exception))
+        with patch("feedback.urlopen", return_value=io.BytesIO(b'{"ok":false}')):
+            with self.assertRaisesRegex(RuntimeError, "returned an error"):
+                telegram_send("secret", "sendMessage", {"chat_id": 1})
+
+    def test_delivery_rejects_invalid_run_and_missing_token_before_send(self):
+        raw = self.state / f"raw-{self.RUN_ID}.json"
+        raw.write_text(json.dumps({"run_id": "bad", "items": [self.item]}))
+        with self.assertRaisesRegex(ValueError, "invalid digest run"):
+            deliver_cards(raw, self.state, {"chat_id": "1"}, "9", Mock())
+        raw.write_text(json.dumps({"run_id": self.RUN_ID, "items": []}))
+        with self.assertRaisesRegex(ValueError, "invalid digest card count"):
+            deliver_cards(raw, self.state, {"chat_id": "1"}, "9", Mock())
+        with self.assertRaisesRegex(RuntimeError, "token unavailable"):
+            deliver_cards_to_telegram(raw, self.state, {"chat_id": "1"}, "9", "")
+
+    def test_owner_selection_and_stats_cli(self):
+        from feedback import main
+
+        jobs_path = self.state / "jobs.json"
+        self.assertIsNone(owner_for_digest_jobs(jobs_path))
+        jobs_path.write_text(json.dumps({"jobs": [
+            {"skill": "ai_digest", "enabled": True, "origin": {"user_id": "9"}},
+            {"skill": "ai_digest", "enabled": False, "origin": {"user_id": "10"}},
+        ]}))
+        self.assertEqual(owner_for_digest_jobs(jobs_path), "9")
+        jobs_path.write_text(json.dumps({"jobs": [
+            {"skill": "ai_digest", "origin": {"user_id": "9"}},
+            {"skill": "ai_digest", "origin": {"user_id": "10"}},
+        ]}))
+        self.assertIsNone(owner_for_digest_jobs(jobs_path))
+        output = io.StringIO()
+        with patch.dict("os.environ", {"AI_DIGEST_STATE_DIR": str(self.state),
+                                    "HERMES_HOME": str(self.state)}), redirect_stdout(output):
+            self.assertEqual(main(["--stats"]), 2)
+        self.assertEqual(json.loads(output.getvalue())["error"], "digest owner is ambiguous")
+        output = io.StringIO()
+        with patch.dict("os.environ", {"AI_DIGEST_STATE_DIR": str(self.state),
+                                    "HERMES_HOME": str(self.state)}), redirect_stdout(output):
+            self.assertEqual(main(["--stats", "--user-id", "9"]), 0)
+        self.assertEqual(json.loads(output.getvalue())["rated_items"], 0)
+
+    def test_missing_finalizer_and_unknown_completion_are_explicit_errors(self):
+        import feedback
+
+        with patch("feedback.importlib.util.spec_from_file_location", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "finalizer unavailable"):
+                feedback._finalizer()
+        with self.assertRaisesRegex(ValueError, "unknown digest card"):
+            complete_if_ready(self.store, "missing", self.state, self.state / "output")
+
+    def test_completion_message_is_recorded_and_unrelated_ratings_do_not_bias(self):
+        with self.store._connect() as db:
+            db.execute("INSERT INTO completions (run_id,chat_id,thread_id,owner_id,path) "
+                       "VALUES (?,?,?,?,?)", (self.RUN_ID, "-1001", "42", "9", "report.md"))
+        self.store.mark_completion_sent(self.RUN_ID, "-1001", "42", "9", 777)
+        with self.store._connect() as db:
+            message = db.execute("SELECT message_id FROM completions").fetchone()[0]
+        self.assertEqual(message, 777)
+        self.assertEqual(preference_bonus(self.item, []), 0)
+        same = dict(self.item, score=3, updated_at="bad date")
+        self.assertEqual(preference_bonus(self.item, [same]), 0)
+        similar = dict(self.item, url="https://example.org/old", score=3,
+                       updated_at="bad date")
+        self.assertGreater(preference_bonus(self.item, [similar]), 0)
+
+    def test_two_item_marker_uses_correct_noun(self):
+        raw = self.state / f"raw-{self.RUN_ID}.json"
+        raw.write_text(json.dumps({"run_id": self.RUN_ID, "items": [self.item, self.item]}))
+        clean, path = extract_cards_marker(f"NEWS_CARDS:{raw}",
+                                           {"skill": "ai_digest"}, self.state)
+        self.assertEqual(path, raw.resolve())
+        self.assertIn("Собрано 2 новости", clean)
+
+    def test_telegram_caps_malformed_retry_after(self):
+        rate_limited = HTTPError("https://api.telegram.org/botsecret/sendMessage", 429,
+                                 "rate limit", {"Retry-After": "invalid"}, None)
+        with patch("feedback.urlopen", side_effect=[rate_limited,
+                                                    io.BytesIO(b'{"ok":true,"result":{}}')]), \
+                patch("feedback.time.sleep") as sleep:
+            self.assertEqual(telegram_send("secret", "sendMessage", {"chat_id": 1}), {})
+        sleep.assert_called_once_with(1)
+
+    def test_concurrent_staging_accepts_winner_only_when_file_exists(self):
+        import feedback
+
+        finalizer = Mock()
+        finalizer.stage.side_effect = FileExistsError("concurrent stage")
+        with self.assertRaises(FileExistsError):
+            feedback._stage_cards(finalizer, {}, [self.item], self.state, self.RUN_ID)
+        staged = self.state / f"staged-{self.RUN_ID}.md"
+
+        def winner(*_args):
+            staged.write_text("completed")
+            raise FileExistsError("concurrent stage")
+
+        finalizer.stage.side_effect = winner
+        self.assertEqual(feedback._stage_cards(finalizer, {}, [self.item],
+                                               self.state, self.RUN_ID), staged)
 
 
 if __name__ == "__main__":

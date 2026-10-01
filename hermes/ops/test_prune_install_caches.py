@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import importlib.util
+import runpy
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 MODULE_PATH = Path(__file__).with_name("prune-install-caches.py")
@@ -77,10 +79,106 @@ class PruneInstallCachesTests(unittest.TestCase):
                 load_pruner().prune_browser_builds(home / "browsers", set())
             self.assertTrue((outside / "chrome-1.0.0.0").exists())
 
+    def test_absent_browser_root_is_safe_on_first_install(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            self.assertEqual(load_pruner().prune_browser_builds(Path(temporary) / "browsers", set()), 0)
+
+    def test_nested_cache_symlink_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            cache = home / ".cache" / "pip"
+            cache.mkdir(parents=True)
+            outside = home / "outside"
+            outside.write_text("keep")
+            (cache / "link").symlink_to(outside)
+            with self.assertRaises(ValueError):
+                load_pruner().prune_large_caches(home, max_bytes=0, busy=False)
+            self.assertEqual(outside.read_text(), "keep")
+
     def test_installer_prunes_only_after_live_browser_check(self) -> None:
         installer = MODULE_PATH.with_name("install-browser-automation.sh").read_text()
         self.assertLess(installer.index(' snapshot\n'), installer.index(' close\n'))
         self.assertLess(installer.index(' close\n'), installer.index('"${SCRIPT_DIR}/prune-install-caches.py"'))
+
+    def test_detects_active_chrome_and_package_installers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary) / "home"
+            proc = Path(temporary) / "proc"
+            chrome = home / ".agent-browser/browsers/chrome-152.0.1.1/chrome"
+            chrome.parent.mkdir(parents=True)
+            chrome.touch()
+            browser = proc / "123"
+            browser.mkdir(parents=True)
+            (browser / "exe").symlink_to(chrome)
+            (browser / "comm").write_text("chrome\n")
+            installer = proc / "124"
+            installer.mkdir()
+            (installer / "exe").symlink_to("/usr/bin/node")
+            (installer / "comm").write_text("node\n")
+            (installer / "cmdline").write_bytes(b"node\0/usr/lib/node_modules/npm/bin/npm-cli.js\0install\0")
+            self.assertEqual(load_pruner().active_processes(home, proc),
+                             ({"chrome-152.0.1.1"}, True))
+
+    def test_unavailable_process_table_defers_cache_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            self.assertEqual(load_pruner().active_processes(home, home / "missing-proc"),
+                             (set(), True))
+
+    def test_process_scan_handles_exited_processes_and_other_installers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary) / "home"
+            proc = Path(temporary) / "proc"
+            proc.mkdir()
+            (proc / "self").mkdir()
+            exited = proc / "123"
+            exited.mkdir()
+            interrupted = proc / "127"
+            interrupted.mkdir()
+            (interrupted / "exe").symlink_to("/usr/bin/node")
+            (interrupted / "comm").write_text("node")
+            for pid, exe, command, argv in (
+                ("124", home / ".cache/ms-playwright/chrome", "chrome", b"chrome\0"),
+                ("125", Path("/usr/bin/pip3"), "pip3", b"pip3\0install\0"),
+                ("126", Path("/usr/bin/python3"), "python3", b"python3\0-m\0pip\0install\0"),
+            ):
+                process = proc / pid
+                process.mkdir()
+                (process / "exe").symlink_to(exe)
+                (process / "comm").write_text(command)
+                (process / "cmdline").write_bytes(argv)
+            self.assertEqual(load_pruner().active_processes(home, proc), (set(), True))
+
+    def test_main_prunes_after_process_check_and_is_repeatable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            browser = home / ".agent-browser" / "browsers"
+            browser.mkdir(parents=True)
+            for version in ("1.0.0.0", "2.0.0.0", "3.0.0.0"):
+                (browser / f"chrome-{version}").mkdir()
+            pruner = load_pruner()
+            with patch("sys.argv", ["prune-install-caches.py", "--user-home", str(home)]), \
+                    patch.object(pruner, "active_processes", return_value=(set(), False)), \
+                    patch.object(pruner, "MAX_CACHE_BYTES", 1), \
+                    patch("builtins.print") as output:
+                pruner.main()
+                output.assert_called_with("browser_removed=1 cache_entries_removed=0")
+                pruner.main()
+                output.assert_called_with("browser_removed=0 cache_entries_removed=0")
+
+    def test_main_rejects_relative_home(self) -> None:
+        pruner = load_pruner()
+        with patch("sys.argv", ["prune-install-caches.py", "--user-home", "relative"]), \
+                self.assertRaises(SystemExit) as error:
+            pruner.main()
+        self.assertEqual(error.exception.code, 2)
+
+    def test_cli_accepts_a_clean_first_install(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch("sys.argv", ["prune-install-caches.py", "--user-home", temporary]), \
+                    patch("builtins.print") as output:
+                runpy.run_path(str(MODULE_PATH), run_name="__main__")
+            output.assert_called_with("browser_removed=0 cache_entries_removed=0")
 
 
 if __name__ == "__main__":

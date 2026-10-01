@@ -234,7 +234,7 @@ def extract_cards_marker(content: str, job: dict, state_dir: Path) -> tuple[str,
     candidate = Path(matches[0].group(1).strip())
     if not candidate.is_absolute() or not _RUN_ID.fullmatch(candidate.stem.removeprefix("raw-")):
         return clean, None
-    if candidate.resolve().parent != state_dir or not candidate.is_file():
+    if candidate.resolve().parent != state_dir.resolve() or not candidate.is_file():
         return clean, None
     try:
         raw = _finalizer()._read_raw(candidate, state_dir)
@@ -297,16 +297,8 @@ def telegram_send(token: str, method: str, payload: dict, *, timeout: int = 15) 
     return result["result"]
 
 
-def deliver_cards(raw_path: Path, state_dir: Path, target: dict, owner_id: str, send) -> int:  # noqa: S3776
-    """Send one silent Telegram card per item, without retrying uncertain sends."""
-    finalizer = _finalizer()
-    raw = finalizer._read_raw(Path(raw_path), Path(state_dir))
-    run_id = raw.get("run_id", "")
-    if not _RUN_ID.fullmatch(run_id):
-        raise ValueError("invalid digest run")
-    items = raw.get("items")
-    if not isinstance(items, list) or not items or len(items) > 20:
-        raise ValueError("invalid digest card count")
+def _stage_cards(finalizer, raw: dict, items: list[dict], state_dir: Path,
+                 run_id: str) -> Path:
     staged_path = Path(state_dir) / f"staged-{run_id}.md"
     if not staged_path.is_file():
         draft_path = Path(state_dir) / f"draft-{run_id}.md"
@@ -321,7 +313,10 @@ def deliver_cards(raw_path: Path, state_dir: Path, target: dict, owner_id: str, 
         except FileExistsError:
             if not staged_path.is_file():
                 raise
-    store = FeedbackStore(Path(state_dir) / "feedback.db")
+    return staged_path
+
+
+def _card_texts(staged_path: Path, items: list[dict]) -> list[str]:
     staged_text = staged_path.read_text(encoding="utf-8")
     sections = re.split(r"^## \d+\. .+$", staged_text, flags=re.M)[1:]
     card_texts = []
@@ -332,6 +327,22 @@ def deliver_cards(raw_path: Path, state_dir: Path, target: dict, owner_id: str, 
                               sections[index], flags=re.M | re.S)
             analysis = match.group(1).strip() if match else ""
         card_texts.append(_card_text(item, index + 1, len(items), analysis))
+    return card_texts
+
+
+def deliver_cards(raw_path: Path, state_dir: Path, target: dict, owner_id: str, send) -> int:
+    """Send one silent Telegram card per item, without retrying uncertain sends."""
+    finalizer = _finalizer()
+    raw = finalizer._read_raw(Path(raw_path), Path(state_dir))
+    run_id = raw.get("run_id", "")
+    if not _RUN_ID.fullmatch(run_id):
+        raise ValueError("invalid digest run")
+    items = raw.get("items")
+    if not isinstance(items, list) or not items or len(items) > 20:
+        raise ValueError("invalid digest card count")
+    staged_path = _stage_cards(finalizer, raw, items, Path(state_dir), run_id)
+    store = FeedbackStore(Path(state_dir) / "feedback.db")
+    card_texts = _card_texts(staged_path, items)
     count = 0
     for index, item in enumerate(items):
         card_id, fresh = store.reserve_card(run_id, item, target["chat_id"],

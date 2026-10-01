@@ -106,6 +106,14 @@ class ApplyConfigTests(unittest.TestCase):
         operations = apply_config.build_operations(settings, chosen, variables, set())
         self.assertNotIn('display.busy_input_mode', [op.key for op in operations])
 
+        legacy = {'display': {'busy_input_mode': 'interrupt'}}
+        operations = apply_config.build_operations(settings, legacy, variables, set())
+        self.assertIn(apply_config.Operation('set', 'display.busy_input_mode', 'steer'), operations)
+
+        migrated = {'display': {'busy_input_mode': 'steer'}}
+        operations = apply_config.build_operations(settings, migrated, variables, set())
+        self.assertNotIn('display.busy_input_mode', [op.key for op in operations])
+
     def test_workspace_cannot_move_security_sections_to_ui_ownership(self) -> None:
         settings = {
             'vps_deploy': {'features': {'workspace_ui': True}},

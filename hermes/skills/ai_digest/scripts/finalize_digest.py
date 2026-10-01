@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import re
 
-HEADING_PATTERN = re.compile(r"^## (\\d+)\. (.+)$")
+HEADING_PATTERN = re.compile(r"^## (\d+)\. (.+)$", re.M)
 SOURCE_AVAILABILITY_HEADER = "\n## Source availability\n"
 import tempfile
 

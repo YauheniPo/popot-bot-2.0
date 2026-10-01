@@ -71,9 +71,8 @@ def prune_large_caches(home: Path, max_bytes: int, busy: bool) -> int:
     return removed
 
 
-def active_processes(home: Path) -> tuple[set[str], bool]:
+def active_processes(home: Path, proc: Path = Path("/proc")) -> tuple[set[str], bool]:
     """Keep Chrome builds in use and defer cache cleanup while installers run."""
-    proc = Path("/proc")
     if not proc.is_dir():
         return set(), True
     browser_root = home / ".agent-browser" / "browsers"

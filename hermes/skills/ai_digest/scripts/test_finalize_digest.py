@@ -33,6 +33,9 @@ Impact. Use: estimate cost.
 
 
 class FinalizeDigestTests(unittest.TestCase):
+    def test_report_recognizes_news_heading_after_document_title(self):
+        _validate_report(RAW, VALID, RAW["items"])
+
     def test_staged_analysis_yields_only_three_rated_news_in_final_report(self):
         raw = {"run_id": RAW["run_id"], "items": [
             RAW["items"][0], {"title": "Other news", "urls": ["https://vendor.test/other"]}],
@@ -346,7 +349,8 @@ All configured sources responded.
         self.assertIn("Item 1", result3)
         self.assertIn("Item 2", result3)
         # Should start with the title and have two items sections
-        self.assertTrue(result3.startswith("# AI/IT News Digest\n\n## 1. Item 1"))
+        self.assertEqual(result3.splitlines()[:3],
+                         ["# AI/IT News Digest", "", "## 1. Item 1"])
         self.assertIn("## 2. Item 2", result3)
 
     def test_finalize_selected_invalid_indexes(self):

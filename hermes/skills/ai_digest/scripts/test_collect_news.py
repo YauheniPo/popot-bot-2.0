@@ -61,6 +61,49 @@ class CollectNewsTests(unittest.TestCase):
         self.assertEqual(item["evidence"], "Local agent orchestrator")
         self.assertIn("README unavailable", item["read_issue"])
 
+    def test_read_article_rejects_missing_or_short_github_readme(self):
+        from collect_news import _read_article
+
+        for response in ({"encoding": "utf-8", "content": "text"},
+                         {"encoding": "base64", "content": base64.b64encode(b"short").decode()}):
+            item = {"url": "https://github.com/acme/agent", "evidence": "Listing",
+                    "full_text_available": False}
+            _read_article(item, {}, lambda _url, _limit: json.dumps(response).encode())
+            self.assertEqual(item["evidence"], "Listing")
+            self.assertIn("README unavailable", item["read_issue"])
+
+    def test_reddit_comment_excerpt_keeps_only_readable_comments(self):
+        from collect_news import _fetch_reddit_comments
+
+        item = {"discussion_excerpts": []}
+        response = [{"data": {"children": []}}, {"data": {"children": [
+            {"kind": "t1", "data": {"body": "Useful model comparison"}},
+            {"kind": "more", "data": {"body": "not a comment"}},
+        ]}}]
+        with patch("collect_news._public_url"):
+            _fetch_reddit_comments(item, "abc123", 3,
+                                   lambda _url, _limit: json.dumps(response).encode())
+        self.assertEqual(item["discussion_excerpts"],
+                         [{"source_id": "reddit", "text": "Useful model comparison"}])
+
+    def test_pinned_http_connection_uses_validated_address(self):
+        from collect_news import _SafeHTTPHandler
+
+        address = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 80))]
+        connected = MagicMock()
+        with patch("collect_news._public_addresses", return_value=address), \
+                patch("collect_news.socket.socket", return_value=connected):
+            connection = _pinned_connection_class(http.client.HTTPConnection,
+                                                  "http://example.org/")("example.org")
+            connection.connect()
+        connected.connect.assert_called_once_with(("127.0.0.1", 80))
+        self.assertIs(connection.sock, connected)
+        handler = _SafeHTTPHandler()
+        with patch.object(handler, "do_open", return_value="response") as opened, \
+                patch("collect_news._pinned_connection_class", return_value=http.client.HTTPConnection):
+            self.assertEqual(handler.http_open(MagicMock(full_url="http://example.org/")), "response")
+        self.assertIs(opened.call_args.args[0], http.client.HTTPConnection)
+
     def test_read_article_uses_long_page_body_without_article_tag(self):
         from collect_news import _read_article
 
@@ -131,6 +174,29 @@ class CollectNewsTests(unittest.TestCase):
                 self.assertEqual(main(["--sources", str(source), "--state-dir", str(state)]), 3)
             raw = json.loads(next(state.glob("raw-*.json")).read_text())
             self.assertIn("feedback", [issue["id"] for issue in raw["source_issues"]])
+
+    def test_collector_reads_healthy_feedback_and_rejects_bad_cooldown(self):
+        import tempfile
+        from collect_news import main
+        from feedback import FeedbackStore
+
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "home"
+            state = Path(directory) / "state"
+            (home / "cron").mkdir(parents=True)
+            state.mkdir()
+            (home / "cron" / "jobs.json").write_text(json.dumps({"jobs": [
+                {"skill": "ai_digest", "origin": {"user_id": "9"}}]}))
+            FeedbackStore(state / "feedback.db")
+            source = Path(directory) / "sources.json"
+            source.write_text(json.dumps({"version": 1, "defaults": {"window_hours": 24,
+                "limit": 10, "repeat_cooldown_hours": 168}, "sources": []}))
+            with patch.dict("os.environ", {"HERMES_HOME": str(home)}):
+                self.assertEqual(main(["--sources", str(source), "--state-dir", str(state)]), 3)
+            source.write_text(json.dumps({"version": 1, "defaults": {"window_hours": 24,
+                "limit": 10, "repeat_cooldown_hours": 0}, "sources": []}))
+            with patch.dict("os.environ", {"HERMES_HOME": str(home)}):
+                self.assertEqual(main(["--sources", str(source), "--state-dir", str(state)]), 2)
 
     def test_trending_articles_extracts_repo_and_description(self):
         html = '''<article class="Box-row"><h2><a href="/owner/repo">owner/repo</a></h2>
@@ -598,6 +664,21 @@ class CollectNewsTests(unittest.TestCase):
                          if selected_item["category"] == "benchmark")
         self.assertEqual(benchmark["source_ids"][0], "source-b")
         self.assertLessEqual(counts["source-a"], 2)
+
+    def test_weekly_categories_take_priority_over_exploration(self):
+        from collect_news import _select_items
+
+        items = [{"title": category, "url": f"https://example.org/{category}",
+                  "source_ids": [category], "category": category,
+                  "published_at": "2026-09-25T11:00:00Z", "score": score,
+                  "discussion_count": 0}
+                 for category, score in (("research", 0), ("podcast", 0),
+                                         ("benchmark", 0), ("news", 100))]
+        history = [{"title": "Old item", "url": "https://example.org/old",
+                    "score": 2, "updated_at": "2026-09-24T11:00:00+00:00"}]
+        selected = _select_items(items, 3, "weekly", NOW, 168, history=history)
+        self.assertEqual({item["category"] for item in selected},
+                         {"research", "podcast", "benchmark"})
 
     def test_collect_sources_isolates_malformed_hn_and_reddit_payloads(self):
         from collect_news import _collect_sources

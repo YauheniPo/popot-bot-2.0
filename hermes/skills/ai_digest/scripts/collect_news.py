@@ -982,7 +982,8 @@ def _select_items(items: list[dict], limit: int, mode: str, now: datetime,  # no
     reserve_exploration = bool(history) and limit > 1
     main_limit = limit - int(reserve_exploration)
     if mode == "weekly":
-        _select_weekly_categories(ranked, selected, counts, main_limit, max_per_source)
+        _select_weekly_categories(ranked, selected, counts, limit, max_per_source)
+        main_limit = max(main_limit, len(selected))
     for item in ranked:
         if len(selected) >= main_limit:
             break
@@ -993,7 +994,7 @@ def _select_items(items: list[dict], limit: int, mode: str, now: datetime,  # no
             continue
         selected.append(item)
         counts[primary] = counts.get(primary, 0) + 1
-    if reserve_exploration:
+    if reserve_exploration and len(selected) < limit:
         by_base = sorted(items, key=lambda item: (-_importance(item, now, window_hours),
                                                   item["title"]))
         for candidates in ([item for item in by_base if abs(bonuses[id(item)]) < 0.5], by_base):
@@ -1005,14 +1006,6 @@ def _select_items(items: list[dict], limit: int, mode: str, now: datetime,  # no
                 primary = candidate["source_ids"][0]
                 counts[primary] = counts.get(primary, 0) + 1
                 break
-    for item in ranked:
-        if len(selected) >= limit:
-            break
-        if item not in selected and _source_capacity_available(
-                item, ranked, selected, counts, max_per_source):
-            selected.append(item)
-            primary = item["source_ids"][0]
-            counts[primary] = counts.get(primary, 0) + 1
     return selected
 
 
