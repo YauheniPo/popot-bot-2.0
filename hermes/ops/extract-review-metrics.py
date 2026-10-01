@@ -38,10 +38,10 @@ FIELD_RE = {
     "direct_chunks": re.compile(r"Reviewed the PR in\s*(\d+)\s*bounded chunk", re.I),
 }
 REVIEW_MARKERS = (
+    ("DirectAPI", re.compile(r"<!-- openrouter-pr-review:azure-devops:([0-9a-f]{40}):[^\n]*:(\d+) -->")),
     ("DirectAPI", re.compile(r"<!-- openrouter-pr-review:([0-9a-f]{40}) -->")),
     ("ClaudeCodePlugin", re.compile(r"<!-- claude-pr-review:([0-9a-f]{40}):(\d+) -->")),
     ("ObservableMessagesReview", re.compile(r"<!-- observable-pr-review:([0-9a-f]{40}):(\d+):\d+ -->")),
-    ("DirectAPI", re.compile(r"<!-- openrouter-pr-review:azure-devops:([0-9a-f]{40}):[^\n]*:(\d+) -->")),
 )
 
 
@@ -63,7 +63,7 @@ def _apply_claude_validated_marker(
         return False
     if default_outcome != "unknown" or validated_chunks == 0:
         return False
-    return bool(REVIEW_MARKERS[1][1].search(body))
+    return bool(REVIEW_MARKERS[2][1].search(body))
 
 
 def _compute_total_chunks(
