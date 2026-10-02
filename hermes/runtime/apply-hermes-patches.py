@@ -1135,6 +1135,23 @@ _PATCHES.extend([
         fb_key = _fallback_entry_key(fb)
 ''',
     ),
+    (
+        "agent/turn_recovery.py", _PREFIX + " eager fallback after fallback 429",
+        '''        pool_may_recover = (
+            False if _is_upstream else _ra()._pool_may_recover_from_rate_limit(agent._credential_pool)
+        )
+''',
+        '''        # Local Hermes: eager fallback after fallback 429
+        # Credential rotation has already run before this branch. Do not spend
+        # the full retry budget on a rate-limited fallback route.
+        pool_may_recover = (
+            False if _is_upstream or (
+                is_rate_limited and getattr(agent, "_provider_fallback_active", False)
+            )
+            else _ra()._pool_may_recover_from_rate_limit(agent._credential_pool)
+        )
+''',
+    ),
 ])
 
 _PATCHES.extend([

@@ -72,7 +72,7 @@ stages:
           # with the pipelines. Do not rewrite it as a root-relative path.
           - template: azure-templates/validate-trusted-branch.yml
             parameters:
-              errorMessage: Run the production deployment pipeline from main.
+              errorMessage: Select main in Branch/tag and enter the feature branch in Branch to deploy.
 
           - checkout: self
             path: s/pipeline

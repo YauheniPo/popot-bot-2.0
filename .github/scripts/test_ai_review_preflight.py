@@ -1189,6 +1189,8 @@ class NousReviewTest(unittest.TestCase):
             (root / "azure-ci/azure-ai-code-review.yml").read_text(),
             Loader=yaml.BaseLoader,
         )
+        self.assertEqual(pipeline["trigger"], "none")
+        self.assertEqual(pipeline["pr"], "none")
         jobs = {job["job"]: job for job in pipeline["jobs"]}
 
         validation = jobs["ValidateReviewPipeline"]
@@ -1204,6 +1206,31 @@ class NousReviewTest(unittest.TestCase):
         self.assertEqual(test_step["workingDirectory"], "$(Build.SourcesDirectory)")
         self.assertEqual(jobs["RequestReview"]["dependsOn"], "ValidateReviewPipeline")
         self.assertEqual(jobs["RequestReview"]["condition"], "succeeded()")
+
+    def test_azure_trusted_branch_gate_reports_actual_run_context(self):
+        root = Path(__file__).resolve().parents[2]
+        template = yaml.load(
+            (root / "azure-ci/azure-templates/validate-trusted-branch.yml").read_text(),
+            Loader=yaml.BaseLoader,
+        )
+        step = template["steps"][0]
+        self.assertEqual(step["env"]["PIPELINE_DEFINITION_REF"], "$(Build.SourceBranch)")
+        self.assertEqual(step["env"]["BUILD_REASON"], "$(Build.Reason)")
+        for branch, reason, expected_status in (
+            ("refs/heads/main", "Manual", 0),
+            ("refs/heads/feature/review", "Manual", 1),
+            ("refs/pull/64/merge", "PullRequest", 1),
+        ):
+            with self.subTest(branch=branch):
+                result = subprocess.run(
+                    ["bash", "-c", step["bash"]], capture_output=True, text=True,
+                    env={**os.environ, "PIPELINE_DEFINITION_REF": branch,
+                         "BUILD_REASON": reason, "ERROR_MESSAGE": "Use main"},
+                )
+                self.assertEqual(result.returncode, expected_status, result.stdout + result.stderr)
+                if expected_status:
+                    self.assertIn(branch, result.stdout)
+                    self.assertIn(reason, result.stdout)
 
     def test_github_review_report_has_no_broken_artifacts_page_link(self):
         root = Path(__file__).resolve().parents[2]

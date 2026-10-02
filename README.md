@@ -258,6 +258,13 @@ diagnostics; the summary does not include a separate artifact-page link.
 Before dispatching GitHub Actions, the Azure launcher checks out the trusted
 `main` revision and runs the repository's `.github/scripts` tests. A failed test
 stops the launch before provider requests or publication.
+To review a feature branch, run this Azure pipeline manually with **Branch/tag =
+main** and put the feature branch in **targetRef**. The first field selects the
+pipeline YAML; `targetRef` selects the code sent to GitHub for review. This
+launcher has `trigger: none` and `pr: none`. If it starts automatically for a PR,
+check Azure Pipelines → Edit → Triggers for UI overrides of those YAML settings.
+The trusted-branch gate reports its actual `Build.SourceBranch` and
+`Build.Reason` when they do not identify a run from `main`.
 
 For a pull request opened by someone else, use the `ai-review-approved` label
 after you have inspected the change. Only the repository owner adding that label
