@@ -52,6 +52,8 @@ vps_deploy:
 # Workspace enabled, ui_owned_sections are initial defaults, not deploy-time
 # resets: both UIs edit the same live config. Exception: model.provider/default
 # are authoritative for agents, delegation, cron defaults and Swarm profiles.
+# auxiliary.compression provider/model/fallback_chain are also managed; other
+# auxiliary settings and compression tuning remain UI-owned.
 vps_hermes:
   config:
     ui_owned_sections:
@@ -102,8 +104,9 @@ vps_hermes:
       # Compact long sessions after 70% of the active model context is used.
       compression:
         threshold: 0.70
-      # Context compaction uses this primary, then the profile's configured
-      # fallback routes unless auxiliary.compression.fallback_chain is explicit.
+      # Deploy applies this route even when auxiliary is UI-owned. Omitting
+      # fallback_chain removes a stale separate chain so compression inherits
+      # the profile's main fallbacks. Set an explicit list here to override it.
       auxiliary:
         compression:
           provider: nvidia

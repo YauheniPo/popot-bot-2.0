@@ -21,6 +21,51 @@ SPEC.loader.exec_module(apply_config)
 
 
 class ApplyConfigTests(unittest.TestCase):
+    def test_managed_compression_replaces_stale_route_and_inherits_fallbacks(self):
+        settings = {'vps_deploy': {'features': {'workspace_ui': True}},
+                    'vps_hermes': {'config': {'ui_owned_sections': ['auxiliary'],
+                        'managed_overlay': {'auxiliary': {'compression': {
+                            'provider': 'fixture-provider', 'model': 'fixture-model'}}}}}}
+        current = {'auxiliary': {'compression': {'provider': 'old', 'model': 'old',
+                     'fallback_chain': [{'provider': 'old', 'model': 'same-upstream'}],
+                     'timeout': 321}, 'vision': {'model': 'keep'}},
+                   'fallback_providers': [{'provider': 'other', 'model': 'backup'}]}
+        expected = [apply_config.Operation('set', 'auxiliary.compression.provider', 'fixture-provider'),
+                    apply_config.Operation('set', 'auxiliary.compression.model', 'fixture-model'),
+                    apply_config.Operation('unset', 'auxiliary.compression.fallback_chain')]
+        self.assertEqual(apply_config.build_operations(settings, current, {}, set()), expected)
+        for operation in expected:
+            section = current['auxiliary']['compression']
+            key = operation.key.rsplit('.', 1)[1]
+            if operation.action == 'unset':
+                section.pop(key)
+            else:
+                section[key] = operation.value
+        self.assertEqual(apply_config.build_operations(settings, current, {}, set()), [])
+        self.assertEqual(current['auxiliary']['compression']['timeout'], 321)
+        self.assertEqual(current['auxiliary']['vision'], {'model': 'keep'})
+        self.assertEqual(current['fallback_providers'], [{'provider': 'other', 'model': 'backup'}])
+
+    def test_managed_compression_allows_explicit_chain_and_unmanaged_routes(self):
+        current = {'auxiliary': {'compression': {'provider': 'p', 'model': 'm', 'fallback_chain': []}}}
+        self.assertEqual(apply_config.build_operations({}, current, {}, set()), [])
+        for chain in ([], [{'provider': 'backup', 'model': 'other'}]):
+            settings = {'vps_hermes': {'config': {'managed_overlay': {'auxiliary': {'compression': {
+                'provider': 'p', 'model': 'm', 'fallback_chain': chain}}}}}}
+            with self.subTest(chain=chain):
+                operations = apply_config.build_operations(settings, current, {}, set())
+                self.assertEqual(operations, [] if not chain else [apply_config.Operation(
+                    'set', 'auxiliary.compression.fallback_chain', chain)])
+
+    def test_managed_compression_rejects_invalid_routes_before_applying(self):
+        for route in (None, [], {}, {'provider': 'p'}, {'provider': '', 'model': 'm'},
+                      {'provider': 'p', 'model': 'm', 'fallback_chain': 'invalid'},
+                      {'provider': 'p', 'model': 'm', 'fallback_chain': ['invalid']},
+                      {'provider': 'p', 'model': 'm', 'fallback_chain': [{'provider': 'p'}]}):
+            settings = {'vps_hermes': {'config': {'managed_overlay': {'auxiliary': {'compression': route}}}}}
+            with self.subTest(route=route), self.assertRaisesRegex(ValueError, 'compression'):
+                apply_config.build_operations(settings, {}, {}, set())
+
     def test_one_managed_model_overrides_ui_routes_without_changing_other_settings(self):
         settings = {'vps_hermes': {'config': {
             'ui_owned_sections': ['model', 'cron'],

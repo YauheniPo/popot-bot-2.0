@@ -359,6 +359,34 @@ def _unset_operations_when_missing(
     return operations
 
 
+def _managed_compression_operations(route: Any, current_config: dict[str, Any]) -> list[Operation]:
+    """Apply only the configured compression route, preserving other auxiliary settings."""
+    if not isinstance(route, dict) or any(
+        not isinstance(route.get(key), str) or not route[key].strip()
+        for key in ('provider', 'model')
+    ):
+        raise ValueError('managed compression requires non-empty provider and model')
+    chain = route.get('fallback_chain')
+    if chain is not None and (not isinstance(chain, list) or any(
+        not isinstance(entry, dict) or any(
+            not isinstance(entry.get(key), str) or not entry[key].strip()
+            for key in ('provider', 'model')
+        ) for entry in chain
+    )):
+        raise ValueError('managed compression fallback_chain requires provider/model mappings')
+    operations = []
+    for field in ('provider', 'model', 'fallback_chain'):
+        key = 'auxiliary.compression.' + field
+        present, current = nested_value(current_config, key)
+        value = route.get(field)
+        if value is None:
+            if present:
+                operations.append(Operation('unset', key))
+        elif not present or current != value:
+            operations.append(Operation('set', key, value))
+    return operations
+
+
 def build_operations(
     settings: dict[str, Any],
     current_config: dict[str, Any],
@@ -398,11 +426,16 @@ def build_operations(
     )
 
     # Route policy wins over UI-owned sections and legacy runtime pins. Keep
-    # token budgets, compression, fallback routes and other UI settings intact.
+    # token budgets, compression tuning and other UI settings intact.
     model_values = managed_model_values(settings)
     operations = [op for op in operations if op.key not in model_values]
     operations.extend(Operation('set', key, value) for key, value in model_values.items()
                       if nested_value(current_config, key) != (True, value))
+    compression_exists, compression_route = nested_value(settings, 'vps_hermes.config.managed_overlay.auxiliary.compression')
+    if compression_exists:
+        route_keys = {'auxiliary.compression.' + field for field in ('provider', 'model', 'fallback_chain')}
+        operations = [op for op in operations if op.key not in route_keys]
+        operations.extend(_managed_compression_operations(compression_route, current_config))
     return operations
 
 

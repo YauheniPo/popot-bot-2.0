@@ -7,6 +7,7 @@ import argparse
 import os
 import re
 import shutil
+import sys
 from pathlib import Path
 
 
@@ -91,7 +92,7 @@ def _check_command_for_cache_busy(command: str, process: Path) -> bool:
 def active_processes(home: Path, proc: Path = Path("/proc")) -> tuple[set[str], bool]:
     """Keep Chrome builds in use and defer cache cleanup while installers run."""
     if not proc.is_dir():
-        return set(), True
+        raise OSError('process table unavailable')
     browser_root = home / DOT_AGENT_BROWSER / "browsers"
     active_builds: set[str] = set()
     cache_busy = False
@@ -101,7 +102,9 @@ def active_processes(home: Path, proc: Path = Path("/proc")) -> tuple[set[str], 
         try:
             executable = os.readlink(process / "exe")
             command = (process / "comm").read_text().strip().lower()
-        except (OSError, UnicodeError):
+        except (FileNotFoundError, ProcessLookupError):
+            # Processes may exit during the scan; permission/decode failures
+            # instead invalidate the scan and must defer all cleanup.
             continue
         executable_path = Path(executable)
         if browser_root in executable_path.parents:
@@ -132,7 +135,7 @@ def _check_argv_for_cache_markers(process: Path) -> bool:
     """Check process cmdline for cache-related markers."""
     try:
         argv = (process / "cmdline").read_bytes().split(b"\0")
-    except OSError:
+    except (FileNotFoundError, ProcessLookupError):
         return False
     markers = (
         b"npm-cli.js", b"npx-cli.js", b"pnpm.cjs", b"playwright",
@@ -152,7 +155,13 @@ def main() -> None:
         parser.error("--user-home must be an existing, non-symlinked absolute directory")
     browser_root = home / DOT_AGENT_BROWSER / "browsers"
     checked_directory(home / DOT_AGENT_BROWSER)
-    active_builds, cache_busy = active_processes(home)
+    try:
+        active_builds, cache_busy = active_processes(home)
+    except (OSError, UnicodeError) as error:
+        print(f'warning: process scan incomplete ({type(error).__name__}); '
+              'browser/cache cleanup deferred', file=sys.stderr)
+        print('browser_removed=0 cache_entries_removed=0')
+        return
     browser_removed = prune_browser_builds(browser_root, active_builds)
     cache_removed = prune_large_caches(home, MAX_CACHE_BYTES, cache_busy)
     print(f"browser_removed={browser_removed} cache_entries_removed={cache_removed}")

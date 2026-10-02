@@ -397,7 +397,8 @@ Deploy обновляет ролевые managed-блоки SOUL, но не со
 |---|---|
 | Основной provider/model, модель делегирования и cron по умолчанию | Единый источник `vps_hermes.config.managed_overlay.model`; повторно применяется при каждом deploy |
 | Действующий fallback | `fallback_policy.default_routes` из Ansible; повторно применяется при каждом deploy |
-| Остальные параметры model/cron, auxiliary, compression, memory limits, display, session reset | Общий `config.yaml`; существующие значения сохраняются, отсутствующие инициализируются из репозитория |
+| Provider/model/fallback_chain в auxiliary.compression | Managed overlay Ansible; отсутствие fallback_chain в политике включает общие резервы при deploy |
+| Остальные параметры model/cron/auxiliary, compression, memory limits, display, session reset | Общий `config.yaml`; существующие значения сохраняются, отсутствующие инициализируются из репозитория |
 | Approvals, ограничения инструментов, disabled skills, сеть и bind/порты | Политика Ansible повторно применяется при deploy |
 | API keys, токены, пароль Workspace | Vault → общий `.env`; изменения `.env` через UI будут заменены при deploy |
 | Sessions, память, skills, OAuth | Существующий Hermes home; отдельная копия для Workspace не создаётся |
@@ -405,7 +406,9 @@ Deploy обновляет ролевые managed-блоки SOUL, но не со
 
 Список сохраняемых разделов — `vps_hermes.config.ui_owned_sections`.
 Исключение внутри `model` и `cron` — provider/model: они всегда управляются
-репозиторием, даже если раздел включён в этот список.
+репозиторием, даже если раздел включён в этот список. То же относится к
+`auxiliary.compression.provider`, `model` и `fallback_chain`, когда маршрут
+сжатия задан в managed overlay; другие auxiliary-настройки сохраняются.
 Чтобы снова управлять конкретным разделом из репозитория, исключите его из
 списка и примените deploy. При выключенном `workspace_ui` действует прежняя
 политика Ansible для всех managed-параметров. Произвольные параметры Workspace

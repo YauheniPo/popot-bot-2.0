@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import runpy
 import tempfile
 import unittest
@@ -125,11 +126,54 @@ class PruneInstallCachesTests(unittest.TestCase):
             self.assertEqual(load_pruner().active_processes(home, proc),
                              ({"chrome-152.0.1.1"}, True))
 
-    def test_unavailable_process_table_defers_cache_cleanup(self) -> None:
+    def test_unavailable_process_table_is_not_a_complete_scan(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary)
-            self.assertEqual(load_pruner().active_processes(home, home / "missing-proc"),
-                             (set(), True))
+            with self.assertRaises(OSError):
+                load_pruner().active_processes(home, home / "missing-proc")
+
+    def test_incomplete_process_scan_preserves_browser_builds_and_caches(self) -> None:
+        for error in (PermissionError('private detail'), UnicodeError('private detail'),
+                      FileNotFoundError('private detail')):
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as temporary:
+                home = Path(temporary)
+                browser = home / '.agent-browser' / 'browsers'
+                for version in ('1.0.0.0', '2.0.0.0', '3.0.0.0'):
+                    (browser / f'chrome-{version}').mkdir(parents=True)
+                cache = home / '.cache' / 'pip'
+                cache.mkdir(parents=True)
+                (cache / 'data').write_bytes(b'keep')
+                pruner = load_pruner()
+                with patch('sys.argv', ['prune-install-caches.py', '--user-home', str(home)]), \
+                        patch.object(pruner, 'active_processes', side_effect=error), \
+                        patch.object(pruner, 'MAX_CACHE_BYTES', 1), \
+                        patch('sys.stderr', new_callable=io.StringIO) as warnings, \
+                        patch('sys.stdout', new_callable=io.StringIO) as output:
+                    pruner.main()
+                self.assertEqual(len(list(browser.iterdir())), 3)
+                self.assertEqual((cache / 'data').read_bytes(), b'keep')
+                self.assertIn('cleanup deferred', warnings.getvalue())
+                self.assertIn(type(error).__name__, warnings.getvalue())
+                self.assertNotIn('private detail', warnings.getvalue())
+                self.assertEqual(output.getvalue().strip(), 'browser_removed=0 cache_entries_removed=0')
+
+    def test_unreadable_process_fields_propagate_instead_of_hiding_activity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            proc = home / 'proc'
+            process = proc / '123'
+            process.mkdir(parents=True)
+            (process / 'exe').symlink_to('/usr/bin/node')
+            (process / 'comm').write_text('node')
+            (process / 'cmdline').write_bytes(b'node\0npm-cli.js\0install\0')
+            pruner = load_pruner()
+            for target, error in (('os.readlink', PermissionError()),
+                                  ('pathlib.Path.read_text', PermissionError()),
+                                  ('pathlib.Path.read_text', UnicodeError()),
+                                  ('pathlib.Path.read_bytes', PermissionError())):
+                with self.subTest(target=target, error=type(error).__name__), \
+                        patch(target, side_effect=error), self.assertRaises(type(error)):
+                    pruner.active_processes(home, proc)
 
     def test_process_scan_handles_exited_processes_and_other_installers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
