@@ -345,6 +345,7 @@ Other planning.
         mock_telegram = Mock()
         with self.assertRaisesRegex(ValueError, "invalid digest run"):
             deliver_cards(raw, self.state, {"chat_id": "1"}, "9", mock_telegram)
+        mock_telegram.assert_not_called()
 
     def test_delivery_rejects_empty_card_count(self):
         raw = self.state / f"raw-{self.RUN_ID}.json"
