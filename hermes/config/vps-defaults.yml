@@ -81,8 +81,8 @@ vps_hermes:
       fallback_policy:
         # Repeated providers are allowed; each provider/model pair must be unique.
         # Catalogs checked 2026-09-29; selection rationale/limits: hermes/README.md.
-        # Alternate providers first. Quota failures skip ALL later routes of
-        # that provider; later same-provider models help with non-quota failures.
+        # Alternate providers first. Billing/upstream quota skips the affected
+        # provider; a model-level 429 can try another free model on that provider.
         default_routes:
           - provider: openrouter
             model: google/gemma-4-31b-it:free

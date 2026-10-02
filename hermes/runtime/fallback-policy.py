@@ -82,7 +82,8 @@ def edit_fallback_config(config, arguments):
                       + '\nРазрешённые providers: ' + ', '.join(allowed)
                       + '\n/fallback set provider model; provider model'
                       + '\n/fallback add provider model | remove N | off | reset'
-                      + '\nПри quota/429 выбирается другой provider. Проверка API — при использовании.')
+                      + '\nПри 429 пробуется следующая модель; при billing — другой provider.'
+                        ' Проверка API — при использовании.')
     if '\n' in arguments or '\r' in arguments:
         raise FallbackCommandError('Команда должна занимать одну строку.')
     routes = _edit_fallback_routes(chain, policy, command, value)
@@ -113,17 +114,26 @@ def run_fallback_command(config_path, arguments):
 
 
 def begin_fallback_walk(agent, reason):
-    """Keep quota failures for this native fallback walk, not a permanent blacklist."""
+    """Keep failed routes for this walk without discarding alternate free models."""
     if getattr(agent, '_fallback_index', 0) == 0 and not getattr(agent, '_fallback_activated', False):
         agent._managed_quota_providers = set()
-    if getattr(reason, 'value', reason) in {'rate_limit', 'upstream_rate_limit', 'billing'}:
+        agent._managed_rate_limited_routes = set()
+    reason = getattr(reason, 'value', reason)
+    if reason in {'upstream_rate_limit', 'billing'}:
         blocked = set(getattr(agent, '_managed_quota_providers', ()))
         blocked.add(_managed_provider(getattr(agent, 'provider', '')))
         agent._managed_quota_providers = blocked
+    elif reason == 'rate_limit':
+        blocked = set(getattr(agent, '_managed_rate_limited_routes', ()))
+        blocked.add((_managed_provider(getattr(agent, 'provider', '')),
+                     str(getattr(agent, 'model', '') or '').strip()))
+        agent._managed_rate_limited_routes = blocked
 
 
 def allow_fallback_candidate(agent, candidate):
     provider = _managed_provider(candidate.get('provider'))
-    if provider == 'openrouter' and not str(candidate.get('model', '')).endswith(':free'):
+    model = str(candidate.get('model', '')).strip()
+    if provider == 'openrouter' and not model.endswith(':free'):
         return False
-    return provider not in getattr(agent, '_managed_quota_providers', ())
+    return (provider not in getattr(agent, '_managed_quota_providers', ())
+            and (provider, model) not in getattr(agent, '_managed_rate_limited_routes', ()))
