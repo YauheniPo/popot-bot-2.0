@@ -787,10 +787,12 @@ def _location_summary(location_details: dict[str, Any]) -> str:
     place_section = location_details.get("reverse_geocoding")
     place = place_section.get("data") if isinstance(place_section, dict) else None
     if isinstance(place, dict):
-        lines.append(f"City or locality: {_text_scalar(place.get('city'))}")
-        lines.append(f"Country: {_text_scalar(place.get('country'))}")
-        lines.append(f"Address: {_text_scalar(place.get('display_name'))}")
-        lines.append(f"Place data source: {NOMINATIM_ATTRIBUTION}")
+        lines.extend([
+            f"City or locality: {_text_scalar(place.get('city'))}",
+            f"Country: {_text_scalar(place.get('country'))}",
+            f"Address: {_text_scalar(place.get('display_name'))}",
+            f"Place data source: {NOMINATIM_ATTRIBUTION}",
+        ])
     else:
         lines.append("The place could not be identified.")
 
@@ -799,15 +801,11 @@ def _location_summary(location_details: dict[str, Any]) -> str:
         timezone_section.get("data") if isinstance(timezone_section, dict) else None
     )
     if isinstance(timezone_data, dict):
-        lines.append(
-            f"Time zone: {_text_scalar(timezone_data.get('iana_name'))}"
-        )
-        lines.append(
-            f"UTC offset: {_text_scalar(timezone_data.get('utc_offset'))}"
-        )
-        lines.append(
-            f"Local time: {_text_scalar(timezone_data.get('local_time'))}"
-        )
+        lines.extend([
+            f"Time zone: {_text_scalar(timezone_data.get('iana_name'))}",
+            f"UTC offset: {_text_scalar(timezone_data.get('utc_offset'))}",
+            f"Local time: {_text_scalar(timezone_data.get('local_time'))}",
+        ])
     else:
         lines.append("The time zone could not be identified.")
 

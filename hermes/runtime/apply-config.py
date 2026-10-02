@@ -359,19 +359,20 @@ def _unset_operations_when_missing(
     return operations
 
 
+def _is_compression_route(route: Any) -> bool:
+    return isinstance(route, dict) and all(
+        isinstance(route.get(key), str) and route[key].strip()
+        for key in ('provider', 'model')
+    )
+
+
 def _managed_compression_operations(route: Any, current_config: dict[str, Any]) -> list[Operation]:
     """Apply only the configured compression route, preserving other auxiliary settings."""
-    if not isinstance(route, dict) or any(
-        not isinstance(route.get(key), str) or not route[key].strip()
-        for key in ('provider', 'model')
-    ):
+    if not _is_compression_route(route):
         raise ValueError('managed compression requires non-empty provider and model')
     chain = route.get('fallback_chain')
     if chain is not None and (not isinstance(chain, list) or any(
-        not isinstance(entry, dict) or any(
-            not isinstance(entry.get(key), str) or not entry[key].strip()
-            for key in ('provider', 'model')
-        ) for entry in chain
+        not _is_compression_route(entry) for entry in chain
     )):
         raise ValueError('managed compression fallback_chain requires provider/model mappings')
     operations = []

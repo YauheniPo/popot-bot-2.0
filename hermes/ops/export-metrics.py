@@ -184,9 +184,11 @@ def activity_metrics(database: Path) -> list[str]:
         "FROM c GROUP BY metric_label(tool_name), metric_label(status)",
     ):
         tags = {"tool": tool, "status": status}
-        lines.append(metric("hermes_tool_calls_total", calls, tags))
-        lines.append(metric("hermes_tool_duration_ms_average", duration_ms / calls if calls else 0, tags))
-        lines.append(metric("hermes_tool_duration_ms_total", duration_ms, tags))
+        lines.extend([
+            metric("hermes_tool_calls_total", calls, tags),
+            metric("hermes_tool_duration_ms_average", duration_ms / calls if calls else 0, tags),
+            metric("hermes_tool_duration_ms_total", duration_ms, tags),
+        ])
     commands = with_rollup(
         tables, "commands", "SELECT ts, COALESCE(command,'') AS command, 1 AS weight FROM commands", ("command", "weight"),
     )
@@ -445,12 +447,14 @@ def profile_request_metrics(root: Path, now: float | None = None) -> list[str]:
         except (OSError, sqlite3.Error):
             lines.append(metric('hermes_profile_history_readable', 0, tags))
             continue
-        lines.append(metric('hermes_profile_history_readable', 1, tags))
-        lines.append(metric('hermes_profile_last_request_timestamp_seconds', latest, tags))
-        lines.append(metric('hermes_profile_last_activity_timestamp_seconds', last_activity, tags))
-        lines.append(metric('hermes_profile_last_request_duration_seconds', latest_duration, tags))
-        lines.append(metric('hermes_profile_last_request_start_timestamp_seconds', latest_start, tags))
-        lines.append(metric('hermes_profile_last_request_end_timestamp_seconds', latest_end, tags))
+        lines.extend([
+            metric('hermes_profile_history_readable', 1, tags),
+            metric('hermes_profile_last_request_timestamp_seconds', latest, tags),
+            metric('hermes_profile_last_activity_timestamp_seconds', last_activity, tags),
+            metric('hermes_profile_last_request_duration_seconds', latest_duration, tags),
+            metric('hermes_profile_last_request_start_timestamp_seconds', latest_start, tags),
+            metric('hermes_profile_last_request_end_timestamp_seconds', latest_end, tags),
+        ])
         for window, count in [('1h', hour), ('24h', day), ('7d', week), ('retained', retained)]:
             lines.append(metric('hermes_profile_user_requests', count, {**tags, 'window': window}))
         for window, duration in [('1h', hour_duration), ('24h', day_duration),

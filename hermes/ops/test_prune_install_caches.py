@@ -129,8 +129,10 @@ class PruneInstallCachesTests(unittest.TestCase):
     def test_unavailable_process_table_is_not_a_complete_scan(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary)
+            pruner = load_pruner()
+            missing_proc = home / "missing-proc"
             with self.assertRaises(OSError):
-                load_pruner().active_processes(home, home / "missing-proc")
+                pruner.active_processes(home, missing_proc)
 
     def test_incomplete_process_scan_preserves_browser_builds_and_caches(self) -> None:
         for error in (PermissionError('private detail'), UnicodeError('private detail'),
