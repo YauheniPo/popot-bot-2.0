@@ -15,10 +15,11 @@ steps:
   - bash: |
       set -euo pipefail
       if [[ "${PIPELINE_DEFINITION_REF}" != "refs/heads/main" ]]; then
-        echo "##vso[task.logissue type=error]${ERROR_MESSAGE}"
+        echo "##vso[task.logissue type=error]${ERROR_MESSAGE} Build.SourceBranch=${PIPELINE_DEFINITION_REF}; Build.Reason=${BUILD_REASON}."
         exit 1
       fi
     displayName: Validate trusted pipeline definition
     env:
       PIPELINE_DEFINITION_REF: $(Build.SourceBranch)
+      BUILD_REASON: $(Build.Reason)
       ERROR_MESSAGE: ${{ parameters.errorMessage }}
