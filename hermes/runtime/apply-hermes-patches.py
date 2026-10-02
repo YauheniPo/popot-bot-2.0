@@ -13,6 +13,8 @@ Covered customizations (not yet upstream):
  * gateway commands: /gw-restart (canonical, with /restart and /gw_restart
    aliases so the Telegram menu entry resolves), /model_global, /fallback, and /doctor
  * quota fallback skips the exhausted provider; chat list edits survive cooldown
+ * compression inherits configured fallback routes; timeouts preserve the chat
+   session and failed turns do not expose unfinished reasoning as a result
  * attached cron skills retain read tools under restricted toolsets, without
    granting skill management or overriding global toolset denies
  * /status shows reasoning, models, and session-scoped background activity
@@ -57,6 +59,7 @@ _GATEWAY_STATUS_PATH = "gateway/slash_commands_status.py"
 _GATEWAY_TURN_PATH = "gateway/run_turn.py"
 _MODEL_SWITCH_PATH = "hermes_cli/model_switch.py"
 _TURN_RUNNER_PATH = "gateway/run_turn_runner.py"
+_AUXILIARY_CLIENT_PATH = "agent/auxiliary_client.py"
 _COMMAND_PLATFORMS_PATH = "hermes_cli/commands_platforms.py"
 _BACKUP_PATH = "hermes_cli/backup.py"
 # Construct the retired spelling without advertising it as a supported slash
@@ -1058,6 +1061,71 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
         '        return sorted(_get_platform_tools(cfg or {}, "cron"))\n',
         '''        # Local Hermes: cron skill platform tools
         return _with_cron_skill_tools(job, sorted(_get_platform_tools(cfg or {}, "cron")))
+''',
+    ),
+])
+
+_PATCHES.extend([
+    (
+        _TURN_RUNNER_PATH, _PREFIX + " compression exit reason",
+        '            "compression_exhausted": result.get("compression_exhausted", False),\n',
+        '''            # Local Hermes: compression exit reason
+            "turn_exit_reason": result.get("turn_exit_reason"),
+            "compression_exhausted": result.get("compression_exhausted", False),
+''',
+    ),
+    (
+        _GATEWAY_TURN_PATH, _PREFIX + " preserve session on compression timeout",
+        '        if agent_result.get("compression_deferred"):\n',
+        '''        # Local Hermes: preserve session on compression timeout
+        # A host/provider timeout does not prove this history cannot be compressed.
+        # Keep the session binding and overrides; never replay tools here.
+        if agent_result.get("turn_exit_reason") == "context_compression_timeout":
+            logger.warning("Compression timed out; preserving the gateway session for manual recovery.")
+            response = (
+                "⚠️ Сжатие контекста не завершилось за отведённое время. "
+                "Сессия сохранена, текущий запуск остановлен. "
+                "Повторите /compress; если ошибка повторяется, проверьте auxiliary.compression "
+                "и доступность резервных моделей. После успешного сжатия попросите продолжить задачу "
+                "с проверки уже выполненных действий."
+            )
+            return response, session_entry
+        if agent_result.get("compression_deferred"):
+''',
+    ),
+    (
+        _GATEWAY_TURN_PATH, _PREFIX + " hide reasoning on unsuccessful turns",
+        '        last_reasoning = agent_result.get("last_reasoning")\n',
+        '''        # Local Hermes: hide reasoning on unsuccessful turns
+        if any(agent_result.get(flag) for flag in (
+            "failed", "error", "interrupted", "compression_exhausted", "compression_deferred",
+        )):
+            return response
+        last_reasoning = agent_result.get("last_reasoning")
+''',
+    ),
+    (
+        _AUXILIARY_CLIENT_PATH, _PREFIX + " compression uses configured fallback",
+        '\n    chain = _get_auxiliary_task_config(task).get("fallback_chain")\n',
+        '''
+    # Local Hermes: compression uses configured fallback
+    task_config = _get_auxiliary_task_config(task)
+    if task == "compression" and "fallback_chain" not in task_config:
+        # Reuse native credential, cooldown and context-window screening. An
+        # explicit task chain (including []) keeps its upstream semantics.
+        return _try_main_fallback_chain(
+            task, failed_provider, reason=reason, failed_model=failed_model,
+            failed_base_url=failed_base_url, failure_scope=failure_scope,
+        )
+    chain = task_config.get("fallback_chain")
+''',
+    ),
+    (
+        _AUXILIARY_CLIENT_PATH, _PREFIX + " compression fallback free OpenRouter",
+        '        if fb_norm == "auto" or skip(fb_provider, fb_model, fb_base_url):\n',
+        '''        # Local Hermes: compression fallback free OpenRouter
+        if (fb_norm == "auto" or skip(fb_provider, fb_model, fb_base_url)
+                or (task == "compression" and fb_norm == "openrouter" and not fb_model.endswith(":free"))):
 ''',
     ),
 ])
