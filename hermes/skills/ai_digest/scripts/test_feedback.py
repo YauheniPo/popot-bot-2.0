@@ -339,14 +339,23 @@ Other planning.
             with self.assertRaisesRegex(RuntimeError, "returned an error"):
                 telegram_send("secret", "sendMessage", {"chat_id": 1})
 
-    def test_delivery_rejects_invalid_run_and_missing_token_before_send(self):
+    def test_delivery_rejects_invalid_run(self):
         raw = self.state / f"raw-{self.RUN_ID}.json"
         raw.write_text(json.dumps({"run_id": "bad", "items": [self.item]}))
+        mock_telegram = Mock()
         with self.assertRaisesRegex(ValueError, "invalid digest run"):
-            deliver_cards(raw, self.state, {"chat_id": "1"}, "9", Mock())
+            deliver_cards(raw, self.state, {"chat_id": "1"}, "9", mock_telegram)
+
+    def test_delivery_rejects_empty_card_count(self):
+        raw = self.state / f"raw-{self.RUN_ID}.json"
         raw.write_text(json.dumps({"run_id": self.RUN_ID, "items": []}))
+        mock_telegram = Mock()
         with self.assertRaisesRegex(ValueError, "invalid digest card count"):
-            deliver_cards(raw, self.state, {"chat_id": "1"}, "9", Mock())
+            deliver_cards(raw, self.state, {"chat_id": "1"}, "9", mock_telegram)
+
+    def test_delivery_rejects_missing_token(self):
+        raw = self.state / f"raw-{self.RUN_ID}.json"
+        raw.write_text(json.dumps({"run_id": self.RUN_ID, "items": [self.item]}))
         with self.assertRaisesRegex(RuntimeError, "token unavailable"):
             deliver_cards_to_telegram(raw, self.state, {"chat_id": "1"}, "9", "")
 

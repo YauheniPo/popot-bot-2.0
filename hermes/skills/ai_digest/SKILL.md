@@ -80,7 +80,7 @@ that a message was delivered: Hermes cron records that separately.
    another reason, correct the Markdown draft and retry at most once;
    otherwise return `[CRON_FAILURE]`
    and the actual error. Do not skip items or substitute a cached draft.
-5. Final answer: use the exact length of `items` in the collected JSON when
+5. Final answer: use the number of `items` in the collected JSON when
    saying how many items were collected; do not claim that every item was analyzed
    unless staging succeeded for every item.
    Ask the owner to rate every Telegram card from 1 to 3. End with

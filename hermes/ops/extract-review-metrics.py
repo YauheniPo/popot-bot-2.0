@@ -38,23 +38,30 @@ FIELD_RE = {
     "direct_chunks": re.compile(r"Reviewed the PR in\s*(\d+)\s*bounded chunk", re.I),
 }
 REVIEW_MARKERS = (
-    ("DirectAPI", re.compile(r"<!-- openrouter-pr-review:([0-9a-f]{40}) -->")),
-    ("ClaudeCodePlugin", re.compile(r"<!-- claude-pr-review:([0-9a-f]{40}):(\d+) -->")),
     ("ObservableMessagesReview", re.compile(r"<!-- observable-pr-review:([0-9a-f]{40}):(\d+):\d+ -->")),
+    ("ClaudeCodePlugin", re.compile(r"<!-- claude-pr-review:([0-9a-f]{40}):(\d+) -->")),
     ("DirectAPI", re.compile(r"<!-- openrouter-pr-review:azure-devops:([0-9a-f]{40}):[^\n]*:(\d+) -->")),
+    ("DirectAPI", re.compile(r"<!-- openrouter-pr-review:([0-9a-f]{40}) -->")),
 )
 
 
 def _review_identity(body: str) -> tuple[str, str, str]:
+    """Return (reviewer, sha, pr) from the first matching marker in the body.
+    If multiple markers are present, the one that appears first in the body is used.
+    If no marker is found, fall back to header-style lines.
+    """
+    matches = []
     for reviewer, pattern in REVIEW_MARKERS:
-        if match := pattern.search(body):
-            return reviewer, match.group(1), match.group(2) if match.lastindex == 2 else ""
+        for match in pattern.finditer(body):
+            matches.append((match.start(), reviewer, match))
+    if matches:
+        matches.sort(key=lambda x: x[0])
+        _, reviewer, match = matches[0]
+        return reviewer, match.group(1), match.group(2) if match.lastindex == 2 else ""
     for reviewer in ("DirectAPI", "ClaudeCodePlugin", "ObservableMessagesReview"):
         if re.search(rf"^## {reviewer}\s*$", body, re.M):
             return reviewer, "", ""
     return "unknown", "", ""
-
-
 def _apply_claude_validated_marker(
     reviewer: str, default_outcome: str, validated_chunks: int, body: str
 ) -> bool:

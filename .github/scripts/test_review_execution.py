@@ -125,6 +125,20 @@ class ExecutionReportTest(unittest.TestCase):
         self.assertIn("Attempts: 4 · Validated: 1 · Retries: 3 · Fallback successes: 1", report.summary())
         self.assertEqual(report.attempts[-1].model, "backup")
 
+    def test_claude_fallback_retry_with_validation_failure(self):
+        report = claude_execution_report({
+            "CLAUDE_REVIEW_PRIMARY_MODEL": "primary",
+            "CLAUDE_REVIEW_FALLBACK_MODEL": "backup",
+            "CLAUDE_REVIEW_PRIMARY_OUTCOME": "failure",
+            "CLAUDE_REVIEW_RETRY_OUTCOME": "failure",
+            "CLAUDE_REVIEW_FALLBACK_RETRY_OUTCOME": "success",
+            "CLAUDE_REVIEW_PRIMARY_VALIDATION": "failure",
+            "CLAUDE_REVIEW_RETRY_VALIDATION": "failure",
+            "CLAUDE_REVIEW_FALLBACK_RETRY_VALIDATION": "failure",
+        })
+        self.assertIn("Attempts: 3", report.summary())
+        self.assertIn("validation_failed", report.details())
+        self.assertEqual(report.attempts[-1].model, "backup")
     def test_long_history_is_bounded_while_totals_remain_exact(self):
         report = ExecutionReport("nvidia", "https://integrate.api.nvidia.com", "primary")
         for index in range(100):
