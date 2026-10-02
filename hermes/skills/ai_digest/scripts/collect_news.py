@@ -998,7 +998,7 @@ def _select_items(items: list[dict], limit: int, mode: str, now: datetime,  # no
         by_base = sorted(items, key=lambda item: (-_importance(item, now, window_hours),
                                                   item["title"]))
         for candidates in ([item for item in by_base if abs(bonuses[id(item)]) < 0.5], by_base):
-            if len(selected) >= limit:
+            if len(selected) >= limit:  # pragma: no cover - second iteration only if no candidate found, but len(selected) unchanged
                 break
             candidate = next((item for item in candidates if item not in selected
                               and _source_capacity_available(item, ranked, selected, counts,
