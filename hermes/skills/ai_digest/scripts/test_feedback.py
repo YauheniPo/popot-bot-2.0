@@ -342,14 +342,16 @@ Other planning.
     def test_delivery_rejects_invalid_run(self):
         raw = self.state / f"raw-{self.RUN_ID}.json"
         raw.write_text(json.dumps({"run_id": "bad", "items": [self.item]}))
+        mock_telegram = Mock()
         with self.assertRaisesRegex(ValueError, "invalid digest run"):
-            deliver_cards(raw, self.state, {"chat_id": "1"}, "9", Mock())
+            deliver_cards(raw, self.state, {"chat_id": "1"}, "9", mock_telegram)
 
     def test_delivery_rejects_empty_card_count(self):
         raw = self.state / f"raw-{self.RUN_ID}.json"
         raw.write_text(json.dumps({"run_id": self.RUN_ID, "items": []}))
+        mock_telegram = Mock()
         with self.assertRaisesRegex(ValueError, "invalid digest card count"):
-            deliver_cards(raw, self.state, {"chat_id": "1"}, "9", Mock())
+            deliver_cards(raw, self.state, {"chat_id": "1"}, "9", mock_telegram)
 
     def test_delivery_rejects_missing_token(self):
         raw = self.state / f"raw-{self.RUN_ID}.json"
