@@ -345,6 +345,25 @@ Other planning.
         mock_telegram = Mock()
         with self.assertRaisesRegex(ValueError, "invalid digest run"):
             deliver_cards(raw, self.state, {"chat_id": "1"}, "9", mock_telegram)
+        mock_telegram.assert_not_called()
+
+    def test_delivery_rejects_invalid_run_and_missing_token_before_send(self):
+        """Combined test for invalid run and missing token scenarios."""
+        # Test invalid run
+        raw1 = self.state / f"raw-{self.RUN_ID}-1.json"
+        raw1.write_text(json.dumps({"run_id": "bad", "items": [self.item]}))
+        mock_telegram1 = Mock()
+        with self.assertRaisesRegex(ValueError, "invalid digest run"):
+            deliver_cards(raw1, self.state, {"chat_id": "1"}, "9", mock_telegram1)
+        mock_telegram1.assert_not_called()
+
+        # Test missing token
+        raw2 = self.state / f"raw-{self.RUN_ID}-2.json"
+        raw2.write_text(json.dumps({"run_id": self.RUN_ID, "items": [self.item]}))
+        mock_telegram2 = Mock()
+        with self.assertRaisesRegex(RuntimeError, "token unavailable"):
+            deliver_cards_to_telegram(raw2, self.state, {"chat_id": "1"}, "9", "")
+        mock_telegram2.assert_not_called()
 
     def test_delivery_rejects_empty_card_count(self):
         raw = self.state / f"raw-{self.RUN_ID}.json"
@@ -352,14 +371,15 @@ Other planning.
         mock_telegram = Mock()
         with self.assertRaisesRegex(ValueError, "invalid digest card count"):
             deliver_cards(raw, self.state, {"chat_id": "1"}, "9", mock_telegram)
+        mock_telegram.assert_not_called()
 
     def test_delivery_rejects_missing_token(self):
         raw = self.state / f"raw-{self.RUN_ID}.json"
         raw.write_text(json.dumps({"run_id": self.RUN_ID, "items": [self.item]}))
+        mock_telegram = Mock()
         with self.assertRaisesRegex(RuntimeError, "token unavailable"):
             deliver_cards_to_telegram(raw, self.state, {"chat_id": "1"}, "9", "")
-
-    def test_owner_selection_and_stats_cli(self):
+        mock_telegram.assert_not_called()
         from feedback import main
 
         jobs_path = self.state / "jobs.json"
