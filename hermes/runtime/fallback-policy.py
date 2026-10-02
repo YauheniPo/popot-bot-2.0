@@ -82,8 +82,8 @@ def edit_fallback_config(config, arguments):
                       + '\nРазрешённые providers: ' + ', '.join(allowed)
                       + '\n/fallback set provider model; provider model'
                       + '\n/fallback add provider model | remove N | off | reset'
-                      + '\nПри 429 пробуется следующая модель; при billing — другой provider.'
-                        ' Проверка API — при использовании.')
+                      + '\nПри 429 пробуется следующая модель; при billing — другой provider. '
+                      + 'Проверка API — при использовании.')
     if '\n' in arguments or '\r' in arguments:
         raise FallbackCommandError('Команда должна занимать одну строку.')
     routes = _edit_fallback_routes(chain, policy, command, value)
