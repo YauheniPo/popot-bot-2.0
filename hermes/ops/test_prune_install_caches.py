@@ -15,7 +15,8 @@ MODULE_PATH = Path(__file__).with_name("prune-install-caches.py")
 
 def load_pruner():
     spec = importlib.util.spec_from_file_location("prune_install_caches", MODULE_PATH)
-    assert spec is not None and spec.loader is not None
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -65,8 +66,9 @@ class PruneInstallCachesTests(unittest.TestCase):
             cache = home / ".cache"
             cache.mkdir()
             (cache / "uv").symlink_to(outside, target_is_directory=True)
+            pruner = load_pruner()
             with self.assertRaises(ValueError):
-                load_pruner().prune_large_caches(home, max_bytes=0, busy=False)
+                pruner.prune_large_caches(home, max_bytes=0, busy=False)
             self.assertEqual((outside / "keep").read_text(), "saved")
 
     def test_browser_root_symlink_cannot_delete_another_tree(self) -> None:
@@ -75,15 +77,16 @@ class PruneInstallCachesTests(unittest.TestCase):
             outside = home / "outside"
             (outside / "chrome-1.0.0.0").mkdir(parents=True)
             (home / "browsers").symlink_to(outside, target_is_directory=True)
+            pruner = load_pruner()
             with self.assertRaises(ValueError):
-                load_pruner().prune_browser_builds(home / "browsers", set())
+                pruner.prune_browser_builds(home / "browsers", set())
             self.assertTrue((outside / "chrome-1.0.0.0").exists())
 
     def test_absent_browser_root_is_safe_on_first_install(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             self.assertEqual(load_pruner().prune_browser_builds(Path(temporary) / "browsers", set()), 0)
 
-    def test_nested_cache_symlink_is_rejected(self) -> None:
+    def test_nested_cache_symlink_is_skipped(self) -> None:
         """Symlink inside cache is skipped (not followed) during size calculation."""
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary)
@@ -93,10 +96,7 @@ class PruneInstallCachesTests(unittest.TestCase):
             outside.write_text("keep")
             (cache / "link").symlink_to(outside)
             # No exception expected; symlink is skipped, size of target not counted
-            try:
-                load_pruner().prune_large_caches(home, max_bytes=0, busy=False)
-            except ValueError:
-                self.fail("prune_large_caches raised ValueError unexpectedly")
+            load_pruner().prune_large_caches(home, max_bytes=0, busy=False)
             # Symlink file should still exist
             self.assertTrue((cache / "link").exists())
             # Outside file should be untouched

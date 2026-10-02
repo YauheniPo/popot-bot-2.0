@@ -16,6 +16,8 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'ops'))
 from hermes_config_io import load_config as load_private_config, validated_config_path, write_config
 
+_BUSY_INPUT_MODE_KEY = "display.busy_input_mode"
+
 
 def managed_model_values(settings: dict[str, Any]) -> dict[str, str]:
     """One route for agent defaults; explicit session/job overrides are separate."""
@@ -380,11 +382,11 @@ def build_operations(
                       op.key.split('.')[0] not in owned or not nested_value(current_config, op.key)[0]]
         # The legacy interrupt mode cancels long-running work on every follow-up.
         # Keep queue/steer user-owned, but repair interrupt at deploy time.
-        exists, value = nested_value(current_config, 'display.busy_input_mode')
+        exists, value = nested_value(current_config, _BUSY_INPUT_MODE_KEY)
         if exists and value == 'interrupt':
-            desired_mode = runtime.get('set', {}).get('display.busy_input_mode')
+            desired_mode = runtime.get('set', {}).get(_BUSY_INPUT_MODE_KEY)
             if desired_mode == 'steer':
-                operations.append(Operation('set', 'display.busy_input_mode', desired_mode))
+                operations.append(Operation('set', _BUSY_INPUT_MODE_KEY, desired_mode))
     operations.extend(_set_if_missing_operations(runtime, current_config, variables))
     operations.extend(_unset_operations(runtime, current_config))
 

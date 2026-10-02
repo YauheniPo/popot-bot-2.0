@@ -347,6 +347,10 @@ Other planning.
         raw.write_text(json.dumps({"run_id": self.RUN_ID, "items": []}))
         with self.assertRaisesRegex(ValueError, "invalid digest card count"):
             deliver_cards(raw, self.state, {"chat_id": "1"}, "9", Mock())
+
+    def test_delivery_rejects_missing_token(self):
+        raw = self.state / f"raw-{self.RUN_ID}.json"
+        raw.write_text(json.dumps({"run_id": self.RUN_ID, "items": [self.item]}))
         with self.assertRaisesRegex(RuntimeError, "token unavailable"):
             deliver_cards_to_telegram(raw, self.state, {"chat_id": "1"}, "9", "")
 

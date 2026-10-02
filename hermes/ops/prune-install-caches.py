@@ -79,6 +79,15 @@ def prune_large_caches(home: Path, max_bytes: int, busy: bool) -> int:
             shutil.rmtree(path)
             removed += 1
     return removed
+def _check_command_for_cache_busy(command: str, process: Path) -> bool:
+    """Check if command indicates cache activity."""
+    if command in {"uv", "pip", "pip3", "pnpm", "sonar-scanner"}:
+        return True
+    if command in {"node", "java"} or command.startswith("python"):
+        return _check_argv_for_cache_markers(process)
+    return False
+
+
 def active_processes(home: Path, proc: Path = Path("/proc")) -> tuple[set[str], bool]:
     """Keep Chrome builds in use and defer cache cleanup while installers run."""
     if not proc.is_dir():
@@ -99,10 +108,8 @@ def active_processes(home: Path, proc: Path = Path("/proc")) -> tuple[set[str], 
             active_builds.update(_extract_chrome_build(executable_path, browser_root))
         if _is_cache_root(executable_path, home / DOT_CACHE):
             cache_busy = True
-        if command in {"uv", "pip", "pip3", "pnpm", "sonar-scanner"}:
+        if _check_command_for_cache_busy(command, process):
             cache_busy = True
-        elif command in {"node", "java"} or command.startswith("python"):
-            cache_busy = cache_busy or _check_argv_for_cache_markers(process)
     return active_builds, cache_busy
 
 
