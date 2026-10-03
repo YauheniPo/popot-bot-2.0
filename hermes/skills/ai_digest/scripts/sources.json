@@ -2,7 +2,8 @@
   "version": 1,
   "defaults": {
     "window_hours": 24,
-    "limit": 5,
+    "limit": 10,
+    "repeat_cooldown_hours": 168,
     "request_timeout_s": 12,
     "max_summary_chars": 1200,
     "max_article_chars": 4500,
@@ -10,8 +11,8 @@
     "max_response_bytes": 5242880
   },
   "profiles": {
-    "daily": {"window_hours": 24, "limit": 5},
-    "weekly": {"window_hours": 168, "limit": 7}
+    "daily": {"window_hours": 24, "limit": 10},
+    "weekly": {"window_hours": 168, "limit": 10}
   },
   "sources": [
     {"id": "hackernews", "type": "hackernews", "max_items": 10, "max_comments": 5},

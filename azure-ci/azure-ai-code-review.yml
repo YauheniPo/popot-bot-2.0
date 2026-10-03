@@ -29,6 +29,9 @@
 #      review can outlive the wait. That ends the build with a warning and the
 #      run link, never with a failure: the review still finishes on GitHub.
 #      Set waitMinutes to 0 to dispatch without waiting at all.
+#   4. In Run pipeline, choose Branch/tag = main; use targetRef for the branch
+#      to review. Keep CI and PR trigger overrides disabled in the Azure UI:
+#      UI trigger settings can override trigger/pr: none below.
 
 trigger: none
 pr: none

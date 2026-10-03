@@ -18,6 +18,47 @@ import ai_review_preflight
 
 
 class OllamaReviewTest(unittest.TestCase):
+    def test_claude_runs_the_probed_model_in_every_role_and_attempt(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = yaml.safe_load((root / '.github/workflows/pr-ai-review.yml').read_text())
+        env = workflow['env']
+        # The legacy override must select the probed model too, rather than
+        # silently replacing only the SDK's model after a different probe.
+        expression = env['CLAUDE_REVIEW_MODEL'].removeprefix('${{ ').removesuffix(' }}')
+        for variables, expected in (
+            ({'CLAUDE_REVIEW_MODEL': 'fixture/primary'}, 'fixture/primary'),
+            ({'CLAUDE_REVIEW_MODEL': 'fixture/primary',
+              'CLAUDE_CODE_REVIEW_MODEL': 'fixture/override'}, 'fixture/override'),
+        ):
+            choices = [variables.get(part[5:], '') if part.startswith('vars.') else part.strip("'")
+                       for part in expression.split(' || ')]
+            self.assertEqual(next(filter(None, choices)), expected)
+        steps = {step.get('id'): step for step in workflow['jobs']['claude-code-plugin-review']['steps']}
+        self.assertEqual(steps['claude_models']['env']['DIRECT_REVIEW_MODEL'], '${{ env.CLAUDE_REVIEW_MODEL }}')
+        for attempt in ('primary', 'primary_retry', 'fallback', 'fallback_retry'):
+            route = 'fallback' if attempt.startswith('fallback') else 'primary'
+            checked = '${{ steps.claude_models.outputs.' + route + '_model }}'
+            step = steps['claude_review_' + attempt]
+            with self.subTest(attempt=attempt):
+                self.assertIn('--model "' + checked + '"', step['with']['claude_args'])
+                for key in ('ANTHROPIC_DEFAULT_FABLE_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL',
+                            'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+                            'CLAUDE_CODE_SUBAGENT_MODEL'):
+                    self.assertEqual(step['env'][key], checked)
+
+    def test_observable_default_provider_is_independent_of_claude_settings(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = yaml.safe_load((root / '.github/workflows/pr-ai-review.yml').read_text())
+        env = workflow['jobs']['observable-claude-review']['env']
+        for key in ('CLAUDE_REVIEW_PROVIDER', 'CLAUDE_REVIEW_FALLBACK_PROVIDER'):
+            self.assertNotIn('vars.CLAUDE_', env[key])
+        primary = env['CLAUDE_REVIEW_PROVIDER'].split("'")[1]
+        fallback = env['CLAUDE_REVIEW_FALLBACK_PROVIDER'].split("'")[1]
+        self.assertNotEqual(primary, fallback)
+        self.assertIn(primary, ai_review_preflight.MESSAGES_BASE_URLS)
+        self.assertIn(fallback, ai_review_preflight.MESSAGES_BASE_URLS)
+        self.assertEqual(env['CLAUDE_REVIEW_BASE_URL'], "${{ vars.OBSERVABLE_REVIEW_BASE_URL || '' }}")
+
     def test_stream_watchdog_timeout_keeps_bounded_preflight_retry(self):
         first = io.BytesIO(b"")
         second = io.BytesIO(b"")
@@ -703,8 +744,8 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertEqual(automatic["env"]["OLLAMA_REVIEW_RPM"], "${{ vars.OLLAMA_REVIEW_RPM || '60' }}")
         self.assertEqual(automatic["env"]["OLLAMA_REVIEW_COOLDOWN_SECONDS"], "${{ vars.OLLAMA_REVIEW_COOLDOWN_SECONDS || '0' }}")
         self.assertEqual(automatic["env"]["OLLAMA_REVIEW_BUDGET_SECONDS"], "${{ vars.OLLAMA_REVIEW_BUDGET_SECONDS || '2400' }}")
-        self.assertIn("vars.CLAUDE_CODE_REVIEW_MODEL", automatic["env"]["CLAUDE_CODE_REVIEW_MODEL"])
-        self.assertIn("||", automatic["env"]["CLAUDE_CODE_REVIEW_MODEL"])
+        self.assertIn("vars.CLAUDE_CODE_REVIEW_MODEL", automatic["env"]["CLAUDE_REVIEW_MODEL"])
+        self.assertIn("||", automatic["env"]["CLAUDE_REVIEW_MODEL"])
         checkout_line = next(
             line for line in (root / ".github/workflows/pr-ai-review.yml").read_text().splitlines()
             if "uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" in line
@@ -1189,6 +1230,8 @@ class NousReviewTest(unittest.TestCase):
             (root / "azure-ci/azure-ai-code-review.yml").read_text(),
             Loader=yaml.BaseLoader,
         )
+        self.assertEqual(pipeline["trigger"], "none")
+        self.assertEqual(pipeline["pr"], "none")
         jobs = {job["job"]: job for job in pipeline["jobs"]}
 
         validation = jobs["ValidateReviewPipeline"]
@@ -1204,6 +1247,31 @@ class NousReviewTest(unittest.TestCase):
         self.assertEqual(test_step["workingDirectory"], "$(Build.SourcesDirectory)")
         self.assertEqual(jobs["RequestReview"]["dependsOn"], "ValidateReviewPipeline")
         self.assertEqual(jobs["RequestReview"]["condition"], "succeeded()")
+
+    def test_azure_trusted_branch_gate_reports_actual_run_context(self):
+        root = Path(__file__).resolve().parents[2]
+        template = yaml.load(
+            (root / "azure-ci/azure-templates/validate-trusted-branch.yml").read_text(),
+            Loader=yaml.BaseLoader,
+        )
+        step = template["steps"][0]
+        self.assertEqual(step["env"]["PIPELINE_DEFINITION_REF"], "$(Build.SourceBranch)")
+        self.assertEqual(step["env"]["BUILD_REASON"], "$(Build.Reason)")
+        for branch, reason, expected_status in (
+            ("refs/heads/main", "Manual", 0),
+            ("refs/heads/feature/review", "Manual", 1),
+            ("refs/pull/64/merge", "PullRequest", 1),
+        ):
+            with self.subTest(branch=branch):
+                result = subprocess.run(
+                    ["bash", "-c", step["bash"]], capture_output=True, text=True,
+                    env={**os.environ, "PIPELINE_DEFINITION_REF": branch,
+                         "BUILD_REASON": reason, "ERROR_MESSAGE": "Use main"},
+                )
+                self.assertEqual(result.returncode, expected_status, result.stdout + result.stderr)
+                if expected_status:
+                    self.assertIn(branch, result.stdout)
+                    self.assertIn(reason, result.stdout)
 
     def test_github_review_report_has_no_broken_artifacts_page_link(self):
         root = Path(__file__).resolve().parents[2]

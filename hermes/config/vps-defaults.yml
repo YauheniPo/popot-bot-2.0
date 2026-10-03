@@ -52,11 +52,12 @@ vps_deploy:
 # Workspace enabled, ui_owned_sections are initial defaults, not deploy-time
 # resets: both UIs edit the same live config. Exception: model.provider/default
 # are authoritative for agents, delegation, cron defaults and Swarm profiles.
+# auxiliary.compression provider/model/fallback_chain are also managed; other
+# auxiliary settings and compression tuning remain UI-owned.
 vps_hermes:
   config:
     ui_owned_sections:
       - model
-      - fallback_providers
       - auxiliary
       - compression
       - cron
@@ -77,24 +78,24 @@ vps_hermes:
         # Single source: deploy also applies this route to existing profiles.
         default: nvidia/nemotron-3-ultra-550b-a55b
         provider: nvidia
-      # Initial ordered list; /fallback edits survive deployment. /fallback reset
-      # restores this list. Credentials stay in Vault, never in chat commands.
+      # Deploy applies this ordered list to active fallback_providers on every run.
+      # /fallback edits last until the next deploy. Credentials stay in Vault.
       fallback_policy:
         # Repeated providers are allowed; each provider/model pair must be unique.
-        # Catalogs checked 2026-09-23; selection rationale/limits: hermes/README.md.
-        # Alternate providers first. Quota failures skip ALL later routes of
-        # that provider; later same-provider models help with non-quota failures.
+        # Catalogs checked 2026-09-29; selection rationale/limits: hermes/README.md.
+        # Alternate providers first. Billing/upstream quota skips the affected
+        # provider; a model-level 429 can try another free model on that provider.
         default_routes:
           - provider: openrouter
-            model: inclusionai/ling-3.0-flash-fin:free
+            model: google/gemma-4-31b-it:free
           - provider: nous
-            model: meituan/longcat-2.0:free
-          - provider: nvidia
-            model: nvidia/nemotron-3-super-120b-a12b
+            model: stepfun/step-3.7-flash:free
           - provider: openrouter
-            model: nvidia/nemotron-3-ultra-550b-a55b:free
+            model: cohere/north-mini-code:free
           - provider: nous
             model: inclusionai/ling-3.0-flash-sante:free
+          - provider: nvidia
+            model: nvidia/nemotron-3-super-120b-a12b
         # Chat may only choose these existing integrations. No automatic keys,
         # endpoints or paid OpenRouter routes are added by the command.
         allowed_providers: [nvidia, openrouter, nous]
@@ -103,8 +104,9 @@ vps_hermes:
       # Compact long sessions after 70% of the active model context is used.
       compression:
         threshold: 0.70
-      # Context compaction keeps its explicit OpenRouter primary, then uses the
-      # managed fallback route only for this compression request.
+      # Deploy applies this route even when auxiliary is UI-owned. Omitting
+      # fallback_chain removes a stale separate chain so compression inherits
+      # the profile's main fallbacks. Set an explicit list here to override it.
       auxiliary:
         compression:
           provider: nvidia
@@ -284,6 +286,8 @@ vps_runtime:
     updates.non_interactive_local_changes: stash
     gateway.systemd_watchdog_seconds: 120
     agent.verify_on_stop: auto
+    # Also bounds rebuilt-message restarts while walking the fallback chain.
+    agent.api_max_retries: 6
     browser.backend: "off"
     tool_loop_guardrails.hard_stop_enabled: true
     # Validation/tool-contract failures may need a few corrected attempts after
@@ -294,8 +298,22 @@ vps_runtime:
     tool_loop_guardrails.hard_stop_after.idempotent_no_progress: 6
     tool_loop_guardrails.loop_caps.max_web_searches: 20
     tool_loop_guardrails.loop_caps.max_subagents: 10
+    # Tool progress: off = no tool messages; new = tool changes only;
+    # all = every call; verbose = full details; log = audit file only.
+    # Keep CLI verbose. Telegram shows compact live progress in one message,
+    # then removes progress bubbles after success; final answers and warnings stay.
+    # Seed the UI-owned choice only when missing. Follow-ups reach the active
+    # run at a message boundary without cancelling its current call.
+    display.busy_input_mode: steer
     display.tool_progress: "verbose"
+    display.platforms.telegram.tool_progress: "new"
+    display.platforms.telegram.tool_progress_grouping: "accumulate"
+    display.platforms.telegram.cleanup_progress: true
     display.platforms.telegram.interim_assistant_messages: false
+    display.platforms.telegram.long_running_notifications: true
+    display.platforms.telegram.busy_ack_detail: false
+    display.platforms.telegram.show_reasoning: false
+    display.platforms.telegram.suppress_warning_notifications: false
     display.background_process_notifications: result
     # Local Hermes: keep /gw_restart and /model_global visible in the
     # Telegram menu — the default 60-command cap would hide them.

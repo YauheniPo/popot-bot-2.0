@@ -1,9 +1,11 @@
 """Offline contracts for the cron-backed news collector."""
 
+import base64
 from datetime import datetime, timezone
 import gzip
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import http.client
+import io
 import json
 from pathlib import Path
 import socket
@@ -12,6 +14,7 @@ import sys
 import threading
 import unittest
 from unittest.mock import patch, MagicMock
+from urllib.error import URLError
 from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -26,6 +29,175 @@ NOW = datetime(2026, 9, 25, 12, tzinfo=timezone.utc)
 
 
 class CollectNewsTests(unittest.TestCase):
+    def test_read_article_fetches_github_readme_for_project(self):
+        from collect_news import _read_article
+
+        item = {"url": "https://github.com/acme/agent", "evidence": "Agent toolkit",
+                "full_text_available": False}
+        readme = "# Agent toolkit\n\nAn agent orchestrator with persistent teams and shared terminal sessions."
+        response = json.dumps({"encoding": "base64", "content":
+                               base64.b64encode(readme.encode()).decode()}).encode()
+        calls = []
+
+        def fetch(url, limit):
+            calls.append((url, limit))
+            return response
+
+        _read_article(item, {"max_article_chars": 4500}, fetch)
+        self.assertEqual(calls[0][0], GITHUB_API_URL + "/repos/acme/agent/readme")
+        self.assertIn("persistent teams", item["evidence"])
+        self.assertEqual(item["evidence_kind"], "repository_readme")
+
+    def test_read_article_keeps_project_listing_when_readme_unavailable(self):
+        from collect_news import _read_article
+
+        item = {"url": "https://github.com/acme/agent", "evidence": "Local agent orchestrator",
+                "full_text_available": False}
+
+        def fetch(_url, _limit):
+            raise OSError("rate limited")
+
+        _read_article(item, {}, fetch)
+        self.assertEqual(item["evidence"], "Local agent orchestrator")
+        self.assertIn("README unavailable", item["read_issue"])
+
+    def test_read_article_rejects_missing_or_short_github_readme(self):
+        from collect_news import _read_article
+
+        for response in ({"encoding": "utf-8", "content": "text"},
+                         {"encoding": "base64", "content": base64.b64encode(b"short").decode()}):
+            item = {"url": "https://github.com/acme/agent", "evidence": "Listing",
+                    "full_text_available": False}
+            _read_article(item, {}, lambda _url, _limit: json.dumps(response).encode())
+            self.assertEqual(item["evidence"], "Listing")
+            self.assertIn("README unavailable", item["read_issue"])
+
+    def test_reddit_comment_excerpt_keeps_only_readable_comments(self):
+        from collect_news import _fetch_reddit_comments
+
+        item = {"discussion_excerpts": []}
+        response = [{"data": {"children": []}}, {"data": {"children": [
+            {"kind": "t1", "data": {"body": "Useful model comparison"}},
+            {"kind": "more", "data": {"body": "not a comment"}},
+        ]}}]
+        with patch("collect_news._public_url"):
+            _fetch_reddit_comments(item, "abc123", 3,
+                                   lambda _url, _limit: json.dumps(response).encode())
+        self.assertEqual(item["discussion_excerpts"],
+                         [{"source_id": "reddit", "text": "Useful model comparison"}])
+
+    def test_pinned_http_connection_uses_validated_address(self):
+        from collect_news import _SafeHTTPHandler
+
+        address = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 80))]
+        connected = MagicMock()
+        with patch("collect_news._public_addresses", return_value=address), \
+                patch("collect_news.socket.socket", return_value=connected):
+            connection = _pinned_connection_class(http.client.HTTPConnection,
+                                                  "http://example.org/")("example.org")
+            connection.connect()
+        connected.connect.assert_called_once_with(("127.0.0.1", 80))
+        self.assertIs(connection.sock, connected)
+        handler = _SafeHTTPHandler()
+        with patch.object(handler, "do_open", return_value="response") as opened, \
+                patch("collect_news._pinned_connection_class", return_value=http.client.HTTPConnection):
+            self.assertEqual(handler.http_open(MagicMock(full_url="http://example.org/")), "response")
+        self.assertIs(opened.call_args.args[0], http.client.HTTPConnection)
+
+    def test_read_article_uses_long_page_body_without_article_tag(self):
+        from collect_news import _read_article
+
+        item = {"url": "https://example.org/news", "evidence": "Short teaser",
+                "full_text_available": False}
+        paragraphs = " ".join(["The release adds local model support and command line tools."] * 10)
+        html = f"<html><body><div>{paragraphs}</div></body></html>".encode()
+        _read_article(item, {"max_article_chars": 4500}, lambda _url, _limit: html)
+        self.assertIn("local model support", item["evidence"])
+        self.assertEqual(item["evidence_kind"], "page_text")
+        self.assertFalse(item["full_text_available"])
+
+    def test_ratings_change_selection_between_equally_fresh_candidates(self):
+        from collect_news import _select_items
+
+        items = [
+            {"title": "Stock options dispute", "url": "https://example.org/stocks-new",
+             "source_ids": ["hackernews"], "category": "business", "subcategory": "Equity",
+             "evidence": "More stock options", "score": 0, "discussion_count": 0,
+             "published_at": NOW.isoformat()},
+            {"title": "Coding agent toolkit", "url": "https://example.org/tool-new",
+             "source_ids": ["github-trending"], "category": "project", "subcategory": "Agents",
+             "evidence": "Coding agent toolkit", "score": 0, "discussion_count": 0,
+             "published_at": NOW.isoformat()},
+        ]
+        history = [
+            {**items[0], "url": "https://example.org/stocks-old", "score": 1,
+             "updated_at": NOW.isoformat()},
+            {**items[1], "url": "https://example.org/tool-old", "score": 3,
+             "updated_at": NOW.isoformat()},
+        ]
+        self.assertEqual(_select_items(items, 1, "daily", NOW, 24, history=history)[0]["title"],
+                         "Coding agent toolkit")
+
+    def test_personalized_digest_keeps_one_unrated_topic(self):
+        from collect_news import _select_items
+
+        items = [{"title": f"Agent toolkit {index}", "url": f"https://example.org/tool-{index}",
+                  "source_ids": [f"source-{index}"], "category": "project", "subcategory": "Agents",
+                  "evidence": "Coding agent toolkit", "score": 0, "discussion_count": 0,
+                  "published_at": NOW.isoformat()} for index in range(3)]
+        items.append({"title": "Database research", "url": "https://example.org/database",
+                      "source_ids": ["source-new"], "category": "research", "subcategory": "Databases",
+                      "evidence": "New database design", "score": 0, "discussion_count": 0,
+                      "published_at": NOW.isoformat()})
+        history = [{**items[0], "url": "https://example.org/old-tool", "score": 3,
+                    "updated_at": NOW.isoformat()}]
+        selected = _select_items(items, 3, "daily", NOW, 24, history=history)
+        self.assertIn("Database research", [item["title"] for item in selected])
+
+    def test_corrupt_feedback_keeps_collection_running_with_issue(self):
+        import tempfile
+        from unittest.mock import patch
+        from collect_news import main
+
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "home"
+            state = Path(directory) / "state"
+            (home / "cron").mkdir(parents=True)
+            state.mkdir()
+            (home / "cron" / "jobs.json").write_text(json.dumps({"jobs": [
+                {"skill": "ai_digest", "origin": {"user_id": "9"}}]}))
+            (state / "feedback.db").write_bytes(b"invalid database")
+            source = Path(directory) / "sources.json"
+            source.write_text(json.dumps({"version": 1, "defaults": {"window_hours": 24,
+                "limit": 10}, "sources": []}))
+            with patch.dict("os.environ", {"HERMES_HOME": str(home)}):
+                self.assertEqual(main(["--sources", str(source), "--state-dir", str(state)]), 3)
+            raw = json.loads(next(state.glob("raw-*.json")).read_text())
+            self.assertIn("feedback", [issue["id"] for issue in raw["source_issues"]])
+
+    def test_collector_reads_healthy_feedback_and_rejects_bad_cooldown(self):
+        import tempfile
+        from collect_news import main
+        from feedback import FeedbackStore
+
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "home"
+            state = Path(directory) / "state"
+            (home / "cron").mkdir(parents=True)
+            state.mkdir()
+            (home / "cron" / "jobs.json").write_text(json.dumps({"jobs": [
+                {"skill": "ai_digest", "origin": {"user_id": "9"}}]}))
+            FeedbackStore(state / "feedback.db")
+            source = Path(directory) / "sources.json"
+            source.write_text(json.dumps({"version": 1, "defaults": {"window_hours": 24,
+                "limit": 10, "repeat_cooldown_hours": 168}, "sources": []}))
+            with patch.dict("os.environ", {"HERMES_HOME": str(home)}):
+                self.assertEqual(main(["--sources", str(source), "--state-dir", str(state)]), 3)
+            source.write_text(json.dumps({"version": 1, "defaults": {"window_hours": 24,
+                "limit": 10, "repeat_cooldown_hours": 0}, "sources": []}))
+            with patch.dict("os.environ", {"HERMES_HOME": str(home)}):
+                self.assertEqual(main(["--sources", str(source), "--state-dir", str(state)]), 2)
+
     def test_trending_articles_extracts_repo_and_description(self):
         html = '''<article class="Box-row"><h2><a href="/owner/repo">owner/repo</a></h2>
         <p>A useful model</p><span itemprop="programmingLanguage">Python</span>
@@ -67,6 +239,10 @@ class CollectNewsTests(unittest.TestCase):
 
         def fetch(url, _limit):
             requested.append(url)
+            if url.endswith("/readme"):
+                return json.dumps({"encoding": "base64", "content":
+                    base64.b64encode(
+                        b"An agent toolkit with persistent teams and shared terminal sessions.").decode()}).encode()
             if "/commits?" in url:
                 return json.dumps(commits).encode()
             if url.endswith("/" + "a" * 40 + "/README.md"):
@@ -113,6 +289,10 @@ class CollectNewsTests(unittest.TestCase):
                       "| [Jev Router](https://github.com/mrjev/jev-router) | MCP tool router |\n")
 
         def fetch(url, _limit):
+            if url.endswith("/readme"):
+                return json.dumps({"encoding": "base64", "content":
+                    base64.b64encode(
+                        b"A tool router for integrating agent workflows with multiple providers.").decode()}).encode()
             if "/commits?" in url:
                 return json.dumps(commits).encode()
             if url.endswith("/" + "c" * 40 + "/README.md"):
@@ -279,7 +459,8 @@ class CollectNewsTests(unittest.TestCase):
                 b'{"text":"Second discussion","time":1790334001}',
             "https://vendor.test/release": b"<article><p>" + b"Article body. " * 40 + b"</p></article>",
         }
-        result = collect(config, now=NOW, fetch=lambda url, _limit: responses[url])
+        with patch("collect_news._public_url"):
+            result = collect(config, now=NOW, fetch=lambda url, _limit: responses[url])
         self.assertEqual(len(result["items"]), 1)
         self.assertEqual([c["text"] for c in result["items"][0]["discussion_excerpts"]],
                          ["Useful technical discussion", "Second discussion"])
@@ -483,6 +664,21 @@ class CollectNewsTests(unittest.TestCase):
                          if selected_item["category"] == "benchmark")
         self.assertEqual(benchmark["source_ids"][0], "source-b")
         self.assertLessEqual(counts["source-a"], 2)
+
+    def test_weekly_categories_take_priority_over_exploration(self):
+        from collect_news import _select_items
+
+        items = [{"title": category, "url": f"https://example.org/{category}",
+                  "source_ids": [category], "category": category,
+                  "published_at": "2026-09-25T11:00:00Z", "score": score,
+                  "discussion_count": 0}
+                 for category, score in (("research", 0), ("podcast", 0),
+                                         ("benchmark", 0), ("news", 100))]
+        history = [{"title": "Old item", "url": "https://example.org/old",
+                    "score": 2, "updated_at": "2026-09-24T11:00:00+00:00"}]
+        selected = _select_items(items, 3, "weekly", NOW, 168, history=history)
+        self.assertEqual({item["category"] for item in selected},
+                         {"research", "podcast", "benchmark"})
 
     def test_collect_sources_isolates_malformed_hn_and_reddit_payloads(self):
         from collect_news import _collect_sources
@@ -1058,6 +1254,37 @@ class CollectNewsTests(unittest.TestCase):
         factory.assert_called_once_with(http.client.HTTPSConnection, request.full_url, allow_loopback=False)
         self.assertIs(do_open.call_args.args[0], connection_type)
 
+    def test_https_fetch_uses_real_connection_with_verified_tls_context(self):
+        address = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "",
+                    ("93.184.216.34", 443))]
+        pinned_socket = MagicMock()
+        tls_socket = MagicMock()
+        tls_socket.makefile.return_value = io.BytesIO(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+        )
+        with patch("collect_news._public_addresses", return_value=address), \
+                patch("collect_news._connect_resolved", return_value=pinned_socket) as connect, \
+                patch("ssl.SSLContext.wrap_socket", autospec=True, return_value=tls_socket) as wrap, \
+                patch("socket.getaddrinfo", side_effect=AssertionError("unexpected DNS lookup")):
+            self.assertEqual(http_fetch("https://example.test/news", max_bytes=10, timeout=3), b"ok")
+        connect.assert_called_once_with(address, 3)
+        context, connection = wrap.call_args.args
+        self.assertIs(connection, pinned_socket)
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertEqual(wrap.call_args.kwargs["server_hostname"], "example.test")
+
+    def test_https_fetch_reports_certificate_failure_and_closes_socket(self):
+        pinned_socket = MagicMock()
+        error = ssl.SSLCertVerificationError("certificate verify failed")
+        with patch("collect_news._public_addresses", return_value=[]), \
+                patch("collect_news._connect_resolved", return_value=pinned_socket), \
+                patch("ssl.SSLContext.wrap_socket", side_effect=error):
+            with self.assertRaises(URLError) as result:
+                http_fetch("https://example.test/news", max_bytes=10)
+        self.assertIs(result.exception.reason, error)
+        pinned_socket.close.assert_called_once()
+
     def test_safe_redirect_validates_newurl(self):
         """Test _SafeRedirect validates the redirect URL and delegates on success."""
         from collect_news import _SafeRedirect
@@ -1117,7 +1344,8 @@ class CollectNewsTests(unittest.TestCase):
                 b'{"text":"Second discussion","time":1790334001}',
             "https://vendor.test/release": b"<article><p>Article body.</p></article>",
         }
-        result = collect(config, now=NOW, fetch=lambda url, _limit: responses[url])
+        with patch("collect_news._public_url"):
+            result = collect(config, now=NOW, fetch=lambda url, _limit: responses[url])
         self.assertEqual(len(result["items"]), 1)
         self.assertIn("discussion_issue", result["items"][0])
         self.assertIn("Hacker News comment 201", result["items"][0]["discussion_issue"])
@@ -1357,7 +1585,8 @@ class CollectNewsTests(unittest.TestCase):
             if "reddit.com/comments" in url:
                 raise OSError("comment fetch failed")
             return listing
-        result = collect(config, now=NOW, fetch=fetch)
+        with patch("collect_news._public_url"):
+            result = collect(config, now=NOW, fetch=fetch)
         self.assertEqual(len(result["items"]), 1)
         self.assertIn("Reddit comments unavailable: comment fetch failed",
                       result["items"][0]["discussion_issue"])

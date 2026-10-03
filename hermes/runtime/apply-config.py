@@ -16,6 +16,8 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'ops'))
 from hermes_config_io import load_config as load_private_config, validated_config_path, write_config
 
+_BUSY_INPUT_MODE_KEY = "display.busy_input_mode"
+
 
 def managed_model_values(settings: dict[str, Any]) -> dict[str, str]:
     """One route for agent defaults; explicit session/job overrides are separate."""
@@ -357,6 +359,35 @@ def _unset_operations_when_missing(
     return operations
 
 
+def _is_compression_route(route: Any) -> bool:
+    return isinstance(route, dict) and all(
+        isinstance(route.get(key), str) and route[key].strip()
+        for key in ('provider', 'model')
+    )
+
+
+def _managed_compression_operations(route: Any, current_config: dict[str, Any]) -> list[Operation]:
+    """Apply only the configured compression route, preserving other auxiliary settings."""
+    if not _is_compression_route(route):
+        raise ValueError('managed compression requires non-empty provider and model')
+    chain = route.get('fallback_chain')
+    if chain is not None and (not isinstance(chain, list) or any(
+        not _is_compression_route(entry) for entry in chain
+    )):
+        raise ValueError('managed compression fallback_chain requires provider/model mappings')
+    operations = []
+    for field in ('provider', 'model', 'fallback_chain'):
+        key = 'auxiliary.compression.' + field
+        present, current = nested_value(current_config, key)
+        value = route.get(field)
+        if value is None:
+            if present:
+                operations.append(Operation('unset', key))
+        elif not present or current != value:
+            operations.append(Operation('set', key, value))
+    return operations
+
+
 def build_operations(
     settings: dict[str, Any],
     current_config: dict[str, Any],
@@ -378,6 +409,13 @@ def build_operations(
         # Infrastructure/safety settings and capability overrides remain managed.
         operations = [op for op in operations if
                       op.key.split('.')[0] not in owned or not nested_value(current_config, op.key)[0]]
+        # The legacy interrupt mode cancels long-running work on every follow-up.
+        # Keep queue/steer user-owned, but repair interrupt at deploy time.
+        exists, value = nested_value(current_config, _BUSY_INPUT_MODE_KEY)
+        if exists and value == 'interrupt':
+            desired_mode = runtime.get('set', {}).get(_BUSY_INPUT_MODE_KEY)
+            if desired_mode == 'steer':
+                operations.append(Operation('set', _BUSY_INPUT_MODE_KEY, desired_mode))
     operations.extend(_set_if_missing_operations(runtime, current_config, variables))
     operations.extend(_unset_operations(runtime, current_config))
 
@@ -389,11 +427,16 @@ def build_operations(
     )
 
     # Route policy wins over UI-owned sections and legacy runtime pins. Keep
-    # token budgets, compression, fallback routes and other UI settings intact.
+    # token budgets, compression tuning and other UI settings intact.
     model_values = managed_model_values(settings)
     operations = [op for op in operations if op.key not in model_values]
     operations.extend(Operation('set', key, value) for key, value in model_values.items()
                       if nested_value(current_config, key) != (True, value))
+    compression_exists, compression_route = nested_value(settings, 'vps_hermes.config.managed_overlay.auxiliary.compression')
+    if compression_exists:
+        route_keys = {'auxiliary.compression.' + field for field in ('provider', 'model', 'fallback_chain')}
+        operations = [op for op in operations if op.key not in route_keys]
+        operations.extend(_managed_compression_operations(compression_route, current_config))
     return operations
 
 
@@ -868,5 +911,5 @@ def main() -> int:
         return 1
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())

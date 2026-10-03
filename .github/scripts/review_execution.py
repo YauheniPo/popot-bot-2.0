@@ -91,15 +91,13 @@ class ExecutionReport:
         # global report order, so counting number == 1 would mislabel new chunks.
         retries = len(self.attempts) - len({a.unit for a in self.attempts})
         lines = [self.connection()]
-        lines.append("> Successful models: " + (", ".join(f"`{m}`" for m in models[:8]) or "none"))
-        lines.append(
+        lines.extend([
+            "> Successful models: " + (", ".join(f"`{m}`" for m in models[:8]) or "none"),
             f"> Attempts: {len(self.attempts)} · Validated: {len(successes)} · Retries: {retries} · "
-            f"Fallback successes: {sum(a.route.startswith('fallback') for a in successes)}"
-        )
-        lines.append(
+            f"Fallback successes: {sum(a.route.startswith('fallback') for a in successes)}",
             f"> Provider time: {sum(a.seconds or 0 for a in self.attempts):.1f}s "
-            "(retry waits, preflight, and GitHub API requests excluded)."
-        )
+            "(retry waits, preflight, and GitHub API requests excluded).",
+        ])
         return "\n".join(lines)
 
     def footer(self, unit: str) -> str:
@@ -174,13 +172,14 @@ def claude_execution_report(environment: Mapping[str, str]) -> ExecutionReport:
         environment.get("CLAUDE_REVIEW_PROVIDER", "unknown"),
         environment.get("CLAUDE_REVIEW_ENDPOINT", ""), primary, kind="claude",
     )
-    for stage in ("PRIMARY", "RETRY", "FALLBACK"):
+    for stage in ("PRIMARY", "RETRY", "FALLBACK", "FALLBACK_RETRY"):
         outcome = environment.get(f"CLAUDE_REVIEW_{stage}_OUTCOME", "skipped")
         if outcome not in {"success", "failure", "cancelled"}:
             continue
         validation = environment.get(f"CLAUDE_REVIEW_{stage}_VALIDATION", "skipped")
-        model = environment.get("CLAUDE_REVIEW_FALLBACK_MODEL", "unknown") if stage == "FALLBACK" else primary
-        attempt = report.begin({"model": model}, route="fallback" if stage == "FALLBACK" else "primary")
+        fallback = stage.startswith("FALLBACK")
+        model = environment.get("CLAUDE_REVIEW_FALLBACK_MODEL", "unknown") if fallback else primary
+        attempt = report.begin({"model": model}, route="fallback" if fallback else "primary")
         result = "execution_failed"
         if outcome == "success":
             result = "valid_json" if validation == "success" else "validation_failed"

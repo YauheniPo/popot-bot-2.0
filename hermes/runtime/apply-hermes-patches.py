@@ -13,6 +13,10 @@ Covered customizations (not yet upstream):
  * gateway commands: /gw-restart (canonical, with /restart and /gw_restart
    aliases so the Telegram menu entry resolves), /model_global, /fallback, and /doctor
  * quota fallback skips the exhausted provider; chat list edits survive cooldown
+ * compression inherits configured fallback routes; timeouts preserve the chat
+   session and failed turns do not expose unfinished reasoning as a result
+ * attached cron skills retain read tools under restricted toolsets, without
+   granting skill management or overriding global toolset denies
  * /status shows reasoning, models, and session-scoped background activity
  * Telegram final replies show the actual provider/model in a copyable block
  * /model accepts an explicit built-in provider/model pair
@@ -42,6 +46,9 @@ HERMES_AGENT_DIR = Path(
 )
 
 _PREFIX = "# Local Hermes:"
+_CRON_SCHEDULER_PATH = "cron/scheduler.py"
+_TELEGRAM_ADAPTER_PATH = "plugins/platforms/telegram/adapter.py"
+_CRON_SCHEDULER_DELIVERY_PATH = "cron/scheduler_delivery.py"
 # Relative paths patched by multiple migrations/patches below; named once so
 # the literal isn't duplicated across the file (SonarCloud: duplicated string).
 _HERMES_CLI_COMMANDS_PATH = "hermes_cli/commands.py"
@@ -52,6 +59,7 @@ _GATEWAY_STATUS_PATH = "gateway/slash_commands_status.py"
 _GATEWAY_TURN_PATH = "gateway/run_turn.py"
 _MODEL_SWITCH_PATH = "hermes_cli/model_switch.py"
 _TURN_RUNNER_PATH = "gateway/run_turn_runner.py"
+_AUXILIARY_CLIENT_PATH = "agent/auxiliary_client.py"
 _COMMAND_PLATFORMS_PATH = "hermes_cli/commands_platforms.py"
 _BACKUP_PATH = "hermes_cli/backup.py"
 # Construct the retired spelling without advertising it as a supported slash
@@ -923,7 +931,7 @@ def _clamp_command_names(
 ''',
     ),
     (
-        "plugins/platforms/telegram/adapter.py",
+        _TELEGRAM_ADAPTER_PATH,
         _PREFIX + " telegram usage refresh",
         '''    def _effective_update_message(self, update: Update) -> Optional[Message]:
 ''',
@@ -987,7 +995,7 @@ def _clamp_command_names(
 ''',
     ),
     (
-        "plugins/platforms/telegram/adapter.py",
+        _TELEGRAM_ADAPTER_PATH,
         _PREFIX + " telegram usage record",
         '''        event = await self._build_triggered_event(msg, update, MessageType.COMMAND)
 ''',
@@ -1008,6 +1016,119 @@ def _clamp_command_names(
 ''',
     ),
 ]
+
+# Attached skills may read references through skill_view even though their main
+# document is preloaded. Expose only the readers, not skill_manage. Native
+# disabled_toolsets subtraction still applies after this selection.
+_PATCHES.extend([
+    (
+        "toolsets.py", _PREFIX + " cron skill readers",
+        '    "skills": _ts(\n',
+        '''    # Local Hermes: cron skill readers
+    "cron-skills": _ts("Read skill instructions for attached cron skills", ["skills_list", "skill_view"]),
+    "skills": _ts(
+''',
+    ),
+    (
+        _CRON_SCHEDULER_PATH, _PREFIX + " cron skill toolsets",
+        'def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:\n',
+        '''# Local Hermes: cron skill toolsets
+def _with_cron_skill_tools(job: dict, toolsets: list[str]) -> list[str]:
+    result = list(toolsets)
+    skills = job.get("skills")
+    if skills is None:
+        skills = job.get("skill") or []
+    if isinstance(skills, str):
+        skills = [skills]
+    if (result and not job.get("no_agent") and any(str(name).strip() for name in skills)
+            and "skills" not in result and "cron-skills" not in result):
+        result.append("cron-skills")
+    return result
+
+
+def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
+''',
+    ),
+    (
+        _CRON_SCHEDULER_PATH, _PREFIX + " cron skill per-job tools",
+        '        return _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {})\n',
+        '''        # Local Hermes: cron skill per-job tools
+        return _with_cron_skill_tools(job, _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {}))
+''',
+    ),
+    (
+        _CRON_SCHEDULER_PATH, _PREFIX + " cron skill platform tools",
+        '        return sorted(_get_platform_tools(cfg or {}, "cron"))\n',
+        '''        # Local Hermes: cron skill platform tools
+        return _with_cron_skill_tools(job, sorted(_get_platform_tools(cfg or {}, "cron")))
+''',
+    ),
+])
+
+_PATCHES.extend([
+    (
+        _TURN_RUNNER_PATH, _PREFIX + " compression exit reason",
+        '            "compression_exhausted": result.get("compression_exhausted", False),\n',
+        '''            # Local Hermes: compression exit reason
+            "turn_exit_reason": result.get("turn_exit_reason"),
+            "compression_exhausted": result.get("compression_exhausted", False),
+''',
+    ),
+    (
+        _GATEWAY_TURN_PATH, _PREFIX + " preserve session on compression timeout",
+        '        if agent_result.get("compression_deferred"):\n',
+        '''        # Local Hermes: preserve session on compression timeout
+        # A host/provider timeout does not prove this history cannot be compressed.
+        # Keep the session binding and overrides; never replay tools here.
+        if agent_result.get("turn_exit_reason") == "context_compression_timeout":
+            logger.warning("Compression timed out; preserving the gateway session for manual recovery.")
+            response = (
+                "⚠️ Сжатие контекста не завершилось за отведённое время. "
+                "Сессия сохранена, текущий запуск остановлен. "
+                "Повторите /compress; если ошибка повторяется, проверьте auxiliary.compression "
+                "и доступность резервных моделей. После успешного сжатия попросите продолжить задачу "
+                "с проверки уже выполненных действий."
+            )
+            return response, session_entry
+        if agent_result.get("compression_deferred"):
+''',
+    ),
+    (
+        _GATEWAY_TURN_PATH, _PREFIX + " hide reasoning on unsuccessful turns",
+        '        last_reasoning = agent_result.get("last_reasoning")\n',
+        '''        # Local Hermes: hide reasoning on unsuccessful turns
+        if any(agent_result.get(flag) for flag in (
+            "failed", "error", "interrupted", "compression_exhausted", "compression_deferred",
+        )):
+            return response
+        last_reasoning = agent_result.get("last_reasoning")
+''',
+    ),
+    (
+        _AUXILIARY_CLIENT_PATH, _PREFIX + " compression uses configured fallback",
+        '\n    chain = _get_auxiliary_task_config(task).get("fallback_chain")\n',
+        '''
+    # Local Hermes: compression uses configured fallback
+    task_config = _get_auxiliary_task_config(task)
+    if task == "compression" and "fallback_chain" not in task_config:
+        # Reuse native credential, cooldown and context-window screening. An
+        # explicit task chain (including []) keeps its upstream semantics.
+        return _try_main_fallback_chain(
+            task, failed_provider, reason=reason, failed_model=failed_model,
+            failed_base_url=failed_base_url, failure_scope=failure_scope,
+        )
+    chain = task_config.get("fallback_chain")
+''',
+    ),
+    (
+        _AUXILIARY_CLIENT_PATH, _PREFIX + " compression fallback free OpenRouter",
+        '        if fb_norm == "auto" or skip(fb_provider, fb_model, fb_base_url):\n',
+        '''        # Local Hermes: compression fallback free OpenRouter
+        if (fb_norm == "auto" or skip(fb_provider, fb_model, fb_base_url)
+                or (task == "compression" and fb_norm == "openrouter" and not fb_model.endswith(":free"))):
+''',
+    ),
+])
 
 # Keep the implementation testable as ordinary Python; install it through the
 # same fingerprinted source-patch mechanism, not a sys.path/bootstrap hook.
@@ -1080,6 +1201,188 @@ _PATCHES.extend([
             logger.info("Fallback candidate skipped: quota provider or non-free OpenRouter route")
             continue
         fb_key = _fallback_entry_key(fb)
+''',
+    ),
+    (
+        "agent/turn_recovery.py", _PREFIX + " eager fallback after fallback 429",
+        '''        pool_may_recover = (
+            False if _is_upstream else _ra()._pool_may_recover_from_rate_limit(agent._credential_pool)
+        )
+''',
+        '''        # Local Hermes: eager fallback after fallback 429
+        # Credential rotation has already run before this branch. Do not spend
+        # the full retry budget on a rate-limited fallback route.
+        pool_may_recover = (
+            False if _is_upstream or (
+                is_rate_limited and getattr(agent, "_provider_fallback_active", False)
+            )
+            else _ra()._pool_may_recover_from_rate_limit(agent._credential_pool)
+        )
+''',
+    ),
+])
+
+_PATCHES.extend([
+    (
+        _CRON_SCHEDULER_DELIVERY_PATH, _PREFIX + " digest feedback loader",
+        '''    from gateway.config import load_gateway_config
+
+    # Wrap with header/footer unless cron.wrap_response: false.
+''',
+        '''    # Local Hermes: digest feedback loader
+    digest_marker_seen = "NEWS_CARDS:" in content
+    digest_feedback = None
+    digest_cards_path = None
+    if digest_marker_seen:
+        import importlib.util
+        from pathlib import Path
+        skill_dir = os.environ.get("AI_DIGEST_SKILL_DIR", "")
+        if skill_dir:
+            spec = importlib.util.spec_from_file_location(
+                "ai_digest_feedback", Path(skill_dir) / "scripts" / "feedback.py")
+            if spec is not None and spec.loader is not None:
+                digest_feedback = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(digest_feedback)
+                state_dir = Path(os.environ.get("AI_DIGEST_STATE_DIR", "~/.hermes/ops/news")).expanduser()
+                content, digest_cards_path = digest_feedback.extract_cards_marker(content, job, state_dir)
+        if digest_feedback is None:
+            content = "\\n".join(line for line in content.splitlines()
+                                if not line.startswith("NEWS_CARDS:"))
+
+    from gateway.config import load_gateway_config
+
+    # Wrap with header/footer unless cron.wrap_response: false.
+''',
+    ),
+    (
+        _CRON_SCHEDULER_DELIVERY_PATH, _PREFIX + " digest card prerequisites",
+        '''    delivery_errors = []
+    suppressed_targets = 0  # local: `job` is snapshotted into durable deferred records mid-loop
+''',
+        '''    delivery_errors = []
+    # Local Hermes: digest card prerequisites
+    if digest_marker_seen and digest_cards_path is None:
+        delivery_errors.append("digest cards marker is invalid or unavailable")
+    digest_target_ok = (digest_cards_path is not None and sum(
+        target["platform"] == "telegram" for target in targets) == 1)
+    if digest_cards_path is not None and not digest_target_ok:
+        delivery_errors.append("digest cards require exactly one Telegram delivery target")
+    suppressed_targets = 0  # local: `job` is snapshotted into durable deferred records mid-loop
+''',
+    ),
+    (
+        _CRON_SCHEDULER_DELIVERY_PATH, _PREFIX + " digest card delivery",
+        '''        target_errors: list = []
+        delivered = t.live_adapter_ready and _deliver_via_live_adapter(
+            t, cleaned_delivery_content, media_files,
+            target_errors=target_errors, delivery_errors=delivery_errors,
+            unverified_targets=unverified_targets,
+        )
+        if not delivered:
+            _deliver_standalone(
+                t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
+
+    # Filter-time drops apply to every target; report them once. A run whose every target was
+''',
+        '''        target_errors: list = []
+        errors_before = len(delivery_errors)
+        delivered = t.live_adapter_ready and _deliver_via_live_adapter(
+            t, cleaned_delivery_content, media_files,
+            target_errors=target_errors, delivery_errors=delivery_errors,
+            unverified_targets=unverified_targets,
+        )
+        if not delivered:
+            _deliver_standalone(
+                t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
+        # Local Hermes: digest card delivery
+        if (digest_target_ok and digest_feedback is not None
+                and target["platform"] == "telegram" and len(delivery_errors) == errors_before):
+            try:
+                from gateway.platforms._shared import get_scoped_secret
+                origin = job.get("origin") or {}
+                owner_id = origin.get("user_id") if isinstance(origin, dict) else None
+                if not owner_id:
+                    raise ValueError("digest origin user missing")
+                token = get_scoped_secret("TELEGRAM_BOT_TOKEN")
+                digest_feedback.deliver_cards_to_telegram(
+                    digest_cards_path, state_dir, target, str(owner_id), token)
+            except Exception as exc:
+                delivery_errors.append(f"digest cards failed for {t.where}: {type(exc).__name__}")
+
+    # Filter-time drops apply to every target; report them once. A run whose every target was
+''',
+    ),
+    (
+        _TELEGRAM_ADAPTER_PATH, _PREFIX + " digest feedback callback",
+        '''        cb = self._callback_ctx(query)
+        # Model picker / generic choice picker (/reasoning, /fast) need a chat id.
+''',
+        '''        cb = self._callback_ctx(query)
+        # Local Hermes: digest feedback callback
+        if data.startswith("nd:"):
+            if not await self._callback_authorized(query, cb, "Not allowed to rate this digest."):
+                return
+            match = re.fullmatch(r"nd:([0-9a-f]{16}):([123])", data)
+            if match is None or query.message is None:
+                await query.answer(text="Invalid digest rating.")
+                return
+            try:
+                import importlib.util
+                from pathlib import Path
+                skill_dir = os.environ.get("AI_DIGEST_SKILL_DIR", "")
+                spec = importlib.util.spec_from_file_location(
+                    "ai_digest_feedback", Path(skill_dir) / "scripts" / "feedback.py")
+                if spec is None or spec.loader is None:
+                    raise ValueError("digest feedback unavailable")
+                feedback = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(feedback)
+                state_dir = Path(os.environ.get("AI_DIGEST_STATE_DIR", "~/.hermes/ops/news")).expanduser()
+                output_dir = Path(os.environ.get("AI_DIGEST_OUTPUT_DIR", "~/workspace/digests")).expanduser()
+                card_id, rating = match.group(1), int(match.group(2))
+                chat_id, message_id, user_id = str(query.message.chat_id), query.message.message_id, str(query.from_user.id)
+
+                def save_rating():
+                    store = feedback.FeedbackStore(state_dir / "feedback.db")
+                    store.rate(card_id, chat_id, message_id, user_id, rating)
+                    card = store.card(card_id)
+                    report = feedback.complete_if_ready(store, card_id, state_dir, output_dir)
+                    return card, report, store
+
+                card, report, store = await asyncio.to_thread(save_rating)
+            except PermissionError:
+                await query.answer(text="Only the digest owner can rate this item.", show_alert=True)
+                return
+            except Exception as exc:
+                logger.warning("Digest rating failed: %s", type(exc).__name__)
+                await query.answer(text=f"Rating unavailable: {type(exc).__name__}", show_alert=True)
+                return
+            try:
+                await query.answer(text=f"Saved: {rating}/3")
+            except Exception:
+                logger.warning("Digest rating saved but Telegram acknowledgement failed")
+            try:
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton(("✓ " if choice == rating else "") + str(choice),
+                                         callback_data=f"nd:{card_id}:{choice}")
+                    for choice in (1, 2, 3)]])
+                await query.edit_message_reply_markup(reply_markup=keyboard)
+            except Exception:
+                logger.warning("Digest rating saved but button highlight failed")
+            if report is not None:
+                try:
+                    kwargs = {"chat_id": int(chat_id), "caption": "Итоговый AI digest: новости с оценкой 3"}
+                    if card["thread_id"]:
+                        kwargs["message_thread_id"] = int(card["thread_id"])
+                    with report.open("rb") as stream:
+                        sent = await _await_with_thread_deadline(
+                            self._bot.send_document(document=stream, **kwargs),
+                            timeout=60, label="digest-report", dump_on_blocked_loop=False)
+                    await asyncio.to_thread(store.mark_completion_sent, card["run_id"],
+                                            chat_id, card["thread_id"], user_id, sent.message_id)
+                except Exception as exc:
+                    logger.error("Digest report delivery failed: %s", _redact_telegram_error_text(exc))
+            return
+        # Model picker / generic choice picker (/reasoning, /fast) need a chat id.
 ''',
     ),
 ])

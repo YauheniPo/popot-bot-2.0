@@ -476,6 +476,9 @@ sudo() { printf '%s\\n' "$@"; [[ "$*" != *'tailscale logout'* ]]; }
         variables = self.pipeline["stages"][0]["jobs"][0]["variables"]
         self.assertEqual(variables["deploymentSourceRef"], "$[ resources.repositories.deploySource.ref ]")
         self.assertEqual(variables["deploymentSourceVersion"], "$[ resources.repositories.deploySource.version ]")
+        validation = self.pipeline["stages"][0]["jobs"][0]["steps"][0]
+        self.assertIn("Branch/tag", validation["parameters"]["errorMessage"])
+        self.assertIn("Branch to deploy", validation["parameters"]["errorMessage"])
 
     def test_mode_parameters_reach_both_ansible_commands_after_vault(self):
         parameters = {p["name"]: p for p in self.pipeline["parameters"]}

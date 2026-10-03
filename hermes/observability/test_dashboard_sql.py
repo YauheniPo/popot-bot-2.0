@@ -88,6 +88,9 @@ class DashboardSqlTests(unittest.TestCase):
             connection.execute("INSERT INTO review_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                ("review:1", 43, "DirectAPI", "provider-a", "model-a", "success", 2, 8, 8, 1, 1,
                                 12.5, at(60), "abc", "run-1"))
+            connection.execute("INSERT INTO review_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                               ("comment:2", 43, "ClaudeCodePlugin", "provider-a", "model-b", "success", 1, 1, 1, 0, 0,
+                                0.0, at(61), "abc", "run-1"))
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -132,6 +135,15 @@ class DashboardSqlTests(unittest.TestCase):
         self.assertAlmostEqual(route["Cost per success"], 0.25)
         self.assertEqual((route["Successes"], route["Errors"], route["Rate limits"], route["Retries"]), (3, 2, 1, 3))
         self.assertEqual(rows[0][:2], ("provider-a", "model-b"), "sorted by availability")
+
+    def test_review_panels_do_not_treat_unmeasured_claude_time_as_zero(self) -> None:
+        targets = dict(sqlite_targets())
+        columns, rows = self.run_query(targets["AI review runs — selected range"])
+        claude = next(dict(zip(columns, row)) for row in rows if row[1] == "ClaudeCodePlugin")
+        self.assertIsNone(claude["Provider seconds"])
+        _, points = self.run_query(targets["AI review provider time"])
+        self.assertEqual(len(points), 1)
+        self.assertIn("DirectAPI", points[0][1])
 
     def test_events_and_mismatch_tables_use_rfc3339_timestamps(self) -> None:
         targets = dict(sqlite_targets())

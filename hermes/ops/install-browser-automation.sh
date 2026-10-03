@@ -146,3 +146,7 @@ log "running a live local browser launch check"
 run_as_hermes "${AGENT_BROWSER_BIN}" --config "${BROWSER_CONFIG}" open about:blank
 run_as_hermes "${AGENT_BROWSER_BIN}" --config "${BROWSER_CONFIG}" snapshot
 run_as_hermes "${AGENT_BROWSER_BIN}" --config "${BROWSER_CONFIG}" close
+
+log "pruning old browser builds and large install caches"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+run_as_hermes python3 "${SCRIPT_DIR}/prune-install-caches.py" --user-home "${USER_HOME}"

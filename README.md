@@ -182,9 +182,10 @@ The existing `DIRECT_REVIEW_FALLBACK_MODEL` and `CLAUDE_REVIEW_FALLBACK_MODEL`
 also accept Portal model IDs. Manual GitHub and Azure runs select `provider=nous`
 and supply `model` in their run parameters. For the standard Portal connection,
 direct review uses Chat Completions. Do not assume a Portal catalog entry also
-supports Anthropic Messages: live checks returned HTTP 404 on the standard
-Portal Messages route. Use a verified Anthropic-compatible route for Claude and
-Observable. Claude runs a short smoke test before starting:
+works for inference or supports Anthropic Messages: on 2026-10-02, the Fin free
+route returned HTTP 404 in CI, while Sante passed tool/JSON checks and completed
+the Claude review. Claude and Observable require an Anthropic-compatible route;
+NVIDIA's direct Chat Completions endpoint does not supply one. Claude runs a short smoke test before starting:
 it checks tool calling and the exact review JSON contract in separate requests.
 The Claude smoke test uses up to two attempts with a 90-second timeout per check, so an
 unavailable or incompatible model is reported before the full Claude run.
@@ -203,14 +204,35 @@ when Direct API fails. `1` runs only Direct API; `2` runs both agent reviewers
 without Direct API. Owner-only, same-repository and non-draft safeguards apply
 to all three. A newer revision cancels the previous run.
 
-Both agent reviewers use `CLAUDE_REVIEW_*` provider and endpoint settings, not
-`DIRECT_REVIEW_*`. Observable overrides the model names using
-`OBSERVABLE_REVIEW_MODEL` and `OBSERVABLE_REVIEW_FALLBACK_MODEL`; the fallback
-provider remains `CLAUDE_REVIEW_FALLBACK_PROVIDER`. Their publication identities are
+Claude Code uses `CLAUDE_REVIEW_*` provider and model settings, not
+`DIRECT_REVIEW_*`. The legacy `CLAUDE_CODE_REVIEW_MODEL` variable overrides the
+effective primary model for both preflight and execution. All SDK roles and
+retries use the model emitted by preflight; changing only `CLAUDE_REVIEW_MODEL`
+requires clearing or updating that legacy override if it is set.
+Observable independently selects both provider/model pairs with
+`OBSERVABLE_REVIEW_PROVIDER`, `OBSERVABLE_REVIEW_MODEL`,
+`OBSERVABLE_REVIEW_FALLBACK_PROVIDER` and `OBSERVABLE_REVIEW_FALLBACK_MODEL`.
+Its providers do not inherit Claude's variables. A custom Observable gateway
+must be set separately in `OBSERVABLE_REVIEW_BASE_URL`; it never inherits
+`CLAUDE_REVIEW_BASE_URL` with another provider's credentials. Their publication identities are
 fixed in code: `ClaudeCodePlugin` and `ObservableMessagesReview`. No additional
 identity variables or credentials are required. Each publishes its own PR
 summary and inline findings. The observable reviewer never resolves or replies
 to other reviewers' threads, avoiding races between the parallel jobs.
+
+The default routes, checked against catalogs on 2026-10-02, are:
+
+| Reviewer | Primary | Fallback |
+| --- | --- | --- |
+| Direct API | `nous / inclusionai/ling-3.0-flash-sante:free` | `openrouter / google/gemma-4-31b-it:free` |
+| Claude Code | `nous / inclusionai/ling-3.0-flash-sante:free` | `openrouter / google/gemma-4-31b-it:free` |
+| Observable | `openrouter / cohere/north-mini-code:free` | `nous / inclusionai/ling-3.0-flash-sante:free` |
+
+Repository Actions variables override these YAML defaults; update both when
+retiring a route. The parallel agent jobs start on different providers, and
+each reviewer has a fallback on another provider. Different providers can still
+share an upstream quota. Catalog presence is not a successful inference check;
+the CI preflight and validated review result remain the operational evidence.
 
 Direct API retries HTTP 429 on a dedicated ladder of 1, 2, 5 and 10 minutes
 that does not consume its general four-request budget for transport, JSON and
@@ -258,6 +280,13 @@ diagnostics; the summary does not include a separate artifact-page link.
 Before dispatching GitHub Actions, the Azure launcher checks out the trusted
 `main` revision and runs the repository's `.github/scripts` tests. A failed test
 stops the launch before provider requests or publication.
+To review a feature branch, run this Azure pipeline manually with **Branch/tag =
+main** and put the feature branch in **targetRef**. The first field selects the
+pipeline YAML; `targetRef` selects the code sent to GitHub for review. This
+launcher has `trigger: none` and `pr: none`. If it starts automatically for a PR,
+check Azure Pipelines → Edit → Triggers for UI overrides of those YAML settings.
+The trusted-branch gate reports its actual `Build.SourceBranch` and
+`Build.Reason` when they do not identify a run from `main`.
 
 For a pull request opened by someone else, use the `ai-review-approved` label
 after you have inspected the change. Only the repository owner adding that label
@@ -294,13 +323,12 @@ free fallback after confirmed daily exhaustion. A separately configured provider
 can still be tried. OpenRouter routes must use existing free model IDs; adding
 `:free` to a paid model ID does not create a free route.
 
-Default fallback routes use `ollama-cloud`: Direct API → `deepseek-v4.1-flash`,
-Claude Code → `glm-5.3-flash`, Observable → `kimi-k2.7-code`. Each passed a live
-synthetic diff review on 2026-09-20 (JSON plus file/tool reads for the agents).
-This validates compatibility, not future uptime or review accuracy on all code.
-Set `OLLAMA_API_KEY` in GitHub Actions secrets. Repository variables override
-these defaults; update stale fallback model/provider pairs together. Leave
-`CLAUDE_REVIEW_BASE_URL` unset when using the providers' standard endpoints.
+The defaults in the route table above use Nous and OpenRouter. Their existing
+`NOUS_API_KEY` and `OPENROUTER_API_KEY` Actions secrets supply credentials.
+Repository variables override the defaults; update stale model/provider pairs
+together. Leave `CLAUDE_REVIEW_BASE_URL` and `OBSERVABLE_REVIEW_BASE_URL` unset
+when using standard endpoints. A successful probe establishes compatibility for
+that request, not future uptime or review accuracy on all code.
 
 The `review-results` job checks that **every selected method** actually returned
 and published a validated result. A green diagnostic/publication step is not

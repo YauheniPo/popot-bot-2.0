@@ -239,6 +239,43 @@ class PruneBackupsTests(unittest.TestCase):
             self.assertEqual(removed, 1)
             self.assertFalse(old_scheduled.exists())
 
+    def test_quick_snapshots_removes_scheduled_old_when_not_symlink_or_mount(self) -> None:
+        """Cover the continue branch for symlink/mount check."""
+        now = 2_000_000_000.0
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots_dir = Path(temp)
+            # Create a scheduled snapshot that is old enough to be removed
+            old_scheduled = self.create_snapshot(snapshots_dir, "old-scheduled", "scheduled", now - 15 * 86400)
+            # Create a symlink to a different location that is NOT scheduled (should be skipped)
+            outside = Path(temp) / "outside"
+            outside.mkdir()
+            (outside / "manifest.json").write_text(json.dumps({"label": "manual"}), encoding="utf-8")
+            os.utime(outside, (now - 15 * 86400, now - 15 * 86400))
+            symlink = snapshots_dir / "symlink-snapshot"
+            symlink.symlink_to(outside)
+            
+            removed = prune_backups.prune_scheduled_quick_snapshots(
+                snapshots_dir, retention_days=14, now=now,
+            )
+            # Only the directory should be removed, symlink should be skipped
+            self.assertEqual(removed, 1)
+            self.assertFalse(old_scheduled.exists())
+            self.assertTrue(symlink.exists())
+            self.assertTrue(outside.exists())
+
+    def test_main_entry_point(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            backup_dir = Path(temp) / "backups"
+            backup_dir.mkdir()
+            snapshots_dir = Path(temp) / "snapshots"
+            snapshots_dir.mkdir()
+            argv = ["prune-backups.py", "--backup-dir", str(backup_dir),
+                    "--snapshots-dir", str(snapshots_dir),
+                    "--quick-retention-days", "7", "--full-keep", "5",
+                    "--deployment-keep", "3"]
+            with mock.patch("sys.argv", argv):
+                self.assertEqual(prune_backups.main(), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

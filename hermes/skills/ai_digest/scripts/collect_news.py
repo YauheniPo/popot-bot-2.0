@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -69,6 +71,9 @@ def article_plain(html: str) -> tuple[str, bool]:
         match = re.search(rf"<{tag}\b[^>]*>(.*?)</{tag}>", html, re.S | re.I)
         if match:
             return plain(match.group(1)), True
+    body = re.search(r"<body\b[^>]*>(.*?)</body>", html, re.S | re.I)
+    if body:
+        return plain(body.group(1)), False
     return plain(html), False
 
 
@@ -171,8 +176,7 @@ class _SafeHTTPSHandler(HTTPSHandler):
         connection_type = _pinned_connection_class(
             http.client.HTTPSConnection, req.full_url, allow_loopback=self.allow_loopback,
         )
-        return self.do_open(connection_type, req, context=self._context,
-                            check_hostname=getattr(self, "_check_hostname", None))
+        return self.do_open(connection_type, req, context=self._context)
 
 
 class _SafeRedirect(HTTPRedirectHandler):
@@ -636,7 +640,7 @@ def _collect_github_trending(source: dict, source_id: str, now: datetime, fetch,
                                             max_bytes, max_chars, window, issues)
 
 
-def _curated_projects(markdown: str) -> dict[str, dict]:  # noqa: S3776
+def _curated_projects(markdown: str) -> dict[str, dict]:  # noqa: S3776  # noqa: S3776
     """Parse categorized GitHub project links from a curated-list README."""
     projects = {}
     category = "Projects"
@@ -965,15 +969,23 @@ def _importance(item: dict, now: datetime, window_hours: int) -> float:
     return freshness + popularity + discussion + curated_update + 10 * (len(item["source_ids"]) - 1)
 
 
-def _select_items(items: list[dict], limit: int, mode: str, now: datetime,
-                  window_hours: int) -> list[dict]:
-    ranked = sorted(items, key=lambda item: (-_importance(item, now, window_hours), item["title"]))
+def _select_items(items: list[dict], limit: int, mode: str, now: datetime,  # noqa: S3776
+                  window_hours: int, *, history: list[dict] | None = None) -> list[dict]:
+    from feedback import preference_bonus
+
+    bonuses = {id(item): preference_bonus(item, history or []) for item in items}
+    ranked = sorted(items, key=lambda item: (
+        -(_importance(item, now, window_hours) + bonuses[id(item)]),
+        item["title"]))
     selected, counts = [], {}
     max_per_source = max(1, math.ceil(limit / 3))
+    reserve_exploration = bool(history) and limit > 1
+    main_limit = limit - int(reserve_exploration)
     if mode == "weekly":
         _select_weekly_categories(ranked, selected, counts, limit, max_per_source)
+        main_limit = max(main_limit, len(selected))
     for item in ranked:
-        if len(selected) >= limit:
+        if len(selected) >= main_limit:
             break
         if item in selected:
             continue
@@ -982,6 +994,20 @@ def _select_items(items: list[dict], limit: int, mode: str, now: datetime,
             continue
         selected.append(item)
         counts[primary] = counts.get(primary, 0) + 1
+    if reserve_exploration and len(selected) < limit:
+        by_base = sorted(items, key=lambda item: (-_importance(item, now, window_hours),
+                                                  item["title"]))
+        for candidates in ([item for item in by_base if abs(bonuses[id(item)]) < 0.5], by_base):
+            if len(selected) >= limit:  # pragma: no cover - second iteration only if no candidate found, but len(selected) unchanged
+                break
+            candidate = next((item for item in candidates if item not in selected
+                              and _source_capacity_available(item, ranked, selected, counts,
+                                                             max_per_source)), None)
+            if candidate is not None:
+                selected.append(candidate)
+                primary = candidate["source_ids"][0]
+                counts[primary] = counts.get(primary, 0) + 1
+                break
     return selected
 
 
@@ -1061,29 +1087,55 @@ def _fetch_reddit_comments(item: dict, reddit_id: str, max_comments: int, fetch)
         item["discussion_issue"] = f"Reddit comments unavailable: {str(exc)[:120]}"
 
 
-def _read_article(item: dict, defaults: dict, fetch) -> None:
+def _read_article(item: dict, defaults: dict, fetch) -> None:  # noqa: S3776
+    parsed = urlsplit(item["url"])
+    if parsed.hostname == "github.com":
+        parts = parsed.path.strip("/").split("/")
+        if len(parts) == 2 and all(re.fullmatch(r"[A-Za-z0-9_.-]+", part) for part in parts):
+            try:
+                url = f"{GITHUB_API_URL}/repos/{parts[0]}/{parts[1]}/readme"
+                response = _json(fetch, url, min(int(defaults.get("max_response_bytes", 5_242_880)), 2_000_000))
+                if response.get("encoding") != "base64" or not isinstance(response.get("content"), str):
+                    raise ValueError("repository README has no readable content")
+                encoded = re.sub(r"\s+", "", response["content"])
+                readme = base64.b64decode(encoded, validate=True).decode("utf-8", "replace")
+                readme = re.sub(r"```.*?```", " ", readme, flags=re.S)
+                readme = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", readme)
+                readme = plain(readme)
+                if len(readme) < 40:
+                    raise ValueError("repository README is too short")
+                item["evidence"] = (item.get("evidence", "") + "\nRepository README excerpt: " + readme)[
+                    :int(defaults.get("max_article_chars", 4500))]
+                item["evidence_kind"] = "repository_readme"
+            except (OSError, ValueError, TypeError, AttributeError, binascii.Error) as exc:  # noqa: S5713
+                item["read_issue"] = f"repository README unavailable: {str(exc)[:100]}"
+        return
     if (item["full_text_available"] or item.get("evidence_kind") in
-            {"abstract", "benchmark_result", "model_metadata", "show_notes", "reddit_search_snippet"}
-            or item["url"].startswith("https://github.com/")):
+            {"abstract", "benchmark_result", "model_metadata", "show_notes", "reddit_search_snippet"}):
         return
     try:
         body = fetch(item["url"], min(int(defaults.get("max_response_bytes", 5_242_880)), 2_000_000))
         if body.startswith(b"%PDF"):
             raise ValueError("PDF article is not supported")
-        article, region_found = article_plain(body.decode("utf-8", "replace"))
+        html = body.decode("utf-8", "replace")
+        article, region_found = article_plain(html)
         article = article[:int(defaults.get("max_article_chars", 4500))]
         if len(article) >= 400 and region_found:
             item["evidence"] = article
             item["full_text_available"] = True
+        elif len(article) >= 400 and re.search(r"<body\b", html, re.I):
+            item["evidence"] = article
+            item["evidence_kind"] = "page_text"
         else:
             item["read_issue"] = "article body unavailable or too short"
     except (OSError, ValueError) as exc:  # noqa: S5713
         item["read_issue"] = str(exc)[:120]
 
 
-def collect(config: dict, *, now: datetime | None = None, fetch=None,
+def collect(config: dict, *, now: datetime | None = None, fetch=None,  # noqa: S3776
             window_hours: int | None = None, limit: int | None = None, topic: str = "",
-            mode: str = "daily") -> dict:  # noqa: S3776
+            mode: str = "daily", history: list[dict] | None = None,
+            seen_items: list[dict] | None = None) -> dict:  # noqa: S3776
     if fetch is None:
         fetch = http_fetch
     if config.get("version") != 1 or not isinstance(config.get("sources"), list):
@@ -1110,12 +1162,18 @@ def collect(config: dict, *, now: datetime | None = None, fetch=None,
         words = _topic_words(topic)
         raw = [item for item in raw if words & _topic_words(item["title"] + " " + item["evidence"])]
     merged = _deduplicate(raw)
-    selected = _select_items(merged, limit, mode, now, defaults["window_hours"])
+    previously_sent = seen_items or []
+    sent_urls = {item["url"] for item in previously_sent}
+    fresh = [item for item in merged
+             if not sent_urls.intersection(item.get("urls", [item["url"]]))
+             and _duplicate_match(item, previously_sent) is None]
+    selected = _select_items(fresh, limit, mode, now, defaults["window_hours"], history=history)
     _hydrate_items(selected, defaults, fetch)
     return {"schema_version": 1, "mode": mode, "generated_at": now.isoformat().replace(UTC_SUFFIX, "Z"),
             "window_hours": defaults["window_hours"], "limit": limit, "topic": topic or None,
             "items": selected, "source_issues": sorted(issues, key=lambda issue: issue["id"]),
-            "stats": {"fetched": in_window, "after_dedup": len(merged), "returned": len(selected)}}
+            "stats": {"fetched": in_window, "after_dedup": len(merged),
+                      "repeated_excluded": len(merged) - len(fresh), "returned": len(selected)}}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1131,8 +1189,32 @@ def main(argv: list[str] | None = None) -> int:
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
     try:
         config = json.loads(args.sources.read_text())
-        result = collect(config, window_hours=args.window_hours, limit=args.limit,
-                         topic=args.topic, mode=args.mode)
+        from feedback import FeedbackStore, owner_for_digest_jobs
+        import sqlite3
+
+        hermes_home = Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser()
+        owner = owner_for_digest_jobs(hermes_home / "cron" / "jobs.json")
+        feedback_path = args.state_dir / "feedback.db"
+        run_now = datetime.now(timezone.utc)
+        cooldown_hours = int(config.get("defaults", {}).get("repeat_cooldown_hours", 168))
+        if not 1 <= cooldown_hours <= 720:
+            raise ValueError("repeat cooldown outside supported range")
+        history, seen_items = [], []
+        feedback_issue = None
+        if owner and feedback_path.is_file():
+            try:
+                store = FeedbackStore(feedback_path)
+                history = store.history(owner)
+                seen_items = store.recently_sent_items(
+                    owner, (run_now - timedelta(hours=cooldown_hours)).isoformat())
+            except (sqlite3.DatabaseError, OSError, ValueError):
+                feedback_issue = {"id": "feedback", "kind": "degraded",
+                                  "reason": "stored ratings or delivery history unavailable; used base ranking"}
+        result = collect(config, now=run_now, window_hours=args.window_hours, limit=args.limit,
+                         topic=args.topic, mode=args.mode, history=history,
+                         seen_items=seen_items)
+        if feedback_issue:
+            result["source_issues"].append(feedback_issue)
         result["run_id"] = run_id
         args.state_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
         output = args.state_dir / f"raw-{run_id}.json"

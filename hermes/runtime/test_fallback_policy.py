@@ -6,6 +6,8 @@ import copy
 import importlib.util
 import os
 from pathlib import Path
+import tempfile
+import textwrap
 import threading
 import time
 from types import SimpleNamespace
@@ -111,9 +113,9 @@ class FallbackPolicyTests(unittest.TestCase):
         self.assertIn('legacy fallback_model', reply)
         self.assertNotIn('never-show-this', reply)
 
-    def test_quota_skips_entire_failed_provider_and_keeps_native_order(self):
+    def test_account_quota_skips_entire_failed_provider_and_keeps_native_order(self):
         agent = SimpleNamespace(provider='nvidia', _fallback_index=0, _fallback_activated=False)
-        self.policy.begin_fallback_walk(agent, 'rate_limit')
+        self.policy.begin_fallback_walk(agent, 'billing')
         for candidate, allowed in (({'provider': 'nvidia', 'model': 'other'}, False),
                                    ({'provider': 'nous', 'model': 'next'}, True),
                                    ({'provider': 'openrouter', 'model': 'paid'}, False),
@@ -128,6 +130,54 @@ class FallbackPolicyTests(unittest.TestCase):
         agent.provider, agent._fallback_index, agent._fallback_activated = 'nvidia', 0, False
         self.policy.begin_fallback_walk(agent, 'timeout')
         self.assertTrue(self.policy.allow_fallback_candidate(agent, {'provider': 'nvidia', 'model': 'other'}))
+
+    def test_rate_limit_can_try_another_free_model_on_same_provider(self):
+        agent = SimpleNamespace(provider='nvidia', model='ultra',
+                                _fallback_index=0, _fallback_activated=False)
+        self.policy.begin_fallback_walk(agent, 'rate_limit')
+        self.assertFalse(self.policy.allow_fallback_candidate(
+            agent, {'provider': 'nvidia', 'model': 'ultra'}))
+        self.assertTrue(self.policy.allow_fallback_candidate(
+            agent, {'provider': 'nvidia', 'model': 'super'}))
+        agent.provider, agent.model = 'openrouter', 'gemma:free'
+        agent._fallback_index, agent._fallback_activated = 1, True
+        self.policy.begin_fallback_walk(agent, 'rate_limit')
+        self.assertFalse(self.policy.allow_fallback_candidate(
+            agent, {'provider': 'openrouter', 'model': 'gemma:free'}))
+        self.assertTrue(self.policy.allow_fallback_candidate(
+            agent, {'provider': 'openrouter', 'model': 'north:free'}))
+        self.assertFalse(self.policy.allow_fallback_candidate(
+            agent, {'provider': 'openrouter', 'model': 'north'}))
+
+    def test_eager_fallback_patch_skips_pool_wait_after_fallback_429(self):
+        patcher = load_module('fallback_patches', ROOT / 'runtime/apply-hermes-patches.py')
+        patches = [item for item in patcher._PATCHES
+                   if item[0] == 'agent/turn_recovery.py'
+                   and item[1] == '# Local Hermes: eager fallback after fallback 429']
+        self.assertEqual(len(patches), 1)
+        path, marker, old, new = patches[0]
+        self.assertIn('pool_may_recover', old)
+        namespace = {}
+        exec('def should_wait(agent, is_rate_limited, _is_upstream, _ra):\n'
+             + textwrap.indent(textwrap.dedent(new), '    ')
+             + '    return pool_may_recover\n', namespace)
+        pool = SimpleNamespace(_pool_may_recover_from_rate_limit=lambda _: True)
+        route = SimpleNamespace(_credential_pool=object(), _provider_fallback_active=True)
+        self.assertFalse(namespace['should_wait'](route, True, False, lambda: pool))
+        self.assertTrue(namespace['should_wait'](route, False, False, lambda: pool))
+        route._provider_fallback_active = False
+        self.assertTrue(namespace['should_wait'](route, True, False, lambda: pool))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / 'agent/turn_recovery.py'
+            target.parent.mkdir()
+            target.write_text(old)
+            state = {}
+            with mock.patch.object(patcher, 'HERMES_AGENT_DIR', root):
+                first = patcher._apply_one_patch(path, marker, old, new, state)
+                second = patcher._apply_one_patch(path, marker, old, new, state)
+            self.assertEqual((first[0], second[0]), (1, 0))
+            self.assertEqual(target.read_text(), new)
 
     def test_enum_reasons_and_provider_aliases(self):
         from enum import Enum
@@ -176,7 +226,7 @@ class FallbackPolicyTests(unittest.TestCase):
                         if failing is reader:
                             writer.assert_not_called()
 
-    def test_deploy_preserves_chat_routes_even_without_workspace_and_refreshes_defaults(self):
+    def test_deploy_reapplies_managed_fallback_routes_with_or_without_workspace(self):
         from ansible.plugins.filter.core import FilterModule
         from jinja2 import Environment
         tasks = yaml.safe_load((ROOT / 'ansible/tasks/runtime.yml').read_text())
@@ -195,7 +245,7 @@ class FallbackPolicyTests(unittest.TestCase):
                     hermes_managed_config=managed, hermes_external_skill_dirs=[],
                     vps_hermes=settings['vps_hermes'], vps_deploy={'features': {'workspace_ui': workspace}})
                 result = yaml.safe_load(template.render(**values))
-                self.assertEqual(result['fallback_providers'], selected)
+                self.assertEqual(result['fallback_providers'], defaults)
                 self.assertEqual(result['fallback_policy']['default_routes'], defaults)
                 values['hermes_existing_config'] = result
                 self.assertEqual(yaml.safe_load(template.render(**values)), result)

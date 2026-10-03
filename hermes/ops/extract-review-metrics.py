@@ -3,7 +3,8 @@
 
 Only review metadata is stored: no prompts, findings, comments, or tokens.
 The importer is intentionally idempotent and can be run from a timer or by
-hand after a PR review (``GITHUB_TOKEN=... extract-review-metrics.py --pr 43``).
+hand after a PR review (``extract-review-metrics.py --pr 43``). Set
+GITHUB_TOKEN when importing a private repository or for higher API limits.
 """
 
 from __future__ import annotations
@@ -37,22 +38,30 @@ FIELD_RE = {
     "direct_chunks": re.compile(r"Reviewed the PR in\s*(\d+)\s*bounded chunk", re.I),
 }
 REVIEW_MARKERS = (
-    ("DirectAPI", re.compile(r"<!-- openrouter-pr-review:([0-9a-f]{40}) -->")),
-    ("ClaudeCodePlugin", re.compile(r"<!-- claude-pr-review:([0-9a-f]{40}):(\d+) -->")),
     ("ObservableMessagesReview", re.compile(r"<!-- observable-pr-review:([0-9a-f]{40}):(\d+):\d+ -->")),
+    ("ClaudeCodePlugin", re.compile(r"<!-- claude-pr-review:([0-9a-f]{40}):(\d+) -->")),
+    ("DirectAPI", re.compile(r"<!-- openrouter-pr-review:azure-devops:([0-9a-f]{40}):[^\n]*:(\d+) -->")),
+    ("DirectAPI", re.compile(r"<!-- openrouter-pr-review:([0-9a-f]{40}) -->")),
 )
 
 
 def _review_identity(body: str) -> tuple[str, str, str]:
+    """Return (reviewer, sha, pr) from the first matching marker in the body.
+    If multiple markers are present, the one that appears first in the body is used.
+    If no marker is found, fall back to header-style lines.
+    """
+    matches = []
     for reviewer, pattern in REVIEW_MARKERS:
-        if match := pattern.search(body):
-            return reviewer, match.group(1), match.group(2) if match.lastindex == 2 else ""
+        for match in pattern.finditer(body):
+            matches.append((match.start(), reviewer, match))
+    if matches:
+        matches.sort(key=lambda x: x[0])
+        _, reviewer, match = matches[0]
+        return reviewer, match.group(1), match.group(2) if match.lastindex == 2 else ""
     for reviewer in ("DirectAPI", "ClaudeCodePlugin", "ObservableMessagesReview"):
         if re.search(rf"^## {reviewer}\s*$", body, re.M):
             return reviewer, "", ""
     return "unknown", "", ""
-
-
 def _apply_claude_validated_marker(
     reviewer: str, default_outcome: str, validated_chunks: int, body: str
 ) -> bool:
@@ -133,10 +142,13 @@ def fetch_reviews(repository: str, pr: int, token: str) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for resource in (f"pulls/{pr}/reviews", f"issues/{pr}/comments"):
         for page in range(1, 51):
-            request = urllib.request.Request(_api_url(repository, f"{resource}?per_page=100&page={page}"), headers={
-                "Accept": "application/vnd.github+json", "Authorization": f"Bearer {token}",
+            headers = {
+                "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "hermes-review-metrics",
-            })
+            }
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            request = urllib.request.Request(_api_url(repository, f"{resource}?per_page=100&page={page}"), headers=headers)
             with urllib.request.urlopen(request, timeout=20) as response:
                 payload = json.load(response)
             if not isinstance(payload, list):
@@ -216,8 +228,6 @@ def main() -> int:
     parser.add_argument("--database", type=Path, default=database)
     args = parser.parse_args()
     token = os.environ.get("GITHUB_TOKEN", "").strip()
-    if not token:
-        parser.error("GITHUB_TOKEN is required")
     count = import_pr(args.repository, args.pr, token, args.database.expanduser())
     print(f"Imported {count} published review record(s) for PR #{args.pr}")
     return 0
