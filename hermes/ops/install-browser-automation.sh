@@ -115,10 +115,13 @@ run_as_hermes() {
 }
 
 resolve_browser_version() {
-    AGENT_BROWSER_VERSION="$(python3 "$(dirname -- "${CONFIG_APPLIER}")/resolve-tool-version.py" \
+    # Resolve version, validate pattern before shell substitution
+    local resolved
+    resolved="$(python3 "$(dirname -- "${CONFIG_APPLIER}")/resolve-tool-version.py" \
         --package agent-browser --requested "${AGENT_BROWSER_VERSION}")"
-    [[ "${AGENT_BROWSER_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+    [[ "${resolved}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || \
         die "invalid resolved agent-browser version"
+    AGENT_BROWSER_VERSION="${resolved}"
 }
 resolve_browser_version
 
