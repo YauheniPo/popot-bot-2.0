@@ -32,6 +32,10 @@ def installed_from(python, url):
 
 
 def install(home, revision, uv):
+    # Validate requested revision format early - fail fast before any subprocess call
+    if revision != 'latest' and not re.fullmatch(r'[0-9a-f]{40}', revision):
+        raise ValueError('Agent-Reach revision must be a full commit SHA or "latest"')
+    
     if revision == 'latest':
         print('Resolving latest Agent-Reach source', flush=True)
         revision = run([sys.executable, str(Path(__file__).with_name('resolve-tool-version.py')),
