@@ -23,6 +23,23 @@ SPEC.loader.exec_module(observability)
 
 
 class ObservabilityRedactionTests(unittest.TestCase):
+    def test_oversized_metadata_is_redacted_without_exposing_truncated_secrets(self) -> None:
+        for text in (
+            "x" * 501,
+            "curl " * 101,
+            "password=" + "s" * 600,
+            "https://user:" + "s" * 600 + "@example.invalid",
+            'curl -u "user:' + "s" * 600 + '"',
+        ):
+            with self.subTest(prefix=text[:12]):
+                self.assertEqual(observability._short(text), "[REDACTED]")
+
+    def test_metadata_length_guard_respects_each_field_limit(self) -> None:
+        for limit in (5, 120, 240, 500):
+            with self.subTest(limit=limit):
+                self.assertEqual(observability._short("x" * limit, limit), "x" * limit)
+                self.assertEqual(observability._short("x" * (limit + 1), limit), "[REDACTED]"[:limit])
+
     def test_command_program_uses_bounded_placeholder_for_invalid_input(self) -> None:
         self.assertEqual(observability._command_program(""), "[command]")
         self.assertEqual(observability._command_program("bad 'quote"), "[command]")

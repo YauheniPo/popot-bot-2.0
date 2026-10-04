@@ -250,8 +250,11 @@ vps_workspace_ui:
         instructions: Independently inspect the assigned Builder diff, verify regressions and tests, and report actionable findings without editing task files.
 
 vps_tools:
+  agent_reach:
+    # Official GitHub source; the same-named PyPI package is unrelated.
+    revision: latest
   google_workspace_cli:
-    version: "0.22.5"
+    version: latest
 
 vps_packages:
   grafana_channel: stable
@@ -507,7 +510,7 @@ vps_web:
   searxng_url: ""
 
 vps_browser:
-  agent_browser_version: "0.35.0"
+  agent_browser_version: latest
   launch_args: --no-sandbox,--disable-dev-shm-usage
 
 # Private Docker search service for cron and other sandboxed subprocesses.

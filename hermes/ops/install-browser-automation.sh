@@ -27,7 +27,7 @@ Options:
   --user NAME          Hermes system user (default: hermes)
   --user-home PATH     User home (default: /home/hermes)
   --hermes-home PATH   Hermes state directory (default: USER_HOME/.hermes)
-  --version VERSION    Exact agent-browser version from vps-defaults.yml
+  --version VERSION    agent-browser version or latest from vps-defaults.yml
   --launch-args ARGS   Comma-separated Chrome launch arguments
   -h, --help           Show this help
 EOF
@@ -87,7 +87,7 @@ id "${HERMES_USER}" >/dev/null 2>&1 || die "user does not exist"
 for path in "${USER_HOME}" "${HERMES_HOME}"; do
     [[ "${path}" =~ ^/[A-Za-z0-9._/@+-]+$ ]] || die "unsafe or unsupported path: ${path}"
 done
-[[ "${AGENT_BROWSER_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+[[ "${AGENT_BROWSER_VERSION}" == latest || "${AGENT_BROWSER_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
     die "invalid agent-browser version"
 [[ "${AGENT_BROWSER_ARGS}" =~ ^--[A-Za-z0-9=,_-]+$ ]] ||
     die "invalid agent-browser launch arguments"
@@ -113,6 +113,14 @@ run_as_hermes() {
         USER="${HERMES_USER}" \
         /bin/bash -c 'cd -- "$1"; shift; exec "$@"' bash "${USER_HOME}" "$@" </dev/null
 }
+
+resolve_browser_version() {
+    AGENT_BROWSER_VERSION="$(python3 "$(dirname -- "${CONFIG_APPLIER}")/resolve-tool-version.py" \
+        --package agent-browser --requested "${AGENT_BROWSER_VERSION}")"
+    [[ "${AGENT_BROWSER_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+        die "invalid resolved agent-browser version"
+}
+resolve_browser_version
 
 installed_browser_version="$(python3 -c \
     'import json, pathlib, sys; path=pathlib.Path(sys.argv[1]); print(json.loads(path.read_text())["version"]) if path.is_file() else None' \

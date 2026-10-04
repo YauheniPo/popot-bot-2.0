@@ -345,6 +345,36 @@
   when: hermes_venv_python.stat.exists
   notify: restart Hermes gateway
 
+- name: Update Agent-Reach and its dependencies in an isolated user environment
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ hermes_bundle_dir }}/runtime/install-agent-reach.py"
+      - --revision
+      - "{{ vps_tools.agent_reach.revision }}"
+  become_user: "{{ hermes_user }}"
+  environment:
+    HOME: "{{ hermes_user_home }}"
+    HERMES_HOME: "{{ hermes_home }}"
+    PATH: "{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/bin:/usr/bin:/bin"
+  register: hermes_agent_reach_install
+  changed_when: "'1 change(s)' in hermes_agent_reach_install.stdout"
+  when: vps_deploy.features.development_clis | bool
+
+- name: Resolve the requested Google Workspace CLI version
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ hermes_bundle_dir }}/runtime/resolve-tool-version.py"
+      - --package
+      - "@googleworkspace/cli"
+      - --requested
+      - "{{ vps_tools.google_workspace_cli.version }}"
+  become_user: "{{ hermes_user }}"
+  register: hermes_google_workspace_cli_target
+  changed_when: false
+  when: vps_deploy.features.google_workspace_cli | bool
+
 - name: Read the installed Google Workspace CLI version
   ansible.builtin.command:
     argv:
@@ -357,7 +387,7 @@
   failed_when: false
   when: vps_deploy.features.google_workspace_cli | bool
 
-- name: Install the pinned Google Workspace CLI
+- name: Install the resolved Google Workspace CLI
   ansible.builtin.command:
     argv:
       - "{{ hermes_home }}/node/bin/npm"
@@ -366,7 +396,7 @@
       - --omit=dev
       - --prefix
       - "{{ hermes_home }}/node"
-      - "@googleworkspace/cli@{{ vps_tools.google_workspace_cli.version }}"
+      - "@googleworkspace/cli@{{ hermes_google_workspace_cli_target.stdout }}"
   become_user: "{{ hermes_user }}"
   environment:
     HOME: "{{ hermes_user_home }}"
@@ -374,10 +404,10 @@
     PATH: "{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/bin:/usr/bin:/bin"
   when:
     - vps_deploy.features.google_workspace_cli | bool
-    - hermes_google_workspace_cli_version.stdout | default('') != vps_tools.google_workspace_cli.version
+    - hermes_google_workspace_cli_version.stdout | default('') != hermes_google_workspace_cli_target.stdout
   changed_when: true
 
-- name: Verify the pinned Google Workspace CLI launcher
+- name: Verify the Google Workspace CLI launcher
   ansible.builtin.stat:
     path: "{{ hermes_home }}/node/bin/gws"
     follow: true

@@ -331,7 +331,7 @@ GitHub permissions и messenger tokens подключаются отдельно
     deploy, например закрытый `.env`.
 - `config/vps-defaults.yml` — единый видимый файл важных non-secret настроек
   VPS: identity/paths, feature switches, Hermes runtime guardrails, backup и
-  health policy, observability topology, pinned browser tooling, VS Code и
+  health policy, observability topology, browser tooling, VS Code и
   группы systemd services для обязательного рестарта.
 - `deploy/` — домены прямого deploy: host, runtime, services и reporting.
 - `runtime/` — testable helpers, которые применяют общие настройки через
@@ -412,11 +412,11 @@ GitHub permissions и messenger tokens подключаются отдельно
 - `vps_ops` — backup retention, health thresholds и интервалы timers;
 - `vps_observability` — loopback addresses/ports, scrape intervals, SQLite и audit retention;
 - `vps_network`/`vps_packages`/`vps_tools` — SSH/Tailscale/UFW policy,
-  package channels/retries и pinned auxiliary CLI versions;
+  package channels/retries и версии внешних CLI (по умолчанию `latest`);
 - `vps_hermes.config.managed_overlay` — authoritative non-secret config.yaml
   policy без `model.default`, если `/model_global` должен сохраняться;
 - `vps_vscode`/`vps_browser` — образ code-server `latest` (проверяется при каждом
-  deploy с code-server), закреплённая версия browser package и безопасная локальная
+  deploy с code-server), версия browser package и безопасная локальная
   browser/IDE topology;
 - `vps_agent_policy` — только repository-owned блоки поведения, без замены
   личного `SOUL.md`; языковое правило задаёт язык ответов и объяснений по
@@ -798,6 +798,11 @@ terminal сохраняется сокращённая команда с мас�
 сырые provider errors и аргументы slash-команд. Session/turn ID связывает audit
 с историей Hermes, если нужно понять контекст «почему», не дублируя личные
 данные в отдельном логе.
+
+Скалярные метаданные длиннее лимита своего поля заменяются целиком на
+`[REDACTED]` до запуска регулярных выражений. Это ограничивает время
+маскирования и не оставляет в логе обрезанный секрет, чей закрывающий
+разделитель находится за пределами лимита.
 
 Best-effort копия метаданных также отправляется в root-managed system journal:
 
@@ -1410,6 +1415,45 @@ identity, GitHub owner, workspace и write boundaries из `vps_github` в ед�
 
 ### Web search и работа с интернетом
 
+Полный deploy с development CLI bundle также устанавливает
+[`agent-reach`](https://github.com/Panniantong/Agent-Reach) и `yt-dlp` в отдельное
+Python-окружение пользователя Hermes (`~/.local/share/hermes-tools/agent-reach`),
+с командами в `~/.local/bin`. `vps_tools.agent_reach.revision: latest` на каждом
+deploy разрешается в текущий commit `main` официального GitHub-репозитория;
+одноимённый пакет PyPI не используется. Deploy также проверяет обновления
+`yt-dlp` и остальных зависимостей этого отдельного окружения через `uv pip
+install --upgrade`. Совпадающие пакеты не переустанавливаются; установка сама
+по себе не перезапускает gateway. `--without-dev-cli` и
+`--minimal` пропускают установку; в Ansible её контролирует
+`vps_deploy.features.development_clis`.
+
+Установщик использует собственный `uv` Hermes из `$HERMES_HOME/bin/uv`,
+даже если его нет в `PATH`; Ansible передаёт фактический `HERMES_HOME`.
+Если managed-бинарник отсутствует, используется доступный `uv` из `PATH`.
+
+Внешние CLI обновляются при каждом deploy: `gws` и `agent-browser` используют
+стабильный npm dist-tag `latest`, Agent-Reach — актуальный upstream `main`,
+`yt-dlp` — последнюю версию, совместимую с зависимостями Agent-Reach и Python.
+Настройки — `vps_tools.google_workspace_cli.version`,
+`vps_browser.agent_browser_version` и `vps_tools.agent_reach.revision`.
+Resolver сначала получает конкретную версию/commit с ограниченным timeout и
+retries, затем установка сравнивает её с имеющейся. При недоступности registry
+deploy завершается ошибкой, а не объявляет старую версию актуальной. Можно
+задать точную версию/commit вместо `latest`. Hermes, Workspace, их runtime и
+инфраструктурные компоненты сохраняют существующую политику совместимости;
+их зависимости не обновляются произвольно этим механизмом.
+
+Agent-Reach помогает диагностировать и настраивать доступ к YouTube, RSS,
+web-страницам и соцсетям. `agent-reach --help` показывает команды,
+`agent-reach doctor` проверяет доступность каналов. Чтение выполняют отдельные
+инструменты: например, `yt-dlp` получает субтитры YouTube, а `gh` работает с
+GitHub. Это дополнение к штатным инструментам Hermes. Deploy не запускает
+`agent-reach install --system`, не импортирует cookies, не подключает Exa/MCP
+и не устанавливает дополнительные социальные CLI. Такие настройки требуют
+отдельного запроса и credentials; каналы с настольной Chrome-сессией не готовы
+на headless VPS. Назначение и границы CLI включены в managed-инструкции агента
+из `instructions/common.md`.
+
 Hermes может искать информацию, извлекать текст со страниц и работать с
 интерактивными сайтами. Chromium и его системные библиотеки устанавливаются
 автоматически. Terminal и Chromium имеют обычный исходящий доступ в интернет
@@ -1458,8 +1502,10 @@ Hermes использует его для навигации, кликов, фо
 обходит CAPTCHA, paywall или авторизацию. При каждом deploy запускается
 реальный цикл `open → snapshot → close` с фактическими launch-параметрами;
 ошибка проверки останавливает playbook вместо неявно работающего браузера.
-Версия пакета закреплена в `vps_browser.agent_browser_version`, поэтому новый
-deploy не получает другой browser runtime при неизменном commit проекта.
+`vps_browser.agent_browser_version: latest` проверяет актуальную стабильную
+версию при каждом deploy; совпадающая версия не переустанавливается.
+Фактический browser runtime может обновиться при неизменном commit проекта,
+и обязательная live-проверка остаётся условием успешного deploy.
 После успешной проверки установщик сохраняет две последние сборки Chrome и
 сборки, которыми ещё пользуются процессы, удаляя более старые. При deploy он
 также очищает известные npm, Python, Playwright и Sonar install-кэши, если
@@ -1694,6 +1740,9 @@ Systemd создаёт ещё и scheduled backup:
 в обычные дни и full snapshot раз в неделю. Quick snapshots хранятся 14 дней,
 из full сохраняются последние 5, а из обязательных `pre-deploy` и
 `pre-config-deploy` архивов — последние 10 групп вместе с их state manifests.
+Имена `pre-config-deploy` содержат время и случайный суффикс, общий для архива
+и его state manifest: повторный запуск с тем же временем получает новую пару
+путей. Retention распознаёт как эти имена, так и старые имена без суффикса.
 Health check отдельно сообщает, если любой backup старше 26 часов или полный
 старше 8 дней. Пороги, день недели и retention меняются в `vps_ops` файла
 [`config/vps-defaults.yml`](config/vps-defaults.yml) и применяются deploy.

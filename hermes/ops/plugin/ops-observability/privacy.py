@@ -31,7 +31,12 @@ REDACTED = "[REDACTED]"
 COMMAND_PLACEHOLDER = "[command]"
 
 def _short(value: Any, limit: int = 500) -> str:
-    text = str(value or "").replace("\x00", "").replace("\r", " ").replace("\n", " ")
+    text = str(value or "")
+    # Bound regex work without retaining a partial secret whose closing delimiter
+    # falls outside the field limit (for example URL userinfo or a quoted flag).
+    if len(text) > limit:
+        return REDACTED[:limit]
+    text = text.replace("\x00", "").replace("\r", " ").replace("\n", " ")
     text = _SECRET_TEXT.sub(lambda match: (match.group(1) or match.group(2) or "") + REDACTED, text)
     text = _SECRET_FLAG.sub(lambda match: match.group(1) + REDACTED, text)
     text = _SECRET_AUTH_FLAG.sub(lambda match: match.group(1) + REDACTED, text)

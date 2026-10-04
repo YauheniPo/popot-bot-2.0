@@ -20,6 +20,25 @@ SPEC.loader.exec_module(prune_backups)
 
 
 class PruneBackupsTests(unittest.TestCase):
+    def test_deployment_retention_handles_unique_suffixes_and_legacy_names(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prefixes = ["pre-config-deploy-20261003T120000",
+                        "pre-config-deploy-20261003T120000-" + "a" * 16,
+                        "pre-config-deploy-20261003T120000-" + "b" * 16]
+            for index, prefix in enumerate(prefixes):
+                archive = root / (prefix + ".zip")
+                archive.touch()
+                os.utime(archive, (index + 1, index + 1))
+                (root / (prefix + "-state.json")).touch()
+            manual = root / "pre-config-deploy-20261003T120000-manual.zip"
+            manual.touch()
+            self.assertEqual(prune_backups.prune_deployment_backups(root, keep=1), 2)
+            self.assertEqual(sorted(path.name for path in root.iterdir()), sorted([
+                prefixes[-1] + ".zip", prefixes[-1] + "-state.json", manual.name,
+            ]))
+            self.assertEqual(prune_backups.prune_deployment_backups(root, keep=1), 0)
+
     def test_full_retention_keeps_only_five_newest_scheduled_archives(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             backup_dir = Path(temporary_directory)
