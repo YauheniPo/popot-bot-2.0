@@ -107,14 +107,28 @@ def main():
         # Validate settings path: must be within config root and have safe extension
         config_root = Path(__file__).resolve().parents[1] / 'config'
         try:
-            settings_path.resolve().relative_to(config_root.resolve())
+            # Resolve symlinks and verify path stays within config_root
+            resolved_path = settings_path.resolve()
+            resolved_path.relative_to(config_root.resolve())
+            # Ensure the resolved path is a regular file, not a symlink outside config_root
+            if not resolved_path.is_file():
+                parser.error(f'--settings must be a regular file under {config_root}')
         except ValueError:
             parser.error(f'--settings path must be under {config_root}')
         if settings_path.suffix not in ('.yml', '.yaml'):
             parser.error('--settings must be a .yml or .yaml file')
         import yaml
         settings = yaml.safe_load(settings_path.read_text(encoding='utf-8'))
-        revision = settings['vps_tools']['agent_reach']['revision']
+        # Validate settings structure and revision key presence/type
+        vps_tools = settings.get('vps_tools')
+        if not isinstance(vps_tools, dict):
+            raise ValueError('settings: vps_tools must be a mapping')
+        agent_reach = vps_tools.get('agent_reach')
+        if not isinstance(agent_reach, dict):
+            raise ValueError('settings: vps_tools.agent_reach must be a mapping')
+        revision = agent_reach.get('revision')
+        if not isinstance(revision, str):
+            raise ValueError('settings: vps_tools.agent_reach.revision must be a string')
         # Re-validate revision after YAML load
         if revision != 'latest' and not re.fullmatch(r'[0-9a-f]{40}', revision):
             raise ValueError('Agent-Reach revision from settings must be a full commit SHA or "latest"')
