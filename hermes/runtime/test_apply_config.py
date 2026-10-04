@@ -573,7 +573,7 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertNotIn("DEFAULT_HERMES_COMMIT", deploy_script)
         self.assertNotIn("DEFAULT_INSTALLER_SHA256", deploy_script)
         self.assertIn('data["vps_deploy"]["hermes_source"]', deploy_script)
-        self.assertIn("8#$settings_perms & 8#022", deploy_script)
+        self.assertIn("(( (settings_perms & 022) == 0 ))", deploy_script)
         self.assertNotIn("settings_owner", deploy_script)
         self.assertNotIn("must be owned by root", deploy_script)
         self.assertIn('HERMES_BRANCH="${HERMES_BRANCH:-$source_branch}"', deploy_script)
