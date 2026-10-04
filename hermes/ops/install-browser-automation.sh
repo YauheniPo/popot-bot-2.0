@@ -118,8 +118,10 @@ resolve_browser_version() {
     # Resolve version, validate pattern before shell substitution
     local resolved
     resolved="$(python3 "$(dirname -- "${CONFIG_APPLIER}")/resolve-tool-version.py" \
-        --package agent-browser --requested "${AGENT_BROWSER_VERSION}" 2>/dev/null)" || \
-        die "agent-browser version resolution failed"
+                --package agent-browser --requested "${AGENT_BROWSER_VERSION}" 2>&1)" || \
+        { error_msg="agent-browser version resolution failed" \
+            && if [[ -n "$resolved" ]]; then error_msg+=" (stderr: $resolved)"; fi \
+            && die "$error_msg"; }
     [[ "${resolved}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || \
         die "invalid resolved agent-browser version"
     AGENT_BROWSER_VERSION="${resolved}"
