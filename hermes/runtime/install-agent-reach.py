@@ -114,7 +114,7 @@ def main():
         changed = install(Path.home(), revision, uv)
     except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
         # Do not dump installer output which may contain environment credentials.
-        print(f'Agent-Reach installation failed: {exc}', file=sys.stderr)
+        print('Agent-Reach installation failed', file=sys.stderr)
         return 1
     print(f'{int(changed)} change(s)')
     return 0
