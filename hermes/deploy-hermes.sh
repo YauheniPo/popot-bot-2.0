@@ -351,7 +351,7 @@ resolve_source_pin() {
   settings_perms="$(stat -c '%a' "$VPS_SETTINGS_FILE")"
   [[ "$settings_perms" =~ ^[0-7]{3,4}$ ]] ||
     die "$VPS_SETTINGS_FILE has an invalid mode: $settings_perms"
-  (( ($settings_perms & 022) == 0 )) ||
+  (( (settings_perms & 022) == 0 )) ||
     die "$VPS_SETTINGS_FILE must not be group- or world-writable (mode: $settings_perms)"
 
   local parsed source_raw_base_url source_branch source_version source_release source_commit source_installer_sha256
