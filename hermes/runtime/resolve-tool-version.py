@@ -17,7 +17,9 @@ def fetch_json(url):
         try:
             request = Request(url, headers={'User-Agent': 'hermes-deploy', 'Accept': 'application/json'})
             with urlopen(request, timeout=15) as response:
-                return json.loads(response.read(5 * 1024 * 1024))
+                data = response.read(5 * 1024 * 1024)
+                # Cap response size at read level (5 MiB)
+                return json.loads(data)
         except (URLError, OSError, ValueError) as exc:
             if attempt == 2:
                 raise RuntimeError(f'latest version lookup failed for {url}: {type(exc).__name__}') from exc
@@ -43,7 +45,11 @@ def resolve(package, requested):
                 raise ValueError('agent-reach response ref mismatch')
             version = data.get('sha', '')
         else:
-            version = fetch_json('https://registry.npmjs.org/' + quote(package, safe='@')).get('dist-tags', {}).get('latest', '')
+            data = fetch_json('https://registry.npmjs.org/' + quote(package, safe='@'))
+            # Validate npm response structure before accessing nested keys
+            if not isinstance(data, dict):
+                raise ValueError('unexpected npm response structure')
+            version = data.get('dist-tags', {}).get('latest', '')
     pattern = r'[0-9a-f]{40}' if package == 'agent-reach' else r'[0-9]+\.[0-9]+\.[0-9]+'
     if not isinstance(version, str) or not re.fullmatch(pattern, version):
         raise ValueError(f'invalid resolved version for {package}')
