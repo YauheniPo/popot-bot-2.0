@@ -34,6 +34,13 @@ def resolve(package, requested):
             # Validate response shape - must be a dict with a valid SHA
             if not isinstance(data, dict):
                 raise ValueError('unexpected response structure for agent-reach latest')
+            # Validate repository and ref
+            repo_full_name = data.get('repository', {}).get('full_name', '')
+            if repo_full_name != 'Panniantong/Agent-Reach':
+                raise ValueError('agent-reach response repository mismatch')
+            ref = data.get('ref', '')
+            if ref != 'refs/heads/main':
+                raise ValueError('agent-reach response ref mismatch')
             version = data.get('sha', '')
         else:
             version = fetch_json('https://registry.npmjs.org/' + quote(package, safe='@')).get('dist-tags', {}).get('latest', '')
