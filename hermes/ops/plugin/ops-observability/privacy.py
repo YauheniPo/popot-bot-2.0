@@ -32,11 +32,9 @@ COMMAND_PLACEHOLDER = "[command]"
 
 def _short(value: Any, limit: int = 500) -> str:
     text = str(value or "")
-    # Bound regex work without retaining a partial secret whose closing delimiter
-    # falls outside the field limit (for example URL userinfo or a quoted flag).
-    if len(text) > limit:
-        text = text[:limit]
-    text = text.replace("\x00", "").replace("\r", " ").replace("\n", " ")
+    # Redact secrets BEFORE truncation to avoid partial secrets at the boundary.
+    # This ensures URL userinfo, flag values, and key=value secrets are redacted
+    # even when the closing delimiter (@, space, etc.) falls outside the limit.
     text = _SECRET_TEXT.sub(lambda match: (match.group(1) or match.group(2) or "") + REDACTED, text)
     text = _SECRET_FLAG.sub(lambda match: match.group(1) + REDACTED, text)
     text = _SECRET_AUTH_FLAG.sub(lambda match: match.group(1) + REDACTED, text)
@@ -44,6 +42,10 @@ def _short(value: Any, limit: int = 500) -> str:
     text = _SSHPASS_FLAG.sub(lambda match: match.group(1) + REDACTED, text)
     text = _URL_USERINFO.sub(r"\1" + REDACTED + "@", text)
     text = re.sub(r"-----BEGIN [^-]+ PRIVATE KEY-----.*", "[REDACTED PRIVATE KEY]", text, flags=re.IGNORECASE)
+    # Now truncate and clean
+    if len(text) > limit:
+        text = text[:limit]
+    text = text.replace("\x00", "").replace("\r", " ").replace("\n", " ")
     return text[:limit]
 
 

@@ -32,8 +32,11 @@ class DeploymentStatePolicyTests(unittest.TestCase):
 
         facts = list(facts_in(play["tasks"]))
         template = NativeEnvironment()
+        # The playbook uses: {{ '%016x' | format(lookup('pipe', 'openssl rand -hex 8')) }}
+        # We mock lookup to return hex strings, and format to do the formatting
         suffixes = iter(("a" * 16, "b" * 16, "c" * 16))
-        template.globals["lookup"] = lambda *args, **kwargs: next(suffixes)
+        template.globals["lookup"] = lambda *args, **kwargs: next(suffixes) if "openssl" in str(args) else ""
+        template.filters['format'] = lambda fmt, val: val if isinstance(val, str) and len(val) == 16 else fmt
         with tempfile.TemporaryDirectory() as directory:
             artifacts = []
             for index in range(3):
