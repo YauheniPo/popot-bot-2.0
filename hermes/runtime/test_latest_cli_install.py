@@ -32,7 +32,8 @@ class LatestCliInstallTests(unittest.TestCase):
                 body = 'installed_browser_version=' + body
                 # Include the resolver immediately before inspecting the installed package.
                 resolver = source.split('resolve_browser_version() {', 1)[1].split('\n}\n', 1)[0] if 'resolve_browser_version() {' in source else ''
-                body = resolver + '\n' + body
+                # Wrap resolver in a function call since test runs it inline
+                body = 'resolve_browser_version() {\n' + resolver + '\n}\nresolve_browser_version\n' + body
             script = f'''
 set -Eeuo pipefail
 source {shlex.quote(str(ROOT / 'deploy/runtime.sh'))}
