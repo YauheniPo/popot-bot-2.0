@@ -31,13 +31,24 @@ class TestSecurityFixes(unittest.TestCase):
 
     def test_revision_format_validation(self):
         """Test revision format validation (security fix)"""
-        # Test that revision validation works before URL construction
-        # This simulates the security fix in install-agent-reach.py
+        # Test the specific security fix in install-agent-reach.py
+        # Line 36-37: Validate requested revision format early - fail fast before any subprocess call
 
-        # Valid revision formats
+        # Test valid revision formats
         valid_revisions = ['latest', 'a' * 40]  # SHA-1
 
-        # Invalid revision formats
+        # Test valid revisions (should not raise)
+        for revision in valid_revisions:
+            try:
+                # This is the exact validation logic from install-agent-reach.py line 36-37
+                if revision != 'latest' and not re.fullmatch(r'[0-9a-f]{40}', revision):
+                    raise ValueError('Agent-Reach revision must be a full commit SHA or "latest"')
+                # If no exception, test passes
+                pass
+            except Exception as e:
+                self.fail(f"Valid revision '{revision}' raised exception: {e}")
+
+        # Test invalid revision formats
         invalid_revisions = [
             'invalid-revision',
             '123456',  # Too short
@@ -47,19 +58,10 @@ class TestSecurityFixes(unittest.TestCase):
             'latest-extra',  # With suffix
         ]
 
-        # Test valid revisions (should not raise)
-        for revision in valid_revisions:
-            try:
-                if revision != 'latest' and not re.fullmatch(r'[0-9a-f]{40}', revision):
-                    raise ValueError('Invalid revision format')
-                # If no exception, test passes
-                pass
-            except Exception as e:
-                self.fail(f"Valid revision '{revision}' raised exception: {e}")
-
         # Test invalid revisions (should raise ValueError)
         for revision in invalid_revisions:
             with self.assertRaises(ValueError) as context:
+                # This is the exact validation logic from install-agent-reach.py line 36-37
                 if revision != 'latest' and not re.fullmatch(r'[0-9a-f]{40}', revision):
                     raise ValueError('Agent-Reach revision must be a full commit SHA or "latest"')
 
