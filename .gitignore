@@ -39,3 +39,4 @@ venv/
 
 # JavaScript coverage consumed by the SonarCloud scan workflow.
 hermes-runtime.lcov
+.runtime/swarm-missions.json
