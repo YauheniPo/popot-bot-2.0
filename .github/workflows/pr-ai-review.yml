@@ -263,7 +263,7 @@ jobs:
         if: steps.claude_models.outputs.primary_ready == 'true'
         continue-on-error: true
         timeout-minutes: 12
-        uses: anthropics/claude-code-action@9171db3e57d6a3140a37ddc2ba92788584e0ead6 # v1
+        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1
         with:
           # Route through ANTHROPIC_BASE_URL with the selected provider's key.
           anthropic_api_key: &claude_api_key ${{ (steps.claude_models.outputs.provider == 'nous' && secrets.NOUS_API_KEY) || (steps.claude_models.outputs.provider == 'nvidia' && secrets.NVIDIA_API_KEY) || (steps.claude_models.outputs.provider == 'openrouter' && secrets.OPENROUTER_API_KEY) || (steps.claude_models.outputs.provider == 'ollama-cloud' && secrets.OLLAMA_API_KEY) || '' }}
@@ -462,7 +462,7 @@ jobs:
           steps.extract_claude_review_primary.outcome != 'success'
         continue-on-error: true
         timeout-minutes: 12
-        uses: anthropics/claude-code-action@9171db3e57d6a3140a37ddc2ba92788584e0ead6 # v1
+        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1
         with:
           anthropic_api_key: *claude_api_key
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -513,7 +513,7 @@ jobs:
           steps.extract_claude_review_primary_retry.outcome != 'success'
         continue-on-error: true
         timeout-minutes: 12
-        uses: anthropics/claude-code-action@9171db3e57d6a3140a37ddc2ba92788584e0ead6 # v1
+        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1
         with:
           anthropic_api_key: &claude_fallback_api_key ${{ (steps.claude_models.outputs.fallback_provider == 'nous' && secrets.NOUS_API_KEY) || (steps.claude_models.outputs.fallback_provider == 'nvidia' && secrets.NVIDIA_API_KEY) || (steps.claude_models.outputs.fallback_provider == 'openrouter' && secrets.OPENROUTER_API_KEY) || (steps.claude_models.outputs.fallback_provider == 'ollama-cloud' && secrets.OLLAMA_API_KEY) || '' }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -579,7 +579,7 @@ jobs:
           steps.extract_claude_review_fallback.outcome != 'success'
         continue-on-error: true
         timeout-minutes: 12
-        uses: anthropics/claude-code-action@9171db3e57d6a3140a37ddc2ba92788584e0ead6 # v1
+        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1
         with:
           anthropic_api_key: *claude_fallback_api_key
           github_token: ${{ secrets.GITHUB_TOKEN }}
