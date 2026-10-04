@@ -84,8 +84,9 @@ jobs:
               message = (
                   "These CI Actions are absent from the repository allow-list:\\n"
                   f"{details}\\n\\n"
-                  "For a Dependabot GitHub-Actions upgrade, merge it into main and the Sync Actions allowlist "
-                  "workflow will add the new pinned revision. For any other change, add the action deliberately "
+                  "For a pinned upgrade of an already allowed Action, merge it into main and the Sync Actions allowlist "
+                  "workflow will add the new revision. If it was already merged, run that workflow manually on main. "
+                  "For a new Action source, add the action deliberately "
                   "in Settings → Actions → General → Allow specified actions and reusable workflows."
               )
               print(f"::error title=Blocked CI Action revision::{message}")

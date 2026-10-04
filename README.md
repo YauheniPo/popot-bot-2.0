@@ -537,6 +537,25 @@ Historical provider names in job IDs, environment aliases, and inline-comment
 markers are retained for compatibility. They do not identify the connection
 used by a particular run.
 
+## GitHub Actions allowlist
+
+`ACTIONS_ALLOWED_PATTERNS` mirrors the repository policy under **Settings →
+Actions → General → Allow specified actions and reusable workflows**. The PR
+policy check reads this mirror; changing the variable alone does not enable an
+Action in GitHub.
+
+After workflow changes are merged into `main`, **Sync Actions allowlist** adds
+new exact 40-character commit revisions of already permitted Action sources and
+refreshes the mirror. This applies to owner merges and Dependabot updates.
+Existing policy patterns are preserved; new Action sources and unpinned
+revisions require deliberate administrator approval. Sync runs are serialized
+and use no external Actions, so a blocked revision cannot prevent recovery.
+
+For already merged updates, run **Sync Actions allowlist → Run workflow** on
+`main`, then rerun affected PR checks. The workflow requires the existing
+`ACTIONS_POLICY_TOKEN` secret with repository **Administration: write** and
+**Variables: write** permissions. A missing token or API failure fails the sync.
+
 ## Coverage quality gate
 
 The project's SonarQube Cloud gate is
