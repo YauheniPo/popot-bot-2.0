@@ -20,7 +20,7 @@ class ToolVersionTests(unittest.TestCase):
         with mock.patch.object(self.module, 'fetch_json', return_value={'dist-tags': {'latest': '1.2.3'}}) as fetch:
             self.assertEqual(self.module.resolve('@googleworkspace/cli', 'latest'), '1.2.3')
         self.assertIn('%2F', fetch.call_args.args[0])
-        with mock.patch.object(self.module, 'fetch_json', return_value={'sha': 'a' * 40}):
+        with mock.patch.object(self.module, 'fetch_json', return_value={'sha': 'a' * 40, 'repository': {'full_name': 'Panniantong/Agent-Reach'}, 'ref': 'refs/heads/main'}):
             self.assertEqual(self.module.resolve('agent-reach', 'latest'), 'a' * 40)
 
     def test_invalid_remote_response_is_rejected(self):
