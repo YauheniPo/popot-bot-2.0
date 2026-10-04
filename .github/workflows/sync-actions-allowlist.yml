@@ -1,29 +1,34 @@
 name: Sync Actions allowlist
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
       - ".github/workflows/**"
       - ".github/dependabot.yml"
 
+concurrency:
+  group: sync-actions-allowlist
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
 jobs:
   sync-dependabot-action-updates:
-    name: Sync Dependabot GitHub Actions updates
+    name: Sync approved GitHub Actions revisions
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
       # This intentionally has no external `uses:` dependency: it must be able
       # to run when the just-merged action revision is not yet allowlisted.
-      - name: Add approved Dependabot revisions to the selected-actions policy
+      - name: Add approved main revisions to the selected-actions policy
         shell: bash
         env:
           ACTIONS_POLICY_TOKEN: ${{ secrets.ACTIONS_POLICY_TOKEN }}
           REPOSITORY: ${{ github.repository }}
-          BASE_SHA: ${{ github.event.before }}
           HEAD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -55,12 +60,6 @@ jobs:
               with urllib.request.urlopen(request, timeout=20) as response:
                   return None if response.status == 204 else json.load(response)
 
-          commit = api(f"/repos/{repository}/commits/{os.environ['HEAD_SHA']}")
-          author = commit.get("author") if isinstance(commit, dict) else None
-          if not isinstance(author, dict) or author.get("login") != "dependabot[bot]":
-              print("Dependabot identity could not be verified; refusing to update the allow-list.")
-              sys.exit(0)
-
           def action_refs(revision):
               tree = api(f"/repos/{repository}/git/trees/{revision}?recursive=1")
               if tree.get("truncated"):
@@ -76,21 +75,27 @@ jobs:
                   blob = api(f"/repos/{repository}/git/blobs/{sha}")
                   text = base64.b64decode(blob["content"]).decode("utf-8")
                   refs.update(re.findall(
-                      r"^\s*uses:\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[^\s#]+)", text, flags=re.MULTILINE,
+                      r"^\s*-?\s*uses:\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[^\s#]+)", text, flags=re.MULTILINE,
                   ))
               return refs
 
           settings = api(f"/repos/{repository}/actions/permissions/selected-actions")
           patterns = settings["patterns_allowed"]
-          before = action_refs(os.environ["BASE_SHA"])
           after = action_refs(os.environ["HEAD_SHA"])
-          before_sources = {item.split("@", 1)[0] for item in before}
-          unsafe = [ref for ref in after if ref.split("@", 1)[0] not in before_sources]
-          if unsafe:
-              print("::error title=Refusing to allow a new Action source::" + ", ".join(unsafe))
-              sys.exit(1)
-
           additions = sorted(ref for ref in after if not any(fnmatch.fnmatchcase(ref, pattern) for pattern in patterns))
+          # Merging into main approves a revision, but never expands the
+          # Action sources already permitted by the repository administrator.
+          unsafe = [
+              ref for ref in additions
+              if not re.fullmatch(r"[0-9a-f]{40}", ref.split("@", 1)[1])
+              or not any(
+                  "@" in pattern and fnmatch.fnmatchcase(ref.split("@", 1)[0], pattern.split("@", 1)[0])
+                  for pattern in patterns
+              )
+          ]
+          if unsafe:
+              print("::error title=Refusing unapproved Action sources or unpinned revisions::" + ", ".join(unsafe))
+              sys.exit(1)
 
           if additions:
               patterns.extend(additions)
