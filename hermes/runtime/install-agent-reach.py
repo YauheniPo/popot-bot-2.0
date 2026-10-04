@@ -36,6 +36,7 @@ def install(home, revision, uv):
         print('Resolving latest Agent-Reach source', flush=True)
         revision = run([sys.executable, str(Path(__file__).with_name('resolve-tool-version.py')),
                         '--package', 'agent-reach', '--requested', revision], timeout=60)
+    # Validate revision format immediately before any URL construction
     if not re.fullmatch(r'[0-9a-f]{40}', revision):
         raise ValueError('Agent-Reach revision must be a full commit SHA')
     venv = home / '.local/share/hermes-tools/agent-reach'

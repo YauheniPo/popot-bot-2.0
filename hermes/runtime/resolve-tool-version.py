@@ -30,7 +30,17 @@ def resolve(package, requested):
     version = requested
     if requested == 'latest':
         if package == 'agent-reach':
-            version = fetch_json('https://api.github.com/repos/Panniantong/Agent-Reach/commits/main').get('sha', '')
+            data = fetch_json('https://api.github.com/repos/Panniantong/Agent-Reach/commits/main')
+            # Validate response shape and repository/ref before using SHA
+            if not isinstance(data, dict):
+                raise ValueError('unexpected response structure for agent-reach latest')
+            repo_full_name = data.get('repository', {}).get('full_name', '')
+            if repo_full_name != 'Panniantong/Agent-Reach':
+                raise ValueError('agent-reach response repository mismatch')
+            ref = data.get('ref', '')
+            if ref != 'refs/heads/main':
+                raise ValueError('agent-reach response ref mismatch')
+            version = data.get('sha', '')
         else:
             version = fetch_json('https://registry.npmjs.org/' + quote(package, safe='@')).get('dist-tags', {}).get('latest', '')
     pattern = r'[0-9a-f]{40}' if package == 'agent-reach' else r'[0-9]+\.[0-9]+\.[0-9]+'
