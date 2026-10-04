@@ -691,11 +691,11 @@ class OllamaReviewTest(unittest.TestCase):
         )
         self.assertEqual(sync["name"], "Sync Actions allowlist")
         self.assertEqual(sync["on"]["push"]["branches"], ["main"])
-        self.assertNotIn("if", sync["jobs"]["sync-dependabot-action-updates"])
+        self.assertEqual(sync["jobs"]["sync-dependabot-action-updates"]["if"], "github.ref == 'refs/heads/main'")
         sync_step = sync["jobs"]["sync-dependabot-action-updates"]["steps"][0]
         self.assertNotIn("uses", sync_step)
         self.assertIn("actions/permissions/selected-actions", sync_step["run"])
-        self.assertIn('author.get("login") != "dependabot[bot]"', sync_step["run"])
+        self.assertNotIn('author.get("login")', sync_step["run"])
 
     def test_owner_approved_review_uses_a_trusted_workflow_and_reads_pr_as_data(self):
         root = Path(__file__).resolve().parents[2]
