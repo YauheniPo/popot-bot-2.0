@@ -415,6 +415,7 @@ main() {
   apply_local_hermes_patches
   install_local_browser_automation
   configure_development_clis
+  install_agent_reach_cli
   install_google_workspace_cli
 
   if [[ "$RUN_SETUP" == true ]]; then

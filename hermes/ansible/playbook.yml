@@ -142,14 +142,14 @@
           - vps_vscode.tunnel_port | int >= 1
           - vps_vscode.tunnel_port | int <= 65535
           - vps_vscode.timezone is match('^[A-Za-z0-9_+/-]+$')
-          - vps_browser.agent_browser_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+          - vps_browser.agent_browser_version == 'latest' or vps_browser.agent_browser_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
           - vps_browser.launch_args is match('^--[A-Za-z0-9=,_-]+$')
           - vps_agent_policy.response_language_instruction | length > 0
           - vps_deploy.features.browser_automation is boolean
           - vps_deploy.features.development_clis is boolean
           - vps_deploy.features.google_workspace_cli is boolean
           - vps_deploy.secret_environment.managed is boolean
-          - vps_tools.google_workspace_cli.version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+          - vps_tools.google_workspace_cli.version == 'latest' or vps_tools.google_workspace_cli.version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
           - vps_network.ssh_port | int >= 1
           - vps_network.ssh_port | int <= 65535
           - vps_network.tailscale.interface is match('^[A-Za-z0-9_.:-]+$')
@@ -618,12 +618,21 @@
             - not (hermes_source_update_required | bool)
             - hermes_deploy_mode == 'full'
 
+        - name: Choose a unique suffix for the config-only deployment backup
+          ansible.builtin.set_fact:
+            hermes_config_backup_suffix: >-
+              {{ lookup('ansible.builtin.password', '/dev/null', length=16, chars=['ascii_lowercase', 'digits']) }}
+          when:
+            - hermes_binary.stat.exists
+            - not (hermes_source_update_required | bool)
+            - hermes_deploy_mode == 'full'
+
         - name: Define the mandatory config-only deployment backup paths
           ansible.builtin.set_fact:
             hermes_config_backup_archive: >-
-              {{ hermes_backup_dir }}/pre-config-deploy-{{ ansible_date_time.iso8601_basic_short }}.zip
+              {{ hermes_backup_dir }}/pre-config-deploy-{{ ansible_date_time.iso8601_basic_short }}-{{ hermes_config_backup_suffix }}.zip
             hermes_config_backup_snapshot: >-
-              {{ hermes_backup_dir }}/pre-config-deploy-{{ ansible_date_time.iso8601_basic_short }}-state.json
+              {{ hermes_backup_dir }}/pre-config-deploy-{{ ansible_date_time.iso8601_basic_short }}-{{ hermes_config_backup_suffix }}-state.json
           when:
             - hermes_binary.stat.exists
             - not (hermes_source_update_required | bool)

@@ -112,7 +112,8 @@ private/loopback сетям.
 
 Ежедневно используются исходные IT-ленты, OpenAI News, Google AI, DeepMind,
 Hugging Face Papers/Trending, блог Simon Willison и поиск по Anthropic News,
-Meta AI Blog, TLDR AI и X-публикациям Karpathy, Simon Willison и swyx. Поиск
+Meta AI Blog, TLDR AI и X-публикациям Karpathy, Simon Willison, swyx и
+[@thsottiaux](https://x.com/thsottiaux). Поиск
 X, LinkedIn и названных сайтов зависит от уже установленного SearXNG и наличия
 даты в его результате; пропуски отображаются в отчёте. Если прямой Reddit API
 блокирует VPS, сборщик ищет публичные страницы сабреддита через тот же SearXNG

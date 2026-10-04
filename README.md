@@ -426,8 +426,10 @@ preflight and publication; their model-traffic budgets remain separate.
 Tune traffic and execution budgets for your provider's quota and the size of the
 review. `OLLAMA_REVIEW_RPM` controls direct API request pacing,
 `OLLAMA_REVIEW_COOLDOWN_SECONDS` controls the pause between the Direct API
-reviewer and Claude Code (useful when the two reviewers share a quota),
-and `OLLAMA_REVIEW_BUDGET_SECONDS` bounds direct review model traffic. These
+reviewer and Claude Code (useful when the two reviewers share a quota). It accepts
+one to three decimal digits from 0 to 300 seconds, including leading zeros;
+for example, `08` means 8 seconds. `OLLAMA_REVIEW_BUDGET_SECONDS` bounds direct
+review model traffic. These
 historical variable names also apply when a different provider is selected.
 Manual/Azure review uses `MANUAL_REVIEW_MAX_CHUNKS` and
 `MANUAL_REVIEW_BUDGET_SECONDS` for its chunk and time budgets.

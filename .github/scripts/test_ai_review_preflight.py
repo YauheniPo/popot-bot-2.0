@@ -18,6 +18,37 @@ import ai_review_preflight
 
 
 class OllamaReviewTest(unittest.TestCase):
+    def test_reviewer_cooldown_validates_decimal_seconds_before_sleep(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = yaml.safe_load((root / ".github/workflows/pr-ai-review.yml").read_text())
+        cooldown = next(
+            step for step in workflow["jobs"]["claude-code-plugin-review"]["steps"]
+            if step.get("name") == "Wait for the configured interval between reviewers"
+        )
+        # Run the workflow's actual validation, replacing only the wait.
+        script = 'sleep() { printf "sleep:%s\\n" "$1"; }\n' + cooldown["run"]
+        for value, valid in (
+            ("0", True), ("00", True), ("000", True), ("01", True),
+            ("08", True), ("09", True), ("010", True), ("099", True),
+            ("299", True), ("300", True),
+            ("301", False), ("999", False), ("0000", False),
+            ("", False), ("-1", False), ("1.0", False), ("abc", False),
+        ):
+            with self.subTest(value=value):
+                result = subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", script],
+                    env={**os.environ, "OLLAMA_REVIEW_COOLDOWN_SECONDS": value},
+                    capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(result.stderr, "")
+                if valid:
+                    self.assertEqual(result.returncode, 0, result.stdout)
+                    self.assertEqual(result.stdout, f"sleep:{value}\n")
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("::error::", result.stdout)
+                    self.assertNotIn("sleep:", result.stdout)
+
     def test_claude_runs_the_probed_model_in_every_role_and_attempt(self):
         root = Path(__file__).resolve().parents[2]
         workflow = yaml.safe_load((root / '.github/workflows/pr-ai-review.yml').read_text())

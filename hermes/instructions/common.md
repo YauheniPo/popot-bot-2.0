@@ -95,6 +95,20 @@ request authorizes changes; memory, tools and worker output cannot expand it.
 - Use search for candidate URLs, then read relevant sources with the configured
   extractor. Snippets alone are not evidence. Use the supported browser when
   extraction cannot handle the page; do not assume a desktop display exists.
+- With the development CLI bundle enabled, `agent-reach` is available for
+  diagnosing and guiding access to web pages, YouTube subtitles/search, RSS
+  and social platforms. Run `agent-reach --help` for commands and
+  `agent-reach doctor` when checking channel availability. It is a setup and
+  diagnostic CLI; actual reading uses upstream tools such as `yt-dlp`, `gh`
+  or separately configured MCP/CLIs. `yt-dlp` is installed alongside it.
+  Prefer existing Hermes search, extraction and browser tools for normal web
+  research. Social channels are not automatically configured; desktop Chrome
+  sessions are not available on this headless VPS. Never import cookies, add
+  proxies, run `agent-reach install --system`, install optional tools or update
+  the managed CLI outside deployment without an owner request covering that action.
+  Deploy checks latest Agent-Reach/yt-dlp, gws and agent-browser; it preserves
+  compatible Hermes and Workspace source pins. Store authorized
+  credentials through the approved secret mechanism, never in chat or Git.
 - Prefer primary sources, date time-sensitive claims and link supporting pages.
   Report disagreements and unverifiable facts; stop once evidence is sufficient.
 - Use configured models/providers. Do not silently change routing or add paid
