@@ -129,11 +129,12 @@ resolve_browser_version
 installed_browser_version="$(python3 -c \
     'import json, pathlib, sys; path=pathlib.Path(sys.argv[1]); print(json.loads(path.read_text())["version"]) if path.is_file() else None' \
     "${HERMES_HOME}/node/lib/node_modules/agent-browser/package.json" 2>/dev/null || true)"
+browser_pkg="agent-browser@${AGENT_BROWSER_VERSION}"
 if [[ "${installed_browser_version}" != "${AGENT_BROWSER_VERSION}" ]]; then
     log "installing agent-browser ${AGENT_BROWSER_VERSION}"
     run_as_hermes "${NPM_BIN}" install --global --omit=dev \
         --allow-scripts=agent-browser --prefix "${HERMES_HOME}/node" \
-        "agent-browser@${AGENT_BROWSER_VERSION}"
+        "${browser_pkg}"
 fi
 
 log "writing persistent local browser launch configuration"

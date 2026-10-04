@@ -103,9 +103,21 @@ def main():
     args = parser.parse_args()
     revision = args.revision
     if args.settings:
+        settings_path = args.settings
+        # Validate settings path: must be within config root and have safe extension
+        config_root = Path(__file__).resolve().parents[1] / 'config'
+        try:
+            settings_path.resolve().relative_to(config_root.resolve())
+        except ValueError:
+            parser.error(f'--settings path must be under {config_root}')
+        if settings_path.suffix not in ('.yml', '.yaml'):
+            parser.error('--settings must be a .yml or .yaml file')
         import yaml
-        settings = yaml.safe_load(args.settings.read_text(encoding='utf-8'))
+        settings = yaml.safe_load(settings_path.read_text(encoding='utf-8'))
         revision = settings['vps_tools']['agent_reach']['revision']
+        # Re-validate revision after YAML load
+        if revision != 'latest' and not re.fullmatch(r'[0-9a-f]{40}', revision):
+            raise ValueError('Agent-Reach revision from settings must be a full commit SHA or "latest"')
     hermes_home = Path(os.environ.get('HERMES_HOME') or Path.home() / '.hermes')
     uv = resolve_uv(hermes_home)
     if not uv:

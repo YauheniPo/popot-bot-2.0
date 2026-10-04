@@ -417,13 +417,15 @@ install_google_workspace_cli() {
   local installed_version=""
 
   [[ -x "$npm_bin" ]] || die "Hermes-managed npm was not found at $npm_bin"
-    google_cli_version="$(python3 "$VPS_CONFIG_APPLIER" value \
+  google_cli_version="$(python3 "$VPS_CONFIG_APPLIER" value \
       --settings "$VPS_SETTINGS_FILE" vps_tools.google_workspace_cli.version)"
-    # Resolve version and validate pattern before shell substitution
-    google_cli_version="$(python3 "$SCRIPT_DIR/runtime/resolve-tool-version.py" \
+  # Resolve version and validate pattern before shell substitution
+  google_cli_version="$(python3 "$SCRIPT_DIR/runtime/resolve-tool-version.py" \
       --package @googleworkspace/cli --requested "$google_cli_version")"
-    [[ "$google_cli_version" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]] || \
+  [[ "$google_cli_version" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]] || \
       die "invalid resolved Google Workspace CLI version: $google_cli_version"
+  # Quote the resolved version for npm command
+  local google_cli_pkg="@googleworkspace/cli@${google_cli_version}"
   if [[ -f "$package_json" ]]; then
     installed_version="$(python3 -c \
       'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])' \
@@ -434,7 +436,7 @@ install_google_workspace_cli() {
     log "Installing Google Workspace CLI $google_cli_version"
     run_as_hermes "$npm_bin" install --global --omit=dev \
       --prefix "$HERMES_HOME/node" \
-      "@googleworkspace/cli@$google_cli_version"
+      "$google_cli_pkg"
   else
     log "Google Workspace CLI $google_cli_version is already installed"
   fi
