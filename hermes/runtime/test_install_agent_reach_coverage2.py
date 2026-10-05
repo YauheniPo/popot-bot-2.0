@@ -443,8 +443,12 @@ class InstallAgentReachAdditionalCoverageTests(unittest.TestCase):
             text=True,
             timeout=5
         )
-        # Script will fail due to missing uv, but should execute main()
-        self.assertIn('Agent-Reach installation failed', result.stderr)
+        # Script will fail (either missing uv or installation failed), but should execute main()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(
+            'Agent-Reach installation failed' in result.stderr or
+            'uv is required' in result.stderr
+        )
 
     # ---- resolve-tool-version line 73: sys.exit(main()) ----
     def test_resolve_tool_version_sys_exit_entry_point(self):
