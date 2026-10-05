@@ -25,8 +25,6 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
         # Create a mock install-agent-reach.py in a temporary runtime directory
         self.runtime_dir = self.home / 'hermes' / 'runtime'
         self.runtime_dir.mkdir(parents=True)
-        self.config_dir = self.home / '.hermes' / 'config'
-        self.config_dir.mkdir(parents=True)
         # Copy the real script to our runtime directory
         self.mock_script = self.runtime_dir / 'install-agent-reach.py'
         self.mock_script.write_text(SCRIPT.read_text(encoding='utf-8'))
@@ -49,10 +47,11 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
                     def run_side_effect(args, timeout=60, **kwargs):
                         # Provision uv venv
                         if args[1:3] == ['venv', '--python']:
-                            (self.home / '.local/share/hermes-tools/agent-reach' / 'bin').mkdir(parents=True, exist_ok=True)
+                            venv_dir = self.home / '.local/share/hermes-tools/agent-reach'
+                            (venv_dir / 'bin').mkdir(parents=True, exist_ok=True)
                             for name in ('python', 'agent-reach', 'yt-dlp'):
-                                (self.home / '.local/share/hermes-tools/agent-reach' / 'bin' / name).write_text('fixture')
-                                (self.home / '.local/share/hermes-tools/agent-reach' / 'bin' / name).chmod(0o755)
+                                (venv_dir / 'bin' / name).write_text('fixture')
+                                (venv_dir / 'bin' / name).chmod(0o755)
                             return ''
                         # pip install
                         if args[1:3] == ['pip', 'install']:
@@ -81,7 +80,7 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
                     return self.pin
                 return original_side_effect(args, timeout)
             mock_run.side_effect = run_side_effect
-            with mock.patch('sys.argv', ['install-agent-reach.py', '--revision', 'latest']):
+            with mock.patch('sys.argv', ['install-agent-reach.py', '--revision', self.pin]):
                 with mock.patch('pathlib.Path.home', return_value=self.home):
                     changed = self.module.main()
                     self.assertTrue(changed)  # Should succeed and report a change
@@ -89,8 +88,11 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
     # ---- lines 114-115: settings path is_file() check (symlink to directory) ----
     def test_lines_114_115_settings_is_file_symlink_to_dir(self):
         """Lines 114-115: --settings path symlink pointing to directory fails is_file() check."""
-        settings_symlink = self.config_dir / 'bad_link.yml'
-        target_dir = self.config_dir / 'target_dir'
+        # config_root based on mocked __file__
+        config_root = self.home / 'hermes' / 'config'
+        config_root.mkdir(parents=True)
+        settings_symlink = config_root / 'bad_link.yml'
+        target_dir = config_root / 'target_dir'
         target_dir.mkdir()
         settings_symlink.symlink_to(target_dir)  # symlink to directory
         with mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_symlink)]):
@@ -104,7 +106,9 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
     # ---- lines 118-119: settings suffix check ----
     def test_lines_118_119_settings_wrong_extension(self):
         """Lines 118-119: --settings wrong extension triggers error."""
-        settings_file = self.config_dir / 'settings.txt'
+        config_root = self.home / 'hermes' / 'config'
+        config_root.mkdir(parents=True)
+        settings_file = config_root / 'settings.txt'
         settings_file.write_text('''vps_tools:
   agent_reach:
     revision: "latest"
@@ -120,7 +124,9 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
     # ---- lines 120-131: settings structure validation ----
     def test_lines_120_131_settings_vps_tools_not_dict(self):
         """Line 124-125: vps_tools must be a mapping."""
-        settings_file = self.config_dir / 'settings1.yml'
+        config_root = self.home / 'hermes' / 'config'
+        config_root.mkdir(parents=True)
+        settings_file = config_root / 'settings1.yml'
         settings_file.write_text('vps_tools: \"not a dict\"')
         with mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_file)]):
             with mock.patch.object(self.module, '__file__', str(self.mock_script)):
@@ -132,7 +138,9 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
 
     def test_lines_120_131_settings_agent_reach_not_dict(self):
         """Line 127-128: agent_reach must be a mapping."""
-        settings_file = self.config_dir / 'settings2.yml'
+        config_root = self.home / 'hermes' / 'config'
+        config_root.mkdir(parents=True)
+        settings_file = config_root / 'settings2.yml'
         settings_file.write_text('''vps_tools:
   agent_reach: \"not a dict\"
 ''')
@@ -146,7 +154,9 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
 
     def test_lines_120_131_settings_revision_not_string(self):
         """Line 130-131: revision must be a string."""
-        settings_file = self.config_dir / 'settings3.yml'
+        config_root = self.home / 'hermes' / 'config'
+        config_root.mkdir(parents=True)
+        settings_file = config_root / 'settings3.yml'
         settings_file.write_text('''vps_tools:
   agent_reach:
     revision: 12345
@@ -161,7 +171,9 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
 
     def test_lines_120_131_settings_revision_invalid_sha(self):
         """Line 133-134: revision must be valid SHA or 'latest'."""
-        settings_file = self.config_dir / 'settings4.yml'
+        config_root = self.home / 'hermes' / 'config'
+        config_root.mkdir(parents=True)
+        settings_file = config_root / 'settings4.yml'
         settings_file.write_text('''vps_tools:
   agent_reach:
     revision: \"notashort\"
