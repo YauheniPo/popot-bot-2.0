@@ -19,21 +19,47 @@ class InstallAgentReachAdditionalCoverageTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('agent_reach_install', SCRIPT)
         self.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.module)
-        self.enterContext(mock.patch.object(self.module, 'installed_versions', return_value={}))
+        # Don't mock installed_versions globally - let individual tests mock it
         self.home = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         self.pin = 'a' * 40
         self.url = f'https://github.com/Panniantong/Agent-Reach/archive/{self.pin}.zip'
         self.venv = self.home / '.local/share/hermes-tools/agent-reach'
+        self.uv_path = '/usr/bin/uv'
 
     def provision(self):
         (self.venv / 'bin').mkdir(parents=True, exist_ok=True)
         for name in ('python', 'agent-reach', 'yt-dlp'):
             (self.venv / 'bin' / name).write_text('fixture')
+        # Make them executable
+        for name in ('python', 'agent-reach', 'yt-dlp'):
+            (self.venv / 'bin' / name).chmod(0o755)
+
+    def _make_run_mock(self, mock_run, provision_venv=True):
+        """Create a side_effect function for mocking run() that handles all the internal calls."""
+        def run_side_effect(args, timeout=60):
+            # provision: uv venv --python <python> --no-python-downloads <venv>
+            if args[1:3] == ['venv', '--python']:
+                if provision_venv:
+                    self.provision()
+                return ''
+            # pip install
+            if args[1:3] == ['pip', 'install']:
+                return json.dumps({'url': self.url})
+            # installed_from METADATA check: python -c "from importlib.metadata import distribution; print(distribution('agent-reach').read_text('direct_url.json') or '{}')"
+            if '-c' in args and 'importlib.metadata' in args[2] and 'direct_url.json' in args[2]:
+                return json.dumps({'url': self.url})
+            # installed_versions: python -c "import json; from importlib.metadata import distributions; print(json.dumps({d.metadata['Name']: d.version for d in distributions()}))"
+            if '-c' in args and 'importlib.metadata' in args[2] and 'distributions' in args[2]:
+                return json.dumps({'pkg': '1.0.0'})
+            # version probe: agent-reach version or yt-dlp --version
+            if len(args) >= 2 and args[1] in ('version', '--version'):
+                return '1.0.0'
+            return ''
+        mock_run.side_effect = run_side_effect
 
     # ---- installed_from line 27: python.exists() == False ----
     def test_installed_from_python_not_exists(self):
         python_mock = self.home / 'bin' / 'python'
-        # Ensure it does not exist
         self.assertFalse(python_mock.exists())
         result = self.module.installed_from(python_mock, 'http://example.com')
         self.assertFalse(result)
@@ -45,86 +71,50 @@ class InstallAgentReachAdditionalCoverageTests(unittest.TestCase):
         wrong_target = self.home / 'wrong'
         wrong_target.symlink_to(self.home / 'somewhere')
         launcher.symlink_to(wrong_target)
-        # Mock shutil.which at the module level
-        with mock.patch('shutil.which', return_value='/usr/bin/uv'):
+        with mock.patch('shutil.which', return_value=self.uv_path):
             with mock.patch.object(self.module, 'run') as mock_run:
-                def run_side_effect(args, timeout=60):
-                    if args[1:3] == ['venv', '--python']:
-                        self.provision()
-                    if args[1:3] == ['pip', 'install']:
-                        return json.dumps({'url': self.url})
-                    if '-c' in args and 'importlib.metadata' in args[2]:
-                        return '{}'
-                    return ''
-                mock_run.side_effect = run_side_effect
+                self._make_run_mock(mock_run)
                 with self.assertRaises(RuntimeError) as cm:
-                    self.module.install(self.home, self.pin, 'uv')
+                    self.module.install(self.home, self.pin, self.uv_path)
                 self.assertIn('unmanaged launcher already exists', str(cm.exception))
 
     def test_install_existing_non_symlink_launcher(self):
         launcher = self.home / '.local/bin' / 'agent-reach'
         launcher.parent.mkdir(parents=True, exist_ok=True)
         launcher.write_text('not a symlink')
-        with mock.patch('shutil.which', return_value='/usr/bin/uv'):
+        with mock.patch('shutil.which', return_value=self.uv_path):
             with mock.patch.object(self.module, 'run') as mock_run:
-                def run_side_effect(args, timeout=60):
-                    if args[1:3] == ['venv', '--python']:
-                        self.provision()
-                    if args[1:3] == ['pip', 'install']:
-                        return json.dumps({'url': self.url})
-                    if '-c' in args and 'importlib.metadata' in args[2]:
-                        return '{}'
-                    return ''
-                mock_run.side_effect = run_side_effect
+                self._make_run_mock(mock_run)
                 with self.assertRaises(RuntimeError) as cm:
-                    self.module.install(self.home, self.pin, 'uv')
+                    self.module.install(self.home, self.pin, self.uv_path)
                 self.assertIn('unmanaged launcher already exists', str(cm.exception))
 
     # ---- install lines 74-83: changed calculation, version probes, symlink creation ----
     def test_install_changed_via_version_diff(self):
-        with mock.patch('shutil.which', return_value='/usr/bin/uv'):
+        with mock.patch('shutil.which', return_value=self.uv_path):
             with mock.patch.object(self.module, 'run') as mock_run:
+                self._make_run_mock(mock_run, provision_venv=True)
+                # For this test we need VERSIONS to alternate
                 call_count = 0
-                def run_side_effect(args, timeout=60):
+                original_side_effect = mock_run.side_effect
+                def custom_side_effect(args, timeout=60):
                     nonlocal call_count
-                    call_count += 1
-                    if args[1:3] == ['venv', '--python']:
-                        self.provision()
-                    if args[1:3] == ['pip', 'install']:
-                        return json.dumps({'url': self.url})
-                    if '-c' in args and 'importlib.metadata' in args[2]:
-                        return '{}'
-                    # installed_from calls for METADATA and VERSIONS
-                    if '-c' in args and 'importlib.metadata' in args[2]:
-                        if 'METADATA' in str(args):
-                            return json.dumps({'url': self.url})
-                        if 'VERSIONS' in str(args):
-                            # alternate between two versions
-                            if call_count % 2 == 1:
-                                return json.dumps({'pkg': '1.0.0'})
-                            else:
-                                return json.dumps({'pkg': '2.0.0'})
-                    return ''
-                mock_run.side_effect = run_side_effect
-                changed = self.module.install(self.home, self.pin, 'uv')
+                    if '-c' in args and 'importlib.metadata' in args[2] and 'distributions' in args[2]:
+                        call_count += 1
+                        if call_count % 2 == 1:
+                            return json.dumps({'pkg': '1.0.0'})
+                        else:
+                            return json.dumps({'pkg': '2.0.0'})
+                    return original_side_effect(args, timeout)
+                mock_run.side_effect = custom_side_effect
+                changed = self.module.install(self.home, self.pin, self.uv_path)
                 self.assertTrue(changed)
 
     def test_install_version_probes_and_symlink_creation(self):
-        with mock.patch('shutil.which', return_value='/usr/bin/uv'):
+        with mock.patch('shutil.which', return_value=self.uv_path):
             with mock.patch.object(self.module, 'run') as mock_run:
-                def run_side_effect(args, timeout=60):
-                    if args[1:3] == ['venv', '--python']:
-                        self.provision()
-                    if args[1:3] == ['pip', 'install']:
-                        return json.dumps({'url': self.url})
-                    if '-c' in args and 'importlib.metadata' in args[2]:
-                        return '{}'
-                    # version probe
-                    if '-c' in args and 'importlib.metadata' in args[2] and 'VERSIONS' in str(args):
-                        return json.dumps({'pkg': '1.0.0'})
-                    return ''
-                mock_run.side_effect = run_side_effect
-                changed = self.module.install(self.home, self.pin, 'uv')
+                self._make_run_mock(mock_run, provision_venv=True)
+                changed = self.module.install(self.home, self.pin, self.uv_path)
                 self.assertTrue(changed)
 
     # ---- installed_versions line 87 ----
@@ -144,7 +134,7 @@ class InstallAgentReachAdditionalCoverageTests(unittest.TestCase):
         managed_uv.parent.mkdir(parents=True, exist_ok=True)
         managed_uv.write_text('#!/bin/sh')
         managed_uv.chmod(0o755)
-        with mock.patch('shutil.which', return_value='/usr/bin/uv'):
+        with mock.patch('shutil.which', return_value=self.uv_path):
             with mock.patch.object(self.module, 'Path') as mock_path:
                 mock_path.home.return_value = self.home
                 result = self.module.resolve_uv(self.home)
@@ -154,19 +144,18 @@ class InstallAgentReachAdditionalCoverageTests(unittest.TestCase):
         managed_uv = self.home / 'bin' / 'uv'
         managed_uv.parent.mkdir(parents=True, exist_ok=True)
         managed_uv.write_text('#!/bin/sh')
-        # not executable
-        with mock.patch('shutil.which', return_value='/usr/bin/uv'):
+        with mock.patch('shutil.which', return_value=self.uv_path):
             with mock.patch.object(self.module, 'Path') as mock_path:
                 mock_path.home.return_value = self.home
                 result = self.module.resolve_uv(self.home)
-                self.assertEqual(result, '/usr/bin/uv')
+                self.assertEqual(result, self.uv_path)
 
     def test_resolve_uv_from_which(self):
-        with mock.patch('shutil.which', return_value='/usr/bin/uv'):
+        with mock.patch('shutil.which', return_value=self.uv_path):
             with mock.patch.object(self.module, 'Path') as mock_path:
                 mock_path.home.return_value = self.home
                 result = self.module.resolve_uv(self.home)
-                self.assertEqual(result, '/usr/bin/uv')
+                self.assertEqual(result, self.uv_path)
 
     # ---- main lines 114-115: settings not a file ----
     def test_main_settings_not_file(self):
@@ -230,49 +219,39 @@ class InstallAgentReachAdditionalCoverageTests(unittest.TestCase):
 
     # ---- main lines 137-138: missing uv ----
     def test_main_missing_uv(self):
-        with mock.patch('sys.argv', ['install-agent-reach.py', '--revision', 'latest']):
-            with mock.patch('shutil.which', return_value=None):
-                with self.assertRaises(SystemExit):
-                    self.module.main()
+        with mock.patch('sys.argv', ['install-agent-reach.py', '--revision', self.pin]):
+            with mock.patch.dict('os.environ', {'HERMES_HOME': str(self.home)}):
+                with mock.patch.object(self.module.shutil, 'which', return_value=None):
+                    # Also ensure the managed uv doesn't exist
+                    managed_uv = self.home / 'bin/uv'
+                    if managed_uv.exists():
+                        managed_uv.unlink()
+                    with self.assertRaises(SystemExit):
+                        self.module.main()
 
     # ---- main lines 145-146: print and return 0 (success) ----
     def test_main_success_changed_true(self):
-        with mock.patch('shutil.which', return_value='/usr/bin/uv'):
+        with mock.patch('shutil.which', return_value=self.uv_path):
             with mock.patch.object(self.module, 'run') as mock_run:
-                def run_side_effect(args, timeout=60):
-                    if args[1:3] == ['venv', '--python']:
-                        self.provision()
-                    if args[1:3] == ['pip', 'install']:
-                        return json.dumps({'url': self.url})
-                    if '-c' in args and 'importlib.metadata' in args[2]:
-                        return '{}'
-                    return ''
-                mock_run.side_effect = run_side_effect
+                self._make_run_mock(mock_run, provision_venv=True)
                 with mock.patch('sys.argv', ['install-agent-reach.py', '--revision', self.pin]):
                     result = self.module.main()
                     self.assertEqual(result, 0)
 
     def test_main_success_changed_false(self):
-        with mock.patch('shutil.which', return_value='/usr/bin/uv'):
+        with mock.patch('shutil.which', return_value=self.uv_path):
             with mock.patch.object(self.module, 'run') as mock_run:
-                def run_side_effect(args, timeout=60):
-                    if args[1:3] == ['venv', '--python']:
-                        self.provision()
-                    if args[1:3] == ['pip', 'install']:
-                        return json.dumps({'url': self.url})
-                    if '-c' in args and 'importlib.metadata' in args[2]:
-                        return '{}'
-                    return ''
-                mock_run.side_effect = run_side_effect
-                # first call to install to set up
-                self.module.install(self.home, self.pin, 'uv')
+                self._make_run_mock(mock_run, provision_venv=True)
+                # First call to set up the installation
+                self.module.install(self.home, self.pin, self.uv_path)
+                # Second call should detect no changes
                 with mock.patch('sys.argv', ['install-agent-reach.py', '--revision', self.pin]):
                     result = self.module.main()
                     self.assertEqual(result, 0)
 
     # ---- main lines 141-144: exception handling ----
     def test_main_exception_handling(self):
-        with mock.patch('shutil.which', return_value='/usr/bin/uv'):
+        with mock.patch('shutil.which', return_value=self.uv_path):
             with mock.patch.object(self.module, 'install', side_effect=ValueError('test')):
                 with mock.patch('sys.argv', ['install-agent-reach.py', '--revision', 'latest']):
                     result = self.module.main()
@@ -280,21 +259,15 @@ class InstallAgentReachAdditionalCoverageTests(unittest.TestCase):
 
     # ---- line 150: sys.exit(main()) ----
     def test_main_as_script_calls_sys_exit(self):
-        # We need to execute the module as a script to hit the if __name__ == '__main__' block.
-        # Run the module via subprocess with no arguments (will error due to missing args) but still
-        # executes the block and calls sys.exit with some non-zero code.
         result = subprocess.run(
             [sys.executable, str(SCRIPT)],
             capture_output=True,
             text=True,
             timeout=5
         )
-        # The module will exit with SystemExit due to missing arguments; we just need to ensure
-        # the sys.exit line was executed (i.e., the process exited via SystemExit).
-        # The returncode will be non-zero due to missing arguments, but that's fine.
         self.assertNotEqual(result.returncode, 0)
-        # Additionally, we can check that stderr contains the error message about missing arguments.
-        self.assertIn('the following arguments are required: --settings/--revision', result.stderr)
+        # Check for the actual error message format
+        self.assertIn('one of the arguments --settings --revision is required', result.stderr)
 
 
 if __name__ == '__main__':

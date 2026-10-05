@@ -36,30 +36,36 @@ class ToolVersionCoverageTests(unittest.TestCase):
             self.assertEqual(result, {})
             mock_resp.read.assert_called_once_with(5 * 1024 * 1024)
 
+    def test_fetch_json_raises_after_retries(self):
+        """Line 25: raise RuntimeError after 3 attempts"""
+        from urllib.error import URLError
+        with mock.patch.object(self.module, 'urlopen', side_effect=URLError('fail')):
+            with mock.patch.object(self.module.time, 'sleep'):
+                with self.assertRaises(RuntimeError) as cm:
+                    self.module.fetch_json('http://example.com')
+                self.assertIn('latest version lookup failed', str(cm.exception))
+
     def test_fetch_json_retry_then_success(self):
         """Lines 24-26: retry logic, then success on third attempt"""
+        from urllib.error import URLError
         call_count = 0
         def urlopen_side_effect(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count < 3:
-                raise Exception('temporary failure')
+                raise URLError('temporary failure')
             mock_resp = mock.Mock()
             mock_resp.read.return_value = b'{}'
-            return mock_resp.__enter__.return_value
+            # Return a context manager mock
+            cm = mock.MagicMock()
+            cm.__enter__.return_value = mock_resp
+            cm.__exit__.return_value = None
+            return cm
         with mock.patch.object(self.module, 'urlopen', side_effect=urlopen_side_effect):
             with mock.patch.object(self.module.time, 'sleep'):
                 result = self.module.fetch_json('http://example.com')
                 self.assertEqual(result, {})
                 self.assertEqual(call_count, 3)
-
-    def test_fetch_json_raises_after_retries(self):
-        """Line 25: raise RuntimeError after 3 attempts"""
-        with mock.patch.object(self.module, 'urlopen', side_effect=Exception('fail')):
-            with mock.patch.object(self.module.time, 'sleep'):
-                with self.assertRaises(RuntimeError) as cm:
-                    self.module.fetch_json('http://example.com')
-                self.assertIn('latest version lookup failed', str(cm.exception))
 
     # ----- resolve -----
     def test_unsupported_package(self):
@@ -112,7 +118,7 @@ class ToolVersionCoverageTests(unittest.TestCase):
 
     def test_invalid_resolved_version_agent_reach(self):
         """Line 54-55: pattern check fails"""
-        with mock.patch.object(self.module, 'fetch_json', return_value={'sha': 'nothex'}):
+        with mock.patch.object(self.module, 'fetch_json', return_value={'repository': {'full_name': 'Panniantong/Agent-Reach'}, 'ref': 'refs/heads/main', 'sha': 'nothex'}):
             with self.assertRaises(ValueError) as cm:
                 self.module.resolve('agent-reach', 'latest')
             self.assertIn('invalid resolved version for agent-reach', str(cm.exception))
@@ -146,16 +152,14 @@ class ToolVersionCoverageTests(unittest.TestCase):
     def test_main_value_error(self):
         with mock.patch.object(self.module, 'resolve', side_effect=ValueError('test error')):
             with mock.patch('sys.argv', ['resolve-tool-version.py', '--package', 'agent-reach', '--requested', 'latest']):
-                with self.assertRaises(SystemExit) as cm:
-                    self.module.main()
-                self.assertNotEqual(cm.exception.code, 0)
+                result = self.module.main()
+                self.assertEqual(result, 1)
 
     def test_main_runtime_error(self):
         with mock.patch.object(self.module, 'resolve', side_effect=RuntimeError('test error')):
             with mock.patch('sys.argv', ['resolve-tool-version.py', '--package', 'agent-reach', '--requested', 'latest']):
-                with self.assertRaises(SystemExit) as cm:
-                    self.module.main()
-                self.assertNotEqual(cm.exception.code, 0)
+                result = self.module.main()
+                self.assertEqual(result, 1)
 
     def test_main_success(self):
         with mock.patch.object(self.module, 'resolve', return_value='1.2.3'):
