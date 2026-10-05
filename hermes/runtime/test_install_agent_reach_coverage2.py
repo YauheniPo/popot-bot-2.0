@@ -234,28 +234,31 @@ class InstallAgentReachAdditionalCoverageTests(unittest.TestCase):
         with mock.patch('shutil.which', return_value=self.uv_path):
             with mock.patch.object(self.module, 'run') as mock_run:
                 self._make_run_mock(mock_run, provision_venv=True)
-                with mock.patch('sys.argv', ['install-agent-reach.py', '--revision', self.pin]):
-                    result = self.module.main()
-                    self.assertEqual(result, 0)
+                with mock.patch('pathlib.Path.home', return_value=self.home):
+                    with mock.patch('sys.argv', ['install-agent-reach.py', '--revision', self.pin]):
+                        result = self.module.main()
+                        self.assertEqual(result, 0)
 
     def test_main_success_changed_false(self):
         with mock.patch('shutil.which', return_value=self.uv_path):
             with mock.patch.object(self.module, 'run') as mock_run:
                 self._make_run_mock(mock_run, provision_venv=True)
                 # First call to set up the installation
-                self.module.install(self.home, self.pin, self.uv_path)
-                # Second call should detect no changes
-                with mock.patch('sys.argv', ['install-agent-reach.py', '--revision', self.pin]):
-                    result = self.module.main()
-                    self.assertEqual(result, 0)
+                with mock.patch('pathlib.Path.home', return_value=self.home):
+                    self.module.install(self.home, self.pin, self.uv_path)
+                    # Second call should detect no changes
+                    with mock.patch('sys.argv', ['install-agent-reach.py', '--revision', self.pin]):
+                        result = self.module.main()
+                        self.assertEqual(result, 0)
 
     # ---- main lines 141-144: exception handling ----
     def test_main_exception_handling(self):
         with mock.patch('shutil.which', return_value=self.uv_path):
-            with mock.patch.object(self.module, 'install', side_effect=ValueError('test')):
-                with mock.patch('sys.argv', ['install-agent-reach.py', '--revision', 'latest']):
-                    result = self.module.main()
-                    self.assertEqual(result, 1)
+            with mock.patch('pathlib.Path.home', return_value=self.home):
+                with mock.patch.object(self.module, 'install', side_effect=ValueError('test')):
+                    with mock.patch('sys.argv', ['install-agent-reach.py', '--revision', 'latest']):
+                        result = self.module.main()
+                        self.assertEqual(result, 1)
 
     # ---- line 150: sys.exit(main()) ----
     def test_main_as_script_calls_sys_exit(self):
