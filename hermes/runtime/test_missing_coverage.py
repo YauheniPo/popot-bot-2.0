@@ -14,7 +14,7 @@ from urllib.error import URLError
 import subprocess
 
 ORIGINAL_SCRIPT = Path(__file__).parent / 'install-agent-reach.py'
-ORIGINAL_RESOLVER = Path(__file__).parent / 'resolve_tool_version.py'
+ORIGINAL_RESOLVER = Path(__file__).parent / 'resolve-tool-version.py'
 REAL_CONFIG = Path('/home/hermes/workspace/repositories/popot-bot-2.0/hermes/config')
 
 
@@ -238,13 +238,13 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
             self.assertTrue(result)
 
     def test_line_189_uv_not_found(self):
-        """Line 189: raises error when uv is not found in managed location or PATH."""
+        """Line 200: raises error when uv is not found in managed location or PATH."""
         with mock.patch.object(self.module, 'resolve_uv', return_value=None):
             with mock.patch('sys.argv', ['install-agent-reach.py', '--revision', 'latest']):
                 with mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr:
                     with self.assertRaises(SystemExit) as cm:
                         sys.exit(self.module.main())
-                        self.assertEqual(cm.exception.code, 2)
+                    self.assertEqual(cm.exception.code, 2)
 
     def test_resolve_latest_revision(self):
         """Test _resolve_latest_revision calls resolve-tool-version.py and returns stdout."""
@@ -550,25 +550,25 @@ class InstallAgentReachResolveToolVersionTests(unittest.TestCase):
             self.assertIn('unexpected response structure for agent-reach latest', str(cm.exception))
 
     def test_agent_reach_latest_wrong_repo(self):
-        """Reject a commit with wrong repository."""
+        """Reject a commit with wrong commit URL."""
         with mock.patch.object(self.resolver, 'fetch_json', return_value={
-                'sha': 'a' * 40, 'repository': {'full_name': 'wrong/repo'}, 'ref': 'refs/heads/main'}):
+                'sha': 'a' * 40, 'url': 'https://api.github.com/repos/wrong/repo/commits/' + 'a' * 40}):
             with self.assertRaises(ValueError) as cm:
                 self.resolver.resolve('agent-reach', 'latest')
-            self.assertIn('agent-reach response repository mismatch', str(cm.exception))
+            self.assertIn('agent-reach response commit URL mismatch', str(cm.exception))
 
-    def test_agent_reach_latest_wrong_ref(self):
-        """Reject a commit with wrong ref."""
+    def test_agent_reach_latest_wrong_commit_url(self):
+        """Reject a URL for a different commit even in the expected repository."""
         with mock.patch.object(self.resolver, 'fetch_json', return_value={
-                'sha': 'a' * 40, 'repository': {'full_name': 'Panniantong/Agent-Reach'}, 'ref': 'refs/heads/develop'}):
+                'sha': 'a' * 40, 'url': self.resolver.AGENT_REACH_COMMITS_URL + 'b' * 40}):
             with self.assertRaises(ValueError) as cm:
                 self.resolver.resolve('agent-reach', 'latest')
-            self.assertIn('agent-reach response ref mismatch', str(cm.exception))
+            self.assertIn('agent-reach response commit URL mismatch', str(cm.exception))
 
     def test_agent_reach_latest_missing_sha(self):
         """Line 46: version = data.get('sha', '') -> empty string -> fails pattern"""
         with mock.patch.object(self.resolver, 'fetch_json', return_value={
-            'repository': {'full_name': 'Panniantong/Agent-Reach'}, 'ref': 'refs/heads/main'}):
+            'url': self.resolver.AGENT_REACH_COMMITS_URL + 'a' * 40}):
             with self.assertRaises(ValueError) as cm:
                 self.resolver.resolve('agent-reach', 'latest')
             self.assertIn('invalid resolved version for agent-reach', str(cm.exception))

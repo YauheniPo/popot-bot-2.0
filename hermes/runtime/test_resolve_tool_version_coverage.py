@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 import sys
 
-SCRIPT = Path(__file__).parent / 'resolve_tool_version.py'
+SCRIPT = Path(__file__).parent / 'resolve-tool-version.py'
 
 class ToolVersionCoverageTests(unittest.TestCase):
     def setUp(self):
@@ -86,28 +86,36 @@ class ToolVersionCoverageTests(unittest.TestCase):
             self.assertIn('unexpected response structure for agent-reach latest', str(cm.exception))
 
     def test_agent_reach_latest_wrong_repo(self):
-        """Reject a commit with wrong repository."""
+        """Reject a commit with wrong commit URL."""
         with mock.patch.object(self.module, 'fetch_json', return_value={
-                'sha': 'a' * 40, 'repository': {'full_name': 'wrong/repo'}, 'ref': 'refs/heads/main'}):
+                'sha': 'a' * 40, 'url': 'https://api.github.com/repos/wrong/repo/commits/' + 'a' * 40}):
             with self.assertRaises(ValueError) as cm:
                 self.module.resolve('agent-reach', 'latest')
-            self.assertIn('agent-reach response repository mismatch', str(cm.exception))
+            self.assertIn('agent-reach response commit URL mismatch', str(cm.exception))
 
-    def test_agent_reach_latest_wrong_ref(self):
-        """Reject a commit with wrong ref."""
+    def test_agent_reach_latest_wrong_commit_url(self):
+        """Reject a URL for a different commit even in the expected repository."""
         with mock.patch.object(self.module, 'fetch_json', return_value={
-                'sha': 'a' * 40, 'repository': {'full_name': 'Panniantong/Agent-Reach'}, 'ref': 'refs/heads/develop'}):
+                'sha': 'a' * 40, 'url': self.module.AGENT_REACH_COMMITS_URL + 'b' * 40}):
             with self.assertRaises(ValueError) as cm:
                 self.module.resolve('agent-reach', 'latest')
-            self.assertIn('agent-reach response ref mismatch', str(cm.exception))
+            self.assertIn('agent-reach response commit URL mismatch', str(cm.exception))
 
     def test_agent_reach_latest_missing_sha(self):
         """Line 46: version = data.get('sha', '') -> empty string -> fails pattern"""
         with mock.patch.object(self.module, 'fetch_json', return_value={
-            'repository': {'full_name': 'Panniantong/Agent-Reach'}, 'ref': 'refs/heads/main'}):
+            'url': self.module.AGENT_REACH_COMMITS_URL + 'a' * 40}):
             with self.assertRaises(ValueError) as cm:
                 self.module.resolve('agent-reach', 'latest')
             self.assertIn('invalid resolved version for agent-reach', str(cm.exception))
+
+    def test_resolve_agent_reach_success(self):
+        """Test successful _resolve_agent_reach call"""
+        fake_sha = 'a' * 40
+        with mock.patch.object(self.module, 'fetch_json', return_value={
+            'sha': fake_sha, 'url': self.module.AGENT_REACH_COMMITS_URL + fake_sha}):
+            version = self.module._resolve_agent_reach()
+            self.assertEqual(version, fake_sha)
 
     def test_npm_latest_non_dict_response(self):
         """Line 50-51: if not isinstance(data, dict): raise ValueError"""
@@ -179,15 +187,15 @@ class ToolVersionCoverageTests(unittest.TestCase):
                     self.assertEqual(mock_stdout.write.call_count, 2)
 
     def test_main_as_script_calls_sys_exit(self):
-        """Line 73: sys.exit(main()) - run as subprocess"""
+        """Line 85: sys.exit(main()) - run as subprocess"""
         result = subprocess.run(
-            [sys.executable, str(SCRIPT)],
+            [sys.executable, str(SCRIPT), '--package', 'agent-reach', '--requested', 'a' * 40],
             capture_output=True,
             text=True,
             timeout=5
         )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('the following arguments are required: --package', result.stderr)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), 'a' * 40)
 
     def test_entry_point_prints_explicit_pin_and_exits_successfully(self):
         with mock.patch.object(sys, 'argv', [str(SCRIPT), '--package', 'agent-browser', '--requested', '1.2.3']), \
