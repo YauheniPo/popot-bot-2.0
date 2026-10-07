@@ -15,7 +15,6 @@ class AgentReachInstallTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('agent_reach_install', SCRIPT)
         self.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.module)
-        self.enterContext(mock.patch.object(self.module, 'installed_versions', return_value={}))
         self.home = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         self.pin = 'a' * 40
         self.url = f'https://github.com/Panniantong/Agent-Reach/archive/{self.pin}.zip'
@@ -35,7 +34,10 @@ class AgentReachInstallTests(unittest.TestCase):
             if args[1:3] == ['pip', 'install']:
                 installed = True
             if '-c' in args:
-                return json.dumps({'url': self.url} if installed else {})
+                if 'VERSIONS' in args[2] or 'installed_versions' in args[2] or 'distributions' in args[2]:
+                    return json.dumps({'yt-dlp': '1.0'})
+                if 'METADATA' in args[2] or 'direct_url.json' in args[2]:
+                    return json.dumps({'url': self.url} if installed else {})
             return ''
         with mock.patch.object(self.module, 'run', side_effect=run) as runner:
             self.assertTrue(self.module.install(self.home, self.pin, 'uv'))
@@ -54,10 +56,18 @@ class AgentReachInstallTests(unittest.TestCase):
     def test_same_version_different_source_is_reinstalled(self):
         self.provision()
         with mock.patch.object(self.module, 'run', side_effect=[
-                json.dumps({'url': 'https://wrong.test/pkg.zip'}), '',
-                json.dumps({'url': self.url}), '', '']) as runner:
+                json.dumps({'url': 'https://wrong.test/pkg.zip'}),  # installed_from
+                json.dumps({'yt-dlp': '1.0'}),  # installed_versions
+                '',  # pip install
+                json.dumps({'url': self.url}),  # installed_from (verify)
+                json.dumps({'yt-dlp': '1.0'}),  # installed_versions
+                '', '',  # version probes
+                ]) as runner:
             self.assertTrue(self.module.install(self.home, self.pin, 'uv'))
-        self.assertIn('--reinstall-package', runner.call_args_list[1].args[0])
+        pip_calls = [call.args[0] for call in runner.call_args_list
+                     if len(call.args[0]) >= 3 and call.args[0][1:3] == ['pip', 'install']]
+        self.assertGreaterEqual(len(pip_calls), 1)
+        self.assertIn('--reinstall-package', pip_calls[0])
 
     def test_failed_install_does_not_publish_launcher(self):
         self.provision()

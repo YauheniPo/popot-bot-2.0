@@ -50,10 +50,10 @@ def _validate_and_prepare(home, revision):
     """Validate revision and prepare paths. Returns (venv, python, launchers, url)."""
     if not _validate_revision(revision):
         raise ValueError('Agent-Reach revision must be a full commit SHA or "latest"')
-    
+
     if revision == 'latest':
         revision = _resolve_latest_revision()
-    
+
     if not re.fullmatch(SHA_PATTERN, revision):
         raise ValueError('Agent-Reach revision must be a full commit SHA')
 
@@ -118,19 +118,20 @@ def _create_launchers(launchers):
 def install(home, revision, uv):
     venv, python, launchers, url = _validate_and_prepare(home, revision)
     _check_launchers(launchers)
-    
+
     changed = _create_venv_if_needed(python, uv, venv)
     source_changed = not installed_from(python, url)
     before = installed_versions(python)
     repair = any(not target.exists() for target in launchers.values())
-    
+
     print(f'Checking Agent-Reach revision {revision} and latest dependencies', flush=True)
     _install_packages(python, uv, url, source_changed, repair)
     _verify_installation(python, url)
-    
+
     changed = changed or source_changed or repair or before != installed_versions(python)
     _run_version_probes(launchers)
-    changed = changed or _create_launchers(launchers)
+    launchers_changed = _create_launchers(launchers)
+    changed = changed or launchers_changed
     return changed
 
 
