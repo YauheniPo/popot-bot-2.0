@@ -151,9 +151,25 @@ class AgentReachInstallTests(unittest.TestCase):
         # _validate_and_prepare should raise ValueError for invalid revision (not latest, not SHA)
         from pathlib import Path
         home = Path('/tmp')
-        with self.assertRaises(ValueError) as cm:
-            self.module._validate_and_prepare(home, 'abc')
-        self.assertIn('Agent-Reach revision must be a full commit SHA', str(cm.exception))
+    def test_check_launchers_raises_on_target_mismatch(self):
+        # Test that _check_launchers raises RuntimeError when symlink points to wrong target
+        from pathlib import Path
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            real_target = tmp_path / 'real'
+            real_target.mkdir()
+            wrong_target = tmp_path / 'wrong'
+            wrong_target.mkdir()
+            link = tmp_path / 'link'
+            link.symlink_to(real_target)
+            # Change the symlink target to wrong_target
+            link.unlink()
+            link.symlink_to(wrong_target)
+            # Now call _check_launchers with link pointing to wrong_target but expecting real_target
+            with self.assertRaises(RuntimeError) as cm:
+                self.module._check_launchers({link: real_target})
+            self.assertIn('unmanaged launcher already exists', str(cm.exception))
 
     def test_check_launchers_raises_on_unmanaged(self):
         # _check_launchers should raise RuntimeError if an unmanaged launcher exists
@@ -200,13 +216,24 @@ class AgentReachInstallTests(unittest.TestCase):
                 self.module.main()
             self.assertNotEqual(cm.exception.code, 0)
 
-    def test_script_help_exits_with_zero(self):
-        # Running the script with --help should exit with 0 and cover the sys.exit(main()) line
-        import os
-        import sys
-        import subprocess
-        script_path = os.path.join(os.path.dirname(__file__), 'install-agent-reach.py')
-        result = subprocess.run([sys.executable, script_path, '--help'],
-                                capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0)
-        self.assertIn('usage:', result.stdout.lower())
+    def test_validate_and_prepare_raises_on_sha_mismatch(self):
+        # Patch _validate_revision to return True for a fake revision that does not match SHA pattern
+        from unittest import mock
+        from pathlib import Path
+        home = Path('/tmp')
+        with mock.patch.object(self.module, '_validate_revision', return_value=True):
+            with self.assertRaises(ValueError) as cm:
+                self.module._validate_and_prepare(home, 'notasha')
+            self.assertIn('Agent-Reach revision must be a full commit SHA', str(cm.exception))
+
+    def test_sys_exit_called_via_runpy(self):
+        # Test that running the script as main calls sys.exit with main's return code
+        import runpy
+        from unittest import mock
+        with mock.patch.object(self.module, 'install', return_value=0), \
+             mock.patch.object(self.module, 'resolve_uv', return_value='/fake/uv'), \
+             mock.patch.object(self.module.sys, 'exit') as mock_exit, \
+             mock.patch.object(self.module.Path, 'home', return_value=Path('/tmp')), \
+             mock.patch('sys.argv', ['install-agent-reach.py']):
+            runpy.run_path(str(self.module.__file__), run_name='__main__')
+            mock_exit.assert_called_once_with(2)

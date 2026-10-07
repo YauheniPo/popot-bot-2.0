@@ -55,7 +55,7 @@ def _validate_and_prepare(home, revision):
         revision = _resolve_latest_revision()
 
     if not re.fullmatch(SHA_PATTERN, revision):
-        raise ValueError('Agent-Reach revision must be a full commit SHA')
+        print("ABOUT TO RAISE"); raise ValueError('Agent-Reach revision must be a full commit SHA')
 
     venv = home / '.local/share/hermes-tools/agent-reach'
     python = venv / 'bin/python'
@@ -147,14 +147,27 @@ def resolve_uv(hermes_home):
     return shutil.which('uv')
 
 
+
+
+def _resolve_uv_or_error(hermes_home, parser):
+    """Resolve uv path or return error via parser."""
+    uv = resolve_uv(hermes_home)
+    if not uv:
+        parser.error(f'uv is required at {hermes_home / "bin/uv"} or on PATH')
+    return uv
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    source = parser.add_mutually_exclusive_group(required=True)
+    source = parser.add_mutually_exclusive_group(required=False)
     source.add_argument('--settings', type=Path)
     source.add_argument('--revision')
     args = parser.parse_args()
-    revision = args.revision
-    if args.settings:
+    # If no arguments provided, return error code 2 (usage error)
+    if args.settings is None and args.revision is None:
+        return 2
+    # Determine revision
+    if args.settings is not None:
         settings_path = args.settings
         # Validate settings path: must be within config root and have safe extension
         config_root = Path(__file__).resolve().parents[1] / 'config'
@@ -184,14 +197,13 @@ def main():
         # Re-validate revision after YAML load
         if revision != 'latest' and not re.fullmatch(SHA_PATTERN, revision):
             raise ValueError('Agent-Reach revision from settings must be a full commit SHA or "latest"')
+    else:
+        revision = args.revision
     hermes_home = Path(os.environ.get('HERMES_HOME') or Path.home() / '.hermes')
-    uv = resolve_uv(hermes_home)
-    if not uv:
-        parser.error(f'uv is required at {hermes_home / "bin/uv"} or on PATH')
+    uv = _resolve_uv_or_error(hermes_home, parser)
     try:
         changed = install(Path.home(), revision, uv)
-    except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
-        # Do not dump installer output which may contain environment credentials.
+    except (ValueError, RuntimeError, OSError, subprocess.SubprocessError):
         print('Agent-Reach installation failed', file=sys.stderr)
         return 1
     print(f'{int(changed)} change(s)')
