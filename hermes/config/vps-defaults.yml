@@ -81,8 +81,13 @@ vps_hermes:
       # Deploy applies this ordered list to active fallback_providers on every run.
       # /fallback edits last until the next deploy. Credentials stay in Vault.
       fallback_policy:
+        # Exact provider/model pairs skipped even if present in the active chain.
+        excluded_routes:
+          - provider: openrouter
+            model: cohere/north-mini-code:free
         # Repeated providers are allowed; each provider/model pair must be unique.
-        # Catalogs checked 2026-09-29; selection rationale/limits: hermes/README.md.
+        # Base catalogs checked 2026-09-29; OpenRouter Super probed 2026-10-04.
+        # Selection rationale and limits: hermes/README.md.
         # Alternate providers first. Billing/upstream quota skips the affected
         # provider; a model-level 429 can try another free model on that provider.
         default_routes:
@@ -91,7 +96,7 @@ vps_hermes:
           - provider: nous
             model: stepfun/step-3.7-flash:free
           - provider: openrouter
-            model: cohere/north-mini-code:free
+            model: nvidia/nemotron-3-super-120b-a12b:free
           - provider: nous
             model: inclusionai/ling-3.0-flash-sante:free
           - provider: nvidia
@@ -104,6 +109,7 @@ vps_hermes:
       # Compact long sessions after 70% of the active model context is used.
       compression:
         threshold: 0.70
+        context_total_ceiling_seconds: 1200
       # Deploy applies this route even when auxiliary is UI-owned. Omitting
       # fallback_chain removes a stale separate chain so compression inherits
       # the profile's main fallbacks. Set an explicit list here to override it.
@@ -111,6 +117,7 @@ vps_hermes:
         compression:
           provider: nvidia
           model: nvidia/nemotron-3-super-120b-a12b
+          reasoning_effort: none
       # The runtime derives cron's default route from model above; do not
       # duplicate it here. Explicit per-job pins still take precedence.
       cron:
@@ -288,7 +295,8 @@ vps_runtime:
     updates.pre_update_backup: full
     updates.non_interactive_local_changes: stash
     gateway.systemd_watchdog_seconds: 120
-    agent.verify_on_stop: auto
+    # Force verification closure on Telegram too; auto disables it on messaging surfaces.
+    agent.verify_on_stop: true
     # Also bounds rebuilt-message restarts while walking the fallback chain.
     agent.api_max_retries: 6
     browser.backend: "off"

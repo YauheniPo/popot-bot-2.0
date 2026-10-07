@@ -55,7 +55,7 @@ def _validate_and_prepare(home, revision):
         revision = _resolve_latest_revision()
 
     if not re.fullmatch(SHA_PATTERN, revision):
-        print("ABOUT TO RAISE"); raise ValueError('Agent-Reach revision must be a full commit SHA')
+        raise ValueError('Agent-Reach revision must be a full commit SHA')
 
     venv = home / '.local/share/hermes-tools/agent-reach'
     python = venv / 'bin/python'
@@ -85,7 +85,7 @@ def _create_venv_if_needed(python, uv, venv):
 
 
 def _install_packages(python, uv, url, source_changed, repair):
-    """Install or upgrade packages. Returns command args used."""
+    """Install or upgrade packages."""
     args = [uv, 'pip', 'install', '--python', str(python), '--upgrade']
     if source_changed or repair:
         args += ['--reinstall-package', 'agent-reach', '--reinstall-package', 'yt-dlp']
@@ -147,8 +147,6 @@ def resolve_uv(hermes_home):
     return shutil.which('uv')
 
 
-
-
 def _resolve_uv_or_error(hermes_home, parser):
     """Resolve uv path or return error via parser."""
     uv = resolve_uv(hermes_home)
@@ -159,13 +157,10 @@ def _resolve_uv_or_error(hermes_home, parser):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    source = parser.add_mutually_exclusive_group(required=False)
+    source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument('--settings', type=Path)
     source.add_argument('--revision')
     args = parser.parse_args()
-    # If no arguments provided, return error code 2 (usage error)
-    if args.settings is None and args.revision is None:
-        return 2
     # Determine revision
     if args.settings is not None:
         settings_path = args.settings
@@ -185,6 +180,8 @@ def main():
         import yaml
         settings = yaml.safe_load(settings_path.read_text(encoding='utf-8'))
         # Validate settings structure and revision key presence/type
+        if not isinstance(settings, dict):
+            raise ValueError('settings must be a mapping')
         vps_tools = settings.get('vps_tools')
         if not isinstance(vps_tools, dict):
             raise ValueError('settings: vps_tools must be a mapping')

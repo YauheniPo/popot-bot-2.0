@@ -15,6 +15,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'ops'))
 from hermes_config_io import load_config as load_private_config, validated_config_path, write_config
+from hermes_fallback_exclusions import fallback_excluded_pairs
 
 _BUSY_INPUT_MODE_KEY = "display.busy_input_mode"
 
@@ -36,14 +37,24 @@ def managed_model_values(settings: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _profile_config_updates(config: dict[str, Any], values: dict[str, str]) -> bool:
+def managed_exclusion_values(settings: dict[str, Any]) -> dict[str, Any]:
+    overlay = settings.get('vps_hermes', {}).get('config', {}).get('managed_overlay', {})
+    policy = overlay.get('fallback_policy', {})
+    fallback_excluded_pairs(policy)  # Validate before planning any writes.
+    if 'excluded_routes' not in policy:
+        return {}
+    return {'fallback_policy.excluded_routes': policy['excluded_routes']}
+
+
+def _profile_config_updates(config: dict[str, Any], values: dict[str, Any]) -> bool:
     """Apply managed model values to one profile config; report whether it changed."""
     changed = False
     for key, value in values.items():
         section, field = key.split('.')
         target = config.setdefault(section, {})
         if not isinstance(target, dict):
-            raise ValueError('Hermes profile model, delegation and cron must be mappings')
+            raise ValueError('Hermes profile model, delegation and cron must be mappings; '
+                             'fallback_policy must also be a mapping')
         if target.get(field) != value:
             target[field] = value
             changed = True
@@ -56,6 +67,7 @@ def api_retry_fallbacks(settings: dict[str, Any]) -> str:
     policy = overlay.get('fallback_policy', {})
     if not isinstance(policy, dict):
         raise ValueError('managed fallback_policy must be a mapping')
+    excluded = fallback_excluded_pairs(policy)
     chain = policy.get('default_routes', overlay.get('fallback_providers', []))
     if not isinstance(chain, list):
         raise ValueError('managed fallback routes must be a list')
@@ -73,11 +85,12 @@ def api_retry_fallbacks(settings: dict[str, Any]) -> str:
         if pair in seen:
             raise ValueError('managed fallback routes contain a duplicate provider/model pair')
         seen.add(pair)
-        routes.append(f'{provider}:{model}')
+        if pair not in excluded:
+            routes.append(f'{provider}:{model}')
     return ','.join(routes)
 
 
-def _pending_profile_updates(home: Path, values: dict[str, str]) -> list:
+def _pending_profile_updates(home: Path, values: dict[str, Any]) -> list:
     """Validate every profile and return the (path, config) pairs that need writing."""
     profiles = home / 'profiles'
     if profiles.is_symlink():
@@ -100,8 +113,9 @@ def _pending_profile_updates(home: Path, values: dict[str, str]) -> list:
 
 
 def sync_profile_models(home: Path, settings: dict[str, Any]) -> int:
-    """Update existing profiles atomically without touching credentials or history."""
-    pending = _pending_profile_updates(home, managed_model_values(settings))
+    """Update managed routes/exclusions without touching credentials or history."""
+    values = {**managed_model_values(settings), **managed_exclusion_values(settings)}
+    pending = _pending_profile_updates(home, values)
     # Validate all profiles before writing any. Values/configs are never logged.
     for path, config in pending:
         write_config(path, config)
@@ -367,7 +381,7 @@ def _is_compression_route(route: Any) -> bool:
 
 
 def _managed_compression_operations(route: Any, current_config: dict[str, Any]) -> list[Operation]:
-    """Apply only the configured compression route, preserving other auxiliary settings."""
+    """Apply the compression route and explicit reasoning policy, preserving other settings."""
     if not _is_compression_route(route):
         raise ValueError('managed compression requires non-empty provider and model')
     chain = route.get('fallback_chain')
@@ -385,6 +399,10 @@ def _managed_compression_operations(route: Any, current_config: dict[str, Any]) 
                 operations.append(Operation('unset', key))
         elif not present or current != value:
             operations.append(Operation('set', key, value))
+    if 'reasoning_effort' in route:
+        key = 'auxiliary.compression.reasoning_effort'
+        if nested_value(current_config, key) != (True, route['reasoning_effort']):
+            operations.append(Operation('set', key, route['reasoning_effort']))
     return operations
 
 
@@ -427,16 +445,24 @@ def build_operations(
     )
 
     # Route policy wins over UI-owned sections and legacy runtime pins. Keep
-    # token budgets, compression tuning and other UI settings intact.
-    model_values = managed_model_values(settings)
-    operations = [op for op in operations if op.key not in model_values]
-    operations.extend(Operation('set', key, value) for key, value in model_values.items()
+    # token budgets and other UI settings intact except explicit managed controls below.
+    route_values = {**managed_model_values(settings), **managed_exclusion_values(settings)}
+    operations = [op for op in operations if op.key not in route_values]
+    operations.extend(Operation('set', key, value) for key, value in route_values.items()
                       if nested_value(current_config, key) != (True, value))
     compression_exists, compression_route = nested_value(settings, 'vps_hermes.config.managed_overlay.auxiliary.compression')
     if compression_exists:
         route_keys = {'auxiliary.compression.' + field for field in ('provider', 'model', 'fallback_chain')}
+        if isinstance(compression_route, dict) and 'reasoning_effort' in compression_route:
+            route_keys.add('auxiliary.compression.reasoning_effort')
         operations = [op for op in operations if op.key not in route_keys]
         operations.extend(_managed_compression_operations(compression_route, current_config))
+    ceiling_key = 'compression.context_total_ceiling_seconds'
+    ceiling_exists, ceiling = nested_value(settings, 'vps_hermes.config.managed_overlay.' + ceiling_key)
+    if ceiling_exists:
+        operations = [op for op in operations if op.key != ceiling_key]
+        if nested_value(current_config, ceiling_key) != (True, ceiling):
+            operations.append(Operation('set', ceiling_key, ceiling))
     return operations
 
 

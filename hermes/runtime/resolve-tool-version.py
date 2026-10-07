@@ -10,7 +10,8 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 PACKAGES = ('agent-reach', 'agent-browser', '@googleworkspace/cli')
-GITHUB_API_URL = 'https://api.github.com/repos/Panniantong/Agent-Reach/commits/main'
+AGENT_REACH_COMMITS_URL = 'https://api.github.com/repos/Panniantong/Agent-Reach/commits/'
+GITHUB_API_URL = AGENT_REACH_COMMITS_URL + 'main'
 NPM_REGISTRY_URL = 'https://registry.npmjs.org/'
 AGENT_REACH_SHA_PATTERN = r'[0-9a-f]{40}'
 NPM_VERSION_PATTERN = r'[0-9]+\.[0-9]+\.[0-9]+'
@@ -21,8 +22,10 @@ def fetch_json(url):
         try:
             request = Request(url, headers={'User-Agent': 'hermes-deploy', 'Accept': 'application/json'})
             with urlopen(request, timeout=15) as response:
-                data = response.read(5 * 1024 * 1024)
-                # Cap response size at read level (5 MiB)
+                # Read one extra byte to reject oversized responses before JSON parsing.
+                data = response.read(5 * 1024 * 1024 + 1)
+                if len(data) > 5 * 1024 * 1024:
+                    raise ValueError('latest version response exceeds 5 MiB')
                 return json.loads(data)
         except (URLError, OSError, ValueError) as exc:
             if attempt == 2:
@@ -34,21 +37,24 @@ def _resolve_agent_reach():
     data = fetch_json(GITHUB_API_URL)
     if not isinstance(data, dict):
         raise ValueError('unexpected response structure for agent-reach latest')
-    repo_full_name = data.get('repository', {}).get('full_name', '')
-    if repo_full_name != 'Panniantong/Agent-Reach':
-        raise ValueError('agent-reach response repository mismatch')
-    ref = data.get('ref', '')
-    if ref != 'refs/heads/main':
-        raise ValueError('agent-reach response ref mismatch')
-    return data.get('sha', '')
+    # Get a commit returns sha/url, not repository/ref. The request fixes the
+    # branch; bind its result to this repository and SHA before constructing a URL.
+    version = data.get('sha', '')
+    if not isinstance(version, str) or not re.fullmatch(AGENT_REACH_SHA_PATTERN, version):
+        raise ValueError('invalid resolved version for agent-reach')
+    if data.get('url') != AGENT_REACH_COMMITS_URL + version:
+        raise ValueError('agent-reach response commit URL mismatch')
+    return version
 
 
 def _resolve_npm_package(package):
-    url = NPM_REGISTRY_URL + quote(package, safe='@')
-    data = fetch_json(url)
+    data = fetch_json(NPM_REGISTRY_URL + quote(package, safe='@'))
     if not isinstance(data, dict):
         raise ValueError('unexpected npm response structure')
-    return data.get('dist-tags', {}).get('latest', '')
+    tags = data.get('dist-tags', {})
+    if not isinstance(tags, dict):
+        raise ValueError('unexpected npm dist-tags structure')
+    return tags.get('latest', '')
 
 
 def resolve(package, requested):

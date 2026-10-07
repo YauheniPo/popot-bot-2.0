@@ -20,8 +20,20 @@ class ToolVersionTests(unittest.TestCase):
         with mock.patch.object(self.module, 'fetch_json', return_value={'dist-tags': {'latest': '1.2.3'}}) as fetch:
             self.assertEqual(self.module.resolve('@googleworkspace/cli', 'latest'), '1.2.3')
         self.assertIn('%2F', fetch.call_args.args[0])
-        with mock.patch.object(self.module, 'fetch_json', return_value={'sha': 'a' * 40, 'repository': {'full_name': 'Panniantong/Agent-Reach'}, 'ref': 'refs/heads/main'}):
+        commit_url = 'https://api.github.com/repos/Panniantong/Agent-Reach/commits/' + 'a' * 40
+        with mock.patch.object(self.module, 'fetch_json', return_value={'sha': 'a' * 40, 'url': commit_url}) as fetch:
             self.assertEqual(self.module.resolve('agent-reach', 'latest'), 'a' * 40)
+        fetch.assert_called_once_with('https://api.github.com/repos/Panniantong/Agent-Reach/commits/main')
+
+    def test_git_commit_response_must_bind_valid_sha_to_the_expected_repository(self):
+        for commit_url in (None, 123, '',
+                           'https://api.github.com/repos/other/repo/commits/' + 'a' * 40,
+                           'https://api.github.com/repos/Panniantong/Agent-Reach/commits/' + 'b' * 40,
+                           'http://api.github.com/repos/Panniantong/Agent-Reach/commits/' + 'a' * 40):
+            with self.subTest(url=commit_url), mock.patch.object(self.module, 'fetch_json',
+                    return_value={'sha': 'a' * 40, 'url': commit_url}):
+                with self.assertRaisesRegex(ValueError, 'commit URL mismatch'):
+                    self.module.resolve('agent-reach', 'latest')
 
     def test_invalid_remote_response_is_rejected(self):
         for package, payload in [('agent-browser', {'dist-tags': {'latest': 'next'}}), ('agent-reach', {'sha': 'main'})]:
