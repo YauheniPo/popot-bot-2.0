@@ -85,9 +85,9 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
         with mock.patch('shutil.which', return_value='/usr/bin/uv'), \
              mock.patch('pathlib.Path.home', return_value=self.temp_base), \
              mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_symlink)]), \
-             mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr:
-            with self.assertRaises(SystemExit) as cm:
-                self.module.main()
+             mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr, \
+             self.assertRaises(SystemExit) as cm:
+            self.module.main()
             self.assertEqual(cm.exception.code, 2)
             # stderr should contain 'regular file'
             self.assertIn('regular file', mock_stderr.getvalue())
@@ -100,9 +100,9 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
         with mock.patch('shutil.which', return_value='/usr/bin/uv'), \
              mock.patch('pathlib.Path.home', return_value=self.temp_base), \
              mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_file)]), \
-             mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr:
-            with self.assertRaises(SystemExit) as cm:
-                self.module.main()
+             mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr, \
+             self.assertRaises(SystemExit) as cm:
+            self.module.main()
             self.assertEqual(cm.exception.code, 2)
             self.assertIn('must be a .yml or .yaml file', mock_stderr.getvalue())
 
@@ -115,9 +115,9 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
         with mock.patch('shutil.which', return_value='/usr/bin/uv'), \
              mock.patch('pathlib.Path.home', return_value=self.temp_base), \
              mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_file)]), \
-             mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr:
-            with self.assertRaises(ValueError) as cm:
-                self.module.main()
+             mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr, \
+             self.assertRaises(ValueError) as cm:
+            self.module.main()
             self.assertIn('vps_tools must be a mapping', str(cm.exception))
 
     def test_lines_120_131_settings_agent_reach_not_dict(self):
@@ -128,9 +128,9 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
         with mock.patch('shutil.which', return_value='/usr/bin/uv'), \
              mock.patch('pathlib.Path.home', return_value=self.temp_base), \
              mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_file)]), \
-             mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr:
-            with self.assertRaises(ValueError) as cm:
-                self.module.main()
+             mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr, \
+             self.assertRaises(ValueError) as cm:
+            self.module.main()
             self.assertIn('vps_tools.agent_reach must be a mapping', str(cm.exception))
 
     def test_lines_120_131_settings_revision_not_string(self):
@@ -141,9 +141,9 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
         with mock.patch('shutil.which', return_value='/usr/bin/uv'), \
              mock.patch('pathlib.Path.home', return_value=self.temp_base), \
              mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_file)]), \
-             mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr:
-            with self.assertRaises(ValueError) as cm:
-                self.module.main()
+             mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr, \
+             self.assertRaises(ValueError) as cm:
+            self.module.main()
             self.assertIn('revision must be a string', str(cm.exception))
 
     def test_lines_120_131_settings_revision_invalid_sha(self):
@@ -154,9 +154,9 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
         with mock.patch('shutil.which', return_value='/usr/bin/uv'), \
              mock.patch('pathlib.Path.home', return_value=self.temp_base), \
              mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_file)]), \
-             mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr:
-            with self.assertRaises(ValueError) as cm:
-                self.module.main()
+             mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr, \
+             self.assertRaises(ValueError) as cm:
+            self.module.main()
             self.assertIn('Agent-Reach revision from settings must be a full commit SHA or', str(cm.exception))
 
     # ---- line 150: sys.exit(main()) entry point ----
@@ -166,17 +166,17 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
         with mock.patch('shutil.which', return_value='/usr/bin/uv'), \
              mock.patch('pathlib.Path.home', return_value=self.temp_base), \
              mock.patch('sys.argv', ['install-agent-reach.py']), \
-             mock.patch('sys.stderr', new_callable=io.StringIO):
-            with self.assertRaises(SystemExit) as cm:
-                sys.exit(self.module.main())
+             mock.patch('sys.stderr', new_callable=io.StringIO), \
+             self.assertRaises(SystemExit) as cm:
+            sys.exit(self.module.main())
             self.assertEqual(cm.exception.code, 2)
         # Test with invalid revision -> should error and exit with code 1 (ValueError caught in main)
         with mock.patch('shutil.which', return_value='/usr/bin/uv'), \
              mock.patch('pathlib.Path.home', return_value=self.temp_base), \
              mock.patch('sys.argv', ['install-agent-reach.py', '--revision', 'invalid']), \
-             mock.patch('sys.stderr', new_callable=io.StringIO):
-            with self.assertRaises(SystemExit) as cm:
-                sys.exit(self.module.main())
+             mock.patch('sys.stderr', new_callable=io.StringIO), \
+             self.assertRaises(SystemExit) as cm:
+            sys.exit(self.module.main())
             self.assertEqual(cm.exception.code, 1)
 
 
@@ -274,7 +274,7 @@ class InstallAgentReachResolveToolVersionTests(unittest.TestCase):
     def test_fetch_json_success(self):
         """Test fetch_json returns data on success."""
         mock_resp = mock.Mock()
-        mock_resp.read.return_value = b'{"key": "value"}'
+        mock_resp.read.return_value = rb'{"key": "value"}'
         mock_resp.__enter__ = mock.Mock(return_value=mock_resp)
         mock_resp.__exit__ = mock.Mock(return_value=None)
         with mock.patch.object(self.resolver, 'urlopen', return_value=mock_resp):
