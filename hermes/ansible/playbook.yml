@@ -621,7 +621,7 @@
         - name: Choose a unique suffix for the config-only deployment backup
           ansible.builtin.set_fact:
             hermes_config_backup_suffix: >-
-              {{ '%016x' | format(lookup('pipe', 'openssl rand -hex 8')) }}
+              {{ lookup('pipe', 'openssl rand -hex 8') }}
           when:
             - hermes_binary.stat.exists
             - not (hermes_source_update_required | bool)

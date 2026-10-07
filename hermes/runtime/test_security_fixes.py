@@ -1,220 +1,123 @@
-#!/usr/bin/env python3
-"""Test security fixes for install-agent-reach.py"""
-
-import re
+"""Security contracts exercised through the managed CLI implementation."""
+import importlib.util
+import io
+import os
+from pathlib import Path
+import subprocess
 import tempfile
 import unittest
-from pathlib import Path
 from unittest import mock
-import sys
+
 import yaml
-import json
-import subprocess
-import os
 
 
 class TestSecurityFixes(unittest.TestCase):
-    """Test security fixes and validation logic"""
-
     def setUp(self):
-        """Set up test fixtures"""
-        self.test_dir = Path(tempfile.mkdtemp())
-        self.mock_uv = self.test_dir / 'bin' / 'uv'
-        self.mock_uv.parent.mkdir(parents=True, exist_ok=True)
-        self.mock_uv.write_text('#!/bin/sh\necho "uv mock"')
-        self.mock_uv.chmod(0o755)
+        self.home = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        self.config = self.home / 'hermes/config'
+        self.config.mkdir(parents=True)
+        self.script = self.home / 'hermes/runtime/install-agent-reach.py'
+        self.script.parent.mkdir()
+        self.installer = self.load_module('install-agent-reach.py')
+        self.resolver = self.load_module('resolve-tool-version.py')
+        self.enterContext(mock.patch.object(self.installer, '__file__', str(self.script)))
+        self.enterContext(mock.patch.object(self.installer.Path, 'home', return_value=self.home))
+        self.enterContext(mock.patch.dict(os.environ, {'HERMES_HOME': str(self.home / '.hermes')}))
 
-    def tearDown(self):
-        """Clean up test fixtures"""
-        import shutil
-        shutil.rmtree(self.test_dir, ignore_errors=True)
+    def load_module(self, name):
+        spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name(name))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def run_settings(self, data):
+        settings = self.config / 'settings.yml'
+        settings.write_text(yaml.safe_dump(data))
+        with mock.patch.object(self.installer.sys, 'argv', [str(self.script), '--settings', str(settings)]):
+            return self.installer.main()
 
     def test_revision_format_validation(self):
-        """Test revision format validation (security fix)
-        # Test the specific security fix in install-agent-reach.py
-        # Line 36-37: Validate requested revision format early - fail fast before any subprocess call
-        """
-
-        # Test valid revision formats
-        valid_revisions = ['latest', 'a' * 40]  # SHA-1
-
-        # Test valid revisions (should not raise)
-        for revision in valid_revisions:
-            # This is the exact validation logic from install-agent-reach.py line 36-37
-            self.assertFalse(revision != 'latest' and not re.fullmatch(r'[0-9a-f]{40}', revision),
-                             f"Valid revision '{revision}' should not raise")
-
-        # Test invalid revision formats
-        invalid_revisions = [
-            'invalid-revision',
-            '123456',  # Too short
-            'abc123def' * 10,  # Too long
-            'abc123def1234567890abcdef1234567890',  # SHA-2 (64 chars)
-            '',  # Empty string
-            'latest-extra',  # With suffix
-        ]
-
-        # Test invalid revisions (should raise ValueError)
-        for revision in invalid_revisions:
-            with self.assertRaises(ValueError) as context:
-                # This is the exact validation logic from install-agent-reach.py line 36-37
-                if revision != 'latest' and not re.fullmatch(r'[0-9a-f]{40}', revision):
-                    raise ValueError('Agent-Reach revision must be a full commit SHA or "latest"')
-            self.assertIn('revision must be a full commit SHA or "latest"', str(context.exception))
+        for revision in ('main', '123456', 'f' * 64, '', 'latest-extra', 'g' * 40):
+            with self.subTest(revision=revision), mock.patch.object(self.installer, 'run') as runner:
+                with self.assertRaises(ValueError):
+                    self.installer.install(self.home, revision, 'uv')
+                runner.assert_not_called()
 
     def test_revision_type_validation(self):
-        """Test revision type validation after YAML load (security fix)
-        # Test that revision from YAML is validated as a string
-        """
-
-        # Valid settings with string revision
-        valid_settings = {
-            'vps_tools': {
-                'agent_reach': {
-                    'revision': 'latest'
-                }
-            }
-        }
-
-        # Invalid settings with integer revision
-        invalid_settings = {
-            'vps_tools': {
-                'agent_reach': {
-                    'revision': 12345  # Integer instead of string
-                }
-            }
-        }
-
-        # Test valid settings (should not raise)
-        revision = valid_settings['vps_tools']['agent_reach']['revision']
-        if not isinstance(revision, str):
-            raise ValueError('settings: vps_tools.agent_reach.revision must be a string')
-
-        # Test invalid settings (should raise ValueError)
-        revision = invalid_settings['vps_tools']['agent_reach']['revision']
-        if not isinstance(revision, str):
-            with self.assertRaises(ValueError) as context:
-                raise ValueError('settings: vps_tools.agent_reach.revision must be a string')
-
-            self.assertIn('must be a string', str(context.exception))
+        for revision in (12345, None, [], {}):
+            with self.subTest(revision=revision), mock.patch.object(self.installer, 'install') as install:
+                with self.assertRaisesRegex(ValueError, 'revision must be a string'):
+                    self.run_settings({'vps_tools': {'agent_reach': {'revision': revision}}})
+                install.assert_not_called()
 
     def test_settings_structure_validation(self):
-        """Test settings structure validation (security fix)
-        # Test that vps_tools is a mapping
-        """
-
-        # Valid settings with dict vps_tools
-        valid_settings = {
-            'vps_tools': {
-                'agent_reach': {
-                    'revision': 'latest'
-                }
-            }
-        }
-
-        # Invalid settings with string vps_tools
-        invalid_settings = {
-            'vps_tools': 'invalid_string'  # Should be a dict
-        }
-
-        # Test valid settings (should not raise)
-        vps_tools = valid_settings['vps_tools']
-        if not isinstance(vps_tools, dict):
-            raise ValueError('settings: vps_tools must be a mapping')
-
-        # Test invalid settings (should raise ValueError)
-        vps_tools = invalid_settings['vps_tools']
-        if not isinstance(vps_tools, dict):
-            with self.assertRaises(ValueError) as context:
-                raise ValueError('settings: vps_tools must be a mapping')
-
-            self.assertIn('must be a mapping', str(context.exception))
+        for data in (None, [], 'invalid', {}, {'vps_tools': []}, {'vps_tools': {'agent_reach': []}}):
+            with self.subTest(data=data), mock.patch.object(self.installer, 'install') as install:
+                with self.assertRaisesRegex(ValueError, 'mapping'):
+                    self.run_settings(data)
+                install.assert_not_called()
 
     def test_error_message_sanitization(self):
-        """Test that error messages are sanitized to avoid leaking exception details (security fix)
-        # Test that subprocess errors are caught and sanitized
-        """
-
-        # Simulate a subprocess error with sensitive data
-        def mock_run(args, timeout=60):
-            raise subprocess.CalledProcessError(
-                1,
-                args,
-                output="secret password: admin@example.com"
-            )
-
-        # The security fix should catch this and provide a sanitized error
-        # without leaking sensitive information
-        with self.assertRaises(subprocess.SubprocessError):
-            mock_run(['test'])
+        secret = 'SYNTHETIC_INSTALLER_SECRET'
+        error = subprocess.CalledProcessError(1, ['uv'], output=secret, stderr=secret)
+        with mock.patch.object(self.installer.sys, 'argv', [str(self.script), '--revision', 'a' * 40]), \
+                mock.patch.object(self.installer, 'resolve_uv', return_value='uv'), \
+                mock.patch.object(self.installer, 'install', side_effect=error), \
+                mock.patch.object(self.installer.sys, 'stderr', new_callable=io.StringIO) as stderr:
+            self.assertEqual(self.installer.main(), 1)
+            self.assertEqual(stderr.getvalue(), 'Agent-Reach installation failed\n')
+            self.assertNotIn(secret, stderr.getvalue())
 
     def test_symlink_escape_prevention(self):
-        """Test symlink escape prevention (security fix)
-        # Test that symlinks are validated to prevent path traversal
-        """
-
-        # Create a test directory
-        test_file = self.test_dir / 'test_file'
-        test_file.write_text('safe content')
-
-        # Simulate the security fix: resolve symlinks but validate they're within bounds
-        resolved_path = test_file.resolve()
-
-        # The security fix should ensure that resolved paths are within the expected directory
-        self.assertTrue(str(resolved_path).startswith(str(self.test_dir)))
+        outside = self.home / 'outside.yml'
+        outside.write_text('vps_tools: {}')
+        link = self.config / 'escape.yml'
+        link.symlink_to(outside)
+        with mock.patch.object(self.installer.sys, 'argv', [str(self.script), '--settings', str(link)]), \
+                mock.patch.object(self.installer, 'install') as install, \
+                mock.patch.object(self.installer.sys, 'stderr', new_callable=io.StringIO) as stderr:
+            with self.assertRaises(SystemExit) as error:
+                self.installer.main()
+            self.assertEqual(error.exception.code, 2)
+            self.assertIn('--settings path must be under', stderr.getvalue())
+            install.assert_not_called()
 
     def test_response_size_capping(self):
-        """Test response size capping (security fix)
-        # Test that HTTP responses are capped to prevent memory exhaustion
-        """
-
-        # Simulate a large response
-        large_content = 'x' * 10000000  # 10MB
-
-        # The security fix should cap this to a reasonable size
-        max_size = 10 * 1024 * 1024  # 10MB
-
-        # Test that large responses are rejected
-        if len(large_content) > max_size:
-            with self.assertRaises(ValueError) as context:
-                raise ValueError(f'Response too large: {len(large_content)} bytes > {max_size} bytes')
-
-            self.assertIn('Response too large', str(context.exception))
+        max_size = 5 * 1024 * 1024
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b' ' * (max_size + 1)
+        with mock.patch.object(self.resolver, 'urlopen', return_value=response) as opener, \
+                mock.patch.object(self.resolver.time, 'sleep'), \
+                mock.patch.object(self.resolver.json, 'loads') as loads:
+            with self.assertRaisesRegex(RuntimeError, 'latest version lookup failed'):
+                self.resolver.fetch_json('https://example.invalid')
+            self.assertEqual(opener.call_count, 3)
+            response.__enter__.return_value.read.assert_called_with(max_size + 1)
+            loads.assert_not_called()
 
     def test_uv_executable_validation(self):
-        """Test uv executable validation (security fix)
-        # Test that uv is executable before using it
-        """
-
-        # Create a non-executable uv
-        fake_uv = self.test_dir / 'bin' / 'fake_uv'
-        fake_uv.parent.mkdir(parents=True, exist_ok=True)
-        fake_uv.write_text('#!/bin/sh')
-        # Don't make it executable
-
-        # The security fix should validate that uv is executable
-        if not os.access(fake_uv, os.X_OK):
-            with self.assertRaises(ValueError) as context:
-                raise ValueError(f'uv is not executable: {fake_uv}')
-
-            self.assertIn('uv is not executable', str(context.exception))
+        uv = self.home / '.hermes/bin/uv'
+        uv.parent.mkdir(parents=True)
+        uv.write_text('not executable')
+        uv.chmod(0o644)
+        with mock.patch.object(self.installer.shutil, 'which', return_value=None):
+            self.assertIsNone(self.installer.resolve_uv(self.home / '.hermes'))
+        uv.chmod(0o755)
+        with mock.patch.object(self.installer.shutil, 'which', return_value='/other/uv'):
+            self.assertEqual(self.installer.resolve_uv(self.home / '.hermes'), str(uv))
 
     def test_launcher_validation(self):
-        """Test launcher validation (security fix)
-        # Test that existing launchers are properly validated
-        """
+        launcher = self.home / '.local/bin/agent-reach'
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text('owner tool')
+        with mock.patch.object(self.installer, 'run') as runner:
+            with self.assertRaisesRegex(RuntimeError, 'unmanaged launcher'):
+                self.installer.install(self.home, 'a' * 40, 'uv')
+            runner.assert_not_called()
+        self.assertEqual(launcher.read_text(), 'owner tool')
 
-        # Create a launcher directory
-        launcher = self.test_dir / '.local/bin' / 'agent-reach'
-        launcher.parent.mkdir(parents=True, exist_ok=True)
-
-        # The security fix should validate that launchers exist
-        if not launcher.exists():
-            with self.assertRaises(ValueError) as context:
-                raise ValueError(f'Launcher does not exist: {launcher}')
-
-            self.assertIn('Launcher does not exist', str(context.exception))
-
-
-if __name__ == '__main__':
-    unittest.main()
+    def test_npm_dist_tags_must_be_a_mapping(self):
+        for tags in (None, [], 'latest'):
+            with self.subTest(tags=tags), mock.patch.object(self.resolver, 'fetch_json', return_value={'dist-tags': tags}):
+                with self.assertRaises(ValueError):
+                    self.resolver.resolve('agent-browser', 'latest')

@@ -3,7 +3,6 @@
 
 import importlib.util
 import json
-import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,18 +23,18 @@ class InstallAgentReachCoverageTests(unittest.TestCase):
         # Create the directory structure mirroring the original: base_temp_dir/hermes/runtime/
         self.runtime_dir = self.base_temp_dir / 'hermes' / 'runtime'
         self.runtime_dir.mkdir(parents=True)
-        # Copy the original script to the runtime directory
+        # Point path validation at an isolated fixture tree
         self.copied_script = self.runtime_dir / 'install-agent-reach.py'
-        shutil.copy(ORIGINAL_SCRIPT, self.copied_script)
         # Create the config directory: base_temp_dir/hermes/config/
         self.config_dir = self.base_temp_dir / 'hermes' / 'config'
         self.config_dir.mkdir(parents=True)
-        # Load the module from the copied script (so __file__ matches)
-        spec = importlib.util.spec_from_file_location('install_agent_reach', self.copied_script)
+        # Execute the original source so coverage is attributed to production code
+        spec = importlib.util.spec_from_file_location('install_agent_reach', ORIGINAL_SCRIPT)
         self.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.module)
-        # Patch installed_versions to return empty dict (as original setUp did)
-        self.enterContext(mock.patch.object(self.module, 'installed_versions', return_value={}))
+        self.module.__file__ = str(self.copied_script)
+        self.enterContext(mock.patch.object(self.module.Path, 'home', return_value=self.home))
+        self.enterContext(mock.patch.dict(os.environ, {'HERMES_HOME': str(self.home / '.hermes')}))
         # Set up test-specific paths
         self.pin = 'a' * 40
         self.url = f'https://github.com/Panniantong/Agent-Reach/archive/{self.pin}.zip'
@@ -82,26 +81,22 @@ class InstallAgentReachCoverageTests(unittest.TestCase):
             result = self.module.installed_from(python_mock, 'http://example.com')
             self.assertFalse(result)
 
-    def test_install_valid_revision_latest(self):
-        def mock_run(args, timeout=60):
-            if args[1:3] == ['venv', '--python']:
-                self.provision()
-            if args[1:3] == ['pip', 'install']:
-                return json.dumps({'url': self.url})
-            if '-c' in args and 'importlib.metadata' in args[2]:
-                # Distinguish between METADATA and VERSIONS
-                cmd_str = ' '.join(args)
-                if "distribution('agent-reach').read_text('direct_url.json')" in cmd_str:
-                    # METADATA call: return direct_url.json content with url
-                    return json.dumps({'url': self.url})
-                else:
-                    # VERSIONS call: return empty dict (no packages)
-                    return json.dumps({})
-            return ''
+    def fake_run(self, args, timeout=60):
+        if len(args) >= 2 and args[1].endswith('resolve-tool-version.py'):
+            return self.pin
+        if args[1:3] == ['venv', '--python']:
+            self.provision()
+        if args[1:3] == ['-c', self.module.METADATA]:
+            return json.dumps({'url': self.url})
+        if args[1:3] == ['-c', self.module.VERSIONS]:
+            return json.dumps({})
+        return ''
 
-        with mock.patch.object(self.module, 'run', side_effect=mock_run):
-            changed = self.module.install(self.home, self.pin, 'uv')
-            self.assertTrue(changed)
+    def test_install_valid_revision_latest(self):
+        with mock.patch.object(self.module, 'run', side_effect=self.fake_run) as runner:
+            self.assertTrue(self.module.install(self.home, 'latest', 'uv'))
+        self.assertEqual(runner.call_args_list[0].args[0][2:],
+                         ['--package', 'agent-reach', '--requested', 'latest'])
 
     def test_install_invalid_revision_format(self):
         with self.assertRaises(ValueError) as cm:
@@ -119,74 +114,29 @@ class InstallAgentReachCoverageTests(unittest.TestCase):
                 self.module.install(self.home, 'latest', 'uv')
             self.assertIn('Agent-Reach revision must be a full commit SHA', str(cm.exception))
 
-    @unittest.skip("temporary skip due to environment")
     def test_main_with_settings(self):
-        settings_content = '''vps_tools:
-  agent_reach:
-    revision: "latest"
-'''
-        # Place settings file under config directory to satisfy path validation
-        settings_file = self.config_dir / 'settings.yml'
-        with open(settings_file, 'w') as f:
-            f.write(settings_content)
+        settings = self.config_dir / 'settings.yml'
+        settings.write_text('vps_tools:\n  agent_reach:\n    revision: latest\n')
+        with mock.patch.object(self.module, 'resolve_uv', return_value='uv'), \
+                mock.patch.object(self.module, 'run', side_effect=self.fake_run), \
+                mock.patch.object(self.module.sys, 'argv', ['install-agent-reach.py', '--settings', str(settings)]):
+            self.assertEqual(self.module.main(), 0)
+        self.assertTrue((self.home / '.local/bin/agent-reach').is_symlink())
 
-        with mock.patch.object(self.module, 'resolve_uv', return_value='uv'):
-            with mock.patch.object(self.module, 'run') as mock_run:
-                def run_side_effect(args, timeout=60):
-                    if args[1:3] == ['venv', '--python']:
-                        self.provision()
-                    if args[1:3] == ['pip', 'install']:
-                        return json.dumps({'url': self.url})
-                    if '-c' in args and 'importlib.metadata' in args[2]:
-                        cmd_str = ' '.join(args)
-                        if "distribution('agent-reach').read_text('direct_url.json')" in cmd_str:
-                            # METADATA call: return direct_url.json content with url
-                            return json.dumps({'url': self.url})
-                        else:
-                            # VERSIONS call: return empty dict (no packages)
-                            return json.dumps({})
-                    # Handle resolve-tool-version.py call for latest revision
-                    if len(args) >= 2 and args[0].endswith('resolve-tool-version.py'):
-                        if '--package' in args and '--requested' in args:
-                            pkg_idx = args.index('--package')
-                            req_idx = args.index('--requested')
-                            if pkg_idx + 1 < len(args) and req_idx + 1 < len(args):
-                                if args[pkg_idx + 1] == 'agent-reach' and args[req_idx + 1] == 'latest':
-                                    return self.pin  # return the fake SHA
-                    return ''
-                mock_run.side_effect = run_side_effect
-                with mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_file)]):
-                    result = self.module.main()
-                    self.assertEqual(result, 0)
-
-    @unittest.skip("temporary skip due to environment")
     def test_main_with_revision(self):
-        with mock.patch.object(self.module, 'resolve_uv', return_value='uv'):
-            with mock.patch.object(self.module, 'run') as mock_run:
-                def run_side_effect(args, timeout=60):
-                    if args[1:3] == ['venv', '--python']:
-                        self.provision()
-                    if args[1:3] == ['pip', 'install']:
-                        return json.dumps({'url': self.url})
-                    if '-c' in args and 'importlib.metadata' in args[2]:
-                        cmd_str = ' '.join(args)
-                        if "distribution('agent-reach').read_text('direct_url.json')" in cmd_str:
-                            return json.dumps({'url': self.url})
-                        else:
-                            return json.dumps({})
-                    return ''
-                mock_run.side_effect = run_side_effect
-                with mock.patch('sys.argv', ['install-agent-reach.py', '--revision', self.pin]):
-                    result = self.module.main()
-                    self.assertEqual(result, 0)
+        with mock.patch.object(self.module, 'resolve_uv', return_value='uv'), \
+                mock.patch.object(self.module, 'run', side_effect=self.fake_run), \
+                mock.patch.object(self.module.sys, 'argv', ['install-agent-reach.py', '--revision', self.pin]):
+            self.assertEqual(self.module.main(), 0)
+        self.assertTrue((self.home / '.local/bin/yt-dlp').is_symlink())
 
-    @unittest.skip("temporary skip due to environment")
     def test_main_invalid_revision(self):
-        with mock.patch('sys.argv', ['install-agent-reach.py', '--revision', 'invalid']):
-            with self.assertRaises(SystemExit):
-                self.module.main()
+        with mock.patch.object(self.module, 'resolve_uv', return_value='uv'), \
+                mock.patch.object(self.module, 'run') as runner, \
+                mock.patch.object(self.module.sys, 'argv', ['install-agent-reach.py', '--revision', 'invalid']):
+            self.assertEqual(self.module.main(), 1)
+        runner.assert_not_called()
 
-    @unittest.skip("temporary skip due to environment")
     def test_main_missing_uv(self):
         with mock.patch('sys.argv', ['install-agent-reach.py', '--revision', 'latest']):
             with mock.patch.object(self.module, 'shutil', autospec=True) as mock_shutil:
@@ -204,15 +154,13 @@ class InstallAgentReachCoverageTests(unittest.TestCase):
             result = self.module.resolve_uv(self.home)
             self.assertEqual(result, str(managed_uv))
 
-    @unittest.skip("temporary skip due to environment")
     def test_resolve_uv_not_executable(self):
         managed_uv = self.home / 'bin' / 'uv'
         managed_uv.parent.mkdir(parents=True, exist_ok=True)
         managed_uv.write_text('#!/bin/sh')
-        with mock.patch.object(self.module, 'Path') as mock_path:
-            mock_path.home.return_value = self.home
-            result = self.module.resolve_uv(self.home)
-            self.assertIsNone(result)
+        managed_uv.chmod(0o644)
+        with mock.patch.object(self.module.shutil, 'which', return_value=None):
+            self.assertIsNone(self.module.resolve_uv(self.home))
 
     def test_resolve_uv_from_path(self):
         with mock.patch.object(self.module, 'Path') as mock_path:
@@ -222,7 +170,6 @@ class InstallAgentReachCoverageTests(unittest.TestCase):
                 result = self.module.resolve_uv(self.home)
                 self.assertEqual(result, '/usr/bin/uv')
 
-    @unittest.skip("temporary skip due to environment")
     def test_installed_versions(self):
         with mock.patch.object(self.module, 'run') as mock_run:
             mock_run.return_value = json.dumps({'package': '1.0.0'})

@@ -44,9 +44,9 @@ class ObservabilityRedactionTests(unittest.TestCase):
     def test_metadata_length_guard_respects_each_field_limit(self) -> None:
         for limit in (5, 120, 240, 500):
             with self.subTest(limit=limit):
-                # Non-secret text is truncated to limit
+                # Oversized values are replaced whole before running regexes.
                 self.assertEqual(observability._short("x" * limit, limit), "x" * limit)
-                self.assertEqual(observability._short("x" * (limit + 1), limit), "x" * limit)
+                self.assertEqual(observability._short("x" * (limit + 1), limit), "[REDACTED]"[:limit])
                 # Secret text is redacted then truncated
                 secret_text = "password=" + "s" * (limit + 10)
                 result = observability._short(secret_text, limit)
@@ -54,6 +54,22 @@ class ObservabilityRedactionTests(unittest.TestCase):
                 # For limits that can hold the redacted form, verify it appears
                 if limit >= 20:
                     self.assertIn("[REDACTED]", result)
+
+    def test_api_error_redacts_multiline_private_keys_and_normalized_passwords(self) -> None:
+        fixtures = (
+            ("-----BEGIN RSA PRIVATE KEY-----\nSYNTHETIC_KEY_BODY\n-----END RSA PRIVATE KEY-----", "SYNTHETIC_KEY_BODY"),
+            ("-----BEGIN PRIVATE KEY-----\r\nSYNTHETIC_PKCS8_BODY\r\n-----END PRIVATE KEY-----", "SYNTHETIC_PKCS8_BODY"),
+            ("passw\x00ord=SYNTHETIC_PASSWORD", "SYNTHETIC_PASSWORD"),
+        )
+        for reason, secret in fixtures:
+            with self.subTest(reason=reason), mock.patch.object(observability.hooks, "_execute") as execute, \
+                    mock.patch.object(observability.storage, "_enqueue") as enqueue:
+                observability.hooks._api_request_error(reason=reason, provider="fixture", model="fixture")
+                self.assertNotIn(secret, str(execute.call_args))
+                enqueue.assert_called_once()
+                record = json.loads(enqueue.call_args.args[1])
+                self.assertNotIn(secret, json.dumps(record))
+                self.assertIn("REDACTED", record["reason"])
 
     def test_command_program_uses_bounded_placeholder_for_invalid_input(self) -> None:
         self.assertEqual(observability._command_program(""), "[command]")

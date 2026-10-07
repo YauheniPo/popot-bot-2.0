@@ -14,6 +14,7 @@ import textwrap
 from types import SimpleNamespace
 import unittest
 from unittest import mock
+from typing import Optional
 
 
 MODULE_PATH = Path(__file__).with_name("apply-hermes-patches.py")
@@ -22,6 +23,130 @@ assert SPEC is not None
 assert SPEC.loader is not None
 apply_hermes_patches = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(apply_hermes_patches)
+
+
+class FileMutationStopGateTests(unittest.TestCase):
+    # Exact function from the pinned Hermes source. Execute the registered patch
+    # against it, so missing patching reproduces the original premature stop.
+    upstream = '''def _verify_on_stop_nudge(agent) -> Optional[str]:
+    try:
+        from agent.verification_stop import (
+            build_verify_on_stop_nudge, verify_on_stop_enabled
+        )
+
+        if verify_on_stop_enabled():
+            return build_verify_on_stop_nudge(
+                session_id=getattr(agent, "session_id", None),
+                changed_paths=getattr(agent, "_turn_file_mutation_paths", set()),
+                attempts=getattr(agent, "_verification_stop_nudges", 0),
+            )
+    except Exception:
+        logger.debug("verification stop-loop check failed", exc_info=True)
+    return None
+'''
+
+    def setUp(self):
+        self.verification = SimpleNamespace(
+            verify_on_stop_enabled=mock.Mock(return_value=True),
+            build_verify_on_stop_nudge=mock.Mock(return_value=None),
+        )
+        self.verify_hooks = SimpleNamespace(max_verify_nudges=mock.Mock(return_value=3))
+        self.agent = SimpleNamespace(
+            session_id="test-session",
+            _turn_file_mutation_paths=set(),
+            _turn_failed_file_mutations={"/workspace/test.py": {"tool": "write_file"}},
+            _verification_stop_nudges=0,
+            _file_mutations_still_failed=mock.Mock(side_effect=lambda failed: failed),
+            _format_file_mutation_failure_footer=mock.Mock(return_value="Failed: /workspace/test.py"),
+        )
+        source = self.upstream
+        for path, _marker, old, new in apply_hermes_patches._PATCHES:
+            if path == "agent/turn_stop_gates.py":
+                self.assertIn(old, source)
+                source = source.replace(old, new, 1)
+        namespace = {"Optional": Optional, "logger": mock.Mock()}
+        exec(source, namespace)
+        self.nudge = namespace["_verify_on_stop_nudge"]
+
+    def call_nudge(self):
+        with mock.patch.dict(sys.modules, {
+            "agent.verification_stop": self.verification,
+            "agent.verify_hooks": self.verify_hooks,
+        }):
+            return self.nudge(self.agent)
+
+    def test_failed_write_without_successful_edits_requires_recovery(self):
+        result = self.call_nudge()
+        self.assertIsNotNone(result)
+        self.assertIn("read_file", result)
+        self.assertIn("Failed: /workspace/test.py", result)
+        self.verification.build_verify_on_stop_nudge.assert_not_called()
+
+    def test_failed_write_is_not_cleared_by_passing_verification_of_other_edits(self):
+        self.agent._turn_file_mutation_paths = {"/workspace/other.py"}
+        self.assertIsNotNone(self.call_nudge())
+        self.verification.build_verify_on_stop_nudge.assert_not_called()
+
+    def test_terminal_repair_is_rechecked_before_requesting_recovery(self):
+        self.agent._file_mutations_still_failed.return_value = {}
+        self.agent._file_mutations_still_failed.side_effect = None
+        self.assertIsNone(self.call_nudge())
+        self.agent._file_mutations_still_failed.assert_called_once_with(
+            self.agent._turn_failed_file_mutations)
+        self.verification.build_verify_on_stop_nudge.assert_called_once()
+        self.agent._format_file_mutation_failure_footer.assert_not_called()
+
+    def test_successful_retry_keeps_native_verification(self):
+        self.agent._turn_failed_file_mutations = {}
+        self.agent._turn_file_mutation_paths = {"/workspace/test.py"}
+        self.verification.build_verify_on_stop_nudge.return_value = "Run tests"
+        self.assertEqual(self.call_nudge(), "Run tests")
+        self.verification.build_verify_on_stop_nudge.assert_called_once_with(
+            session_id="test-session", changed_paths={"/workspace/test.py"}, attempts=0)
+
+    def test_failure_recovery_uses_the_existing_bounded_nudge_budget(self):
+        for attempt in range(self.verify_hooks.max_verify_nudges.return_value):
+            self.agent._verification_stop_nudges = attempt
+            self.assertIsNotNone(self.call_nudge())
+        self.agent._verification_stop_nudges = self.verify_hooks.max_verify_nudges.return_value
+        self.assertIsNone(self.call_nudge())
+        self.verification.build_verify_on_stop_nudge.assert_called_once()
+
+    def test_configured_recovery_limit_is_respected(self):
+        self.verify_hooks.max_verify_nudges.return_value = 1
+        self.assertIsNotNone(self.call_nudge())
+        self.agent._verification_stop_nudges = 1
+        self.assertIsNone(self.call_nudge())
+
+    def test_disabled_stop_verification_does_not_force_recovery(self):
+        self.verification.verify_on_stop_enabled.return_value = False
+        self.assertIsNone(self.call_nudge())
+        self.agent._file_mutations_still_failed.assert_not_called()
+        self.verification.build_verify_on_stop_nudge.assert_not_called()
+
+    def test_patch_is_idempotent_and_rejects_unknown_upstream(self):
+        patch = next(patch for patch in apply_hermes_patches._PATCHES
+                     if patch[0] == "agent/turn_stop_gates.py")
+        state = {}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / patch[0]
+            target.parent.mkdir()
+            target.write_text(self.upstream, encoding="utf-8")
+            with mock.patch.object(apply_hermes_patches, "HERMES_AGENT_DIR", root), \
+                    mock.patch("sys.stdout", new_callable=io.StringIO), \
+                    mock.patch("sys.stderr", new_callable=io.StringIO):
+                self.assertEqual(apply_hermes_patches._apply_one_patch(*patch, state),
+                                 (1, None, True))
+                first = target.read_text(encoding="utf-8")
+                self.assertEqual(apply_hermes_patches._apply_one_patch(*patch, state),
+                                 (0, None, False))
+                self.assertEqual(target.read_text(encoding="utf-8"), first)
+                target.write_text("# unknown upstream implementation\n", encoding="utf-8")
+                self.assertEqual(apply_hermes_patches._apply_one_patch(*patch, {}),
+                                 (0, patch[0], False))
+                self.assertEqual(target.read_text(encoding="utf-8"),
+                                 "# unknown upstream implementation\n")
 
 
 class ApplyHermesPatchesTests(unittest.TestCase):

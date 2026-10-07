@@ -53,12 +53,26 @@ def _validate_citations(draft: str, items: list[dict]) -> None:
         raise ValueError("report cites a URL absent from collected sources")
 
 
+def is_empty_analysis(text: str) -> bool:
+    """Recognize empty content and placeholder-only analysis, not missing factual details."""
+    content = re.sub(r"^(?:Sources|Источник|Источники):.*$", "", text, flags=re.M | re.I)
+    content = URL.sub("", content)
+    content = re.sub(r"(?:Что произошло|Чем полезно)\s*:", "", content, flags=re.I)
+    content = re.sub(r"[\s.*_`!?:;—–-]+", " ", content).strip()
+    return not content or bool(re.fullmatch(r"(?:Информация отсутствует\s*)+", content, re.I))
+
+
 def _validate_section(heading, section: str, item: dict, index: int) -> None:
     if heading.group(1) != str(index) or heading.group(2).strip() != item["title"]:
         raise ValueError("report title or order differs from collected items")
     roles = re.findall(r"^### (Junior|Senior|Manager)$", section, re.M)
     if roles != ["Junior", "Senior", "Manager"]:
         raise ValueError("report requires Junior, Senior, Manager in that order")
+    role_sections = re.split(r"^### (?:Junior|Senior|Manager)$", section, flags=re.M)[1:]
+    for body in role_sections:
+        body = re.split(r"^## ", body, maxsplit=1, flags=re.M)[0]
+        if is_empty_analysis(body):
+            raise ValueError("report role analysis is empty or contains only placeholders")
     section_urls = {match.group().rstrip(".,;") for match in URL.finditer(section)}
     if not set(item.get("urls", [])) <= section_urls:
         raise ValueError("report item is missing source URLs")

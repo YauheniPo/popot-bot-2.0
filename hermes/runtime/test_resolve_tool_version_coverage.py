@@ -3,6 +3,8 @@
 
 import importlib.util
 import json
+import io
+import runpy
 import subprocess
 import unittest
 from pathlib import Path
@@ -34,7 +36,7 @@ class ToolVersionCoverageTests(unittest.TestCase):
             mock_urlopen.return_value.__enter__.return_value = mock_resp
             result = self.module.fetch_json('http://example.com')
             self.assertEqual(result, {})
-            mock_resp.read.assert_called_once_with(5 * 1024 * 1024)
+            mock_resp.read.assert_called_once_with(5 * 1024 * 1024 + 1)
 
     def test_fetch_json_raises_after_retries(self):
         """Line 25: raise RuntimeError after 3 attempts"""
@@ -82,22 +84,24 @@ class ToolVersionCoverageTests(unittest.TestCase):
             self.assertIn('unexpected response structure for agent-reach latest', str(cm.exception))
 
     def test_agent_reach_latest_wrong_repo(self):
-        """Line 40-42: repo_full_name != 'Panniantong/Agent-Reach'"""
-        with mock.patch.object(self.module, 'fetch_json', return_value={'repository': {'full_name': 'wrong/repo'}}):
+        """Reject a commit URL pointing to another repository."""
+        with mock.patch.object(self.module, 'fetch_json', return_value={
+                'sha': 'a' * 40, 'url': 'https://api.github.com/repos/wrong/repo/commits/' + 'a' * 40}):
             with self.assertRaises(ValueError) as cm:
                 self.module.resolve('agent-reach', 'latest')
-            self.assertIn('agent-reach response repository mismatch', str(cm.exception))
+            self.assertIn('agent-reach response commit URL mismatch', str(cm.exception))
 
-    def test_agent_reach_latest_wrong_ref(self):
-        """Line 43-45: if ref != 'refs/heads/main': raise ValueError"""
-        with mock.patch.object(self.module, 'fetch_json', return_value={'repository': {'full_name': 'Panniantong/Agent-Reach'}, 'ref': 'refs/heads/dev'}):
+    def test_agent_reach_latest_wrong_commit_url(self):
+        """Reject a URL for a different commit even in the expected repository."""
+        with mock.patch.object(self.module, 'fetch_json', return_value={
+                'sha': 'a' * 40, 'url': self.module.AGENT_REACH_COMMITS_URL + 'b' * 40}):
             with self.assertRaises(ValueError) as cm:
                 self.module.resolve('agent-reach', 'latest')
-            self.assertIn('agent-reach response ref mismatch', str(cm.exception))
+            self.assertIn('agent-reach response commit URL mismatch', str(cm.exception))
 
     def test_agent_reach_latest_missing_sha(self):
         """Line 46: version = data.get('sha', '') -> empty string -> fails pattern"""
-        with mock.patch.object(self.module, 'fetch_json', return_value={'repository': {'full_name': 'Panniantong/Agent-Reach'}, 'ref': 'refs/heads/main'}):
+        with mock.patch.object(self.module, 'fetch_json', return_value={}):
             with self.assertRaises(ValueError) as cm:
                 self.module.resolve('agent-reach', 'latest')
             self.assertIn('invalid resolved version for agent-reach', str(cm.exception))
@@ -118,7 +122,7 @@ class ToolVersionCoverageTests(unittest.TestCase):
 
     def test_invalid_resolved_version_agent_reach(self):
         """Line 54-55: pattern check fails"""
-        with mock.patch.object(self.module, 'fetch_json', return_value={'repository': {'full_name': 'Panniantong/Agent-Reach'}, 'ref': 'refs/heads/main', 'sha': 'nothex'}):
+        with mock.patch.object(self.module, 'fetch_json', return_value={'sha': 'nothex'}):
             with self.assertRaises(ValueError) as cm:
                 self.module.resolve('agent-reach', 'latest')
             self.assertIn('invalid resolved version for agent-reach', str(cm.exception))
@@ -180,6 +184,14 @@ class ToolVersionCoverageTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('the following arguments are required: --package', result.stderr)
+
+    def test_entry_point_prints_explicit_pin_and_exits_successfully(self):
+        with mock.patch.object(sys, 'argv', [str(SCRIPT), '--package', 'agent-browser', '--requested', '1.2.3']), \
+                mock.patch.object(sys, 'stdout', new_callable=io.StringIO) as stdout, \
+                mock.patch.object(sys, 'exit') as exit_call:
+            runpy.run_path(str(SCRIPT), run_name='__main__')
+        exit_call.assert_called_once_with(0)
+        self.assertEqual(stdout.getvalue(), '1.2.3\n')
 
 
 if __name__ == '__main__':

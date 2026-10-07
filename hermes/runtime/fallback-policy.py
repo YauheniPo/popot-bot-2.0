@@ -9,6 +9,8 @@ import re
 
 import yaml
 
+from hermes_fallback_exclusions import fallback_excluded_pairs
+
 
 class FallbackCommandError(ValueError):
     """Safe, authored command feedback (never raw config or provider errors)."""
@@ -18,6 +20,15 @@ def _managed_provider(value):
     from hermes_cli.providers import ALIASES
     provider = str(value or '').strip().lower()
     return ALIASES.get(provider, provider)
+
+
+def filter_fallback_routes(config, chain):
+    """Exclude exact provider/model pairs before resolving any fallback client."""
+    excluded = {(_managed_provider(provider), model) for provider, model in
+                fallback_excluded_pairs(config.get('fallback_policy', {}))}
+    return [route for route in chain
+            if (_managed_provider(route.get('provider')),
+                str(route.get('model', '')).strip()) not in excluded]
 
 
 def validate_fallback_routes(routes, allowed):
@@ -70,6 +81,7 @@ def _edit_fallback_routes(chain, policy, command, value):
 def edit_fallback_config(config, arguments):
     """Pure command parser; None means read-only, otherwise a fresh raw config."""
     policy = config.get('fallback_policy', {})
+    fallback_excluded_pairs(policy)
     allowed = policy.get('allowed_providers', [])
     if not isinstance(allowed, list) or any(not isinstance(p, str) for p in allowed):
         raise ValueError('Invalid managed provider policy')
@@ -80,6 +92,8 @@ def edit_fallback_config(config, arguments):
                       + ('\nТакже задан legacy fallback_model; set/off/reset заменят его.'
                          if config.get('fallback_model') else '')
                       + '\nРазрешённые providers: ' + ', '.join(allowed)
+                      + '\nИсключены из переключения:\n' + _fallback_route_text(
+                          policy.get('excluded_routes', []))
                       + '\n/fallback set provider model; provider model'
                       + '\n/fallback add provider model | remove N | off | reset'
                       + '\nПри 429 пробуется следующая модель; при billing — другой provider. '

@@ -148,9 +148,11 @@ class AgentReachInstallTests(unittest.TestCase):
         self.assertFalse(self.module.installed_from(python, url))
 
     def test_invalid_revision_raises(self):
-        # _validate_and_prepare should raise ValueError for invalid revision (not latest, not SHA)
-        from pathlib import Path
-        home = Path('/tmp')
+        with mock.patch.object(self.module, 'run') as runner:
+            with self.assertRaisesRegex(ValueError, 'full commit SHA'):
+                self.module._validate_and_prepare(self.home, 'invalid')
+        runner.assert_not_called()
+
     def test_check_launchers_raises_on_target_mismatch(self):
         # Test that _check_launchers raises RuntimeError when symlink points to wrong target
         from pathlib import Path
@@ -201,39 +203,37 @@ class AgentReachInstallTests(unittest.TestCase):
             self.assertIn('Agent-Reach installed source does not match the requested revision', str(cm.exception))
 
     def test_settings_path_outside_config_root_error(self):
-        # main should error when --settings path is outside config root
-        import sys
-        from unittest import mock
-        # We'll mock sys.argv and catch SystemExit
-        test_home = '/tmp/test_home'
-        config_root = Path(test_home) / '.hermes' / 'config'
-        # Create a dummy settings file outside config root
-        outside_settings = Path(test_home) / 'outside.yml'
-        outside_settings.parent.mkdir(parents=True, exist_ok=True)
+        outside_settings = self.home / 'outside.yml'
         outside_settings.write_text('dummy')
-        with mock.patch.object(self.module.sys, 'argv', ['install-agent-reach.py', '--settings', str(outside_settings)]):
-            with self.assertRaises(SystemExit) as cm:
+        with mock.patch.object(self.module.sys, 'argv', ['install-agent-reach.py', '--settings', str(outside_settings)]), \
+                mock.patch.object(self.module, 'install') as install:
+            with self.assertRaises(SystemExit) as error:
                 self.module.main()
-            self.assertNotEqual(cm.exception.code, 0)
+        self.assertEqual(error.exception.code, 2)
+        install.assert_not_called()
 
     def test_validate_and_prepare_raises_on_sha_mismatch(self):
-        # Patch _validate_revision to return True for a fake revision that does not match SHA pattern
-        from unittest import mock
-        from pathlib import Path
-        home = Path('/tmp')
-        with mock.patch.object(self.module, '_validate_revision', return_value=True):
-            with self.assertRaises(ValueError) as cm:
-                self.module._validate_and_prepare(home, 'notasha')
-            self.assertIn('Agent-Reach revision must be a full commit SHA', str(cm.exception))
+        with mock.patch.object(self.module, '_resolve_latest_revision', return_value='notasha'):
+            with self.assertRaisesRegex(ValueError, 'full commit SHA'):
+                self.module._validate_and_prepare(self.home, 'latest')
 
     def test_sys_exit_called_via_runpy(self):
-        # Test that running the script as main calls sys.exit with main's return code
         import runpy
-        from unittest import mock
-        with mock.patch.object(self.module, 'install', return_value=0), \
-             mock.patch.object(self.module, 'resolve_uv', return_value='/fake/uv'), \
-             mock.patch.object(self.module.sys, 'exit') as mock_exit, \
-             mock.patch.object(self.module.Path, 'home', return_value=Path('/tmp')), \
-             mock.patch('sys.argv', ['install-agent-reach.py']):
-            runpy.run_path(str(self.module.__file__), run_name='__main__')
-            mock_exit.assert_called_once_with(2)
+        # runpy creates a fresh module: mock its external calls, not the old module's functions.
+        def run(args, **kwargs):
+            if args[1:3] == ['venv', '--python']:
+                self.provision()
+            if args[1:3] == ['-c', self.module.METADATA]:
+                return mock.Mock(stdout=json.dumps({'url': self.url}))
+            if args[1:3] == ['-c', self.module.VERSIONS]:
+                return mock.Mock(stdout='{}')
+            return mock.Mock(stdout='')
+        with mock.patch.object(self.module.subprocess, 'run', side_effect=run), \
+                mock.patch.object(self.module.shutil, 'which', return_value='/fake/uv'), \
+                mock.patch.dict(os.environ, {'HERMES_HOME': str(self.home / '.hermes')}), \
+                mock.patch.object(self.module.sys, 'exit') as exit_call, \
+                mock.patch.object(self.module.Path, 'home', return_value=self.home), \
+                mock.patch.object(self.module.sys, 'argv', ['install-agent-reach.py', '--revision', self.pin]):
+            runpy.run_path(str(SCRIPT), run_name='__main__')
+        exit_call.assert_called_once_with(0)
+        self.assertTrue((self.home / '.local/bin/agent-reach').is_symlink())

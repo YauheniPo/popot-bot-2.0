@@ -255,7 +255,8 @@ def extract_cards_marker(content: str, job: dict, state_dir: Path) -> tuple[str,
 def _card_text(item: dict, index: int, total: int, analysis: str = "") -> str:
     category = item.get("subcategory") or item.get("category") or "AI/IT"
     description = re.sub(r"\s+", " ", analysis).strip()[:650]
-    if not description or "Анализ недоступен" in description or not re.search(r"[А-Яа-яЁё]", description):
+    if (_finalizer().is_empty_analysis(description) or "Анализ недоступен" in description
+            or not re.search(r"[А-Яа-яЁё]", description)):
         evidence = re.sub(r"\s+", " ", item.get("evidence") or "").strip()[:550]
         if not evidence:
             raise ValueError(f"source description unavailable for item {index}")
