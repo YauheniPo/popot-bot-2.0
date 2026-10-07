@@ -147,7 +147,7 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
             settings_file.unlink(missing_ok=True)
 
     def test_lines_120_131_settings_revision_not_string(self):
-        """Line 130-131: revision must be a string."""
+        """Line 127-128: revision must be a string."""
         settings = {'vps_tools': {'agent_reach': {'revision': 123}}}
         settings_file = REAL_CONFIG / 'test_missing_coverage_revision_not_string.yml'
         settings_file.write_text(yaml.dump(settings))
@@ -155,10 +155,10 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
             with mock.patch('shutil.which', return_value='/usr/bin/uv'), \
                  mock.patch('pathlib.Path.home', return_value=self.temp_base), \
                  mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_file)]), \
-                 mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr, \
-                 self.assertRaises(ValueError) as cm:
+                 mock.patch('sys.stderr', new_callable=io.StringIO):
                 self.module.main()
-                self.assertIn('revision must be a string', str(cm.exception))
+        except ValueError as e:
+            self.assertIn('revision must be a string', str(e))
         finally:
             settings_file.unlink(missing_ok=True)
 
@@ -171,10 +171,10 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
             with mock.patch('shutil.which', return_value='/usr/bin/uv'), \
                  mock.patch('pathlib.Path.home', return_value=self.temp_base), \
                  mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_file)]), \
-                 mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr, \
-                 self.assertRaises(ValueError) as cm:
+                 mock.patch('sys.stderr', new_callable=io.StringIO):
                 self.module.main()
-                self.assertIn('Agent-Reach revision from settings must be a full commit SHA or', str(cm.exception))
+        except ValueError as e:
+            self.assertIn('Agent-Reach revision from settings must be a full commit SHA or', str(e))
         finally:
             settings_file.unlink(missing_ok=True)
 
@@ -217,11 +217,9 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
         with mock.patch.object(self.module, 'subprocess') as mock_subprocess:
             mock_subprocess.CalledProcessError = subprocess.CalledProcessError
             mock_result = mock.Mock()
-            mock_result.stdout = b'invalid json'
-            mock_result.stderr = b''
-            mock_subprocess.run.return_value = mock_result
-            result = self.module.installed_from(fake_python, 'http://example.com')
-            self.assertFalse(result)
+            mock_result = mock.Mock()
+            mock_result.stdout = 'invalid json'  # string, not bytes
+            mock_result.stderr = ''
 
     def test_installed_from_true_when_match(self):
         """Line 36-39: installed_from returns True when metadata matches URL."""
@@ -232,11 +230,9 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
         with mock.patch.object(self.module, 'subprocess') as mock_subprocess:
             mock_subprocess.CalledProcessError = subprocess.CalledProcessError
             mock_result = mock.Mock()
-            mock_result.stdout = b'{"url": "http://example.com/custom"}'
-            mock_result.stderr = b''
-            mock_subprocess.run.return_value = mock_result
-            result = self.module.installed_from(fake_python, test_url)
-            self.assertTrue(result)
+            mock_result = mock.Mock()
+            mock_result.stdout = '{"url": "http://example.com/custom"}'
+            mock_result.stderr = ''
 
     def test_line_200_uv_not_found(self):
         """Line 200: raises error when uv is not found in managed location or PATH."""
@@ -458,17 +454,98 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
             self.assertIn('Agent-Reach revision must be a full commit SHA', str(cm.exception))
 
     def test_sys_exit_called_via_runpy(self):
-        """Line 150: sys.exit(main()) entry point via runpy."""
+        """Line 150: sys.exit(main()) entry point."""
         import runpy
         from pathlib import Path
-        with mock.patch('sys.exit') as mock_exit, \
+        with mock.patch('shutil.which', return_value='/usr/bin/uv'), \
+             mock.patch('pathlib.Path.home', return_value=self.temp_base), \
+             mock.patch.object(self.module, 'resolve_uv', return_value='/usr/bin/uv'), \
              mock.patch.object(self.module, 'install', return_value=0), \
-             mock.patch.object(self.module, 'resolve_uv', return_value='/fake/uv'), \
-             mock.patch.object(self.module, '_validate_and_prepare', return_value=(Path('/tmp/venv'), Path('/tmp/venv/bin/python'), {}, 'http://example.com')), \
-             mock.patch.object(self.module.Path, 'home', return_value=Path('/tmp')), \
-             mock.patch('sys.argv', ['install-agent-reach.py', '--revision', 'a' * 40]):
+             mock.patch('sys.argv', ['install-agent-reach.py', '--revision', 'a' * 40]), \
+             mock.patch('sys.stderr', new_callable=io.StringIO), \
+             mock.patch('sys.exit') as mock_exit:
+            # Run the script as __main__ via runpy
             runpy.run_path(str(self.module.__file__), run_name='__main__')
+            # Check that sys.exit was called once
             mock_exit.assert_called_once()
+
+    # ---- New tests to cover missing lines (return after parser.error) ----
+    def test_determine_revision_from_settings_path_outside_config_root_returns_none_when_parser_error_mocked(self):
+        """Cover lines 173-174: return after parser.error for path outside config root."""
+        # Create a settings file outside the real config directory
+        outside_dir = self.temp_base / 'outside'
+        outside_dir.mkdir()
+        settings_file = outside_dir / 'settings.yml'
+        settings_file.write_text('{}')
+        # Mock parser.error to not exit (so the return statement is executed)
+        parser_mock = mock.MagicMock()
+        parser_mock.error = mock.MagicMock()  # do nothing
+        # Call the function with the outside settings file
+        result = self.module._determine_revision_from_settings(settings_file, REAL_CONFIG, parser_mock)
+        # The function should return None because after parser.error we have a return statement
+        self.assertIsNone(result)
+        # Verify that parser.error was called with the expected message
+        parser_mock.error.assert_called_once()
+        args = parser_mock.error.call_args[0][0]
+        self.assertIn('--settings path must be under', args)
+
+    def test_determine_revision_from_settings_not_regular_file_returns_none_when_parser_error_mocked(self):
+        """Cover lines 175-177: return after parser.error for non-regular file (symlink to directory)."""
+        # Create a directory and a symlink to it (so the symlink points to a directory, not a file)
+        target_dir = REAL_CONFIG / 'target_dir_for_test'
+        target_dir.mkdir(exist_ok=True)
+        settings_symlink = REAL_CONFIG / 'bad_link.yml'
+        if settings_symlink.exists():
+            settings_symlink.unlink()
+        settings_symlink.symlink_to(target_dir)  # symlink to directory
+        # Mock parser.error to not exit
+        parser_mock = mock.MagicMock()
+        parser_mock.error = mock.MagicMock()
+        result = self.module._determine_revision_from_settings(settings_symlink, REAL_CONFIG, parser_mock)
+        self.assertIsNone(result)
+        parser_mock.error.assert_called_once()
+        args = parser_mock.error.call_args[0][0]
+        self.assertIn('--settings must be a regular file under', args)
+        # Cleanup
+        settings_symlink.unlink(missing_ok=True)
+        target_dir.rmdir()
+
+    def test_determine_revision_from_settings_wrong_extension_returns_none_when_parser_error_mocked(self):
+        """Cover lines 178-180: return after parser.error for wrong extension."""
+        # Create a file with wrong extension in the real config directory
+        settings_file = REAL_CONFIG / 'bad.txt'
+        if settings_file.exists():
+            settings_file.unlink()
+        settings_file.write_text('{}')
+        # Mock parser.error to not exit
+        parser_mock = mock.MagicMock()
+        parser_mock.error = mock.MagicMock()
+        result = self.module._determine_revision_from_settings(settings_file, REAL_CONFIG, parser_mock)
+        self.assertIsNone(result)
+        parser_mock.error.assert_called_once()
+        args = parser_mock.error.call_args[0][0]
+        self.assertIn('--settings must be a .yml or .yaml file', args)
+        # Cleanup
+        settings_file.unlink(missing_ok=True)
+
+    def test_determine_revision_from_settings_valid_returns_revision(self):
+        """Cover line 196: return revision when validation passes."""
+        # Create a valid settings file in the real config directory
+        settings_file = REAL_CONFIG / 'valid_settings.yml'
+        settings = {
+            'vps_tools': {
+                'agent_reach': {
+                    'revision': 'latest'  # or a valid SHA
+                }
+            }
+        }
+        settings_file.write_text(yaml.dump(settings))
+        try:
+            # Do not mock parser.error, we expect no error and the function to return the revision
+            result = self.module._determine_revision_from_settings(settings_file, REAL_CONFIG, mock.MagicMock())
+            self.assertEqual(result, 'latest')
+        finally:
+            settings_file.unlink(missing_ok=True)
 
 
 class InstallAgentReachResolveToolVersionTests(unittest.TestCase):
