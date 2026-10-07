@@ -4,6 +4,7 @@
 import io
 import importlib.util
 import json
+import runpy
 import sys
 import tempfile
 import unittest
@@ -15,7 +16,7 @@ import subprocess
 
 ORIGINAL_SCRIPT = Path(__file__).parent / 'install-agent-reach.py'
 ORIGINAL_RESOLVER = Path(__file__).parent / 'resolve-tool-version.py'
-REAL_CONFIG = Path('/home/hermes/workspace/repositories/popot-bot-2.0/hermes/config')
+REAL_CONFIG = Path(__file__).parent.parent / 'config'
 
 
 class InstallAgentReachMissingCoverageTests(unittest.TestCase):
@@ -237,7 +238,7 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
             result = self.module.installed_from(fake_python, test_url)
             self.assertTrue(result)
 
-    def test_line_189_uv_not_found(self):
+    def test_line_200_uv_not_found(self):
         """Line 200: raises error when uv is not found in managed location or PATH."""
         with mock.patch.object(self.module, 'resolve_uv', return_value=None):
             with mock.patch('sys.argv', ['install-agent-reach.py', '--revision', 'latest']):
@@ -643,12 +644,23 @@ class InstallAgentReachResolveToolVersionTests(unittest.TestCase):
                     self.assertEqual(mock_stdout.write.call_count, 2)
 
     def test_main_as_script_calls_sys_exit(self):
-        """Line 73: sys.exit(main()) - run as subprocess"""
-        result = subprocess.run([
-            sys.executable, str(ORIGINAL_RESOLVER), '--package', 'agent-reach', '--requested', 'a' * 40
-        ], capture_output=True, text=True)
+        """Line 85: sys.exit(main()) - run as subprocess"""
+        result = subprocess.run(
+            [sys.executable, str(ORIGINAL_RESOLVER), '--package', 'agent-reach', '--requested', 'a' * 40],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout.strip(), 'a' * 40)
+
+    def test_entry_point_prints_explicit_pin_and_exits_successfully(self):
+        with mock.patch.object(sys, 'argv', [str(ORIGINAL_RESOLVER), '--package', 'agent-browser', '--requested', '1.2.3']), \
+                mock.patch.object(sys, 'stdout', new_callable=io.StringIO) as stdout, \
+                mock.patch.object(sys, 'exit') as exit_call:
+            runpy.run_path(str(ORIGINAL_RESOLVER), run_name='__main__')
+        exit_call.assert_called_once_with(0)
+        self.assertEqual(stdout.getvalue(), '1.2.3\n')
 
 
 if __name__ == '__main__':
