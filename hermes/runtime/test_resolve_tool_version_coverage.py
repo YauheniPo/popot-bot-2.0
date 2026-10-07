@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Coverage tests for resolve-tool-version.py"""
+"""Coverage tests for resolve_tool_version.py"""
 
 import importlib.util
 import json
@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 import sys
 
-SCRIPT = Path(__file__).parent / 'resolve-tool-version.py'
+SCRIPT = Path(__file__).parent / 'resolve_tool_version.py'
 
 class ToolVersionCoverageTests(unittest.TestCase):
     def setUp(self):
@@ -28,15 +28,17 @@ class ToolVersionCoverageTests(unittest.TestCase):
             result = self.module.fetch_json('http://example.com')
             self.assertEqual(result, {'ok': True})
 
-    def test_fetch_json_read_limit(self):
-        """Line 20: data = response.read(5 * 1024 * 1024)"""
+    def test_fetch_json_value_error_on_last_attempt(self):
+        """Lines 31-34: ValueError on last attempt raises RuntimeError."""
         with mock.patch.object(self.module, 'urlopen') as mock_urlopen:
             mock_resp = mock.Mock()
-            mock_resp.read.return_value = b'{}'
+            mock_resp.read.return_value = b'not valid json'
             mock_urlopen.return_value.__enter__.return_value = mock_resp
-            result = self.module.fetch_json('http://example.com')
-            self.assertEqual(result, {})
-            mock_resp.read.assert_called_once_with(5 * 1024 * 1024 + 1)
+            with mock.patch.object(self.module.time, 'sleep'):
+                with self.assertRaises(RuntimeError) as cm:
+                    self.module.fetch_json('http://example.com')
+                self.assertIn('latest version lookup failed', str(cm.exception))
+                self.assertIn('JSONDecodeError', str(cm.exception))
 
     def test_fetch_json_raises_after_retries(self):
         """Line 25: raise RuntimeError after 3 attempts"""
@@ -84,24 +86,25 @@ class ToolVersionCoverageTests(unittest.TestCase):
             self.assertIn('unexpected response structure for agent-reach latest', str(cm.exception))
 
     def test_agent_reach_latest_wrong_repo(self):
-        """Reject a commit URL pointing to another repository."""
+        """Reject a commit with wrong repository."""
         with mock.patch.object(self.module, 'fetch_json', return_value={
-                'sha': 'a' * 40, 'url': 'https://api.github.com/repos/wrong/repo/commits/' + 'a' * 40}):
+                'sha': 'a' * 40, 'repository': {'full_name': 'wrong/repo'}, 'ref': 'refs/heads/main'}):
             with self.assertRaises(ValueError) as cm:
                 self.module.resolve('agent-reach', 'latest')
-            self.assertIn('agent-reach response commit URL mismatch', str(cm.exception))
+            self.assertIn('agent-reach response repository mismatch', str(cm.exception))
 
-    def test_agent_reach_latest_wrong_commit_url(self):
-        """Reject a URL for a different commit even in the expected repository."""
+    def test_agent_reach_latest_wrong_ref(self):
+        """Reject a commit with wrong ref."""
         with mock.patch.object(self.module, 'fetch_json', return_value={
-                'sha': 'a' * 40, 'url': self.module.AGENT_REACH_COMMITS_URL + 'b' * 40}):
+                'sha': 'a' * 40, 'repository': {'full_name': 'Panniantong/Agent-Reach'}, 'ref': 'refs/heads/develop'}):
             with self.assertRaises(ValueError) as cm:
                 self.module.resolve('agent-reach', 'latest')
-            self.assertIn('agent-reach response commit URL mismatch', str(cm.exception))
+            self.assertIn('agent-reach response ref mismatch', str(cm.exception))
 
     def test_agent_reach_latest_missing_sha(self):
         """Line 46: version = data.get('sha', '') -> empty string -> fails pattern"""
-        with mock.patch.object(self.module, 'fetch_json', return_value={}):
+        with mock.patch.object(self.module, 'fetch_json', return_value={
+            'repository': {'full_name': 'Panniantong/Agent-Reach'}, 'ref': 'refs/heads/main'}):
             with self.assertRaises(ValueError) as cm:
                 self.module.resolve('agent-reach', 'latest')
             self.assertIn('invalid resolved version for agent-reach', str(cm.exception))
@@ -121,8 +124,9 @@ class ToolVersionCoverageTests(unittest.TestCase):
             self.assertIn('invalid resolved version for agent-browser', str(cm.exception))
 
     def test_invalid_resolved_version_agent_reach(self):
-        """Line 54-55: pattern check fails"""
-        with mock.patch.object(self.module, 'fetch_json', return_value={'sha': 'nothex'}):
+        """Line 67-69: pattern check fails - need valid repo/ref but invalid SHA"""
+        with mock.patch.object(self.module, 'fetch_json', return_value={
+            'sha': 'nothex', 'repository': {'full_name': 'Panniantong/Agent-Reach'}, 'ref': 'refs/heads/main'}):
             with self.assertRaises(ValueError) as cm:
                 self.module.resolve('agent-reach', 'latest')
             self.assertIn('invalid resolved version for agent-reach', str(cm.exception))
