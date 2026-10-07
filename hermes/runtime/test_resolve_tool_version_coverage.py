@@ -42,8 +42,7 @@ class ToolVersionCoverageTests(unittest.TestCase):
 
     def test_fetch_json_raises_after_retries(self):
         """Line 25: raise RuntimeError after 3 attempts"""
-        from urllib.error import URLError
-        with mock.patch.object(self.module, 'urlopen', side_effect=URLError('fail')):
+        with mock.patch.object(self.module, 'urlopen', side_effect=OSError('fail')):
             with mock.patch.object(self.module.time, 'sleep'):
                 with self.assertRaises(RuntimeError) as cm:
                     self.module.fetch_json('http://example.com')
@@ -51,13 +50,12 @@ class ToolVersionCoverageTests(unittest.TestCase):
 
     def test_fetch_json_retry_then_success(self):
         """Lines 24-26: retry logic, then success on third attempt"""
-        from urllib.error import URLError
         call_count = 0
         def urlopen_side_effect(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count < 3:
-                raise URLError('temporary failure')
+                raise OSError('temporary failure')
             mock_resp = mock.Mock()
             mock_resp.read.return_value = b'{}'
             # Return a context manager mock

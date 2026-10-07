@@ -27,7 +27,7 @@ def fetch_json(url):
                 if len(data) > 5 * 1024 * 1024:
                     raise ValueError('latest version response exceeds 5 MiB')
                 return json.loads(data)
-        except (URLError, OSError, ValueError) as exc:
+        except (OSError, ValueError) as exc:
             if attempt == 2:
                 raise RuntimeError(f'latest version lookup failed for {url}: {type(exc).__name__}') from exc
             time.sleep(attempt + 1)
