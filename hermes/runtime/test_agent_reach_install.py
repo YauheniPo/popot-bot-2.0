@@ -140,3 +140,73 @@ class AgentReachInstallTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {'HERMES_HOME': str(custom_home)}), mock.patch.object(self.module.sys, 'argv', ['install-agent-reach.py', '--revision', self.pin]), mock.patch.object(self.module, 'resolve_uv', return_value='/managed/uv') as resolver, mock.patch.object(self.module, 'install', return_value=False):
             self.assertEqual(self.module.main(), 0)
         resolver.assert_called_once_with(custom_home)
+    def test_installed_false_when_python_missing(self):
+        # installed_from should return False when python executable does not exist
+        from pathlib import Path
+        python = Path('/non/existent/python')
+        url = 'http://example.com/test.zip'
+        self.assertFalse(self.module.installed_from(python, url))
+
+    def test_invalid_revision_raises(self):
+        # _validate_and_prepare should raise ValueError for invalid revision (not latest, not SHA)
+        from pathlib import Path
+        home = Path('/tmp')
+        with self.assertRaises(ValueError) as cm:
+            self.module._validate_and_prepare(home, 'abc')
+        self.assertIn('Agent-Reach revision must be a full commit SHA', str(cm.exception))
+
+    def test_check_launchers_raises_on_unmanaged(self):
+        # _check_launchers should raise RuntimeError if an unmanaged launcher exists
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            venv = home / '.local/share/hermes-tools/agent-reach'
+            venv.mkdir(parents=True)
+            bin_dir = venv / 'bin'
+            bin_dir.mkdir(parents=True, exist_ok=True)
+            python = bin_dir / 'python'
+            python.write_text('#!/bin/sh\\necho python')
+            launchers = {home / '.local/bin' / 'agent-reach': venv / 'bin' / 'agent-reach'}
+            # Create a regular file at the launcher location (not a symlink)
+            launcher = home / '.local/bin' / 'agent-reach'
+            launcher.parent.mkdir(parents=True)
+            launcher.write_text('not a symlink')
+            with self.assertRaises(RuntimeError) as cm:
+                self.module._check_launchers(launchers)
+            self.assertIn('unmanaged launcher already exists', str(cm.exception))
+
+    def test_verify_installation_raises_on_mismatch(self):
+        # _verify_installation should raise RuntimeError if installed_from returns False
+        from unittest import mock
+        with mock.patch.object(self.module, 'installed_from', return_value=False):
+            with self.assertRaises(RuntimeError) as cm:
+                self.module._verify_installation('/fake/python', 'http://example.com/test.zip')
+            self.assertIn('Agent-Reach installed source does not match the requested revision', str(cm.exception))
+
+    def test_settings_path_outside_config_root_error(self):
+        # main should error when --settings path is outside config root
+        import sys
+        from unittest import mock
+        # We'll mock sys.argv and catch SystemExit
+        test_home = '/tmp/test_home'
+        config_root = Path(test_home) / '.hermes' / 'config'
+        # Create a dummy settings file outside config root
+        outside_settings = Path(test_home) / 'outside.yml'
+        outside_settings.parent.mkdir(parents=True, exist_ok=True)
+        outside_settings.write_text('dummy')
+        with mock.patch.object(self.module.sys, 'argv', ['install-agent-reach.py', '--settings', str(outside_settings)]):
+            with self.assertRaises(SystemExit) as cm:
+                self.module.main()
+            self.assertNotEqual(cm.exception.code, 0)
+
+    def test_script_help_exits_with_zero(self):
+        # Running the script with --help should exit with 0 and cover the sys.exit(main()) line
+        import os
+        import sys
+        import subprocess
+        script_path = os.path.join(os.path.dirname(__file__), 'install-agent-reach.py')
+        result = subprocess.run([sys.executable, script_path, '--help'],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn('usage:', result.stdout.lower())
