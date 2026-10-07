@@ -41,9 +41,8 @@ class TestSecurityFixes(unittest.TestCase):
         # Test valid revisions (should not raise)
         for revision in valid_revisions:
             # This is the exact validation logic from install-agent-reach.py line 36-37
-            if revision != 'latest' and not re.fullmatch(r'[0-9a-f]{40}', revision):
-                raise ValueError('Agent-Reach revision must be a full commit SHA or "latest"')
-            # If no exception, test passes
+            self.assertFalse(revision != 'latest' and not re.fullmatch(r'[0-9a-f]{40}', revision),
+                             f"Valid revision '{revision}' should not raise")
 
         # Test invalid revision formats
         invalid_revisions = [
