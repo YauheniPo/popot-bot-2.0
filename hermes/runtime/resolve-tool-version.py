@@ -10,6 +10,10 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 PACKAGES = ('agent-reach', 'agent-browser', '@googleworkspace/cli')
+GITHUB_API_URL = 'https://api.github.com/repos/Panniantong/Agent-Reach/commits/main'
+NPM_REGISTRY_URL = 'https://registry.npmjs.org/'
+AGENT_REACH_SHA_PATTERN = r'[0-9a-f]{40}'
+NPM_VERSION_PATTERN = r'[0-9]+\.[0-9]+\.[0-9]+'
 
 
 def fetch_json(url):
@@ -26,31 +30,37 @@ def fetch_json(url):
             time.sleep(attempt + 1)
 
 
+def _resolve_agent_reach():
+    data = fetch_json(GITHUB_API_URL)
+    if not isinstance(data, dict):
+        raise ValueError('unexpected response structure for agent-reach latest')
+    repo_full_name = data.get('repository', {}).get('full_name', '')
+    if repo_full_name != 'Panniantong/Agent-Reach':
+        raise ValueError('agent-reach response repository mismatch')
+    ref = data.get('ref', '')
+    if ref != 'refs/heads/main':
+        raise ValueError('agent-reach response ref mismatch')
+    return data.get('sha', '')
+
+
+def _resolve_npm_package(package):
+    url = NPM_REGISTRY_URL + quote(package, safe='@')
+    data = fetch_json(url)
+    if not isinstance(data, dict):
+        raise ValueError('unexpected npm response structure')
+    return data.get('dist-tags', {}).get('latest', '')
+
+
 def resolve(package, requested):
     if package not in PACKAGES:
         raise ValueError('unsupported managed CLI')
     version = requested
     if requested == 'latest':
         if package == 'agent-reach':
-            data = fetch_json('https://api.github.com/repos/Panniantong/Agent-Reach/commits/main')
-            # Validate response shape - must be a dict with a valid SHA
-            if not isinstance(data, dict):
-                raise ValueError('unexpected response structure for agent-reach latest')
-            # Validate repository and ref
-            repo_full_name = data.get('repository', {}).get('full_name', '')
-            if repo_full_name != 'Panniantong/Agent-Reach':
-                raise ValueError('agent-reach response repository mismatch')
-            ref = data.get('ref', '')
-            if ref != 'refs/heads/main':
-                raise ValueError('agent-reach response ref mismatch')
-            version = data.get('sha', '')
+            version = _resolve_agent_reach()
         else:
-            data = fetch_json('https://registry.npmjs.org/' + quote(package, safe='@'))
-            # Validate npm response structure before accessing nested keys
-            if not isinstance(data, dict):
-                raise ValueError('unexpected npm response structure')
-            version = data.get('dist-tags', {}).get('latest', '')
-    pattern = r'[0-9a-f]{40}' if package == 'agent-reach' else r'[0-9]+\.[0-9]+\.[0-9]+'
+            version = _resolve_npm_package(package)
+    pattern = AGENT_REACH_SHA_PATTERN if package == 'agent-reach' else NPM_VERSION_PATTERN
     if not isinstance(version, str) or not re.fullmatch(pattern, version):
         raise ValueError(f'invalid resolved version for {package}')
     return version

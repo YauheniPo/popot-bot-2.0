@@ -30,23 +30,20 @@ class TestSecurityFixes(unittest.TestCase):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
     def test_revision_format_validation(self):
-        """Test revision format validation (security fix)"""
+        """Test revision format validation (security fix)
         # Test the specific security fix in install-agent-reach.py
         # Line 36-37: Validate requested revision format early - fail fast before any subprocess call
+        """
 
         # Test valid revision formats
         valid_revisions = ['latest', 'a' * 40]  # SHA-1
 
         # Test valid revisions (should not raise)
         for revision in valid_revisions:
-            try:
-                # This is the exact validation logic from install-agent-reach.py line 36-37
-                if revision != 'latest' and not re.fullmatch(r'[0-9a-f]{40}', revision):
-                    raise ValueError('Agent-Reach revision must be a full commit SHA or "latest"')
-                # If no exception, test passes
-                pass
-            except Exception as e:
-                self.fail(f"Valid revision '{revision}' raised exception: {e}")
+            # This is the exact validation logic from install-agent-reach.py line 36-37
+            if revision != 'latest' and not re.fullmatch(r'[0-9a-f]{40}', revision):
+                raise ValueError('Agent-Reach revision must be a full commit SHA or "latest"')
+            # If no exception, test passes
 
         # Test invalid revision formats
         invalid_revisions = [
@@ -64,12 +61,12 @@ class TestSecurityFixes(unittest.TestCase):
                 # This is the exact validation logic from install-agent-reach.py line 36-37
                 if revision != 'latest' and not re.fullmatch(r'[0-9a-f]{40}', revision):
                     raise ValueError('Agent-Reach revision must be a full commit SHA or "latest"')
-
             self.assertIn('revision must be a full commit SHA or "latest"', str(context.exception))
 
     def test_revision_type_validation(self):
-        """Test revision type validation after YAML load (security fix)"""
+        """Test revision type validation after YAML load (security fix)
         # Test that revision from YAML is validated as a string
+        """
 
         # Valid settings with string revision
         valid_settings = {
@@ -103,8 +100,9 @@ class TestSecurityFixes(unittest.TestCase):
             self.assertIn('must be a string', str(context.exception))
 
     def test_settings_structure_validation(self):
-        """Test settings structure validation (security fix)"""
+        """Test settings structure validation (security fix)
         # Test that vps_tools is a mapping
+        """
 
         # Valid settings with dict vps_tools
         valid_settings = {
@@ -134,31 +132,27 @@ class TestSecurityFixes(unittest.TestCase):
             self.assertIn('must be a mapping', str(context.exception))
 
     def test_error_message_sanitization(self):
-        """Test that error messages are sanitized to avoid leaking exception details (security fix)"""
+        """Test that error messages are sanitized to avoid leaking exception details (security fix)
         # Test that subprocess errors are caught and sanitized
+        """
 
         # Simulate a subprocess error with sensitive data
         def mock_run(args, timeout=60):
             raise subprocess.CalledProcessError(
-                1, 
-                args, 
+                1,
+                args,
                 output="secret password: admin@example.com"
             )
 
         # The security fix should catch this and provide a sanitized error
         # without leaking sensitive information
-        try:
+        with self.assertRaises(subprocess.SubprocessError):
             mock_run(['test'])
-            self.fail("Should have raised subprocess.SubprocessError")
-        except subprocess.SubprocessError as e:
-            # Error should be caught and sanitized
-            # In the actual implementation, this would be caught and logged
-            # without exposing the sensitive data
-            pass
 
     def test_symlink_escape_prevention(self):
-        """Test symlink escape prevention (security fix)"""
+        """Test symlink escape prevention (security fix)
         # Test that symlinks are validated to prevent path traversal
+        """
 
         # Create a test directory
         test_file = self.test_dir / 'test_file'
@@ -171,8 +165,9 @@ class TestSecurityFixes(unittest.TestCase):
         self.assertTrue(str(resolved_path).startswith(str(self.test_dir)))
 
     def test_response_size_capping(self):
-        """Test response size capping (security fix)"""
+        """Test response size capping (security fix)
         # Test that HTTP responses are capped to prevent memory exhaustion
+        """
 
         # Simulate a large response
         large_content = 'x' * 10000000  # 10MB
@@ -188,8 +183,9 @@ class TestSecurityFixes(unittest.TestCase):
             self.assertIn('Response too large', str(context.exception))
 
     def test_uv_executable_validation(self):
-        """Test uv executable validation (security fix)"""
+        """Test uv executable validation (security fix)
         # Test that uv is executable before using it
+        """
 
         # Create a non-executable uv
         fake_uv = self.test_dir / 'bin' / 'fake_uv'
@@ -205,8 +201,9 @@ class TestSecurityFixes(unittest.TestCase):
             self.assertIn('uv is not executable', str(context.exception))
 
     def test_launcher_validation(self):
-        """Test launcher validation (security fix)"""
+        """Test launcher validation (security fix)
         # Test that existing launchers are properly validated
+        """
 
         # Create a launcher directory
         launcher = self.test_dir / '.local/bin' / 'agent-reach'
