@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 import shutil
 import yaml
+from urllib.error import URLError
 
 ORIGINAL_SCRIPT = Path(__file__).parent / 'install-agent-reach.py'
 ORIGINAL_RESOLVER = Path(__file__).parent / 'resolve-tool-version.py'
@@ -265,7 +266,7 @@ class InstallAgentReachResolveToolVersionTests(unittest.TestCase):
     def test_fetch_json_retry_and_error(self):
         """Test fetch_json retries and raises RuntimeError on failure."""
         with mock.patch.object(self.resolver, 'urlopen') as mock_urlopen:
-            mock_urlopen.side_effect = Exception('network error')
+            mock_urlopen.side_effect = URLError('network error')
             with self.assertRaises(RuntimeError):
                 self.resolver.fetch_json('http://example.com')
             # Should have retried 3 times
