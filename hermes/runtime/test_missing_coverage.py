@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests to cover missing lines in install-agent-reach.py for coverage."""
 
+import argparse
 import io
 import importlib.util
 import json
@@ -178,6 +179,42 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
              self.assertRaises(SystemExit) as cm:
             sys.exit(self.module.main())
         self.assertEqual(cm.exception.code, 1)
+
+
+    def test_settings_helper_accepts_latest_and_full_sha(self):
+        settings_file = self.fake_hermes_config / 'valid.yml'
+        for revision in ('latest', 'a' * 40):
+            with self.subTest(revision=revision):
+                settings_file.write_text(yaml.safe_dump({
+                    'vps_tools': {'agent_reach': {'revision': revision}}
+                }))
+                result = self.module._determine_revision_from_settings(
+                    settings_file, self.fake_hermes_config, argparse.ArgumentParser()
+                )
+                self.assertEqual(result, revision)
+
+    def test_settings_helper_rejects_paths_before_reading(self):
+        outside = self.temp_base / 'outside.yml'
+        outside.write_text('{}')
+        directory_link = self.fake_hermes_config / 'directory.yml'
+        directory_link.symlink_to(self.fake_hermes_config)
+        wrong_extension = self.fake_hermes_config / 'settings.txt'
+        wrong_extension.write_text('{}')
+        cases = (
+            (outside, 'path must be under'),
+            (directory_link, 'must be a regular file'),
+            (wrong_extension, 'must be a .yml or .yaml file'),
+        )
+        for path, message in cases:
+            with self.subTest(path=path):
+                parser = argparse.ArgumentParser()
+                with mock.patch.object(sys, 'stderr', new_callable=io.StringIO) as stderr:
+                    with self.assertRaises(SystemExit) as error:
+                        self.module._determine_revision_from_settings(
+                            path, self.fake_hermes_config, parser
+                        )
+                self.assertEqual(error.exception.code, 2)
+                self.assertIn(message, stderr.getvalue())
 
 
 class InstallAgentReachResolveToolVersionTests(unittest.TestCase):

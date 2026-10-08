@@ -155,48 +155,63 @@ def _resolve_uv_or_error(hermes_home, parser):
     return uv
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def _parse_args(parser):
+    """Parse and validate command line arguments."""
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument('--settings', type=Path)
     source.add_argument('--revision')
-    args = parser.parse_args()
-    # Determine revision
+    return parser.parse_args()
+
+
+def _determine_revision_from_settings(settings_path, config_root, parser):
+    """Load and validate revision from settings file."""
+    # Resolve symlinks and verify path stays within config_root
+    try:
+        resolved_path = settings_path.resolve()
+        resolved_path.relative_to(config_root.resolve())
+    except ValueError:
+        parser.error(f'--settings path must be under {config_root}')
+    if not resolved_path.is_file():
+        parser.error(f'--settings must be a regular file under {config_root}')
+    if settings_path.suffix not in ('.yml', '.yaml'):
+        parser.error('--settings must be a .yml or .yaml file')
+    import yaml
+    settings = yaml.safe_load(settings_path.read_text(encoding='utf-8'))
+    if not isinstance(settings, dict):
+        raise ValueError('settings must be a mapping')
+    vps_tools = settings.get('vps_tools')
+    if not isinstance(vps_tools, dict):
+        raise ValueError('settings: vps_tools must be a mapping')
+    agent_reach = vps_tools.get('agent_reach')
+    if not isinstance(agent_reach, dict):
+        raise ValueError('settings: vps_tools.agent_reach must be a mapping')
+    revision = agent_reach.get('revision')
+    if not isinstance(revision, str):
+        raise ValueError('settings: vps_tools.agent_reach.revision must be a string')
+    if revision != 'latest' and not re.fullmatch(SHA_PATTERN, revision):
+        raise ValueError('Agent-Reach revision from settings must be a full commit SHA or "latest"')
+    return revision
+
+
+def _determine_revision(args, parser):
+    """Determine the revision from args (settings or direct revision)."""
     if args.settings is not None:
         settings_path = args.settings
-        # Validate settings path: must be within config root and have safe extension
         config_root = Path(__file__).resolve().parents[1] / 'config'
-        try:
-            # Resolve symlinks and verify path stays within config_root
-            resolved_path = settings_path.resolve()
-            resolved_path.relative_to(config_root.resolve())
-            # Ensure the resolved path is a regular file, not a symlink outside config_root
-            if not resolved_path.is_file():
-                parser.error(f'--settings must be a regular file under {config_root}')
-        except ValueError:
-            parser.error(f'--settings path must be under {config_root}')
-        if settings_path.suffix not in ('.yml', '.yaml'):
-            parser.error('--settings must be a .yml or .yaml file')
-        import yaml
-        settings = yaml.safe_load(settings_path.read_text(encoding='utf-8'))
-        # Validate settings structure and revision key presence/type
-        if not isinstance(settings, dict):
-            raise ValueError('settings must be a mapping')
-        vps_tools = settings.get('vps_tools')
-        if not isinstance(vps_tools, dict):
-            raise ValueError('settings: vps_tools must be a mapping')
-        agent_reach = vps_tools.get('agent_reach')
-        if not isinstance(agent_reach, dict):
-            raise ValueError('settings: vps_tools.agent_reach must be a mapping')
-        revision = agent_reach.get('revision')
-        if not isinstance(revision, str):
-            raise ValueError('settings: vps_tools.agent_reach.revision must be a string')
-        # Re-validate revision after YAML load
-        if revision != 'latest' and not re.fullmatch(SHA_PATTERN, revision):
-            raise ValueError('Agent-Reach revision from settings must be a full commit SHA or "latest"')
-    else:
-        revision = args.revision
-    hermes_home = Path(os.environ.get('HERMES_HOME') or Path.home() / '.hermes')
+        return _determine_revision_from_settings(settings_path, config_root, parser)
+    return args.revision
+
+
+def _get_hermes_home():
+    """Get Hermes home directory from environment or default."""
+    return Path(os.environ.get('HERMES_HOME') or Path.home() / '.hermes')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    args = _parse_args(parser)
+    revision = _determine_revision(args, parser)
+    hermes_home = _get_hermes_home()
     uv = _resolve_uv_or_error(hermes_home, parser)
     try:
         changed = install(Path.home(), revision, uv)

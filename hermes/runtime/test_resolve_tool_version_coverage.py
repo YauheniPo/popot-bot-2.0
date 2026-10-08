@@ -194,5 +194,32 @@ class ToolVersionCoverageTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), '1.2.3\n')
 
 
+    def test_fetch_json_value_error_on_last_attempt(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b'not valid json'
+        with mock.patch.object(self.module, 'urlopen', return_value=response) as urlopen:
+            with mock.patch.object(self.module.time, 'sleep') as sleep:
+                with self.assertRaisesRegex(RuntimeError, 'JSONDecodeError'):
+                    self.module.fetch_json('https://example.com')
+        self.assertEqual(urlopen.call_count, 3)
+        self.assertEqual(sleep.call_args_list, [mock.call(1), mock.call(2)])
+
+    def test_resolve_agent_reach_success(self):
+        sha = 'a' * 40
+        with mock.patch.object(self.module, 'fetch_json', return_value={
+            'sha': sha, 'url': self.module.AGENT_REACH_COMMITS_URL + sha
+        }):
+            self.assertEqual(self.module._resolve_agent_reach(), sha)
+
+    def test_script_prints_explicit_sha(self):
+        sha = 'a' * 40
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), '--package', 'agent-reach', '--requested', sha],
+            capture_output=True, text=True, timeout=5
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), sha)
+
+
 if __name__ == '__main__':
     unittest.main()

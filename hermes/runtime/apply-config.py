@@ -406,6 +406,80 @@ def _managed_compression_operations(route: Any, current_config: dict[str, Any]) 
     return operations
 
 
+def _build_runtime_operations(runtime, current_config, variables):
+    """Build operations for runtime settings."""
+    return _set_operations(runtime, current_config, variables)
+
+
+def _build_workspace_ui_operations(settings, current_config, runtime, operations):
+    """Build operations for workspace UI owned sections."""
+    if not settings.get('vps_deploy', {}).get('features', {}).get('workspace_ui', False):
+        return operations
+    owned = settings.get('vps_hermes', {}).get('config', {}).get('ui_owned_sections', [])
+    allowed = {'model', 'fallback_providers', 'auxiliary', 'compression', 'cron',
+               'user_char_limit', 'memory_char_limit', 'display', 'session_reset'}
+    if not isinstance(owned, list) or any(not isinstance(key, str) or key not in allowed for key in owned):
+        raise ValueError('vps_hermes.config.ui_owned_sections contains an unsupported section')
+    # Seed missing values, but preserve choices made through either UI.
+    # Infrastructure/safety settings and capability overrides remain managed.
+    operations = [op for op in operations if
+                  op.key.split('.')[0] not in owned or not nested_value(current_config, op.key)[0]]
+    # The legacy interrupt mode cancels long-running work on every follow-up.
+    # Keep queue/steer user-owned, but repair interrupt at deploy time.
+    exists, value = nested_value(current_config, _BUSY_INPUT_MODE_KEY)
+    if exists and value == 'interrupt':
+        desired_mode = runtime.get('set', {}).get(_BUSY_INPUT_MODE_KEY)
+        if desired_mode == 'steer':
+            operations.append(Operation('set', _BUSY_INPUT_MODE_KEY, desired_mode))
+    return operations
+
+
+def _build_additional_runtime_operations(runtime, current_config, variables, operations):
+    """Build additional runtime operations (missing/unset)."""
+    operations.extend(_set_if_missing_operations(runtime, current_config, variables))
+    operations.extend(_unset_operations(runtime, current_config))
+    return operations
+
+
+def _build_capability_operations(capability_settings, capabilities, current_config, variables, operations):
+    """Build operations for capabilities."""
+    operations.extend(_capability_operations(capability_settings, capabilities, current_config, variables))
+    return operations
+
+
+def _build_route_operations(settings, current_config, operations):
+    """Build operations for managed model/exclusion routes."""
+    # Managed policy wins over UI-owned sections and legacy runtime pins.
+    route_values = {**managed_model_values(settings), **managed_exclusion_values(settings)}
+    operations = [op for op in operations if op.key not in route_values]
+    operations.extend(Operation('set', key, value) for key, value in route_values.items()
+                      if nested_value(current_config, key) != (True, value))
+    return operations
+
+
+def _build_compression_operations(settings, current_config, operations):
+    """Build operations for managed compression settings."""
+    compression_exists, compression_route = nested_value(settings, 'vps_hermes.config.managed_overlay.auxiliary.compression')
+    if compression_exists:
+        route_keys = {'auxiliary.compression.' + field for field in ('provider', 'model', 'fallback_chain')}
+        if isinstance(compression_route, dict) and 'reasoning_effort' in compression_route:
+            route_keys.add('auxiliary.compression.reasoning_effort')
+        operations = [op for op in operations if op.key not in route_keys]
+        operations.extend(_managed_compression_operations(compression_route, current_config))
+    return operations
+
+
+def _build_ceiling_operations(settings, current_config, operations):
+    """Build operations for context ceiling setting."""
+    ceiling_key = 'compression.context_total_ceiling_seconds'
+    ceiling_exists, ceiling = nested_value(settings, 'vps_hermes.config.managed_overlay.' + ceiling_key)
+    if ceiling_exists:
+        operations = [op for op in operations if op.key != ceiling_key]
+        if nested_value(current_config, ceiling_key) != (True, ceiling):
+            operations.append(Operation('set', ceiling_key, ceiling))
+    return operations
+
+
 def build_operations(
     settings: dict[str, Any],
     current_config: dict[str, Any],
@@ -416,53 +490,19 @@ def build_operations(
     if not isinstance(runtime, dict):
         raise ValueError("vps_runtime must be a mapping")
 
-    operations = _set_operations(runtime, current_config, variables)
-    if settings.get('vps_deploy', {}).get('features', {}).get('workspace_ui', False):
-        owned = settings.get('vps_hermes', {}).get('config', {}).get('ui_owned_sections', [])
-        allowed = {'model', 'fallback_providers', 'auxiliary', 'compression', 'cron',
-                   'user_char_limit', 'memory_char_limit', 'display', 'session_reset'}
-        if not isinstance(owned, list) or any(not isinstance(key, str) or key not in allowed for key in owned):
-            raise ValueError('vps_hermes.config.ui_owned_sections contains an unsupported section')
-        # Seed missing values, but preserve choices made through either UI.
-        # Infrastructure/safety settings and capability overrides remain managed.
-        operations = [op for op in operations if
-                      op.key.split('.')[0] not in owned or not nested_value(current_config, op.key)[0]]
-        # The legacy interrupt mode cancels long-running work on every follow-up.
-        # Keep queue/steer user-owned, but repair interrupt at deploy time.
-        exists, value = nested_value(current_config, _BUSY_INPUT_MODE_KEY)
-        if exists and value == 'interrupt':
-            desired_mode = runtime.get('set', {}).get(_BUSY_INPUT_MODE_KEY)
-            if desired_mode == 'steer':
-                operations.append(Operation('set', _BUSY_INPUT_MODE_KEY, desired_mode))
-    operations.extend(_set_if_missing_operations(runtime, current_config, variables))
-    operations.extend(_unset_operations(runtime, current_config))
+    operations = _build_runtime_operations(runtime, current_config, variables)
+    operations = _build_workspace_ui_operations(settings, current_config, runtime, operations)
+    operations = _build_additional_runtime_operations(runtime, current_config, variables, operations)
 
     capability_settings = runtime.get("capabilities", {})
     if not isinstance(capability_settings, dict):
         raise ValueError("vps_runtime.capabilities must be a mapping")
-    operations.extend(
-        _capability_operations(capability_settings, capabilities, current_config, variables)
-    )
+    operations = _build_capability_operations(capability_settings, capabilities, current_config, variables, operations)
 
-    # Route policy wins over UI-owned sections and legacy runtime pins. Keep
-    # token budgets and other UI settings intact except explicit managed controls below.
-    route_values = {**managed_model_values(settings), **managed_exclusion_values(settings)}
-    operations = [op for op in operations if op.key not in route_values]
-    operations.extend(Operation('set', key, value) for key, value in route_values.items()
-                      if nested_value(current_config, key) != (True, value))
-    compression_exists, compression_route = nested_value(settings, 'vps_hermes.config.managed_overlay.auxiliary.compression')
-    if compression_exists:
-        route_keys = {'auxiliary.compression.' + field for field in ('provider', 'model', 'fallback_chain')}
-        if isinstance(compression_route, dict) and 'reasoning_effort' in compression_route:
-            route_keys.add('auxiliary.compression.reasoning_effort')
-        operations = [op for op in operations if op.key not in route_keys]
-        operations.extend(_managed_compression_operations(compression_route, current_config))
-    ceiling_key = 'compression.context_total_ceiling_seconds'
-    ceiling_exists, ceiling = nested_value(settings, 'vps_hermes.config.managed_overlay.' + ceiling_key)
-    if ceiling_exists:
-        operations = [op for op in operations if op.key != ceiling_key]
-        if nested_value(current_config, ceiling_key) != (True, ceiling):
-            operations.append(Operation('set', ceiling_key, ceiling))
+    operations = _build_route_operations(settings, current_config, operations)
+    operations = _build_compression_operations(settings, current_config, operations)
+    operations = _build_ceiling_operations(settings, current_config, operations)
+
     return operations
 
 
