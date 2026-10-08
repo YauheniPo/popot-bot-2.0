@@ -5,6 +5,7 @@ import argparse
 import io
 import importlib.util
 import json
+import runpy
 import sys
 import tempfile
 import unittest
@@ -163,13 +164,14 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
     # ---- line 150: sys.exit(main()) entry point ----
     def test_line_150_sys_exit_entry_point(self):
         """Line 150: sys.exit(main()) entry point."""
+        script = str(ORIGINAL_SCRIPT)
         # Test with missing required arguments -> should error and exit with code 2 (argparse)
         with mock.patch('shutil.which', return_value='/usr/bin/uv'), \
              mock.patch('pathlib.Path.home', return_value=self.temp_base), \
              mock.patch('sys.argv', ['install-agent-reach.py']), \
              mock.patch('sys.stderr', new_callable=io.StringIO), \
              self.assertRaises(SystemExit) as cm:
-            sys.exit(self.module.main())
+            runpy.run_path(script, run_name='__main__')
         self.assertEqual(cm.exception.code, 2)
         # Test with invalid revision -> should error and exit with code 1 (ValueError caught in main)
         with mock.patch('shutil.which', return_value='/usr/bin/uv'), \
@@ -177,7 +179,7 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
              mock.patch('sys.argv', ['install-agent-reach.py', '--revision', 'invalid']), \
              mock.patch('sys.stderr', new_callable=io.StringIO), \
              self.assertRaises(SystemExit) as cm:
-            sys.exit(self.module.main())
+            runpy.run_path(script, run_name='__main__')
         self.assertEqual(cm.exception.code, 1)
 
 
@@ -215,6 +217,14 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
                         )
                 self.assertEqual(error.exception.code, 2)
                 self.assertIn(message, stderr.getvalue())
+
+    def test_installed_from_false_when_json_error(self):
+        python = self.temp_base / 'python'
+        python.touch()
+        with mock.patch.object(self.module, 'run', return_value='invalid json') as runner:
+            result = self.module.installed_from(python, 'https://example.com/package.zip')
+        self.assertIs(result, False)
+        runner.assert_called_once_with([str(python), '-c', self.module.METADATA])
 
 
 class InstallAgentReachResolveToolVersionTests(unittest.TestCase):

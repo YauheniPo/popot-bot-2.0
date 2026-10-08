@@ -137,9 +137,15 @@ class AgentReachInstallTests(unittest.TestCase):
 
     def test_main_passes_custom_hermes_home_to_uv_resolution(self):
         custom_home = self.home / 'custom-state'
-        with mock.patch.dict(os.environ, {'HERMES_HOME': str(custom_home)}), mock.patch.object(self.module.sys, 'argv', ['install-agent-reach.py', '--revision', self.pin]), mock.patch.object(self.module, 'resolve_uv', return_value='/managed/uv') as resolver, mock.patch.object(self.module, 'install', return_value=False):
+        with mock.patch.dict(os.environ, {'HERMES_HOME': str(custom_home)}), \
+                mock.patch.object(self.module.Path, 'home', return_value=self.home), \
+                mock.patch.object(self.module.sys, 'argv', ['install-agent-reach.py', '--revision', self.pin]), \
+                mock.patch.object(self.module, 'resolve_uv', return_value='/managed/uv') as resolver, \
+                mock.patch.object(self.module, 'install', return_value=False) as installer:
             self.assertEqual(self.module.main(), 0)
         resolver.assert_called_once_with(custom_home)
+        installer.assert_called_once_with(self.home, self.pin, '/managed/uv')
+
     def test_installed_false_when_python_missing(self):
         # installed_from should return False when python executable does not exist
         from pathlib import Path

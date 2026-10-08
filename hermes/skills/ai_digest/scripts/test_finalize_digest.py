@@ -42,8 +42,9 @@ class FinalizeDigestTests(unittest.TestCase):
                 with self.subTest(original=original, replacement=replacement):
                     with tempfile.TemporaryDirectory() as directory:
                         state = Path(directory)
+                        draft = VALID.replace(original, replacement)
                         with self.assertRaisesRegex(ValueError, 'analysis'):
-                            stage(RAW, VALID.replace(original, replacement), state)
+                            stage(RAW, draft, state)
                         self.assertFalse((state / f"staged-{RAW['run_id']}.md").exists())
 
     def test_placeholder_sections_are_completed_as_explicitly_unavailable(self):
