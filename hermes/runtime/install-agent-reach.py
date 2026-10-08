@@ -201,10 +201,7 @@ def _determine_revision(args, parser):
     if args.settings is not None:
         settings_path = args.settings
         config_root = Path(__file__).resolve().parents[1] / 'config'
-        try:
-            return _determine_revision_from_settings(settings_path, config_root, parser)
-        except ValueError:
-            raise
+        return _determine_revision_from_settings(settings_path, config_root, parser)
     return args.revision
 
 

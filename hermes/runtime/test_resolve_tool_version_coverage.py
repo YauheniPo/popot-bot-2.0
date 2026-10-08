@@ -196,10 +196,10 @@ class ToolVersionCoverageTests(unittest.TestCase):
         self.assertEqual(result.stdout.strip(), 'a' * 40)
 
     def test_entry_point_prints_explicit_pin_and_exits_successfully(self):
-        with mock.patch.object(sys, 'argv', [str(SCRIPT), '--package', 'agent-browser', '--requested', '1.2.3']), \
-                mock.patch.object(sys, 'stdout', new_callable=io.StringIO) as stdout, \
-                mock.patch.object(sys, 'exit') as exit_call:
-            runpy.run_path(str(SCRIPT), run_name='__main__')
+        with mock.patch.object(sys, 'argv', [str(SCRIPT), '--package', 'agent-browser', '--requested', '1.2.3']):
+            with mock.patch.object(sys, 'stdout', new_callable=io.StringIO) as stdout:
+                with mock.patch.object(sys, 'exit') as exit_call:
+                    runpy.run_path(str(SCRIPT), run_name='__main__')
         exit_call.assert_called_once_with(0)
         self.assertEqual(stdout.getvalue(), '1.2.3\n')
 

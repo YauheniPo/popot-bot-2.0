@@ -49,15 +49,15 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
     def test_line_37_latest_revision_block(self):
         """Line 37: revision == 'latest' triggers resolution via resolve_tool_version.py"""
         fake_sha = 'a' * 40
-        with mock.patch.object(self.module, '__file__', str(ORIGINAL_SCRIPT)), \
-             mock.patch('shutil.which', return_value='/usr/bin/uv'), \
-             mock.patch('pathlib.Path.home', return_value=self.temp_base), \
-             mock.patch.object(self.module, '_resolve_latest_revision', return_value=fake_sha), \
-             mock.patch.object(self.module, 'installed_from', return_value=True), \
-             mock.patch.object(self.module, 'installed_versions', return_value={'agent-reach': '1.0.0'}), \
-             mock.patch('sys.argv', ['install-agent-reach.py', '--revision', 'latest']):
-            result = self.module.main()
-            self.assertIn(result, (True, False))
+        with mock.patch.object(self.module, '__file__', str(ORIGINAL_SCRIPT)):
+            with mock.patch('shutil.which', return_value='/usr/bin/uv'):
+                with mock.patch('pathlib.Path.home', return_value=self.temp_base):
+                    with mock.patch.object(self.module, '_resolve_latest_revision', return_value=fake_sha):
+                        with mock.patch.object(self.module, 'installed_from', return_value=True):
+                            with mock.patch.object(self.module, 'installed_versions', return_value={'agent-reach': '1.0.0'}):
+                                with mock.patch('sys.argv', ['install-agent-reach.py', '--revision', 'latest']):
+                                    result = self.module.main()
+        self.assertIn(result, (True, False))
 
     # ---- lines 114-115: settings path is_file() check (symlink to directory) ----
     def test_lines_114_115_settings_is_file_symlink_to_dir(self):
@@ -70,20 +70,20 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
             settings_symlink.unlink()
         settings_symlink.symlink_to(target_dir)
         # Mock parser.error to avoid sys.exit
-        with mock.patch.object(self.module, '__file__', str(ORIGINAL_SCRIPT)), \
-             mock.patch('shutil.which', return_value='/usr/bin/uv'), \
-             mock.patch('pathlib.Path.home', return_value=self.temp_base), \
-             mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_symlink)]), \
-             mock.patch.object(self.module.argparse.ArgumentParser, 'error') as mock_error, \
-             mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr:
-            mock_error.side_effect = SystemExit(2)
-            with self.assertRaises(SystemExit) as cm:
-                self.module.main()
-            self.assertEqual(cm.exception.code, 2)
-            # Check that parser.error was called with the expected message
-            mock_error.assert_called()
-            args = mock_error.call_args[0][0]
-            self.assertIn('regular file', args)
+        with mock.patch.object(self.module, '__file__', str(ORIGINAL_SCRIPT)):
+            with mock.patch('shutil.which', return_value='/usr/bin/uv'):
+                with mock.patch('pathlib.Path.home', return_value=self.temp_base):
+                    with mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_symlink)]):
+                        with mock.patch.object(self.module.argparse.ArgumentParser, 'error') as mock_error:
+                            with mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr:
+                                mock_error.side_effect = SystemExit(2)
+                                with self.assertRaises(SystemExit) as cm:
+                                    self.module.main()
+                            self.assertEqual(cm.exception.code, 2)
+                            # Check that parser.error was called with the expected message
+                            mock_error.assert_called()
+                            args = mock_error.call_args[0][0]
+                            self.assertIn('regular file', args)
         # Cleanup
         settings_symlink.unlink(missing_ok=True)
         target_dir.rmdir()
@@ -96,17 +96,17 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
         if settings_file.exists():
             settings_file.unlink()
         settings_file.write_text('{}')
-        with mock.patch.object(self.module, '__file__', str(ORIGINAL_SCRIPT)), \
-             mock.patch('shutil.which', return_value='/usr/bin/uv'), \
-             mock.patch('pathlib.Path.home', return_value=self.temp_base), \
-             mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_file)]), \
-             mock.patch.object(self.module.argparse.ArgumentParser, 'error') as mock_error, \
-             mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr:
-            mock_error.side_effect = SystemExit(2)
-            with self.assertRaises(SystemExit) as cm:
-                self.module.main()
-            self.assertEqual(cm.exception.code, 2)
-            mock_error.assert_called()
+        with mock.patch.object(self.module, '__file__', str(ORIGINAL_SCRIPT)):
+            with mock.patch('shutil.which', return_value='/usr/bin/uv'):
+                with mock.patch('pathlib.Path.home', return_value=self.temp_base):
+                    with mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_file)]):
+                        with mock.patch.object(self.module.argparse.ArgumentParser, 'error') as mock_error:
+                            with mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr:
+                                mock_error.side_effect = SystemExit(2)
+                                with self.assertRaises(SystemExit) as cm:
+                                    self.module.main()
+                            self.assertEqual(cm.exception.code, 2)
+                            mock_error.assert_called()
             args = mock_error.call_args[0][0]
             self.assertIn('.yml or .yaml', args)
         # Cleanup
@@ -120,12 +120,12 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
         settings_file = REAL_CONFIG / 'test_missing_coverage_vps_tools_not_dict.yml'
         settings_file.write_text(yaml.dump(settings))
         try:
-            with mock.patch('shutil.which', return_value='/usr/bin/uv'), \
-                 mock.patch('pathlib.Path.home', return_value=self.temp_base), \
-                 mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_file)]), \
-                 mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr, \
-                 self.assertRaises(ValueError) as cm:
-                self.module.main()
+            with mock.patch('shutil.which', return_value='/usr/bin/uv'):
+                with mock.patch('pathlib.Path.home', return_value=self.temp_base):
+                    with mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_file)]):
+                        with mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr:
+                            with self.assertRaises(ValueError) as cm:
+                                self.module.main()
                 self.assertIn('vps_tools must be a mapping', str(cm.exception))
         finally:
             settings_file.unlink(missing_ok=True)
@@ -136,12 +136,12 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
         settings_file = REAL_CONFIG / 'test_missing_coverage_agent_reach_not_dict.yml'
         settings_file.write_text(yaml.dump(settings))
         try:
-            with mock.patch('shutil.which', return_value='/usr/bin/uv'), \
-                 mock.patch('pathlib.Path.home', return_value=self.temp_base), \
-                 mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_file)]), \
-                 mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr, \
-                 self.assertRaises(ValueError) as cm:
-                self.module.main()
+            with mock.patch('shutil.which', return_value='/usr/bin/uv'):
+                with mock.patch('pathlib.Path.home', return_value=self.temp_base):
+                    with mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_file)]):
+                        with mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr:
+                            with self.assertRaises(ValueError) as cm:
+                                self.module.main()
                 self.assertIn('vps_tools.agent_reach must be a mapping', str(cm.exception))
         finally:
             settings_file.unlink(missing_ok=True)
@@ -152,11 +152,11 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
         settings_file = REAL_CONFIG / 'test_missing_coverage_revision_not_string.yml'
         settings_file.write_text(yaml.dump(settings))
         try:
-            with mock.patch('shutil.which', return_value='/usr/bin/uv'), \
-                 mock.patch('pathlib.Path.home', return_value=self.temp_base), \
-                 mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_file)]), \
-                 mock.patch('sys.stderr', new_callable=io.StringIO):
-                self.module.main()
+            with mock.patch('shutil.which', return_value='/usr/bin/uv'):
+                with mock.patch('pathlib.Path.home', return_value=self.temp_base):
+                    with mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_file)]):
+                        with mock.patch('sys.stderr', new_callable=io.StringIO):
+                            self.module.main()
         except ValueError as e:
             self.assertIn('revision must be a string', str(e))
         finally:
@@ -168,11 +168,11 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
         settings_file = REAL_CONFIG / 'test_missing_coverage_revision_invalid_sha.yml'
         settings_file.write_text(yaml.dump(settings))
         try:
-            with mock.patch('shutil.which', return_value='/usr/bin/uv'), \
-                 mock.patch('pathlib.Path.home', return_value=self.temp_base), \
-                 mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_file)]), \
-                 mock.patch('sys.stderr', new_callable=io.StringIO):
-                self.module.main()
+            with mock.patch('shutil.which', return_value='/usr/bin/uv'):
+                with mock.patch('pathlib.Path.home', return_value=self.temp_base):
+                    with mock.patch('sys.argv', ['install-agent-reach.py', '--settings', str(settings_file)]):
+                        with mock.patch('sys.stderr', new_callable=io.StringIO):
+                            self.module.main()
         except ValueError as e:
             self.assertIn('Agent-Reach revision from settings must be a full commit SHA or', str(e))
         finally:
@@ -182,20 +182,20 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
     def test_line_150_sys_exit_entry_point(self):
         """Line 150: sys.exit(main()) entry point."""
         # Test with missing required arguments -> should error and exit with code 2 (argparse)
-        with mock.patch('shutil.which', return_value='/usr/bin/uv'), \
-             mock.patch('pathlib.Path.home', return_value=self.temp_base), \
-             mock.patch('sys.argv', ['install-agent-reach.py']), \
-             mock.patch('sys.stderr', new_callable=io.StringIO), \
-             self.assertRaises(SystemExit) as cm:
-            sys.exit(self.module.main())
+        with mock.patch('shutil.which', return_value='/usr/bin/uv'):
+            with mock.patch('pathlib.Path.home', return_value=self.temp_base):
+                with mock.patch('sys.argv', ['install-agent-reach.py']):
+                    with mock.patch('sys.stderr', new_callable=io.StringIO):
+                        with self.assertRaises(SystemExit) as cm:
+                            sys.exit(self.module.main())
         self.assertEqual(cm.exception.code, 2)
         # Test with invalid revision -> should error and exit with code 1 (ValueError caught in main)
-        with mock.patch('shutil.which', return_value='/usr/bin/uv'), \
-             mock.patch('pathlib.Path.home', return_value=self.temp_base), \
-             mock.patch('sys.argv', ['install-agent-reach.py', '--revision', 'invalid']), \
-             mock.patch('sys.stderr', new_callable=io.StringIO), \
-             self.assertRaises(SystemExit) as cm:
-            sys.exit(self.module.main())
+        with mock.patch('shutil.which', return_value='/usr/bin/uv'):
+            with mock.patch('pathlib.Path.home', return_value=self.temp_base):
+                with mock.patch('sys.argv', ['install-agent-reach.py', '--revision', 'invalid']):
+                    with mock.patch('sys.stderr', new_callable=io.StringIO):
+                        with self.assertRaises(SystemExit) as cm:
+                            sys.exit(self.module.main())
         self.assertEqual(cm.exception.code, 1)
 
     def test_installed_from_false_when_subprocess_error(self):
@@ -241,7 +241,7 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
                 with mock.patch('sys.stderr', new_callable=io.StringIO) as mock_stderr:
                     with self.assertRaises(SystemExit) as cm:
                         sys.exit(self.module.main())
-                    self.assertEqual(cm.exception.code, 2)
+        self.assertEqual(cm.exception.code, 2)
 
     def test_resolve_latest_revision(self):
         """Test _resolve_latest_revision calls resolve-tool-version.py and returns stdout."""
@@ -352,19 +352,19 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
             home / '.local/bin/yt-dlp': mock_venv / 'bin/yt-dlp'
         }
         mock_url = 'https://github.com/Panniantong/Agent-Reach/archive/' + revision + '.zip'
-        with mock.patch.object(self.module, '_validate_and_prepare', return_value=(mock_venv, mock_python, mock_launchers, mock_url)), \
-             mock.patch.object(self.module, '_check_launchers'), \
-             mock.patch.object(self.module, '_create_venv_if_needed', return_value=False), \
-             mock.patch.object(self.module, 'installed_from', return_value=True), \
-             mock.patch.object(self.module, 'installed_versions', return_value={'yt-dlp': '1.0'}), \
-             mock.patch.object(self.module, '_install_packages'), \
-             mock.patch.object(self.module, '_verify_installation'), \
-             mock.patch.object(self.module, '_run_version_probes'), \
-             mock.patch.object(self.module, '_create_launchers', return_value=False):
-            result = self.module.install(home, revision, uv)
-            # The function may return True or False depending on internal logic
-            # This test just ensures the code path is covered
-            self.assertIn(result, (True, False))
+        with mock.patch.object(self.module, '_validate_and_prepare', return_value=(mock_venv, mock_python, mock_launchers, mock_url)):
+            with mock.patch.object(self.module, '_check_launchers'):
+                with mock.patch.object(self.module, '_create_venv_if_needed', return_value=False):
+                    with mock.patch.object(self.module, 'installed_from', return_value=True):
+                        with mock.patch.object(self.module, 'installed_versions', return_value={'yt-dlp': '1.0'}):
+                            with mock.patch.object(self.module, '_install_packages'):
+                                with mock.patch.object(self.module, '_verify_installation'):
+                                    with mock.patch.object(self.module, '_run_version_probes'):
+                                        with mock.patch.object(self.module, '_create_launchers', return_value=False):
+                                            result = self.module.install(home, revision, uv)
+        # The function may return True or False depending on internal logic
+        # This test just ensures the code path is covered
+        self.assertIn(result, (True, False))
 
     def test_resolve_uv_returns_managed_uv(self):
         """Line 144-146: resolve_uv returns managed uv if exists and executable."""
@@ -457,17 +457,17 @@ class InstallAgentReachMissingCoverageTests(unittest.TestCase):
         """Line 150: sys.exit(main()) entry point."""
         import runpy
         from pathlib import Path
-        with mock.patch('shutil.which', return_value='/usr/bin/uv'), \
-             mock.patch('pathlib.Path.home', return_value=self.temp_base), \
-             mock.patch.object(self.module, 'resolve_uv', return_value='/usr/bin/uv'), \
-             mock.patch.object(self.module, 'install', return_value=0), \
-             mock.patch('sys.argv', ['install-agent-reach.py', '--revision', 'a' * 40]), \
-             mock.patch('sys.stderr', new_callable=io.StringIO), \
-             mock.patch('sys.exit') as mock_exit:
-            # Run the script as __main__ via runpy
-            runpy.run_path(str(self.module.__file__), run_name='__main__')
-            # Check that sys.exit was called once
-            mock_exit.assert_called_once()
+        with mock.patch('shutil.which', return_value='/usr/bin/uv'):
+            with mock.patch('pathlib.Path.home', return_value=self.temp_base):
+                with mock.patch.object(self.module, 'resolve_uv', return_value='/usr/bin/uv'):
+                    with mock.patch.object(self.module, 'install', return_value=0):
+                        with mock.patch('sys.argv', ['install-agent-reach.py', '--revision', 'a' * 40]):
+                            with mock.patch('sys.stderr', new_callable=io.StringIO):
+                                with mock.patch('sys.exit') as mock_exit:
+                                    # Run the script as __main__ via runpy
+                                    runpy.run_path(str(self.module.__file__), run_name='__main__')
+                                    # Check that sys.exit was called once
+                                    mock_exit.assert_called_once()
 
     # ---- New tests to cover missing lines (return after parser.error) ----
     def test_determine_revision_from_settings_path_outside_config_root_returns_none_when_parser_error_mocked(self):
@@ -732,10 +732,10 @@ class InstallAgentReachResolveToolVersionTests(unittest.TestCase):
         self.assertEqual(result.stdout.strip(), 'a' * 40)
 
     def test_entry_point_prints_explicit_pin_and_exits_successfully(self):
-        with mock.patch.object(sys, 'argv', [str(ORIGINAL_RESOLVER), '--package', 'agent-browser', '--requested', '1.2.3']), \
-                mock.patch.object(sys, 'stdout', new_callable=io.StringIO) as stdout, \
-                mock.patch.object(sys, 'exit') as exit_call:
-            runpy.run_path(str(ORIGINAL_RESOLVER), run_name='__main__')
+        with mock.patch.object(sys, 'argv', [str(ORIGINAL_RESOLVER), '--package', 'agent-browser', '--requested', '1.2.3']):
+            with mock.patch.object(sys, 'stdout', new_callable=io.StringIO) as stdout:
+                with mock.patch.object(sys, 'exit') as exit_call:
+                    runpy.run_path(str(ORIGINAL_RESOLVER), run_name='__main__')
         exit_call.assert_called_once_with(0)
         self.assertEqual(stdout.getvalue(), '1.2.3\n')
 
