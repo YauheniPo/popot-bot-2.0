@@ -18,6 +18,42 @@ HERMES_ROOT = Path(__file__).resolve().parents[1]
 
 
 class DeploymentStatePolicyTests(unittest.TestCase):
+    def test_repeated_config_backups_preserve_artifacts_at_the_same_timestamp(self):
+        from jinja2.nativetypes import NativeEnvironment
+
+        play = yaml.safe_load((HERMES_ROOT / "ansible/playbook.yml").read_text())[0]
+
+        def facts_in(tasks):
+            for task in tasks:
+                facts = task.get("ansible.builtin.set_fact", {})
+                if any(key.startswith("hermes_config_backup_") for key in facts):
+                    yield facts
+                yield from facts_in(task.get("block", []))
+
+        facts = list(facts_in(play["tasks"]))
+        template = NativeEnvironment()
+        # Mock only the external random source; use the real Jinja filters.
+        suffixes = iter(("a" * 16, "b" * 16, "c" * 16))
+        template.globals["lookup"] = lambda *args, **kwargs: next(suffixes) if "openssl" in str(args) else ""
+        with tempfile.TemporaryDirectory() as directory:
+            artifacts = []
+            for index in range(3):
+                variables = {"hermes_backup_dir": directory,
+                             "ansible_date_time": {"iso8601_basic_short": "20261003T120000"}}
+                for fact in facts:
+                    variables.update({key: template.from_string(value).render(variables)
+                                      for key, value in fact.items()})
+                archive = Path(variables["hermes_config_backup_archive"])
+                snapshot = Path(variables["hermes_config_backup_snapshot"])
+                self.assertEqual(snapshot, archive.with_name(archive.stem + "-state.json"))
+                self.assertFalse(archive.exists(), "deploy must not reuse the previous archive path")
+                self.assertFalse(snapshot.exists(), "deploy must not reuse the previous manifest path")
+                for path in (archive, snapshot):
+                    path.write_text(str(index))
+                    artifacts.append((path, str(index)))
+            for path, expected in artifacts:
+                self.assertEqual(path.read_text(), expected)
+
     @unittest.skipUnless(shutil.which("ansible-playbook"), "ansible-playbook is required")
     def test_shared_instructions_survive_host_admin_disable_and_repeated_deploy(self):
         play = yaml.safe_load((HERMES_ROOT / "ansible/playbook.yml").read_text())[0]

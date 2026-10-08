@@ -8,6 +8,7 @@ import tempfile
 import unittest
 
 import yaml
+from jinja2 import Environment, StrictUndefined
 
 
 ANSIBLE = Path(__file__).parent
@@ -19,6 +20,20 @@ HEALTH_CHECK = (ANSIBLE.parent / "ops" / "health-check.sh").read_text()
 
 
 class DeployOptimizationTests(unittest.TestCase):
+    def test_config_backup_suffix_preserves_random_hex_string(self) -> None:
+        deployment = next(task for task in yaml.safe_load(PLAYBOOK)[0]['tasks']
+                          if task.get('name') == 'Deploy Hermes with bounded maintenance coverage')
+        task = next(task for task in deployment['block']
+                    if task.get('name') == 'Choose a unique suffix for the config-only deployment backup')
+        expression = task['ansible.builtin.set_fact']['hermes_config_backup_suffix']
+        for suffix in ('0000000000000001', 'abcdef0123456789', 'ffffffffffffffff'):
+            with self.subTest(suffix=suffix):
+                environment = Environment(undefined=StrictUndefined)
+                environment.globals['lookup'] = lambda *args: suffix
+                rendered = environment.from_string(expression).render().strip()
+                self.assertEqual(rendered, suffix)
+                self.assertRegex(rendered, r'^[0-9a-f]{16}$')
+
     def test_versioned_directories_use_rsync_synchronization(self) -> None:
         self.assertIn("ansible.posix.synchronize:", PLAYBOOK)
         self.assertIn("checksum: true", PLAYBOOK)

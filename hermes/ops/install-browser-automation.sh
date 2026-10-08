@@ -27,7 +27,7 @@ Options:
   --user NAME          Hermes system user (default: hermes)
   --user-home PATH     User home (default: /home/hermes)
   --hermes-home PATH   Hermes state directory (default: USER_HOME/.hermes)
-  --version VERSION    Exact agent-browser version from vps-defaults.yml
+  --version VERSION    agent-browser version or latest from vps-defaults.yml
   --launch-args ARGS   Comma-separated Chrome launch arguments
   -h, --help           Show this help
 EOF
@@ -87,7 +87,7 @@ id "${HERMES_USER}" >/dev/null 2>&1 || die "user does not exist"
 for path in "${USER_HOME}" "${HERMES_HOME}"; do
     [[ "${path}" =~ ^/[A-Za-z0-9._/@+-]+$ ]] || die "unsafe or unsupported path: ${path}"
 done
-[[ "${AGENT_BROWSER_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+[[ "${AGENT_BROWSER_VERSION}" == latest || "${AGENT_BROWSER_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
     die "invalid agent-browser version"
 [[ "${AGENT_BROWSER_ARGS}" =~ ^--[A-Za-z0-9=,_-]+$ ]] ||
     die "invalid agent-browser launch arguments"
@@ -114,14 +114,29 @@ run_as_hermes() {
         /bin/bash -c 'cd -- "$1"; shift; exec "$@"' bash "${USER_HOME}" "$@" </dev/null
 }
 
+resolve_browser_version() {
+    # Resolve version, validate pattern before shell substitution
+    local resolved
+    resolved="$(python3 "$(dirname -- "${CONFIG_APPLIER}")/resolve-tool-version.py" \
+                --package agent-browser --requested "${AGENT_BROWSER_VERSION}" 2>&1)" || \
+        { error_msg="agent-browser version resolution failed" \
+            && if [[ -n "$resolved" ]]; then error_msg+=" (stderr: $resolved)"; fi \
+            && die "$error_msg"; }
+    [[ "${resolved}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || \
+        die "invalid resolved agent-browser version"
+    AGENT_BROWSER_VERSION="${resolved}"
+}
+resolve_browser_version
+
 installed_browser_version="$(python3 -c \
     'import json, pathlib, sys; path=pathlib.Path(sys.argv[1]); print(json.loads(path.read_text())["version"]) if path.is_file() else None' \
     "${HERMES_HOME}/node/lib/node_modules/agent-browser/package.json" 2>/dev/null || true)"
+browser_pkg="agent-browser@${AGENT_BROWSER_VERSION}"
 if [[ "${installed_browser_version}" != "${AGENT_BROWSER_VERSION}" ]]; then
     log "installing agent-browser ${AGENT_BROWSER_VERSION}"
     run_as_hermes "${NPM_BIN}" install --global --omit=dev \
         --allow-scripts=agent-browser --prefix "${HERMES_HOME}/node" \
-        "agent-browser@${AGENT_BROWSER_VERSION}"
+        "${browser_pkg}"
 fi
 
 log "writing persistent local browser launch configuration"

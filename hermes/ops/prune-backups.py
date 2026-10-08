@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 _DEPLOYMENT_ARCHIVE = re.compile(
-    r"^(pre-deploy-(?a:\d){8}-(?a:\d){6}|pre-config-deploy-(?a:\d){8}T(?a:\d){6})[.]zip$"
+    r"^(pre-deploy-(?a:\d){8}-(?a:\d){6}|pre-config-deploy-(?a:\d){8}T(?a:\d){6}(?:-[a-z0-9]{16})?)[.]zip$"
 )
 
 

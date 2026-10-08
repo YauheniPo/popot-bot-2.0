@@ -31,14 +31,19 @@ REDACTED = "[REDACTED]"
 COMMAND_PLACEHOLDER = "[command]"
 
 def _short(value: Any, limit: int = 500) -> str:
-    text = str(value or "").replace("\x00", "").replace("\r", " ").replace("\n", " ")
+    text = str(value or "")
+    # Bound input before regex processing without exposing a truncated secret.
+    if len(text) > limit:
+        return REDACTED[:limit]
+    # Normalize before matching so control characters cannot hide credentials.
+    text = text.replace("\x00", "").replace("\r", " ").replace("\n", " ")
     text = _SECRET_TEXT.sub(lambda match: (match.group(1) or match.group(2) or "") + REDACTED, text)
     text = _SECRET_FLAG.sub(lambda match: match.group(1) + REDACTED, text)
     text = _SECRET_AUTH_FLAG.sub(lambda match: match.group(1) + REDACTED, text)
     text = _BASIC_AUTH_FLAG.sub(lambda match: match.group(1) + REDACTED, text)
     text = _SSHPASS_FLAG.sub(lambda match: match.group(1) + REDACTED, text)
     text = _URL_USERINFO.sub(r"\1" + REDACTED + "@", text)
-    text = re.sub(r"-----BEGIN [^-]+ PRIVATE KEY-----.*", "[REDACTED PRIVATE KEY]", text, flags=re.IGNORECASE)
+    text = re.sub(r"-----BEGIN (?:[^-]+ )?PRIVATE KEY-----.*", "[REDACTED PRIVATE KEY]", text, flags=re.IGNORECASE)
     return text[:limit]
 
 
@@ -147,5 +152,4 @@ def _safe_args(args: Any) -> dict[str, Any]:
         if sanitized is not None:
             summary[sanitized[0]] = sanitized[1]
     return summary
-
 

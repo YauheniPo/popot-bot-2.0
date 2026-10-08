@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import io
 import tempfile
 import unittest
@@ -21,6 +22,51 @@ SPEC.loader.exec_module(apply_config)
 
 
 class ApplyConfigTests(unittest.TestCase):
+    def test_deploy_enables_stop_verification_for_messaging_and_repeated_apply_is_unchanged(self):
+        settings = apply_config.load_settings(MODULE_PATH.parent.parent / 'config/vps-defaults.yml')
+        current = {'agent': {'verify_on_stop': 'auto'}}
+        operations = apply_config.build_operations(settings, current, {
+            'HERMES_WORKSPACE': '/workspace'}, set())
+        verification = [op for op in operations if op.key == 'agent.verify_on_stop']
+        self.assertEqual(verification, [apply_config.Operation('set', 'agent.verify_on_stop', True)])
+        self.assertEqual(current['agent']['verify_on_stop'], 'auto')
+        current['agent']['verify_on_stop'] = verification[0].value
+        repeated = apply_config.build_operations(settings, current, {
+            'HERMES_WORKSPACE': '/workspace'}, set())
+        self.assertFalse(any(op.key == 'agent.verify_on_stop' for op in repeated))
+
+    def test_managed_compression_budget_and_reasoning_override_ui_idempotently(self):
+        overlay = {'compression': {'context_total_ceiling_seconds': 1200},
+                   'auxiliary': {'compression': {'provider': 'p', 'model': 'm',
+                                                'reasoning_effort': 'none'}}}
+        settings = {'vps_deploy': {'features': {'workspace_ui': True}},
+                    'vps_hermes': {'config': {'ui_owned_sections': ['auxiliary', 'compression'],
+                                             'managed_overlay': overlay}}}
+        current = {'compression': {'context_total_ceiling_seconds': 600, 'threshold': 0.8},
+                   'auxiliary': {'compression': {'provider': 'p', 'model': 'm',
+                                                'reasoning_effort': 'high', 'timeout': 321}}}
+        operations = apply_config.build_operations(settings, current, {}, set())
+        self.assertEqual({op.key: op.value for op in operations}, {
+            'compression.context_total_ceiling_seconds': 1200,
+            'auxiliary.compression.reasoning_effort': 'none'})
+        for operation in operations:
+            target = current
+            fields = operation.key.split('.')
+            for field in fields[:-1]:
+                target = target[field]
+            target[fields[-1]] = operation.value
+        self.assertEqual(apply_config.build_operations(settings, current, {}, set()), [])
+        self.assertEqual(current['compression']['threshold'], 0.8)
+        self.assertEqual(current['auxiliary']['compression']['timeout'], 321)
+
+    def test_absent_managed_compression_controls_preserve_user_values(self):
+        settings = {'vps_hermes': {'config': {'managed_overlay': {
+            'auxiliary': {'compression': {'provider': 'p', 'model': 'm'}}}}}}
+        current = {'compression': {'context_total_ceiling_seconds': 900},
+                   'auxiliary': {'compression': {'provider': 'p', 'model': 'm',
+                                                'reasoning_effort': 'low'}}}
+        self.assertEqual(apply_config.build_operations(settings, current, {}, set()), [])
+
     def test_managed_compression_replaces_stale_route_and_inherits_fallbacks(self):
         settings = {'vps_deploy': {'features': {'workspace_ui': True}},
                     'vps_hermes': {'config': {'ui_owned_sections': ['auxiliary'],
@@ -84,6 +130,31 @@ class ApplyConfigTests(unittest.TestCase):
                      'delegation': {'provider': 'fixture-cloud', 'model': 'fixture-model'},
                      'cron': {'model_provider': 'fixture-cloud', 'model': 'fixture-model'}}
         self.assertEqual(apply_config.build_operations(settings, converged, {}, set()), [])
+
+    def test_exclusions_are_managed_in_main_and_existing_profiles_idempotently(self):
+        excluded = [{'provider': 'openrouter', 'model': 'blocked:free'}]
+        settings = {'vps_hermes': {'config': {'managed_overlay': {
+            'fallback_policy': {'excluded_routes': excluded}}}}}
+        operations = apply_config.build_operations(settings, {}, {}, set())
+        self.assertEqual(operations, [apply_config.Operation(
+            'set', 'fallback_policy.excluded_routes', excluded)])
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            path = home / 'profiles' / 'builder' / 'config.yaml'
+            path.parent.mkdir(parents=True)
+            original = {'fallback_policy': {'allowed_providers': ['nous']},
+                        'fallback_providers': [{'provider': 'nous', 'model': 'keep'}]}
+            path.write_text(yaml.safe_dump(original))
+            self.assertEqual(apply_config.sync_profile_models(home, settings), 1)
+            value = apply_config.load_config(path)
+            self.assertEqual(value['fallback_policy']['excluded_routes'], excluded)
+            self.assertEqual(value['fallback_policy']['allowed_providers'], ['nous'])
+            self.assertEqual(value['fallback_providers'], original['fallback_providers'])
+            self.assertEqual(apply_config.sync_profile_models(home, settings), 0)
+            self.assertEqual(apply_config.build_operations(settings, value, {}, set()), [])
+            settings['vps_hermes']['config']['managed_overlay']['fallback_policy']['excluded_routes'] = []
+            self.assertEqual(apply_config.sync_profile_models(home, settings), 1)
+            self.assertEqual(apply_config.load_config(path)['fallback_policy']['excluded_routes'], [])
 
     def test_existing_profiles_get_managed_model_without_losing_private_config(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -383,6 +454,19 @@ class ApplyConfigTests(unittest.TestCase):
         del overlay['fallback_policy']
         self.assertEqual(apply_config.api_retry_fallbacks(settings), 'old:old')
 
+    def test_api_retry_excludes_only_matching_provider_model_pair(self) -> None:
+        overlay = {'fallback_policy': {'default_routes': [
+            {'provider': 'openrouter', 'model': 'blocked:free'},
+            {'provider': 'nous', 'model': 'blocked:free'},
+            {'provider': 'openrouter', 'model': 'other:free'}],
+            'excluded_routes': [{'provider': 'openrouter', 'model': 'blocked:free'}]}}
+        settings = {'vps_hermes': {'config': {'managed_overlay': overlay}}}
+        self.assertEqual(apply_config.api_retry_fallbacks(settings),
+                         'nous:blocked:free,openrouter:other:free')
+        overlay['fallback_policy']['excluded_routes'] = 'invalid'
+        with self.assertRaises(ValueError):
+            apply_config.api_retry_fallbacks(settings)
+
     def test_policy_rejects_duplicate_provider_model_pairs(self) -> None:
         route = {'provider': 'nous', 'model': 'a'}
         with self.assertRaisesRegex(ValueError, 'duplicate'):
@@ -573,7 +657,6 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertNotIn("DEFAULT_HERMES_COMMIT", deploy_script)
         self.assertNotIn("DEFAULT_INSTALLER_SHA256", deploy_script)
         self.assertIn('data["vps_deploy"]["hermes_source"]', deploy_script)
-        self.assertIn("8#$settings_perms & 8#022", deploy_script)
         self.assertNotIn("settings_owner", deploy_script)
         self.assertNotIn("must be owned by root", deploy_script)
         self.assertIn('HERMES_BRANCH="${HERMES_BRANCH:-$source_branch}"', deploy_script)
@@ -583,6 +666,18 @@ class ApplyConfigTests(unittest.TestCase):
             "verify_updated_kanban_state\n  apply_local_hermes_patches",
             deploy_script,
         )
+
+    def test_manual_deploy_rejects_group_or_world_writable_settings(self) -> None:
+        deploy_script = (MODULE_PATH.parent.parent / "deploy-hermes.sh").read_text(encoding="utf-8")
+        condition = next(line.strip().removesuffix(" ||") for line in deploy_script.splitlines()
+                         if "settings_perms &" in line)
+        for permissions in ("400", "600", "620", "644", "660", "666", "672", "777", "0600"):
+            with self.subTest(permissions=permissions):
+                result = subprocess.run(
+                    ["bash", "-c", 'settings_perms="$1"; ' + condition, "permission-check", permissions],
+                    capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(result.returncode == 0, int(permissions, 8) & 0o022 == 0, result.stderr)
 
     def test_manual_deploy_preserves_path_options_and_resolves_gateway_service(self) -> None:
         hermes_dir = MODULE_PATH.parent.parent

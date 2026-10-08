@@ -33,6 +33,30 @@ Impact. Use: estimate cost.
 
 
 class FinalizeDigestTests(unittest.TestCase):
+    def test_staging_rejects_empty_and_placeholder_role_analysis(self):
+        for original in ('What happened. Use: read the release.',
+                         'What changed. Use: evaluate it.',
+                         'Impact. Use: estimate cost.'):
+            for replacement in ('', '   ', 'Информация отсутствует.',
+                                'Что произошло: Информация отсутствует. Чем полезно: Информация отсутствует.'):
+                with self.subTest(original=original, replacement=replacement):
+                    with tempfile.TemporaryDirectory() as directory:
+                        state = Path(directory)
+                        draft = VALID.replace(original, replacement)
+                        with self.assertRaisesRegex(ValueError, 'analysis'):
+                            stage(RAW, draft, state)
+                        self.assertFalse((state / f"staged-{RAW['run_id']}.md").exists())
+
+    def test_placeholder_sections_are_completed_as_explicitly_unavailable(self):
+        from finalize_digest import complete_missing_analysis
+
+        draft = VALID.replace('What happened. Use: read the release.',
+                              'Что произошло: Информация отсутствует. Чем полезно: Информация отсутствует.')
+        completed = complete_missing_analysis(RAW, draft)
+        self.assertNotIn('Информация отсутствует', completed)
+        self.assertIn('Анализ недоступен', completed)
+        _validate_report(RAW, completed, RAW['items'])
+
     def test_report_recognizes_news_heading_after_document_title(self):
         _validate_report(RAW, VALID, RAW["items"])
 

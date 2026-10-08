@@ -220,8 +220,24 @@ sudo systemctl restart hermes-gateway.service
   локальные точки отката через `/rollback`.
 - **Защита от runaway loops.** В одном turn разрешено не больше 20 web searches
   и 10 subagents; повторяющиеся ошибки останавливаются hard-stop механизмом.
-- **Проверка coding-результата.** `verify_on_stop: auto` требует свежую
-  проверку после изменений кода там, где это уместно.
+- **Проверка coding-результата.** `agent.verify_on_stop: true` включает проверку
+  свежего подтверждения после изменений кода и в Telegram. Режим `auto` на
+  messaging surfaces её отключает. Native проверка имеет ограниченное число
+  повторных запросов и не доказывает успех всего pipeline. Общие инструкции
+  требуют проверять обязательные checks последнего SHA, включая Sonar, прежде
+  чем объявлять исправление pipeline завершённым; ошибки записи файлов и
+  падающие тесты остаются незавершённой работой. Недоступные проверки и реальные
+  блокеры должны быть названы явно. `HERMES_VERIFY_ON_STOP` имеет приоритет над
+  config: ручной override `0` отключит проверку. Managed runtime также возвращает
+  агенту неудачные `write_file`/`patch` до финального ответа, даже если другие
+  проверки прошли или ни одна запись не удалась. Повторы ограничены native
+  `agent.max_verify_nudges` (по умолчанию 3); после исчерпания лимита штатное
+  предупреждение остаётся при включённом `display.file_mutation_verifier`.
+  Это не гарантирует выполнение всей задачи.
+  Перед отчётом инструкции требуют проверить текущий diff и сохранить набор
+  тестов; зелёный CI для SHA не проверяет незакоммиченные изменения.
+  Изменения применяются через deploy; обновлённые инструкции подхватываются
+  в новой сессии.
 - **Infrastructure as Code.** Ansible устанавливает новый VPS или импортирует
   полный Hermes backup вместе с config, auth, memory, sessions, profiles и
   skills.
@@ -331,7 +347,7 @@ GitHub permissions и messenger tokens подключаются отдельно
     deploy, например закрытый `.env`.
 - `config/vps-defaults.yml` — единый видимый файл важных non-secret настроек
   VPS: identity/paths, feature switches, Hermes runtime guardrails, backup и
-  health policy, observability topology, pinned browser tooling, VS Code и
+  health policy, observability topology, browser tooling, VS Code и
   группы systemd services для обязательного рестарта.
 - `deploy/` — домены прямого deploy: host, runtime, services и reporting.
 - `runtime/` — testable helpers, которые применяют общие настройки через
@@ -412,11 +428,11 @@ GitHub permissions и messenger tokens подключаются отдельно
 - `vps_ops` — backup retention, health thresholds и интервалы timers;
 - `vps_observability` — loopback addresses/ports, scrape intervals, SQLite и audit retention;
 - `vps_network`/`vps_packages`/`vps_tools` — SSH/Tailscale/UFW policy,
-  package channels/retries и pinned auxiliary CLI versions;
+  package channels/retries и версии внешних CLI (по умолчанию `latest`);
 - `vps_hermes.config.managed_overlay` — authoritative non-secret config.yaml
   policy без `model.default`, если `/model_global` должен сохраняться;
 - `vps_vscode`/`vps_browser` — образ code-server `latest` (проверяется при каждом
-  deploy с code-server), закреплённая версия browser package и безопасная локальная
+  deploy с code-server), версия browser package и безопасная локальная
   browser/IDE topology;
 - `vps_agent_policy` — только repository-owned блоки поведения, без замены
   личного `SOUL.md`; языковое правило задаёт язык ответов и объяснений по
@@ -798,6 +814,14 @@ terminal сохраняется сокращённая команда с мас�
 сырые provider errors и аргументы slash-команд. Session/turn ID связывает audit
 с историей Hermes, если нужно понять контекст «почему», не дублируя личные
 данные в отдельном логе.
+
+Скалярные метаданные длиннее лимита своего поля заменяются целиком на
+`[REDACTED]` до запуска регулярных выражений. Это ограничивает время
+маскирования и не оставляет в логе обрезанный секрет, чей закрывающий
+разделитель находится за пределами лимита.
+Для значений в пределах лимита NUL/CR/LF нормализуются перед маскированием;
+многострочные private keys скрываются целиком, включая тело ключа. Эти проверки
+применяются к метаданным перед записью в SQLite и audit log.
 
 Best-effort копия метаданных также отправляется в root-managed system journal:
 
@@ -1410,6 +1434,56 @@ identity, GitHub owner, workspace и write boundaries из `vps_github` в ед�
 
 ### Web search и работа с интернетом
 
+Полный deploy с development CLI bundle также устанавливает
+[`agent-reach`](https://github.com/Panniantong/Agent-Reach) и `yt-dlp` в отдельное
+Python-окружение пользователя Hermes (`~/.local/share/hermes-tools/agent-reach`),
+с командами в `~/.local/bin`. `vps_tools.agent_reach.revision: latest` на каждом
+deploy разрешается в текущий commit `main` официального GitHub-репозитория;
+одноимённый пакет PyPI не используется. Deploy также проверяет обновления
+`yt-dlp` и остальных зависимостей этого отдельного окружения через `uv pip
+install --upgrade`. Совпадающие пакеты не переустанавливаются; установка сама
+по себе не перезапускает gateway. `--without-dev-cli` и
+`--minimal` пропускают установку; в Ansible её контролирует
+`vps_deploy.features.development_clis`.
+
+Resolver Agent-Reach проверяет полный SHA и соответствующий ему commit URL
+в ответе GitHub `Get a commit`. Этот API не возвращает `repository` и `ref`;
+ветка `main` задана в самом запросе. При ошибке на этапе «Resolving latest
+Agent-Reach source» отдельно запустите `python3
+/opt/hermes-bootstrap/runtime/resolve-tool-version.py --package agent-reach
+--requested latest`: команда только читает версию, не устанавливает CLI.
+Resolver отклоняет ответы больше 5 MiB до разбора JSON и проверяет структуру
+npm `dist-tags` перед выбором версии. Установщик требует `--revision` либо
+`--settings`; YAML должен содержать mappings `vps_tools.agent_reach` и строку
+`revision`. Symlink к settings за пределами каталога `config` отклоняется.
+
+Установщик использует собственный `uv` Hermes из `$HERMES_HOME/bin/uv`,
+даже если его нет в `PATH`; Ansible передаёт фактический `HERMES_HOME`.
+Если managed-бинарник отсутствует, используется доступный `uv` из `PATH`.
+
+Внешние CLI обновляются при каждом deploy: `gws` и `agent-browser` используют
+стабильный npm dist-tag `latest`, Agent-Reach — актуальный upstream `main`,
+`yt-dlp` — последнюю версию, совместимую с зависимостями Agent-Reach и Python.
+Настройки — `vps_tools.google_workspace_cli.version`,
+`vps_browser.agent_browser_version` и `vps_tools.agent_reach.revision`.
+Resolver сначала получает конкретную версию/commit с ограниченным timeout и
+retries, затем установка сравнивает её с имеющейся. При недоступности registry
+deploy завершается ошибкой, а не объявляет старую версию актуальной. Можно
+задать точную версию/commit вместо `latest`. Hermes, Workspace, их runtime и
+инфраструктурные компоненты сохраняют существующую политику совместимости;
+их зависимости не обновляются произвольно этим механизмом.
+
+Agent-Reach помогает диагностировать и настраивать доступ к YouTube, RSS,
+web-страницам и соцсетям. `agent-reach --help` показывает команды,
+`agent-reach doctor` проверяет доступность каналов. Чтение выполняют отдельные
+инструменты: например, `yt-dlp` получает субтитры YouTube, а `gh` работает с
+GitHub. Это дополнение к штатным инструментам Hermes. Deploy не запускает
+`agent-reach install --system`, не импортирует cookies, не подключает Exa/MCP
+и не устанавливает дополнительные социальные CLI. Такие настройки требуют
+отдельного запроса и credentials; каналы с настольной Chrome-сессией не готовы
+на headless VPS. Назначение и границы CLI включены в managed-инструкции агента
+из `instructions/common.md`.
+
 Hermes может искать информацию, извлекать текст со страниц и работать с
 интерактивными сайтами. Chromium и его системные библиотеки устанавливаются
 автоматически. Terminal и Chromium имеют обычный исходящий доступ в интернет
@@ -1458,8 +1532,10 @@ Hermes использует его для навигации, кликов, фо
 обходит CAPTCHA, paywall или авторизацию. При каждом deploy запускается
 реальный цикл `open → snapshot → close` с фактическими launch-параметрами;
 ошибка проверки останавливает playbook вместо неявно работающего браузера.
-Версия пакета закреплена в `vps_browser.agent_browser_version`, поэтому новый
-deploy не получает другой browser runtime при неизменном commit проекта.
+`vps_browser.agent_browser_version: latest` проверяет актуальную стабильную
+версию при каждом deploy; совпадающая версия не переустанавливается.
+Фактический browser runtime может обновиться при неизменном commit проекта,
+и обязательная live-проверка остаётся условием успешного deploy.
 После успешной проверки установщик сохраняет две последние сборки Chrome и
 сборки, которыми ещё пользуются процессы, удаляя более старые. При deploy он
 также очищает известные npm, Python, Playwright и Sonar install-кэши, если
@@ -1694,6 +1770,11 @@ Systemd создаёт ещё и scheduled backup:
 в обычные дни и full snapshot раз в неделю. Quick snapshots хранятся 14 дней,
 из full сохраняются последние 5, а из обязательных `pre-deploy` и
 `pre-config-deploy` архивов — последние 10 групп вместе с их state manifests.
+Имена `pre-config-deploy` содержат время и случайный суффикс, общий для архива
+и его state manifest: повторный запуск с тем же временем получает новую пару
+путей. Retention распознаёт как эти имена, так и старые имена без суффикса.
+Суффикс берётся напрямую из `openssl rand -hex 8` (16 hex-символов): повторное
+числовое форматирование не требуется и теряет совместимость со строковым результатом lookup.
 Health check отдельно сообщает, если любой backup старше 26 часов или полный
 старше 8 дней. Пороги, день недели и retention меняются в `vps_ops` файла
 [`config/vps-defaults.yml`](config/vps-defaults.yml) и применяются deploy.
@@ -1987,6 +2068,9 @@ IT/AI. Попросите бота создать cron-задачу с этим 
 `repeat_cooldown_hours` в `sources.json`; поэтому карточек может быть меньше
 лимита. Описание карточки берётся из русского блока Junior, а последняя оценка
 формирует отчёт с выбранными пунктами и проверенными общими ссылками.
+Пустые блоки и заглушки «Информация отсутствует» не считаются готовым анализом:
+карточка использует собранный текст источника с пометкой «Анализ недоступен».
+Если текста тоже нет, доставка сообщает ошибку до отправки карточек.
 Недоступный источник отмечается в отчёте;
 при отсутствии пригодных материалов задача завершается ошибкой. HTTPS-клиент
 сборщика использует TLS-контекст стандартной библиотеки Python, совместимый
@@ -2101,6 +2185,20 @@ chat-команда не принимает credentials или произвол�
 работают до следующего deploy. Старый deploy-ключ `fallback_providers` читается
 для совместимости, только если `fallback_policy.default_routes` не задан.
 
+`fallback_policy.excluded_routes` задаёт список исключений с полями `provider`
+и `model`. Например, `provider: openrouter`, `model: cohere/north-mini-code:free`.
+Эта пара уже исключена в текущей конфигурации. Runtime удаляет совпавшие пары
+из итоговой цепочки до обращения к provider, даже если они остались в
+`default_routes`, добавлены через `/fallback`, UI или legacy `fallback_model`.
+Остальные маршруты сохраняют порядок; та же модель у другого provider не
+исключается. Наследуемый compression fallback и API retry helper также используют
+отфильтрованный список. Прямой выбор основной модели не блокируется.
+Пустой список `[]` отключает исключения; некорректный список отклоняется.
+`/fallback` показывает настроенные исключения. Deploy также синхронизирует
+исключения в существующие Hermes profiles, сохраняя их остальные настройки.
+Политика применяется при deploy;
+уже выполняющаяся задача сохраняет ранее загруженную цепочку.
+
 Базовый список сверён с каталогами **29 сентября 2026**. Бесплатные варианты
 `inclusionai/ling-3.0-flash-fin:free` и `meituan/longcat-2.0:free` вернули 404
 при фактическом запуске, хотя каталог Nous всё ещё показывает второй ID.
@@ -2111,13 +2209,13 @@ NVIDIA Super сохранил бесплатный endpoint; его ошибка
 | --- | --- | --- | --- |
 | 1 | `openrouter` | `google/gemma-4-31b-it:free` | Бесплатная мультиязычная модель с tools для общего анализа |
 | 2 | `nous` | `stepfun/step-3.7-flash:free` | Бесплатная рекомендация Nous, tools и длинный контекст |
-| 3 | `openrouter` | `cohere/north-mini-code:free` | Быстрый бесплатный резерв для агентных задач с tools |
+| 3 | `openrouter` | `nvidia/nemotron-3-super-120b-a12b:free` | Nemotron 3 Super 120B: tools, контекст 262K, бесплатный маршрут OpenRouter |
 | 4 | `nous` | `inclusionai/ling-3.0-flash-sante:free` | Доступен в каталоге Nous, ранее работал для PR review |
 | 5 | `nvidia` | `nvidia/nemotron-3-super-120b-a12b` | Бесплатный NIM endpoint с поддержкой tools |
 
 Источники: [каталог OpenRouter](https://openrouter.ai/api/v1/models),
 [Gemma 4 free](https://openrouter.ai/google/gemma-4-31b-it:free),
-[North Mini Code free](https://openrouter.ai/cohere/north-mini-code:free),
+[Nemotron 3 Super free](https://openrouter.ai/nvidia/nemotron-3-super-120b-a12b:free),
 [бесплатные рекомендации Nous](https://portal.nousresearch.com/api/nous/recommended-models),
 [каталог API Nous](https://inference-api.nousresearch.com/v1/models),
 [NVIDIA Super endpoint](https://build.nvidia.com/nvidia/nemotron-3-super-120b-a12b).
@@ -2127,9 +2225,19 @@ NVIDIA Super сохранил бесплатный endpoint; его ошибка
 а не гарантированный бесплатный production SLA. Для Nous требуется существующий
 OAuth login, для остальных — их API keys; ключи этой правкой не добавляются.
 
+4 октября 2026 North Mini Code заменена на Nemotron 3 Super через OpenRouter;
+North остаётся в `excluded_routes`. Каталог OpenRouter подтверждает нулевые
+input/output цены и поддержку tools. Проверочный запрос с VPS вернул корректный
+tool call за 1 секунду при стоимости 0. Маршрут `openrouter` использует
+OpenRouter credentials; последний маршрут `nvidia` использует отдельный NIM key.
+Это одна модель у двух provider, поэтому блокировка provider по billing/quota
+не удаляет маршрут другого provider. Бесплатные endpoints имеют rate limits;
+успешная проверка не гарантирует доступность при длительной нагрузке.
+
 Это обоснованный стартовый набор, **не результат сравнительного live-теста**
 на ваших задачах. Настройка модели в review не доказывает качество её вердиктов.
-Проверялись публичные каталоги, не inference с вашими credentials. Free-квоты,
+Проверка нового маршрута подтверждает доступность tools, не качество выполнения
+длинных задач. Free-квоты,
 модели и доступность могут меняться; для чувствительных данных учитывайте условия
 free endpoint (в частности, NVIDIA предупреждает о логировании запросов).
 Разные API providers также могут использовать общий upstream, поэтому
@@ -2321,13 +2429,20 @@ cooldown и размера контекста остаются; унаследо
 сохраняет upstream-семантику и не заменяется основным списком. Это не гарантирует
 успех при недоступности всех моделей: native лимит времени завершит попытку.
 
-Deploy управляет полями `provider`, `model` и `fallback_chain` сжатия из
+Deploy управляет полями `provider`, `model`, `fallback_chain` и явно заданным
+`reasoning_effort` сжатия из
 `vps_hermes.config.managed_overlay.auxiliary.compression` даже при UI-owned
 `auxiliary`. В текущей политике primary — NVIDIA Super, а отсутствие
 `fallback_chain` удаляет старую отдельную цепочку и включает наследование
 общих резервов. Чтобы закрепить отдельную цепочку или отключить её через `[]`,
-задайте список в managed overlay; ручная правка этих трёх полей действует до
-следующего deploy. Другие auxiliary-модели, таймауты и настройки сжатия
+задайте список в managed overlay; ручная правка этих полей действует до
+следующего deploy. Для summary задан `reasoning_effort: none`: модель генерирует
+summary без отдельного reasoning. Это не удаляет сообщения из истории.
+Общий потолок операции `compression.context_total_ceiling_seconds` увеличен
+с upstream-дефолта 600 до 1200 секунд и тоже применяется поверх UI-owned
+настроек при deploy. Дополнительное время помогает медленной генерации, но не
+гарантирует успех при зависшем или недоступном провайдере; отмена и сохранение
+сессии при таймауте продолжают работать. Другие auxiliary-модели, таймауты запросов и настройки сжатия
 сохраняются. При отсутствии managed compression route runtime-конфигурация
 остаётся пользовательской. Повторное применение совпадающей политики не меняет config.
 

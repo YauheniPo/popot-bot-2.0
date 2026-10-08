@@ -17,6 +17,7 @@ Covered customizations (not yet upstream):
    session and failed turns do not expose unfinished reasoning as a result
  * attached cron skills retain read tools under restricted toolsets, without
    granting skill management or overriding global toolset denies
+ * unsuccessful file writes request bounded recovery before a text-response stop
  * /status shows reasoning, models, and session-scoped background activity
  * Telegram final replies show the actual provider/model in a copyable block
  * /model accepts an explicit built-in provider/model pair
@@ -336,6 +337,33 @@ _PATCHES: list[tuple[str, str, str, str]] = [
         '_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid"}\n',
         '# Local Hermes: exclude ephemeral gateway lock from backups\n'
         '_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid", "gateway.lock"}\n',
+    ),
+    (
+        "agent/turn_stop_gates.py",
+        _PREFIX + " recover failed file mutations before stopping",
+        '''        if verify_on_stop_enabled():
+            return build_verify_on_stop_nudge(
+''',
+        '''        if verify_on_stop_enabled():
+            # Local Hermes: recover failed file mutations before stopping
+            from agent.verify_hooks import max_verify_nudges
+
+            failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
+            if failed and getattr(agent, "_verification_stop_nudges", 0) < max_verify_nudges():
+                failed = agent._file_mutations_still_failed(failed)
+                if failed:
+                    return (
+                        "[System: File mutations remain unsuccessful. Before finishing, "
+                        "read the actual targets with read_file, inspect the tool errors, "
+                        "and retry only a corrected, authorized mutation. Read existing "
+                        "files before overwriting them; do not bypass read-before-write "
+                        "protection. Confirm the change landed and rerun affected checks. "
+                        "If the write is unnecessary or blocked, explain what remains "
+                        "unchanged and the concrete blocker; do not claim the edit succeeded.]"
+                        "\\n\\n" + agent._format_file_mutation_failure_footer(failed)
+                    )
+            return build_verify_on_stop_nudge(
+''',
     ),
     (
         _MODEL_SWITCH_PATH,
@@ -1133,6 +1161,11 @@ _PATCHES.extend([
 # Keep the implementation testable as ordinary Python; install it through the
 # same fingerprinted source-patch mechanism, not a sys.path/bootstrap hook.
 _FALLBACK_POLICY = Path(__file__).with_name("fallback-policy.py").read_text(encoding="utf-8")
+_FALLBACK_POLICY = (
+    (Path(__file__).resolve().parents[1] / 'ops/hermes_fallback_exclusions.py').read_text(encoding='utf-8')
+    + '\n\n' + _FALLBACK_POLICY.replace(
+        'from hermes_fallback_exclusions import fallback_excluded_pairs\n', '')
+)
 _PATCHES.extend([
     (
         "gateway/run_config_loaders.py", _PREFIX + " fallback live config",
@@ -1154,7 +1187,7 @@ _PATCHES.extend([
     (
         "hermes_cli/fallback_config.py", _PREFIX + " managed fallback policy",
         "    return chain\n",
-        "    return chain\n\n\n# Local Hermes: managed fallback policy\n" + _FALLBACK_POLICY,
+        "    return filter_fallback_routes(config, chain)\n\n\n# Local Hermes: managed fallback policy\n" + _FALLBACK_POLICY,
     ),
     (
         _HERMES_CLI_COMMANDS_PATH, _PREFIX + " fallback CommandDef",

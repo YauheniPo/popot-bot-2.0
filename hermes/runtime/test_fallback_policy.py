@@ -5,6 +5,7 @@ import asyncio
 import copy
 import importlib.util
 import os
+import sys
 from pathlib import Path
 import tempfile
 import textwrap
@@ -22,7 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def load_module(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    with mock.patch('sys.path', [str(ROOT / 'ops'), *sys.path]):
+        spec.loader.exec_module(module)
     return module
 
 
@@ -39,6 +41,66 @@ class FallbackPolicyTests(unittest.TestCase):
             'fallback_model': {'provider': 'nous', 'model': 'legacy'},
             'unrelated': {'keep': True},
         }
+
+    def test_excluded_pairs_filter_current_and_legacy_routes_without_mutation(self):
+        self.config['fallback_policy']['excluded_routes'] = [
+            {'provider': 'openrouter', 'model': 'blocked:free'},
+            {'provider': 'nim', 'model': 'blocked'}]
+        chain = [
+            {'provider': 'openrouter', 'model': 'blocked:free', 'api_key': 'private'},
+            {'provider': 'nous', 'model': 'blocked:free'},
+            {'provider': 'openrouter', 'model': 'other:free'},
+            {'provider': 'nvidia', 'model': 'blocked'}]
+        before = copy.deepcopy(chain)
+        result = self.policy.filter_fallback_routes(self.config, chain)
+        self.assertEqual(result, chain[1:3])
+        self.assertEqual(chain, before)
+        self.config['fallback_providers'] = chain[:3]
+        self.config['fallback_model'] = chain[3]
+        patcher = load_module('fallback_exclusion_patches', ROOT / 'runtime/apply-hermes-patches.py')
+        patch = next(p for p in patcher._PATCHES
+                     if p[1] == '# Local Hermes: managed fallback policy')
+        native = '''def get_fallback_chain(config):
+    chain = list(config.get('fallback_providers', []))
+    if config.get('fallback_model'):
+        chain.append(config['fallback_model'])
+    return chain
+'''
+        namespace = {}
+        exec(native.replace(patch[2], patch[3]), namespace)
+        self.assertEqual(namespace['get_fallback_chain'](self.config), chain[1:3])
+        self.config['fallback_policy']['excluded_routes'] = []
+        self.assertEqual(namespace['get_fallback_chain'](self.config), chain)
+
+    def test_invalid_exclusions_fail_closed_without_exposing_values(self):
+        for excluded in (None, 'secret', [{}], ['secret'],
+                         [{'provider': 'nous', 'model': ''}],
+                         [{'provider': None, 'model': 'a'}],
+                         [{'provider': 'Bad Provider', 'model': 'a'}],
+                         [{'provider': 'nous', 'model': 42}],
+                         [{'provider': 'nous', 'model': 'https://secret'}],
+                         [{'provider': 'nous', 'model': 'a' * 201}],
+                         [{'provider': 'nous', 'model': 'a', 'api_key': 'secret'}],
+                         [{'provider': 'nous', 'model': 'a'}] * 2):
+            with self.subTest(excluded=excluded):
+                self.config['fallback_policy']['excluded_routes'] = excluded
+                with self.assertRaises(ValueError) as error:
+                    self.policy.filter_fallback_routes(self.config, self.config['fallback_providers'])
+                self.assertNotIn('secret', str(error.exception))
+
+    def test_chat_edits_preserve_exclusions_and_list_explains_skipped_routes(self):
+        excluded = [{'provider': 'openrouter', 'model': 'blocked:free'}]
+        self.config['fallback_policy']['excluded_routes'] = excluded
+        updated, _ = self.policy.edit_fallback_config(self.config, 'add openrouter blocked:free')
+        self.assertEqual(updated['fallback_policy']['excluded_routes'], excluded)
+        self.assertEqual(self.policy.filter_fallback_routes(updated, updated['fallback_providers']),
+                         self.config['fallback_providers'])
+        _, reply = self.policy.edit_fallback_config(updated, 'list')
+        self.assertIn('Исключены из переключения:', reply)
+        self.assertIn('openrouter blocked:free', reply)
+        self.config['fallback_policy'] = 'secret'
+        with self.assertRaisesRegex(ValueError, 'fallback_policy must be a mapping'):
+            self.policy.filter_fallback_routes(self.config, [])
 
     def test_set_add_remove_off_reset_preserve_other_config(self):
         updated, reply = self.policy.edit_fallback_config(self.config, 'set nous model-a; nvidia model-b')

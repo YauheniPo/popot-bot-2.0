@@ -162,6 +162,23 @@ Sources: https://example.org/tool
         self.assertIn("split mixture of experts", card)
         self.assertIn("аннотации", card)
 
+    def test_placeholder_card_uses_evidence_and_rejects_missing_evidence(self):
+        from feedback import _card_text
+
+        analysis = 'Что произошло: Информация отсутствует. Чем полезно: Информация отсутствует.'
+        card = _card_text(self.item, 1, 1, analysis)
+        self.assertIn(self.item['evidence'], card)
+        self.assertIn('Анализ недоступен', card)
+        self.assertNotIn('Информация отсутствует', card)
+        with self.assertRaisesRegex(ValueError, 'source description unavailable'):
+            _card_text(dict(self.item, evidence=''), 1, 1, analysis)
+
+    def test_card_preserves_substantive_analysis_with_missing_detail(self):
+        from feedback import _card_text
+
+        analysis = 'Выпущен toolkit для агентов. Информация отсутствует только о цене.'
+        self.assertIn(analysis, _card_text(self.item, 1, 1, analysis))
+
     def test_delivery_rejects_empty_source_description_before_sending_any_card(self):
         raw = self.state / f"raw-{self.RUN_ID}.json"
         first = dict(self.item, evidence="A coding agent toolkit")
