@@ -431,6 +431,13 @@ counts, never the reasoning or response text. SSE keepalives do not reset the
 inactivity deadline. `provider_processing=unknown` is intentional: runner
 liveness does not prove the provider is thinking. A stream must terminate cleanly
 before JSON/schema/anchor validation; partial responses are not successful reviews.
+Direct review requests up to **4096 output tokens** for the compact JSON answer.
+For providers that explicitly require reasoning, compatibility requests allow
+up to **8192 tokens**, shared by hidden reasoning and the answer. Large input
+diffs retain their existing chunk limits; they do not require a 32K-token answer.
+A response stopped by its token limit remains an `output_limit` failure, even
+if the received text happens to parse as JSON; the configured fallback can then
+run without repeating the same insufficient output budget on the primary.
 Ollama receives the requested reasoning effort via its supported
 [`reasoning_effort`](https://docs.ollama.com/api/openai-compatibility) field,
 instead of silently reverting to the model's default thinking mode. Nous receives

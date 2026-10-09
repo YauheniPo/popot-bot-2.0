@@ -61,11 +61,13 @@ MAX_REQUEST_ATTEMPTS = 4
 # the entire request budget waiting for an endpoint that is likely unavailable.
 MAX_PRIMARY_TRANSPORT_ATTEMPTS_WITH_FALLBACK = 2
 MAX_REPAIR_CONTENT_CHARACTERS = 16_000
-MAX_OUTPUT_TOKENS = 32_768
+# Each response is a compact JSON envelope with at most three bounded findings.
+# A large input diff does not require an equally large generated answer.
+MAX_OUTPUT_TOKENS = 4_096
 # Hidden reasoning is billed against max_tokens, so a reasoning-required
 # endpoint needs headroom the schema-only budget does not have; without it the
 # model spends the whole budget thinking and returns an empty message.
-REASONING_OUTPUT_TOKENS = 32_768
+REASONING_OUTPUT_TOKENS = 8_192
 REQUEST_TIMEOUT_SECONDS = 90.0
 MODEL_REQUEST_TOTAL_SECONDS = 300.0
 MODEL_HEARTBEAT_SECONDS = 30.0

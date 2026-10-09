@@ -164,9 +164,45 @@ class AnnotatedDiffTest(unittest.TestCase):
         for reason in ("response_limit", "output_limit", "stream_incomplete", "watchdog_already_active"):
             self.assertFalse(reviewer._retryable_request_error(reviewer.RequestError(reason, reason=reason)))
 
-    def test_ollama_review_budget_is_sized_for_large_reviews(self) -> None:
-        self.assertGreaterEqual(reviewer.MAX_OUTPUT_TOKENS, 32_000)
-        self.assertGreaterEqual(reviewer.REASONING_OUTPUT_TOKENS, 32_000)
+    def test_output_limit_rejects_even_valid_json_and_uses_configured_fallback(self):
+        primary_review = {"summary": "Unfinished primary review.", "findings": []}
+        fallback_review = {"summary": "Completed fallback review.", "findings": []}
+        responses = []
+        for document, finish_reason in ((primary_review, 'length'), (fallback_review, 'stop')):
+            events = [
+                {"choices": [{"delta": {"content": json.dumps(document)}}]},
+                {"choices": [{"delta": {}, "finish_reason": finish_reason}]},
+            ]
+            wire = b''.join(b'data: ' + json.dumps(event).encode() + b'\n\n' for event in events)
+            response = io.BytesIO(wire + b'data: [DONE]\n\n')
+            response.headers = {"Content-Type": "text/event-stream"}
+            responses.append(response)
+        chunk = reviewer.ReviewChunk('RIGHT 1|+value', frozenset({'app.py'}), ('app.py',))
+        with (
+            mock.patch.dict(reviewer.os.environ, {
+                'DIRECT_REVIEW_FALLBACK_MODEL': 'fixture/fallback:free',
+                'DIRECT_REVIEW_FALLBACK_PROVIDER': 'openrouter',
+                'OPENROUTER_API_KEY': 'test-key',
+            }, clear=True),
+            mock.patch.object(reviewer, 'ACTIVE_PROVIDER', 'openrouter'),
+            mock.patch.object(reviewer, 'OLLAMA_URL', 'https://openrouter.ai/api/v1/chat/completions'),
+            mock.patch.object(reviewer, 'REVIEW_DEADLINE', reviewer.ReviewDeadline(600)),
+            mock.patch.object(reviewer, 'read_review_rules', return_value='rules'),
+            mock.patch.object(reviewer.urllib.request, 'urlopen', side_effect=responses) as request,
+            mock.patch('builtins.print'),
+        ):
+            result = reviewer.review_chunk('test-key', 'fixture/primary:free', (), chunk, 1, 1)
+        self.assertEqual(result, fallback_review)
+        self.assertEqual(request.call_count, 2)
+        payloads = [json.loads(call.args[0].data) for call in request.call_args_list]
+        self.assertEqual([payload['model'] for payload in payloads],
+                         ['fixture/primary:free', 'fixture/fallback:free'])
+        self.assertTrue(all(payload['max_tokens'] == reviewer.MAX_OUTPUT_TOKENS for payload in payloads))
+        self.assertTrue(all(response.closed for response in responses))
+
+    def test_large_input_reviews_keep_distinct_json_and_reasoning_budgets(self) -> None:
+        self.assertGreater(reviewer.MAX_OUTPUT_TOKENS, 0)
+        self.assertGreater(reviewer.REASONING_OUTPUT_TOKENS, reviewer.MAX_OUTPUT_TOKENS)
         self.assertGreaterEqual(reviewer.MAX_CHUNK_CHARACTERS, 80_000)
         self.assertGreaterEqual(reviewer.MAX_REVIEW_CHUNKS, 100)
 
@@ -1016,7 +1052,7 @@ class OllamaCloudRequestTest(unittest.TestCase):
         retry_body = request.call_args_list[1].args[3]
         self.assertEqual(first_body["max_tokens"], reviewer.MAX_OUTPUT_TOKENS)
         self.assertEqual(retry_body["max_tokens"], reviewer.REASONING_OUTPUT_TOKENS)
-        self.assertGreaterEqual(
+        self.assertGreater(
             reviewer.REASONING_OUTPUT_TOKENS, reviewer.MAX_OUTPUT_TOKENS
         )
 
