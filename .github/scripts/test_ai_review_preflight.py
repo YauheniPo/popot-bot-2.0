@@ -18,6 +18,33 @@ import ai_review_preflight
 
 
 class OllamaReviewTest(unittest.TestCase):
+    def test_review_defaults_use_consistent_free_openrouter_routes(self):
+        root = Path(__file__).resolve().parents[2]
+        automatic = yaml.load((root / '.github/workflows/pr-ai-review.yml').read_text(), Loader=yaml.BaseLoader)
+        manual = yaml.load((root / '.github/workflows/manual-ai-review.yml').read_text(), Loader=yaml.BaseLoader)
+        approved = yaml.load((root / '.github/workflows/owner-approved-ai-review.yml').read_text(), Loader=yaml.BaseLoader)
+        azure = yaml.load((root / 'azure-ci/azure-ai-code-review.yml').read_text(), Loader=yaml.BaseLoader)
+        defaults = {key: value.rsplit("'", 2)[1] for key, value in automatic['env'].items()
+                    if key.startswith(('DIRECT_REVIEW_', 'CLAUDE_REVIEW_')) and "'" in value}
+        for engine in ('DIRECT', 'CLAUDE'):
+            with self.subTest(engine=engine):
+                self.assertEqual(defaults[engine + '_REVIEW_PROVIDER'], 'openrouter')
+                primary = defaults[engine + '_REVIEW_MODEL']
+                fallback = defaults[engine + '_REVIEW_FALLBACK_MODEL']
+                self.assertTrue(primary.endswith(':free'))
+                self.assertTrue(fallback.endswith(':free'))
+                self.assertNotEqual(primary, fallback)
+        self.assertEqual(defaults['DIRECT_REVIEW_MODEL'], defaults['CLAUDE_REVIEW_MODEL'])
+        approved_probe = next(step for step in approved['jobs']['review']['steps']
+                              if step.get('id') == 'models')
+        manual_inputs = manual['on']['workflow_dispatch']['inputs']
+        azure_parameters = {entry['name']: entry for entry in azure['parameters']}
+        for parameter, setting in (('provider', 'DIRECT_REVIEW_PROVIDER'), ('model', 'DIRECT_REVIEW_MODEL')):
+            with self.subTest(parameter=parameter):
+                self.assertEqual(approved_probe['env'][setting], automatic['env'][setting])
+                self.assertEqual(manual_inputs[parameter]['default'], defaults[setting])
+                self.assertEqual(azure_parameters[parameter]['default'], defaults[setting])
+
     def test_manual_review_passes_configured_fallback_model_and_provider(self):
         root = Path(__file__).resolve().parents[2]
         manual = yaml.safe_load((root / ".github/workflows/manual-ai-review.yml").read_text())
@@ -70,13 +97,15 @@ class OllamaReviewTest(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         workflow = yaml.safe_load((root / '.github/workflows/pr-ai-review.yml').read_text())
         env = workflow['env']
-        # The legacy override must select the probed model too, rather than
-        # silently replacing only the SDK's model after a different probe.
+        # One canonical setting selects both the probed model and the SDK model.
         expression = env['CLAUDE_REVIEW_MODEL'].removeprefix('${{ ').removesuffix(' }}')
+        default_model = expression.rsplit("'", 2)[1]
         for variables, expected in (
             ({'CLAUDE_REVIEW_MODEL': 'fixture/primary'}, 'fixture/primary'),
             ({'CLAUDE_REVIEW_MODEL': 'fixture/primary',
-              'CLAUDE_CODE_REVIEW_MODEL': 'fixture/override'}, 'fixture/override'),
+              'CLAUDE_CODE_REVIEW_MODEL': 'fixture/override'}, 'fixture/primary'),
+            ({'CLAUDE_CODE_REVIEW_MODEL': 'fixture/override'}, default_model),
+            ({'CLAUDE_REVIEW_MODEL': ''}, default_model),
         ):
             choices = [variables.get(part[5:], '') if part.startswith('vars.') else part.strip("'")
                        for part in expression.split(' || ')]
@@ -102,7 +131,9 @@ class OllamaReviewTest(unittest.TestCase):
             self.assertNotIn('vars.CLAUDE_', env[key])
         primary = env['CLAUDE_REVIEW_PROVIDER'].split("'")[1]
         fallback = env['CLAUDE_REVIEW_FALLBACK_PROVIDER'].split("'")[1]
-        self.assertNotEqual(primary, fallback)
+        primary_model = env['CLAUDE_REVIEW_MODEL'].split("'")[1]
+        fallback_model = env['CLAUDE_REVIEW_FALLBACK_MODEL'].split("'")[1]
+        self.assertNotEqual((primary, primary_model), (fallback, fallback_model))
         self.assertIn(primary, ai_review_preflight.MESSAGES_BASE_URLS)
         self.assertIn(fallback, ai_review_preflight.MESSAGES_BASE_URLS)
         self.assertEqual(env['CLAUDE_REVIEW_BASE_URL'], "${{ vars.OBSERVABLE_REVIEW_BASE_URL || '' }}")
@@ -838,7 +869,7 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertEqual(automatic["env"]["OLLAMA_REVIEW_RPM"], "${{ vars.OLLAMA_REVIEW_RPM || '60' }}")
         self.assertEqual(automatic["env"]["OLLAMA_REVIEW_COOLDOWN_SECONDS"], "${{ vars.OLLAMA_REVIEW_COOLDOWN_SECONDS || '0' }}")
         self.assertEqual(automatic["env"]["OLLAMA_REVIEW_BUDGET_SECONDS"], "${{ vars.OLLAMA_REVIEW_BUDGET_SECONDS || '2400' }}")
-        self.assertIn("vars.CLAUDE_CODE_REVIEW_MODEL", automatic["env"]["CLAUDE_REVIEW_MODEL"])
+        self.assertNotIn("vars.CLAUDE_CODE_REVIEW_MODEL", automatic["env"]["CLAUDE_REVIEW_MODEL"])
         self.assertIn("||", automatic["env"]["CLAUDE_REVIEW_MODEL"])
         checkout_line = next(
             line for line in (root / ".github/workflows/pr-ai-review.yml").read_text().splitlines()

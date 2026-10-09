@@ -12,13 +12,12 @@ env:
   # 1 = DirectAPI; 2 = ClaudeCodePlugin gating with Observable corroboration.
   PR_REVIEWER: ${{ vars.PR_REVIEWER || '0' }}
   # Claude uses these settings; Observable overrides its routes at job level.
-  DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'nous' }}
-  DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'inclusionai/ling-3.0-flash-sante:free' }}
+  DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'openrouter' }}
+  DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'poolside/laguna-s-2.1:free' }}
   DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'google/gemma-4-31b-it:free' }}
   DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'openrouter' }}
-  CLAUDE_REVIEW_PROVIDER: ${{ vars.CLAUDE_REVIEW_PROVIDER || 'nous' }}
-  # Keep the legacy SDK override, but probe and report that same effective model.
-  CLAUDE_REVIEW_MODEL: ${{ vars.CLAUDE_CODE_REVIEW_MODEL || vars.CLAUDE_REVIEW_MODEL || 'inclusionai/ling-3.0-flash-sante:free' }}
+  CLAUDE_REVIEW_PROVIDER: ${{ vars.CLAUDE_REVIEW_PROVIDER || 'openrouter' }}
+  CLAUDE_REVIEW_MODEL: ${{ vars.CLAUDE_REVIEW_MODEL || 'poolside/laguna-s-2.1:free' }}
   CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.CLAUDE_REVIEW_FALLBACK_MODEL || 'google/gemma-4-31b-it:free' }}
   CLAUDE_REVIEW_FALLBACK_PROVIDER: ${{ vars.CLAUDE_REVIEW_FALLBACK_PROVIDER || 'openrouter' }}
   CLAUDE_REVIEW_BASE_URL: ${{ vars.CLAUDE_REVIEW_BASE_URL || '' }}
@@ -796,13 +795,12 @@ jobs:
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      # Observable uses its own models so it does not compete with the Claude
-      # Code SDK reviewer (which reads CLAUDE_REVIEW_MODEL directly) for the
-      # same free-model rate limit on the shared provider key.
+      # Observable selects its own primary model independently of Claude Code.
+      # These routes still share OpenRouter's account-level free-model quota.
       CLAUDE_REVIEW_PROVIDER: ${{ vars.OBSERVABLE_REVIEW_PROVIDER || 'openrouter' }}
       CLAUDE_REVIEW_MODEL: ${{ vars.OBSERVABLE_REVIEW_MODEL || 'cohere/north-mini-code:free' }}
-      CLAUDE_REVIEW_FALLBACK_PROVIDER: ${{ vars.OBSERVABLE_REVIEW_FALLBACK_PROVIDER || 'nous' }}
-      CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.OBSERVABLE_REVIEW_FALLBACK_MODEL || 'inclusionai/ling-3.0-flash-sante:free' }}
+      CLAUDE_REVIEW_FALLBACK_PROVIDER: ${{ vars.OBSERVABLE_REVIEW_FALLBACK_PROVIDER || 'openrouter' }}
+      CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.OBSERVABLE_REVIEW_FALLBACK_MODEL || 'poolside/laguna-s-2.1:free' }}
       # A different provider must never inherit Claude Code's custom gateway.
       CLAUDE_REVIEW_BASE_URL: ${{ vars.OBSERVABLE_REVIEW_BASE_URL || '' }}
       OBSERVABLE_REVIEW_MAX_TURNS: ${{ vars.OBSERVABLE_REVIEW_MAX_TURNS || '16' }}

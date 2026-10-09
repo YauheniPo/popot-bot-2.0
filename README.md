@@ -213,11 +213,9 @@ when Direct API fails. `1` runs only Direct API; `2` runs both agent reviewers
 without Direct API. Owner-only, same-repository and non-draft safeguards apply
 to all three. A newer revision cancels the previous run.
 
-Claude Code uses `CLAUDE_REVIEW_*` provider and model settings, not
-`DIRECT_REVIEW_*`. The legacy `CLAUDE_CODE_REVIEW_MODEL` variable overrides the
-effective primary model for both preflight and execution. All SDK roles and
-retries use the model emitted by preflight; changing only `CLAUDE_REVIEW_MODEL`
-requires clearing or updating that legacy override if it is set.
+Claude Code selects its provider with `CLAUDE_REVIEW_PROVIDER` and its primary
+model with `CLAUDE_REVIEW_MODEL`. Preflight checks that model, and all SDK roles
+and retries use the model emitted by preflight.
 Observable independently selects both provider/model pairs with
 `OBSERVABLE_REVIEW_PROVIDER`, `OBSERVABLE_REVIEW_MODEL`,
 `OBSERVABLE_REVIEW_FALLBACK_PROVIDER` and `OBSERVABLE_REVIEW_FALLBACK_MODEL`.
@@ -229,19 +227,30 @@ identity variables or credentials are required. Each publishes its own PR
 summary and inline findings. The observable reviewer never resolves or replies
 to other reviewers' threads, avoiding races between the parallel jobs.
 
-The default routes, checked against catalogs on 2026-10-02, are:
+The default routes, checked against catalogs on 2026-10-09, are:
 
 | Reviewer | Primary | Fallback |
 | --- | --- | --- |
-| Direct API | `nous / inclusionai/ling-3.0-flash-sante:free` | `openrouter / google/gemma-4-31b-it:free` |
-| Claude Code | `nous / inclusionai/ling-3.0-flash-sante:free` | `openrouter / google/gemma-4-31b-it:free` |
-| Observable | `openrouter / cohere/north-mini-code:free` | `nous / inclusionai/ling-3.0-flash-sante:free` |
+| Direct API | `openrouter / poolside/laguna-s-2.1:free` | `openrouter / google/gemma-4-31b-it:free` |
+| Claude Code | `openrouter / poolside/laguna-s-2.1:free` | `openrouter / google/gemma-4-31b-it:free` |
+| Observable | `openrouter / cohere/north-mini-code:free` | `openrouter / poolside/laguna-s-2.1:free` |
 
 Repository Actions variables override these YAML defaults; update both when
-retiring a route. The parallel agent jobs start on different providers, and
-each reviewer has a fallback on another provider. Different providers can still
-share an upstream quota. Catalog presence is not a successful inference check;
+retiring a route.
+Sante's configured Nous route returned HTTP 404 in PR #70, so the review
+defaults now select Laguna. The [Laguna S 2.1 free endpoint](https://openrouter.ai/poolside/laguna-s-2.1:free)
+supports tool calling, but expires on **2026-10-31**; replace both the YAML
+defaults and Actions variables before that date. No paid replacement is selected
+automatically. These routes share OpenRouter's account-level free-model quota;
+a different model can help with an upstream/model limit, but cannot bypass an
+exhausted account quota. Catalog presence is not a successful inference check;
 the CI preflight and validated review result remain the operational evidence.
+
+Direct and owner-approved review load trusted reviewer scripts from `main`.
+Changes to those scripts in a feature branch take effect there only after they
+reach `main`; model/provider Actions variables apply to newly started runs
+without requiring that merge. Manual GitHub and Azure launch-form defaults
+remain separate from repository variables, as described below.
 
 Direct API retries HTTP 429 on a dedicated ladder of 1, 2, 5 and 10 minutes
 that does not consume its general four-request budget for transport, JSON and
