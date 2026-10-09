@@ -364,6 +364,12 @@ fallback equal to the failed primary does not grant another retry budget.
 Each probe attempt logs its model, attempt number, and timeout. Preflight calls
 may incur provider charges, even though they are excluded from the published
 review request totals.
+For OpenRouter HTTP 429 without a usable `Retry-After` or rate-limit reset hint,
+preflight waits at least 60 seconds before a permitted retry. This gives a
+per-minute limit time to reset while retaining the existing attempt limits and
+120-second total retry-wait budget per probe. Explicit server hints remain
+authoritative within that budget; confirmed daily exhaustion and HTTP 404 do
+not trigger this retry. An unknown 429 does not prove daily quota exhaustion.
 Direct JSON preflight requests `stream=true` and uses the same bounded response
 reader as the full review. Providers returning an ordinary JSON response remain
 supported. A successful small probe checks transport compatibility, not whether

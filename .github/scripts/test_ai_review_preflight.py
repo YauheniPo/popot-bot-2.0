@@ -316,6 +316,52 @@ class OllamaReviewTest(unittest.TestCase):
                     self.assertEqual(sum(c.args[0] for c in sleep.call_args_list), delay)
                 self.assertEqual(request.call_count, calls)
 
+    def test_claude_fallback_waits_for_openrouter_minute_limit_without_retry_hint(self):
+        elapsed = 0
+
+        def advance(seconds):
+            nonlocal elapsed
+            elapsed += seconds
+
+        def respond(request, **_kwargs):
+            if request.full_url == ai_review_preflight.messages_url("nous"):
+                raise urllib.error.HTTPError(request.full_url, 404, "unavailable", {}, io.BytesIO(b"{}"))
+            if elapsed < 60:
+                raise urllib.error.HTTPError(request.full_url, 429, "limited", {}, io.BytesIO(b"{}"))
+            payload = json.loads(request.data)
+            if payload.get("tools"):
+                return self.response({"content": [{"type": "tool_use", "name": "review_model_preflight",
+                                                   "input": {"status": "ok"}}]})
+            return self.response({"content": [{"type": "text", "text":
+                '{"summary":"checked","findings":[],"thread_verdicts":[]}'}]})
+
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(ai_review_preflight, "SMOKE_MAX_ATTEMPTS", 2), \
+                mock.patch.object(ai_review_preflight, "SMOKE_FALLBACK_MAX_ATTEMPTS", 2), \
+                mock.patch.object(ai_review_preflight, "OPENROUTER_RATE_LIMIT_RETRY_SECONDS", 60), \
+                mock.patch.object(ai_review_preflight.urllib.request, "urlopen", side_effect=respond) as request, \
+                mock.patch.object(ai_review_preflight.time, "sleep", side_effect=advance) as sleep:
+            ready = ai_review_preflight.probe_models("key", "claude", "nous", "primary:free", "backup:free",
+                fallback_provider="openrouter", fallback_api_key="fallback-key")
+        self.assertEqual(ready, (False, True))
+        sleep.assert_called_once_with(60)
+        self.assertEqual(request.call_count, 4)
+
+    def test_openrouter_unknown_429_remains_within_total_preflight_wait_budget(self):
+        def limited(request, **_kwargs):
+            raise urllib.error.HTTPError(request.full_url, 429, "limited", {}, io.BytesIO(b"{}"))
+
+        with mock.patch.object(ai_review_preflight, "MAX_RETRY_WAIT_SECONDS", 120), \
+                mock.patch.object(ai_review_preflight, "MAX_ATTEMPTS", 4), \
+                mock.patch.object(ai_review_preflight, "OPENROUTER_RATE_LIMIT_RETRY_SECONDS", 60), \
+                mock.patch.object(ai_review_preflight.urllib.request, "urlopen", side_effect=limited) as request, \
+                mock.patch.object(ai_review_preflight.time, "sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, "retry wait budget exhausted"):
+                ai_review_preflight.probe("test-key", "json", "openrouter", "model:free")
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(sleep.call_args_list, [mock.call(60), mock.call(60)])
+        self.assertEqual(sum(call.args[0] for call in sleep.call_args_list), 120)
+
     def test_custom_primary_endpoint_does_not_capture_other_provider_credentials(self):
         with mock.patch.dict(os.environ, {"CLAUDE_REVIEW_PROVIDER": "openrouter",
                 "CLAUDE_REVIEW_BASE_URL": "https://openrouter.ai/api"}, clear=True):

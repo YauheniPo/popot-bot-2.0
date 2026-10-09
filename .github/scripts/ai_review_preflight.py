@@ -42,6 +42,8 @@ SMOKE_MAX_ATTEMPTS = 2
 SMOKE_FALLBACK_MAX_ATTEMPTS = 2
 RETRYABLE_STATUSES = {408, 429, 500, 502, 503, 504}
 MAX_RETRY_WAIT_SECONDS = 120
+# Without a server hint, allow an OpenRouter per-minute window to reset.
+OPENROUTER_RATE_LIMIT_RETRY_SECONDS = 60
 
 
 class ProbeFailure(RuntimeError):
@@ -229,6 +231,8 @@ def _http_retry_delay(error, provider: str, kind: str, attempt: int, attempts: i
         details = _rate_limit_details(error) if error.code == 429 else {}
     failure = ProbeFailure(f"{provider} {kind} probe failed with HTTP {error.code}", details)
     delay = max(15 * (attempt + 1), details.get("retry_after_seconds", 0))
+    if error.code == 429 and provider == "openrouter" and "retry_after_seconds" not in details:
+        delay = max(delay, OPENROUTER_RATE_LIMIT_RETRY_SECONDS)
     if details:
         print(f"[preflight] rate_limit {json.dumps(details, sort_keys=True)}", file=sys.stderr)
     if (error.code not in RETRYABLE_STATUSES or attempt == attempts - 1
