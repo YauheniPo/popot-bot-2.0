@@ -34,6 +34,7 @@ PLAIN_JSON_PROVIDERS = frozenset({"ollama-cloud", "nvidia", "nous"})
 NOUS_MAX_OUTPUT_TOKENS = 32_000
 REQUEST_TIMEOUT_SECONDS = 90
 MAX_ATTEMPTS = 4
+MAX_TRANSPORT_ATTEMPTS = 2
 # Free OpenRouter routes can queue before producing a response. Keep the
 # smoke check bounded, but allow the configured primary model one retry so a
 # transient queue or gateway timeout does not immediately block the review.
@@ -252,6 +253,8 @@ def _request_probe_response(request: urllib.request.Request, attempts: int, time
                             provider: str, model: str, kind: str) -> object:
     result: object = None
     remaining = MAX_RETRY_WAIT_SECONDS
+    rate_limit_retried = False
+    transport_failures = 0
     for attempt in range(attempts):
         if remaining <= 0:
             raise RuntimeError(f"{provider} {kind} probe retry wait budget exhausted")
@@ -264,11 +267,18 @@ def _request_probe_response(request: urllib.request.Request, attempts: int, time
             result = _read_probe_response(request, timeout, kind, provider)
             break
         except StreamFailure as error:
-            delay = _stream_retry_delay(error, provider, kind, attempt, attempts)
+            transport_failures += 1
+            retry_attempt = attempts - 1 if transport_failures >= MAX_TRANSPORT_ATTEMPTS else attempt
+            delay = _stream_retry_delay(error, provider, kind, retry_attempt, attempts)
         except urllib.error.HTTPError as error:
-            delay = _http_retry_delay(error, provider, kind, attempt, attempts, remaining)
+            limited = error.code == 429
+            retry_attempt = attempts - 1 if limited and rate_limit_retried else attempt
+            wait_budget = min(remaining, OPENROUTER_RATE_LIMIT_RETRY_SECONDS) if limited else remaining
+            delay = _http_retry_delay(error, provider, kind, retry_attempt, attempts, wait_budget)
+            rate_limit_retried = rate_limit_retried or limited
         except (urllib.error.URLError, TimeoutError, ConnectionError, IncompleteRead):
-            if attempt == attempts - 1:
+            transport_failures += 1
+            if attempt == attempts - 1 or transport_failures >= MAX_TRANSPORT_ATTEMPTS:
                 raise RuntimeError(f"{provider} {kind} probe failed or timed out") from None
         except ValueError:
             raise RuntimeError(f"{provider} {kind} probe returned invalid JSON") from None

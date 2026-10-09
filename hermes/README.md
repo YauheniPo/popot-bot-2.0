@@ -2213,6 +2213,20 @@ chat-команда не принимает credentials или произвол�
 Политика применяется при deploy;
 уже выполняющаяся задача сохраняет ранее загруженную цепочку.
 
+9 октября 2026 в исключения добавлены пары `nvidia / qwen/qwen3-next-80b-a3b-instruct`
+(HTTP 410), `nvidia / google/gemma-4-31b-it` (четыре таймаута по 90 секунд
+до получения headers) и `nous / inclusionai/ling-3.0-flash-sante:free`
+(HTTP 404 в Messages API). Sante также удалена из `default_routes`.
+Пара `openrouter / poolside/laguna-s-2.1:free` исключена после двух
+незавершённых ответов Direct API review по 300 секунд; та же Laguna через Nous
+завершила проверку текущего PR и остаётся разрешённой.
+Ранее проверенные `nous / inclusionai/ling-3.0-flash-fin:free` и
+`nous / meituan/longcat-2.0:free` внесены в тот же список из-за HTTP 404.
+Это результаты конкретных probes, а не утверждение, что модель недоступна
+у всех провайдеров. Перед снятием исключения повторите live-проверку точной пары.
+Временный HTTP 429 сам по себе не добавляет модель в постоянные исключения.
+Этот список управляет fallback Hermes; маршруты GitHub AI review задаются отдельно.
+
 Базовый список сверён с каталогами **29 сентября 2026**. Бесплатные варианты
 `inclusionai/ling-3.0-flash-fin:free` и `meituan/longcat-2.0:free` вернули 404
 при фактическом запуске, хотя каталог Nous всё ещё показывает второй ID.
@@ -2224,8 +2238,7 @@ NVIDIA Super сохранил бесплатный endpoint; его ошибка
 | 1 | `openrouter` | `google/gemma-4-31b-it:free` | Бесплатная мультиязычная модель с tools для общего анализа |
 | 2 | `nous` | `stepfun/step-3.7-flash:free` | Бесплатная рекомендация Nous, tools и длинный контекст |
 | 3 | `openrouter` | `nvidia/nemotron-3-super-120b-a12b:free` | Nemotron 3 Super 120B: tools, контекст 262K, бесплатный маршрут OpenRouter |
-| 4 | `nous` | `inclusionai/ling-3.0-flash-sante:free` | Доступен в каталоге Nous, ранее работал для PR review |
-| 5 | `nvidia` | `nvidia/nemotron-3-super-120b-a12b` | Бесплатный NIM endpoint с поддержкой tools |
+| 4 | `nvidia` | `nvidia/nemotron-3-super-120b-a12b` | Бесплатный NIM endpoint с поддержкой tools |
 
 Источники: [каталог OpenRouter](https://openrouter.ai/api/v1/models),
 [Gemma 4 free](https://openrouter.ai/google/gemma-4-31b-it:free),

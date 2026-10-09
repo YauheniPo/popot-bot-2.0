@@ -12,11 +12,11 @@ env:
   # 1 = DirectAPI; 2 = ClaudeCodePlugin gating with Observable corroboration.
   PR_REVIEWER: ${{ vars.PR_REVIEWER || '0' }}
   # Claude uses these settings; Observable overrides its routes at job level.
-  DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'openrouter' }}
+  DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'nous' }}
   DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'poolside/laguna-s-2.1:free' }}
   DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'google/gemma-4-31b-it:free' }}
   DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'openrouter' }}
-  CLAUDE_REVIEW_PROVIDER: ${{ vars.CLAUDE_REVIEW_PROVIDER || 'openrouter' }}
+  CLAUDE_REVIEW_PROVIDER: ${{ vars.CLAUDE_REVIEW_PROVIDER || 'nous' }}
   CLAUDE_REVIEW_MODEL: ${{ vars.CLAUDE_REVIEW_MODEL || 'poolside/laguna-s-2.1:free' }}
   CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.CLAUDE_REVIEW_FALLBACK_MODEL || 'google/gemma-4-31b-it:free' }}
   CLAUDE_REVIEW_FALLBACK_PROVIDER: ${{ vars.CLAUDE_REVIEW_FALLBACK_PROVIDER || 'openrouter' }}
@@ -442,12 +442,14 @@ jobs:
             --output "${CLAUDE_REVIEW_RESULT_FILE}"
 
       # A provider can complete the agent run but still return malformed final
-      # JSON. Give the primary one fresh completion before spending a fallback.
+      # JSON. Retry that completed run once; SDK failures and step timeouts go
+      # directly to the distinct fallback instead of repeating a stalled route.
       - name: Wait before retrying the primary Claude Code model
         if: >-
           always() &&
           !cancelled() &&
           steps.claude_models.outputs.primary_ready == 'true' &&
+          steps.claude_review_primary.outcome == 'success' &&
           steps.extract_claude_review_primary.outcome != 'success'
         shell: bash
         run: sleep 15
@@ -458,6 +460,7 @@ jobs:
           always() &&
           !cancelled() &&
           steps.claude_models.outputs.primary_ready == 'true' &&
+          steps.claude_review_primary.outcome == 'success' &&
           steps.extract_claude_review_primary.outcome != 'success'
         continue-on-error: true
         timeout-minutes: 12
@@ -553,9 +556,8 @@ jobs:
             --execution-file "${CLAUDE_EXECUTION_FILE}" \
             --output "${CLAUDE_REVIEW_RESULT_FILE}"
 
-      # Free and gateway-routed models can finish an otherwise valid agent run
-      # with a transient SDK error. Give the already-validated fallback the
-      # same one fresh attempt as the primary before declaring it unavailable.
+      # A completed fallback with invalid output gets one validation retry.
+      # SDK failures and timeouts end this route without another full run.
       - name: Wait before retrying the fallback Claude Code model
         if: >-
           always() &&
@@ -563,6 +565,7 @@ jobs:
           steps.claude_models.outputs.fallback_ready == 'true' &&
           steps.extract_claude_review_primary.outcome != 'success' &&
           steps.extract_claude_review_primary_retry.outcome != 'success' &&
+          steps.claude_review_fallback.outcome == 'success' &&
           steps.extract_claude_review_fallback.outcome != 'success'
         shell: bash
         run: sleep 15
@@ -575,6 +578,7 @@ jobs:
           steps.claude_models.outputs.fallback_ready == 'true' &&
           steps.extract_claude_review_primary.outcome != 'success' &&
           steps.extract_claude_review_primary_retry.outcome != 'success' &&
+          steps.claude_review_fallback.outcome == 'success' &&
           steps.extract_claude_review_fallback.outcome != 'success'
         continue-on-error: true
         timeout-minutes: 12
@@ -796,10 +800,10 @@ jobs:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       # Observable selects its own primary model independently of Claude Code.
-      # These routes still share OpenRouter's account-level free-model quota.
+      # Use separate provider credentials/quotas for primary and fallback.
       CLAUDE_REVIEW_PROVIDER: ${{ vars.OBSERVABLE_REVIEW_PROVIDER || 'openrouter' }}
       CLAUDE_REVIEW_MODEL: ${{ vars.OBSERVABLE_REVIEW_MODEL || 'cohere/north-mini-code:free' }}
-      CLAUDE_REVIEW_FALLBACK_PROVIDER: ${{ vars.OBSERVABLE_REVIEW_FALLBACK_PROVIDER || 'openrouter' }}
+      CLAUDE_REVIEW_FALLBACK_PROVIDER: ${{ vars.OBSERVABLE_REVIEW_FALLBACK_PROVIDER || 'nous' }}
       CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.OBSERVABLE_REVIEW_FALLBACK_MODEL || 'poolside/laguna-s-2.1:free' }}
       # A different provider must never inherit Claude Code's custom gateway.
       CLAUDE_REVIEW_BASE_URL: ${{ vars.OBSERVABLE_REVIEW_BASE_URL || '' }}

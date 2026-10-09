@@ -137,7 +137,8 @@ repository **Settings → Secrets and variables → Actions → Variables**.
 | --- | --- | --- |
 | Provider | `DIRECT_REVIEW_PROVIDER` | `CLAUDE_REVIEW_PROVIDER` |
 | Primary model | `DIRECT_REVIEW_MODEL` | `CLAUDE_REVIEW_MODEL` |
-| Fallback model on the same provider | `DIRECT_REVIEW_FALLBACK_MODEL` | `CLAUDE_REVIEW_FALLBACK_MODEL` |
+| Fallback provider | `DIRECT_REVIEW_FALLBACK_PROVIDER` | `CLAUDE_REVIEW_FALLBACK_PROVIDER` |
+| Fallback model | `DIRECT_REVIEW_FALLBACK_MODEL` | `CLAUDE_REVIEW_FALLBACK_MODEL` |
 | Custom API base URL | Selected by the provider adapter | `CLAUDE_REVIEW_BASE_URL` (optional) |
 
 Use a model ID accepted by the selected provider. The provider selector supports
@@ -231,20 +232,19 @@ The default routes, checked against catalogs on 2026-10-09, are:
 
 | Reviewer | Primary | Fallback |
 | --- | --- | --- |
-| Direct API | `openrouter / poolside/laguna-s-2.1:free` | `openrouter / google/gemma-4-31b-it:free` |
-| Claude Code | `openrouter / poolside/laguna-s-2.1:free` | `openrouter / google/gemma-4-31b-it:free` |
-| Observable | `openrouter / cohere/north-mini-code:free` | `openrouter / poolside/laguna-s-2.1:free` |
+| Direct API | `nous / poolside/laguna-s-2.1:free` | `openrouter / google/gemma-4-31b-it:free` |
+| Claude Code | `nous / poolside/laguna-s-2.1:free` | `openrouter / google/gemma-4-31b-it:free` |
+| Observable | `openrouter / cohere/north-mini-code:free` | `nous / poolside/laguna-s-2.1:free` |
 
 Repository Actions variables override these YAML defaults; update both when
 retiring a route.
-Sante's configured Nous route returned HTTP 404 in PR #70, so the review
-defaults now select Laguna. The [Laguna S 2.1 free endpoint](https://openrouter.ai/poolside/laguna-s-2.1:free)
-supports tool calling, but expires on **2026-10-31**; replace both the YAML
-defaults and Actions variables before that date. No paid replacement is selected
-automatically. These routes share OpenRouter's account-level free-model quota;
-a different model can help with an upstream/model limit, but cannot bypass an
-exhausted account quota. Catalog presence is not a successful inference check;
-the CI preflight and validated review result remain the operational evidence.
+Direct API and Claude Code select the free Laguna route through
+[Nous Portal](https://portal.nousresearch.com/models), with OpenRouter for fallback.
+OpenRouter routes share its account-level free-model quota; switching only the
+model cannot bypass an exhausted account quota. The Nous primary and OpenRouter
+fallback have separate provider quotas. No paid replacement is selected
+automatically. Catalog presence is not a successful inference check; the CI
+preflight and validated review result remain the operational evidence.
 
 Direct and owner-approved review load trusted reviewer scripts from `main`.
 Changes to those scripts in a feature branch take effect there only after they
@@ -252,11 +252,16 @@ reach `main`; model/provider Actions variables apply to newly started runs
 without requiring that merge. Manual GitHub and Azure launch-form defaults
 remain separate from repository variables, as described below.
 
-Direct API retries HTTP 429 on a dedicated ladder of 1, 2, 5 and 10 minutes
-that does not consume its general four-request budget for transport, JSON and
-schema retries; a longer provider `Retry-After` extends a step up to 15 minutes,
-and the review deadline still bounds every wait. A confirmed OpenRouter free-model
-daily limit skips that ladder and immediately tries the configured fallback.
+Direct API gives HTTP 429 one retry after a 60-second reset window, then switches
+to the configured fallback model and provider. Each route spends at most 60 seconds
+waiting for rate limits; two persistently limited routes spend at most two minutes
+in backoff, excluding API request durations and preflight. A longer provider
+`Retry-After` or reset hint skips that route immediately instead of retrying before
+the reset. The general four-request budget for transport, JSON and schema retries
+remains separate, and the review deadline still bounds every wait. Logs number
+physical API requests, show the separate retry budgets, and emit a backoff heartbeat
+every 30 seconds explicitly saying that no provider request is in flight.
+A confirmed OpenRouter free-model daily limit immediately tries the configured fallback.
 Other retryable errors keep exponential backoff (1, 2, 4 seconds) with provider
 hints capped at 90 seconds.
 
@@ -284,6 +289,11 @@ its SDK execution file before accepting any primary/retry/fallback result.
 Calls without results, empty pages and reads of unrelated files do not count;
 failure triggers the existing retry/fallback path with `diff_not_read`.
 This is an input-access check, not a guarantee of exhaustive or accurate review.
+Claude Code retries the same route once only when the SDK run completed but its
+result failed validation. An SDK failure or the 12-minute step timeout skips
+that repeat and moves directly to the ready fallback; a failed fallback SDK run
+is reported as unavailable. These guards use the step's original `outcome`,
+because `continue-on-error` can make a failed attempt's `conclusion` show success.
 
 Manual GitHub review and the Azure launcher use the same
 direct reviewer. Their `provider` and `model` come from run inputs, including
@@ -374,11 +384,14 @@ Each probe attempt logs its model, attempt number, and timeout. Preflight calls
 may incur provider charges, even though they are excluded from the published
 review request totals.
 For OpenRouter HTTP 429 without a usable `Retry-After` or rate-limit reset hint,
-preflight waits at least 60 seconds before a permitted retry. This gives a
-per-minute limit time to reset while retaining the existing attempt limits and
-120-second total retry-wait budget per probe. Explicit server hints remain
-authoritative within that budget; confirmed daily exhaustion and HTTP 404 do
-not trigger this retry. An unknown 429 does not prove daily quota exhaustion.
+preflight waits 60 seconds before one permitted retry, then moves on to the
+configured alternate route if rate limiting persists. Explicit server hints
+remain authoritative: a reset beyond 60 seconds skips the route. Two transport
+failures or watchdog timeouts stop a probe and allow fallback, rather than making
+four slow requests to an unavailable endpoint. Other transient HTTP failures retain
+the existing attempt limits and 120-second total retry-wait budget per probe.
+Confirmed daily exhaustion and HTTP 404 do not trigger a rate-limit retry.
+An unknown 429 does not prove daily quota exhaustion.
 Direct JSON preflight requests `stream=true` and uses the same bounded response
 reader as the full review. Providers returning an ordinary JSON response remain
 supported. A successful small probe checks transport compatibility, not whether

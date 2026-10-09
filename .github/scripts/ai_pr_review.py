@@ -49,10 +49,9 @@ MAX_CHUNK_CHARACTERS = 96_000
 MAX_REVIEW_CHUNKS = 100
 MAX_CONFIGURED_REVIEW_CHUNKS = 100
 DEFAULT_REQUESTS_PER_MINUTE = 8
-# 429-specific retry ladder (separate from the general attempt budget).
-# Provides 4 dedicated retries with escalating waits: 1, 2, 5, 10 minutes.
-# Provider Retry-After headers extend the step when longer (capped at 15 min).
-RATE_LIMIT_RETRY_LADDER = (60.0, 120.0, 300.0, 600.0)
+# Give a per-minute rate limit one chance to reset, then try the configured
+# fallback. Long reset hints skip the route instead of retrying too early.
+RATE_LIMIT_RETRY_LADDER = (60.0,)
 MAX_RATE_LIMIT_RETRY_DELAY_SECONDS = 900.0
 # Cap for untrusted provider retry headers outside the 429 ladder.
 MAX_RETRY_DELAY_SECONDS = 90.0
@@ -297,7 +296,7 @@ class ReviewAttempts:
 
     The general attempt budget covers transport retries, invalid-JSON repair,
     and schema-compatibility fallbacks. Rate-limit (HTTP 429) retries have
-    a separate dedicated budget of 4 retries with their own escalating ladder.
+    a separate dedicated retry after one bounded wait.
     """
 
     used: int = 0
@@ -310,7 +309,7 @@ class ReviewAttempts:
         return self.used
 
     def rate_limit_start(self) -> int:
-        """Consume one of the 4 dedicated 429 retries."""
+        """Consume a dedicated 429 retry without resetting on format changes."""
         if self.rate_limit_used >= len(RATE_LIMIT_RETRY_LADDER):
             return -1  # signal: ladder exhausted
         self.rate_limit_used += 1
@@ -351,8 +350,17 @@ class ReviewDeadline:
         return available
 
     def bounded_sleep(self, seconds: float) -> None:
-        """Never sleep past the budget."""
-        time.sleep(max(0.0, min(seconds, self.remaining())))
+        """Never sleep past the budget; distinguish backoff from inference."""
+        remaining = max(0.0, min(seconds, self.remaining()))
+        while remaining > 0:
+            print(
+                f"  retry_wait remaining={remaining:g}s; no provider request in flight",
+                file=sys.stderr,
+                flush=True,
+            )
+            step = min(remaining, MODEL_HEARTBEAT_SECONDS)
+            time.sleep(step)
+            remaining = max(0.0, min(remaining - step, self.remaining()))
 
 
 def configured_review_budget() -> float:
@@ -940,7 +948,9 @@ def request_with_transient_retries(
         available = REVIEW_DEADLINE.require()
         attempt = attempts.start()
         print(
-            f"  {ACTIVE_ROUTE} request {attempt}/{MAX_REQUEST_ATTEMPTS} "
+            f"  {ACTIVE_ROUTE} request {attempt + attempts.rate_limit_used} "
+            f"(general attempt {attempt}/{MAX_REQUEST_ATTEMPTS}; "
+            f"rate-limit retries {attempts.rate_limit_used}/{len(RATE_LIMIT_RETRY_LADDER)}) "
             f"({ACTIVE_PROVIDER}, model={safe_label(body.get('model'))}, "
             f"unit={safe_label(EXECUTION_REPORT.unit) if EXECUTION_REPORT else 'review'}, "
             f"total {min(MODEL_REQUEST_TOTAL_SECONDS, available):.0f}s, "
@@ -999,7 +1009,22 @@ def _retry_delay_or_raise(error: RequestError, attempt: int, body: dict[str, obj
         raise error
     # 429 has its own ladder and budget, so the general attempt cap does not apply.
     if error.status == 429:
-        return _rate_limit_retry_delay(error, attempts)
+        delay = _rate_limit_retry_delay(error, attempts)
+        if delay > RATE_LIMIT_RETRY_LADDER[-1]:
+            print(
+                f"  rate-limit reset requires {delay:g}s; exceeds the "
+                f"{RATE_LIMIT_RETRY_LADDER[-1]:g}s wait budget; stopping this route",
+                file=sys.stderr,
+                flush=True,
+            )
+            raise error
+        print(
+            f"  rate-limit retry {attempts.rate_limit_used}/{len(RATE_LIMIT_RETRY_LADDER)} "
+            f"after {delay:g}s",
+            file=sys.stderr,
+            flush=True,
+        )
+        return delay
     if attempt == MAX_REQUEST_ATTEMPTS:
         raise error
     return error.retry_after_seconds or _retry_delay_seconds(attempt)
@@ -1052,8 +1077,8 @@ def _retry_delay_seconds(attempt: int) -> float:
 def _rate_limit_retry_delay(error: RequestError, attempts: ReviewAttempts) -> float:
     """Return delay for 429 retry based on dedicated ladder and provider hint.
 
-    The ladder is 1, 2, 5, 10 minutes (60, 120, 300, 600 seconds).
     Provider Retry-After extends the step when longer, capped at 15 minutes.
+    The caller skips the route when that hint cannot fit the short wait budget.
     """
     # attempts.rate_limit_used was already incremented; current index is -1
     idx = attempts.rate_limit_used - 1

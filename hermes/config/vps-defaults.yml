@@ -85,6 +85,25 @@ vps_hermes:
         excluded_routes:
           - provider: openrouter
             model: cohere/north-mini-code:free
+          # PR #70 Direct API review: two unfinished generations, 300s each.
+          # The separately verified Nous route remains allowed.
+          - provider: openrouter
+            model: poolside/laguna-s-2.1:free
+          # 2026-10-09 CI probe: NVIDIA returned HTTP 410 (retired endpoint).
+          - provider: nvidia
+            model: qwen/qwen3-next-80b-a3b-instruct
+          # 2026-10-09 CI probe: four 90s timeouts before response headers.
+          # Re-enable only after a successful live probe of this exact pair.
+          - provider: nvidia
+            model: google/gemma-4-31b-it
+          # Nous Messages API returned HTTP 404 in PR #70.
+          - provider: nous
+            model: inclusionai/ling-3.0-flash-sante:free
+          # 2026-09-29 live probes returned HTTP 404 despite catalog listings.
+          - provider: nous
+            model: inclusionai/ling-3.0-flash-fin:free
+          - provider: nous
+            model: meituan/longcat-2.0:free
         # Repeated providers are allowed; each provider/model pair must be unique.
         # Base catalogs checked 2026-09-29; OpenRouter Super probed 2026-10-04.
         # Selection rationale and limits: hermes/README.md.
@@ -97,8 +116,6 @@ vps_hermes:
             model: stepfun/step-3.7-flash:free
           - provider: openrouter
             model: nvidia/nemotron-3-super-120b-a12b:free
-          - provider: nous
-            model: inclusionai/ling-3.0-flash-sante:free
           - provider: nvidia
             model: nvidia/nemotron-3-super-120b-a12b
         # Chat may only choose these existing integrations. No automatic keys,

@@ -64,13 +64,12 @@ parameters:
     displayName: Direct reviewer model
     type: string
     default: poolside/laguna-s-2.1:free
-    # Coding-agent candidate; the free route expires on 2026-10-31.
-    # Every run must still pass the live JSON preflight.
+    # Free coding model on Nous; every run must pass the live JSON preflight.
 
   - name: provider
     displayName: Direct reviewer provider
     type: string
-    default: openrouter
+    default: nous
     values:
       - ollama-cloud
       - openrouter
