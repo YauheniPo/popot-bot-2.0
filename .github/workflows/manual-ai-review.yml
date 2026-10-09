@@ -322,6 +322,8 @@ jobs:
         with:
           model: ${{ inputs.model }}
           provider: ${{ inputs.provider }}
+          fallback_model: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'google/gemma-4-31b-it:free' }}
+          fallback_provider: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'openrouter' }}
           base_sha: ${{ steps.context.outputs.base_sha }}
           head_sha: ${{ steps.context.outputs.head_sha }}
           pr_number: ${{ steps.context.outputs.pr_number }}

@@ -410,7 +410,8 @@ class FallbackIntegrationTests(unittest.TestCase):
             _fallback_chain=[{'provider': p, 'model': m} for p, m in (
                 ('nvidia', 'other'), ('openrouter', 'paid'), ('nous', 'a'), ('ollama-cloud', 'b'))])
         with mock.patch.dict('sys.modules', modules):
-            self.assertFalse(ns['try_activate_fallback'](agent, 'rate_limit'))
+            # Provider-level billing/quota blocks all its models; a model 429 does not.
+            self.assertFalse(ns['try_activate_fallback'](agent, 'billing'))
         self.assertEqual([call.args[0] for call in resolver.call_args_list], ['nous', 'ollama-cloud'])
         self.assertEqual(agent._fallback_index, len(agent._fallback_chain))
 

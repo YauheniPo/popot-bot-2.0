@@ -18,6 +18,23 @@ import ai_review_preflight
 
 
 class OllamaReviewTest(unittest.TestCase):
+    def test_manual_review_passes_configured_fallback_model_and_provider(self):
+        root = Path(__file__).resolve().parents[2]
+        manual = yaml.safe_load((root / ".github/workflows/manual-ai-review.yml").read_text())
+        automatic = yaml.safe_load((root / ".github/workflows/pr-ai-review.yml").read_text())
+        review = next(
+            step for step in manual["jobs"]["review"]["steps"]
+            if step.get("uses") == "./.github/actions/ai-direct-review"
+        )
+        for input_name, variable in (
+            ("fallback_model", "DIRECT_REVIEW_FALLBACK_MODEL"),
+            ("fallback_provider", "DIRECT_REVIEW_FALLBACK_PROVIDER"),
+        ):
+            with self.subTest(input_name=input_name):
+                expression = review["with"].get(input_name, "")
+                self.assertTrue(expression.startswith("${{ vars." + variable + " || "))
+                self.assertEqual(expression, automatic["env"][variable])
+
     def test_reviewer_cooldown_validates_decimal_seconds_before_sleep(self):
         root = Path(__file__).resolve().parents[2]
         workflow = yaml.safe_load((root / ".github/workflows/pr-ai-review.yml").read_text())

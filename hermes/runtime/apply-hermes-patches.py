@@ -339,6 +339,45 @@ _PATCHES: list[tuple[str, str, str, str]] = [
         '_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid", "gateway.lock"}\n',
     ),
     (
+        "agent/tool_guardrails.py",
+        _PREFIX + " actionable file mutation warning",
+        '''            if warnings and exact_count >= self.config.exact_failure_warn_after:
+                return self._decide("warn", "repeated_exact_failure_warning", tool_name, exact_count, signature)
+''',
+        '''            if warnings and exact_count >= self.config.exact_failure_warn_after:
+                # Local Hermes: actionable file mutation warning
+                return self._decide(
+                    "warn", "repeated_exact_failure_warning", tool_name, exact_count, signature,
+                    message=(_tool_failure_recovery_hint(tool_name, same_count)
+                             if tool_name in {"write_file", "patch"} else None),
+                )
+''',
+    ),
+    (
+        "agent/tool_guardrails.py",
+        _PREFIX + " file mutation retry guidance",
+        '''    if tool_name == "terminal":
+        return common + (
+''',
+        '''    # Local Hermes: file mutation retry guidance
+    if tool_name in {"write_file", "patch"}:
+        return (
+            f"{tool_name} failed {count} time(s). Before any retry, read the actual targets "
+            "with read_file; for repository edits, inspect the current HEAD and git diff. "
+            "Do not repeat the same "
+            "failed arguments. If the intended replacement is already present or the reported "
+            "finding belongs to an older revision, verify the current state instead of editing "
+            "again. Otherwise build a unique, corrected patch from the fresh content. For an "
+            "unread-file overwrite refusal, read the file first; never bypass that protection "
+            "with a shell overwrite or delete/recreate. Confirm the edit landed and run affected "
+            "checks. Continue authorized diagnosis while the configured budget permits; report "
+            "a blocker only after verifying it. A failed mutation is not a successful edit."
+        )
+    if tool_name == "terminal":
+        return common + (
+''',
+    ),
+    (
         "agent/turn_stop_gates.py",
         _PREFIX + " recover failed file mutations before stopping",
         '''        if verify_on_stop_enabled():

@@ -180,9 +180,18 @@ CLAUDE_REVIEW_MODEL=<portal-tool-capable-model-id>
 
 The existing `DIRECT_REVIEW_FALLBACK_MODEL` and `CLAUDE_REVIEW_FALLBACK_MODEL`
 also accept Portal model IDs. Manual GitHub and Azure runs select `provider=nous`
-and supply `model` in their run parameters. For the standard Portal connection,
-direct review uses Chat Completions. Do not assume a Portal catalog entry also
-works for inference or supports Anthropic Messages: on 2026-10-02, the Fin free
+and supply `model` in their run parameters.
+
+Manual/Azure direct review uses the same `DIRECT_REVIEW_FALLBACK_MODEL` and
+`DIRECT_REVIEW_FALLBACK_PROVIDER` repository variables and defaults as PR review.
+Changing the primary run parameters does not change that fallback pair; update
+both fallback variables together when changing its route. A fallback is used
+only after its preflight succeeds, and a truncated primary answer still fails
+when no validated fallback is available.
+
+For the standard Portal connection, direct review uses Chat Completions. Do not
+assume a Portal catalog entry also works for inference or supports Anthropic
+Messages: on 2026-10-02, the Fin free
 route returned HTTP 404 in CI, while Sante passed tool/JSON checks and completed
 the Claude review. Claude and Observable require an Anthropic-compatible route;
 NVIDIA's direct Chat Completions endpoint does not supply one. Claude runs a short smoke test before starting:
