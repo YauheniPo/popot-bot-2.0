@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan bounded diff reads and finalize only a fully read, turn-limited review."""
+"""Plan bounded diff reads and finish recoverable reviews with complete read proof."""
 
 import argparse
 import hashlib
@@ -136,6 +136,17 @@ def _write_proof(path, proof):
             temporary.unlink(missing_ok=True)
 
 
+def _completion_reason(result):
+    if result.get('subtype') == 'error_max_turns' and result.get('is_error') is True:
+        return 'turn_limit_after_complete_diff_read'
+    if result.get('subtype') == 'success' and result.get('is_error') is False:
+        try:
+            context._json_response_text(context._result_event_text(result) or '')
+        except RuntimeError:
+            return 'invalid_output_after_complete_diff_read'
+    return ''
+
+
 def prepare(execution_file, proof_file):
     """Return safe action outputs. All other failures go directly to fallback."""
     failure_reason = 'execution_unavailable'
@@ -145,8 +156,9 @@ def prepare(execution_file, proof_file):
         failure_reason = 'invalid_execution_log'
         events = _root_events(context._claude_execution_events(execution_file))
         session, result = _session(events)
-        if result.get('subtype') != 'error_max_turns' or result.get('is_error') is not True:
-            return {'ready': 'false', 'reason': 'not_turn_limit'}
+        reason = _completion_reason(result)
+        if not reason:
+            return {'ready': 'false', 'reason': 'not_recoverable_result'}
         failure_reason = 'diff_not_fully_read'
         path, raw, lines = _diff()
         _require_complete_diff(events, path, lines)
@@ -156,7 +168,7 @@ def prepare(execution_file, proof_file):
         return {'ready': 'false', 'reason': 'diff_not_fully_read', 'read_coverage': json.dumps(error.coverage)}
     except (OSError, ValueError, RuntimeError):
         return {'ready': 'false', 'reason': failure_reason}
-    return {'ready': 'true', 'reason': 'turn_limit_after_complete_diff_read', 'session_id': session}
+    return {'ready': 'true', 'reason': reason, 'session_id': session}
 
 
 def extract(execution_file, proof_file, output_file):

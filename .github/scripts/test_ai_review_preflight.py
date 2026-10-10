@@ -64,6 +64,20 @@ class OllamaReviewTest(unittest.TestCase):
                     for step in (wait, retry):
                         self.assertEqual(allows(step, outcomes), expected_retry)
                         self.assertFalse(allows(step, outcomes, cancelled=True))
+                    prepare = identified_steps['prepare_claude_' + route + '_finalize']
+                    self.assertEqual(allows(prepare, outcomes),
+                                     sdk_outcome in ('success', 'failure') and validation_outcome != 'success')
+                    self.assertFalse(allows(prepare, outcomes, cancelled=True))
+            outcomes[('claude_review_' + route, 'outcome')] = 'success'
+            outcomes[('extract_claude_review_' + route, 'outcome')] = 'failure'
+            prepared = ('prepare_claude_' + route + '_finalize', 'outputs.ready')
+            outcomes[prepared] = 'true'
+            for final_outcome in ('success', 'failure', 'cancelled'):
+                outcomes[('extract_claude_review_' + route + '_finalize', 'outcome')] = final_outcome
+                for step in (wait, retry):
+                    self.assertFalse(allows(step, outcomes), 'Never restart the full review after a tool-free repair')
+            outcomes[prepared] = 'false'
+            outcomes[('extract_claude_review_' + route + '_finalize', 'outcome')] = 'skipped'
             outcomes[('extract_claude_review_' + route, 'outcome')] = 'skipped'
 
         outcomes[('claude_review_primary', 'outcome')] = 'failure'

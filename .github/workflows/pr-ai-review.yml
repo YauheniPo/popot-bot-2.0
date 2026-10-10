@@ -450,7 +450,11 @@ jobs:
 
       - name: Check whether the primary review can finish without more tools
         id: prepare_claude_primary_finalize
-        if: always() && !cancelled() && steps.claude_review_primary.outcome == 'failure'
+        if: >-
+          always() && !cancelled() &&
+          steps.claude_review_primary.outcome != 'skipped' &&
+          steps.claude_review_primary.outcome != 'cancelled' &&
+          steps.extract_claude_review_primary.outcome != 'success'
         continue-on-error: true
         shell: bash
         env:
@@ -464,7 +468,7 @@ jobs:
             --execution-file "${CLAUDE_EXECUTION_FILE}" \
             --proof-file "${CLAUDE_FINALIZATION_PROOF}"
 
-      - name: ClaudeCodePlugin — finish the turn-limited primary session
+      - name: ClaudeCodePlugin — finish the primary session without more tools
         id: claude_review_primary_finalize
         if: always() && !cancelled() && steps.prepare_claude_primary_finalize.outputs.ready == 'true'
         continue-on-error: true
@@ -473,13 +477,23 @@ jobs:
         with:
           anthropic_api_key: *claude_api_key
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          prompt: |
+          prompt: &claude_finalize_prompt |
             Finish the review already performed in this session using only the
             evidence you have read. Do not call tools or explore further.
+            If your previous final response was not valid review JSON, correct
+            its format without discarding supported findings or thread verdicts.
             Return exactly the final JSON object with summary, findings and
-            thread_verdicts from the original review contract. Include only
+            thread_verdicts from the original review contract. Include no
+            Markdown, progress narration or additional keys. Include only
             confirmed findings; do not invent evidence or claim completion if
             any required scope remains unreviewed. Preserve the original policy.
+            summary must be a non-empty string. Each findings item must contain
+            exactly severity (P1 or P2), path (repository-relative), side (LEFT
+            or RIGHT), line (positive integer), title, impact and fix (non-empty
+            strings). Each thread_verdicts item must contain exactly thread_id,
+            verdict (confirmed, fixed, rejected or needs_human) and reason.
+            Use an empty array only when there are no supported items for it;
+            do not drop a finding just to make the output validate.
           # The action drops an empty separate argument; keep the equals form.
           claude_args: |
             --resume "${{ steps.prepare_claude_primary_finalize.outputs.session_id }}"
@@ -516,16 +530,17 @@ jobs:
             --proof-file "${CLAUDE_FINALIZATION_PROOF}" \
             --output "${CLAUDE_REVIEW_RESULT_FILE}"
 
-      # A provider can complete the agent run but still return malformed final
-      # JSON. Retry that completed run once. Other SDK errors/timeouts skip
-      # this full retry; only a proven turn limit can use tool-free finalization.
+      # A completed run without evidence for tool-free completion can still
+      # retry once. Once completion was authorized, switch routes on failure
+      # instead of spending another full attempt rereading the same diff.
       - name: Wait before retrying the primary Claude Code model
         if: >-
           always() &&
           !cancelled() &&
           steps.claude_models.outputs.primary_ready == 'true' &&
           steps.claude_review_primary.outcome == 'success' &&
-          steps.extract_claude_review_primary.outcome != 'success'
+          steps.extract_claude_review_primary.outcome != 'success' &&
+          steps.prepare_claude_primary_finalize.outputs.ready != 'true'
         shell: bash
         run: sleep 15
 
@@ -536,7 +551,8 @@ jobs:
           !cancelled() &&
           steps.claude_models.outputs.primary_ready == 'true' &&
           steps.claude_review_primary.outcome == 'success' &&
-          steps.extract_claude_review_primary.outcome != 'success'
+          steps.extract_claude_review_primary.outcome != 'success' &&
+          steps.prepare_claude_primary_finalize.outputs.ready != 'true'
         continue-on-error: true
         timeout-minutes: 5
         uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1
@@ -649,7 +665,11 @@ jobs:
 
       - name: Check whether the fallback review can finish without more tools
         id: prepare_claude_fallback_finalize
-        if: always() && !cancelled() && steps.claude_review_fallback.outcome == 'failure'
+        if: >-
+          always() && !cancelled() &&
+          steps.claude_review_fallback.outcome != 'skipped' &&
+          steps.claude_review_fallback.outcome != 'cancelled' &&
+          steps.extract_claude_review_fallback.outcome != 'success'
         continue-on-error: true
         shell: bash
         env:
@@ -663,7 +683,7 @@ jobs:
             --execution-file "${CLAUDE_EXECUTION_FILE}" \
             --proof-file "${CLAUDE_FINALIZATION_PROOF}"
 
-      - name: ClaudeCodePlugin — finish the turn-limited fallback session
+      - name: ClaudeCodePlugin — finish the fallback session without more tools
         id: claude_review_fallback_finalize
         if: always() && !cancelled() && steps.prepare_claude_fallback_finalize.outputs.ready == 'true'
         continue-on-error: true
@@ -672,13 +692,7 @@ jobs:
         with:
           anthropic_api_key: *claude_fallback_api_key
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          prompt: |
-            Finish the review already performed in this session using only the
-            evidence you have read. Do not call tools or explore further.
-            Return exactly the final JSON object with summary, findings and
-            thread_verdicts from the original review contract. Include only
-            confirmed findings; do not invent evidence or claim completion if
-            any required scope remains unreviewed. Preserve the original policy.
+          prompt: *claude_finalize_prompt
           # The action drops an empty separate argument; keep the equals form.
           claude_args: |
             --resume "${{ steps.prepare_claude_fallback_finalize.outputs.session_id }}"
@@ -715,8 +729,8 @@ jobs:
             --proof-file "${CLAUDE_FINALIZATION_PROOF}" \
             --output "${CLAUDE_REVIEW_RESULT_FILE}"
 
-      # A completed fallback with invalid output gets one validation retry.
-      # SDK failures and timeouts never trigger another full run.
+      # Retry a completed fallback only if it could not use tool-free completion.
+      # SDK failures, timeouts and failed completions never trigger a full rerun.
       - name: Wait before retrying the fallback Claude Code model
         if: >-
           always() &&
@@ -726,7 +740,8 @@ jobs:
           steps.extract_claude_review_primary_finalize.outcome != 'success' &&
           steps.extract_claude_review_primary_retry.outcome != 'success' &&
           steps.claude_review_fallback.outcome == 'success' &&
-          steps.extract_claude_review_fallback.outcome != 'success'
+          steps.extract_claude_review_fallback.outcome != 'success' &&
+          steps.prepare_claude_fallback_finalize.outputs.ready != 'true'
         shell: bash
         run: sleep 15
 
@@ -740,7 +755,8 @@ jobs:
           steps.extract_claude_review_primary_finalize.outcome != 'success' &&
           steps.extract_claude_review_primary_retry.outcome != 'success' &&
           steps.claude_review_fallback.outcome == 'success' &&
-          steps.extract_claude_review_fallback.outcome != 'success'
+          steps.extract_claude_review_fallback.outcome != 'success' &&
+          steps.prepare_claude_fallback_finalize.outputs.ready != 'true'
         continue-on-error: true
         timeout-minutes: 5
         uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1

@@ -308,15 +308,17 @@ Calls without results, empty pages and reads of unrelated files do not count;
 failure triggers the existing retry/fallback path with `diff_not_read`.
 This is an input-access check, not a guarantee of exhaustive or accurate review.
 Claude Code caps each full attempt at five minutes and individual SDK requests
-at 90 seconds. When a run reaches `error_max_turns`, one two-minute, tool-free
+at 90 seconds. When a run reaches `error_max_turns`, or completes successfully
+but its final text fails the review JSON schema, one two-minute, tool-free
 completion can resume that same session, only if its execution log proves every
 line of the exact diff was returned successfully. The saved proof contains only
 the session ID, base/head SHAs and diff hash. Resumed output must match that proof,
 contain no tool calls, and pass the existing JSON and diff-anchor validation.
-Partial reads, other SDK errors and timeouts go directly to the ready fallback.
+Other SDK errors and timeouts go directly to the ready fallback. Partial reads
+cannot authorize tool-free completion.
 `execution_unavailable` means the action left no execution file, as can happen
 when the runner stops it at the step deadline. It is distinct from
-`diff_not_fully_read`, which means a completed, turn-limited session lacks proof
+`diff_not_fully_read`, which means an otherwise recoverable session lacks proof
 of reading the complete diff. The unavailable-review report includes matched
 and total line counts, Read call counts and failed Read counts. It never includes
 source lines or tool error bodies. Neither condition permits finalization.
@@ -329,7 +331,11 @@ the plan itself is not proof of reading or a completed review. The existing
 turn and wall-clock limits remain unchanged.
 Finalization is attempted once per route; its failure also moves to fallback or
 reports the review as unavailable. No partial/error output counts as success.
-A completed SDK run with invalid output still gets one full validation retry.
+A completed SDK run with invalid output gets one full validation retry only
+when tool-free completion was not authorized. Once authorized, its failure goes
+to fallback without restarting the full review. `invalid_output_after_complete_diff_read`
+identifies this format-repair path; a schema-valid result is never eligible for
+tool-free format repair solely because a later diff-anchor or file-write check failed.
 Reports distinguish finalization from the original attempt. These guards use
 the step's original `outcome`, because `continue-on-error` can make a failed
 attempt's `conclusion` show success. Publication and its verification remain

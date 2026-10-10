@@ -74,6 +74,50 @@ class FinalizeTests(unittest.TestCase):
         self.assertNotIn('diff --git', self.proof.read_text())
         self.assertNotIn('+fixed', log.getvalue())
 
+    def test_completed_review_with_invalid_json_can_repair_output_in_same_session(self):
+        events = self.events()
+        events[-1].update(subtype='success', is_error=False, result='Completed review, but private invalid prose.')
+        prepared = self.prepare(events)
+        self.assertEqual(prepared['ready'], 'true')
+        self.assertEqual(prepared['reason'], 'invalid_output_after_complete_diff_read')
+        self.assertEqual(prepared['session_id'], SESSION)
+        self.assertNotIn('private', json.dumps(prepared))
+        self.execution.write_text(json.dumps(self.completed()))
+        with contextlib.redirect_stdout(io.StringIO()):
+            finalize.extract(self.execution, self.proof, self.output)
+        self.assertEqual(json.loads(self.output.read_text()), REVIEW)
+
+    def test_output_repair_requires_full_diff_evidence_even_after_sdk_success(self):
+        events = self.events()
+        events[-1].update(subtype='success', is_error=False, result='Not JSON')
+        events[2]['message']['content'][0]['content'] = '1→diff --git a/app.py b/app.py'
+        prepared = self.prepare(events)
+        self.assertEqual(prepared['ready'], 'false')
+        self.assertEqual(prepared['reason'], 'diff_not_fully_read')
+        self.assertFalse(self.proof.exists())
+
+    def test_valid_output_does_not_authorize_rewriting_findings(self):
+        events = self.events()
+        # This finding has valid schema but no changed anchor. Formatting repair
+        # must not become a mechanism for deleting an invalid-anchor finding.
+        document = {**REVIEW, 'findings': [{
+            'severity': 'P2', 'path': 'unchanged.py', 'side': 'RIGHT', 'line': 999,
+            'title': 'Fixture finding', 'impact': 'Fixture impact', 'fix': 'Fixture fix',
+        }]}
+        events[-1].update(subtype='success', is_error=False, result=json.dumps(document))
+        self.assertEqual(self.prepare(events)['ready'], 'false')
+        self.assertFalse(self.proof.exists())
+
+    def test_parseable_json_with_invalid_schema_is_eligible_only_for_format_repair(self):
+        events = self.events()
+        events[-1].update(subtype='success', is_error=False, result='{"summary":"Reviewed"}')
+        self.assertEqual(self.prepare(events)['reason'], 'invalid_output_after_complete_diff_read')
+
+    def test_missing_final_text_can_be_completed_only_with_read_proof(self):
+        events = self.events()
+        events[-1].update(subtype='success', is_error=False)
+        self.assertEqual(self.prepare(events)['reason'], 'invalid_output_after_complete_diff_read')
+
     def test_paginated_reads_preserve_blank_lines_and_indentation(self):
         self.diff.write_text('first\n\n\tindented\nlast\n')
         events = self.events()
