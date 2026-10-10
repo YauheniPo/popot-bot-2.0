@@ -87,8 +87,8 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
-          DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'nous' }}
-          DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'poolside/laguna-s-2.1:free' }}
+          DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'nvidia' }}
+          DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'nvidia/nemotron-3-super-120b-a12b' }}
           DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'google/gemma-4-31b-it:free' }}
           DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'openrouter' }}
         run: python3 reviewer/.github/scripts/ai_review_preflight.py --probe json

@@ -228,21 +228,31 @@ identity variables or credentials are required. Each publishes its own PR
 summary and inline findings. The observable reviewer never resolves or replies
 to other reviewers' threads, avoiding races between the parallel jobs.
 
-The default routes, checked against catalogs on 2026-10-09, are:
+The default routes, checked against catalogs and live CI on 2026-10-09–10, are:
 
 | Reviewer | Primary | Fallback |
 | --- | --- | --- |
-| Direct API | `nous / poolside/laguna-s-2.1:free` | `openrouter / google/gemma-4-31b-it:free` |
-| Claude Code | `nous / poolside/laguna-s-2.1:free` | `openrouter / google/gemma-4-31b-it:free` |
+| Direct API | `nvidia / nvidia/nemotron-3-super-120b-a12b` | `openrouter / google/gemma-4-31b-it:free` |
+| Claude Code | `openrouter / cohere/north-mini-code:free` | `nous / poolside/laguna-s-2.1:free` |
 | Observable | `openrouter / cohere/north-mini-code:free` | `nous / poolside/laguna-s-2.1:free` |
 
 Repository Actions variables override these YAML defaults; update both when
 retiring a route.
-Direct API and Claude Code select the free Laguna route through
-[Nous Portal](https://portal.nousresearch.com/models), with OpenRouter for fallback.
+Direct API uses the existing NVIDIA NIM key. A full review of PR #70 at
+`ad4a03b` validated both chunks and all 14 eligible files in 112.9 provider seconds
+in [run 37979872334](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/37979872334).
+Claude Code uses North through OpenRouter; it completed and published the SDK
+review in about 94 seconds in
+[run 37931661305, attempt 7](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/37931661305/attempts/7).
+Its fallback is the free Laguna route through
+[Nous Portal](https://portal.nousresearch.com/models).
+The same Laguna Chat Completions route repeatedly streamed unfinished reviews
+to the deadline, so it is no longer the Direct API default. NVIDIA's hosted
+Chat Completions endpoint does not replace an Anthropic Messages route for Claude.
 OpenRouter routes share its account-level free-model quota; switching only the
-model cannot bypass an exhausted account quota. The Nous primary and OpenRouter
-fallback have separate provider quotas. No paid replacement is selected
+model cannot bypass an exhausted account quota. Claude and Observable share the
+North route; their Nous fallback has a separate provider quota. The NVIDIA Direct API route also has an
+independent provider quota. No paid replacement is selected
 automatically. Catalog presence is not a successful inference check; the CI
 preflight and validated review result remain the operational evidence.
 
@@ -451,6 +461,11 @@ diffs retain their existing chunk limits; they do not require a 32K-token answer
 A response stopped by its token limit remains an `output_limit` failure, even
 if the received text happens to parse as JSON; the configured fallback can then
 run without repeating the same insufficient output budget on the primary.
+The SSE reader also caps visible completion text at **32,000 characters**. This
+stops routes that ignore `max_tokens` and keep producing an unfinished answer
+before they spend the full 300-second deadline. Hidden reasoning has its own
+token/time bounds and does not count against the visible-text cap. Exceeding the
+cap fails the route with `output_limit`; no partial JSON is published.
 Ollama receives the requested reasoning effort via its supported
 [`reasoning_effort`](https://docs.ollama.com/api/openai-compatibility) field,
 instead of silently reverting to the model's default thinking mode. Nous receives

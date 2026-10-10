@@ -131,8 +131,11 @@ class OllamaReviewTest(unittest.TestCase):
             with self.subTest(engine=engine):
                 primary_provider = defaults[engine + '_REVIEW_PROVIDER']
                 fallback_provider = defaults[engine + '_REVIEW_FALLBACK_PROVIDER']
-                self.assertIn(primary_provider, ai_review_preflight.MESSAGES_BASE_URLS)
-                self.assertIn(fallback_provider, ai_review_preflight.MESSAGES_BASE_URLS)
+                providers = set(ai_review_preflight.MESSAGES_BASE_URLS)
+                if engine == 'DIRECT':
+                    providers.add('nvidia')
+                self.assertIn(primary_provider, providers)
+                self.assertIn(fallback_provider, providers)
                 self.assertNotEqual(primary_provider, fallback_provider)
                 primary = defaults[engine + '_REVIEW_MODEL']
                 fallback = defaults[engine + '_REVIEW_FALLBACK_MODEL']
@@ -140,7 +143,6 @@ class OllamaReviewTest(unittest.TestCase):
                     if provider in ('openrouter', 'nous'):
                         self.assertTrue(model.endswith(':free'))
                 self.assertNotEqual(primary, fallback)
-        self.assertEqual(defaults['DIRECT_REVIEW_MODEL'], defaults['CLAUDE_REVIEW_MODEL'])
         approved_probe = next(step for step in approved['jobs']['review']['steps']
                               if step.get('id') == 'models')
         manual_inputs = manual['on']['workflow_dispatch']['inputs']

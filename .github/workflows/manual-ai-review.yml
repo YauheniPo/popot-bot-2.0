@@ -33,13 +33,13 @@ on:
       model:
         description: Model for the direct reviewer
         required: true
-        default: poolside/laguna-s-2.1:free
-        # Free coding model on Nous; every run must pass the live JSON preflight.
+        default: nvidia/nemotron-3-super-120b-a12b
+        # Verified NIM route; every run must pass the live JSON preflight.
         type: string
       provider:
         description: Provider for the direct reviewer
         required: true
-        default: nous
+        default: nvidia
         type: choice
         options:
           - ollama-cloud

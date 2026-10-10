@@ -12,14 +12,14 @@ env:
   # 1 = DirectAPI; 2 = ClaudeCodePlugin gating with Observable corroboration.
   PR_REVIEWER: ${{ vars.PR_REVIEWER || '0' }}
   # Claude uses these settings; Observable overrides its routes at job level.
-  DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'nous' }}
-  DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'poolside/laguna-s-2.1:free' }}
+  DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'nvidia' }}
+  DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'nvidia/nemotron-3-super-120b-a12b' }}
   DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'google/gemma-4-31b-it:free' }}
   DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'openrouter' }}
-  CLAUDE_REVIEW_PROVIDER: ${{ vars.CLAUDE_REVIEW_PROVIDER || 'nous' }}
-  CLAUDE_REVIEW_MODEL: ${{ vars.CLAUDE_REVIEW_MODEL || 'poolside/laguna-s-2.1:free' }}
-  CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.CLAUDE_REVIEW_FALLBACK_MODEL || 'google/gemma-4-31b-it:free' }}
-  CLAUDE_REVIEW_FALLBACK_PROVIDER: ${{ vars.CLAUDE_REVIEW_FALLBACK_PROVIDER || 'openrouter' }}
+  CLAUDE_REVIEW_PROVIDER: ${{ vars.CLAUDE_REVIEW_PROVIDER || 'openrouter' }}
+  CLAUDE_REVIEW_MODEL: ${{ vars.CLAUDE_REVIEW_MODEL || 'cohere/north-mini-code:free' }}
+  CLAUDE_REVIEW_FALLBACK_MODEL: ${{ vars.CLAUDE_REVIEW_FALLBACK_MODEL || 'poolside/laguna-s-2.1:free' }}
+  CLAUDE_REVIEW_FALLBACK_PROVIDER: ${{ vars.CLAUDE_REVIEW_FALLBACK_PROVIDER || 'nous' }}
   CLAUDE_REVIEW_BASE_URL: ${{ vars.CLAUDE_REVIEW_BASE_URL || '' }}
   # Pace direct API requests; tune for the selected provider and account.
   OLLAMA_REVIEW_RPM: ${{ vars.OLLAMA_REVIEW_RPM || '60' }}

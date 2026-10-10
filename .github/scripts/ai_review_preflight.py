@@ -249,6 +249,29 @@ def _stream_retry_delay(error: StreamFailure, provider: str, kind: str, attempt:
     return 15 * (attempt + 1)
 
 
+def _probe_http_retry(error: urllib.error.HTTPError, provider: str, kind: str, attempt: int,
+                      attempts: int, remaining: float, rate_limit_retried: bool) -> tuple[float, bool]:
+    """HTTP retries share the wait budget and allow only one rate-limit reset."""
+    limited = error.code == 429
+    retry_attempt = attempts - 1 if limited and rate_limit_retried else attempt
+    wait_budget = min(remaining, OPENROUTER_RATE_LIMIT_RETRY_SECONDS) if limited else remaining
+    delay = _http_retry_delay(error, provider, kind, retry_attempt, attempts, wait_budget)
+    return delay, rate_limit_retried or limited
+
+
+def _probe_transport_retry(error: BaseException, provider: str, kind: str, attempt: int,
+                           attempts: int, failures: int) -> tuple[float, int]:
+    """Watchdog and IO failures consume the same transport attempt budget."""
+    failures += 1
+    retry_attempt = attempts - 1 if failures >= MAX_TRANSPORT_ATTEMPTS else attempt
+    if isinstance(error, StreamFailure):
+        delay = _stream_retry_delay(error, provider, kind, retry_attempt, attempts)
+        return delay, failures
+    if retry_attempt == attempts - 1:
+        raise RuntimeError(f"{provider} {kind} probe failed or timed out") from None
+    return 15 * (attempt + 1), failures
+
+
 def _request_probe_response(request: urllib.request.Request, attempts: int, timeout: int,
                             provider: str, model: str, kind: str) -> object:
     result: object = None
@@ -258,7 +281,6 @@ def _request_probe_response(request: urllib.request.Request, attempts: int, time
     for attempt in range(attempts):
         if remaining <= 0:
             raise RuntimeError(f"{provider} {kind} probe retry wait budget exhausted")
-        delay = 15 * (attempt + 1)
         print(
             f"{provider} {model}: {kind} probe attempt {attempt + 1}/{attempts} "
             f"(timeout {timeout}s)", file=sys.stderr,
@@ -266,20 +288,14 @@ def _request_probe_response(request: urllib.request.Request, attempts: int, time
         try:
             result = _read_probe_response(request, timeout, kind, provider)
             break
-        except StreamFailure as error:
-            transport_failures += 1
-            retry_attempt = attempts - 1 if transport_failures >= MAX_TRANSPORT_ATTEMPTS else attempt
-            delay = _stream_retry_delay(error, provider, kind, retry_attempt, attempts)
         except urllib.error.HTTPError as error:
-            limited = error.code == 429
-            retry_attempt = attempts - 1 if limited and rate_limit_retried else attempt
-            wait_budget = min(remaining, OPENROUTER_RATE_LIMIT_RETRY_SECONDS) if limited else remaining
-            delay = _http_retry_delay(error, provider, kind, retry_attempt, attempts, wait_budget)
-            rate_limit_retried = rate_limit_retried or limited
-        except (urllib.error.URLError, TimeoutError, ConnectionError, IncompleteRead):
-            transport_failures += 1
-            if attempt == attempts - 1 or transport_failures >= MAX_TRANSPORT_ATTEMPTS:
-                raise RuntimeError(f"{provider} {kind} probe failed or timed out") from None
+            delay, rate_limit_retried = _probe_http_retry(
+                error, provider, kind, attempt, attempts, remaining, rate_limit_retried,
+            )
+        except (StreamFailure, urllib.error.URLError, TimeoutError, ConnectionError, IncompleteRead) as error:
+            delay, transport_failures = _probe_transport_retry(
+                error, provider, kind, attempt, attempts, transport_failures,
+            )
         except ValueError:
             raise RuntimeError(f"{provider} {kind} probe returned invalid JSON") from None
         # Pace only the next request; the final retryable response raises above

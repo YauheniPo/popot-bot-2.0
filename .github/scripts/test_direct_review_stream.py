@@ -47,6 +47,34 @@ def run_reasoning_watchdog(watchdog):
 
 
 class StreamTest(unittest.TestCase):
+    def test_oversized_visible_completion_stops_before_the_stream_tail(self):
+        for allow_stop_at_eof in (False, True):
+            with self.subTest(allow_stop_at_eof=allow_stop_at_eof):
+                response = sse(delta(content='PRIVATE_TOO_LONG'),
+                               {"choices": [{"finish_reason": "stop"}]}, '[DONE]')
+                response.headers = {"Content-Type": "text/event-stream"}
+                log = io.StringIO()
+                with mock.patch.object(stream, 'MAX_CONTENT_CHARACTERS', 8), \
+                        stream.watchdog(total=1, idle=1, heartbeat=1, log=log) as progress:
+                    with self.assertRaisesRegex(stream.StreamFailure, 'output_limit'):
+                        stream.read_response(response, progress, allow_stop_at_eof=allow_stop_at_eof)
+                self.assertLess(response.tell(), len(response.getvalue()))
+                self.assertNotIn('PRIVATE_TOO_LONG', log.getvalue())
+
+    def test_visible_completion_limit_accumulates_deltas_without_counting_reasoning(self):
+        response = sse(delta(reasoning_content='hidden' * 100), delta(content='{'),
+                       delta(content='}'), {"choices": [{"finish_reason": "stop"}]}, '[DONE]')
+        with mock.patch.object(stream, 'MAX_CONTENT_CHARACTERS', 2):
+            result = stream.read_completion(response, stream.Progress(io.StringIO()))
+        self.assertEqual(result['choices'][0]['message']['content'], '{}')
+        response = sse(delta(content='12345'), delta(content='6789'),
+                       {"choices": [{"finish_reason": "stop"}]}, '[DONE]')
+        progress = stream.Progress(io.StringIO())
+        with mock.patch.object(stream, 'MAX_CONTENT_CHARACTERS', 8):
+            with self.assertRaisesRegex(stream.StreamFailure, 'output_limit'):
+                stream.read_completion(response, progress)
+        self.assertEqual(progress.content_chars, 9)
+
     def test_stop_at_eof_compatibility_preserves_metadata_and_diagnostics(self):
         response = sse(delta(content='{"status":"ok"}'),
                        {"id": "test", "model": "test", "choices": [{"finish_reason": "stop"}]},
