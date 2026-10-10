@@ -102,16 +102,22 @@ def _write_proof(path, proof):
 
 def prepare(execution_file, proof_file):
     """Return safe action outputs. All other failures go directly to fallback."""
+    failure_reason = 'execution_unavailable'
     try:
+        if not execution_file.is_file():
+            return {'ready': 'false', 'reason': failure_reason}
+        failure_reason = 'invalid_execution_log'
         events = _root_events(context._claude_execution_events(execution_file))
         session, result = _session(events)
         if result.get('subtype') != 'error_max_turns' or result.get('is_error') is not True:
             return {'ready': 'false', 'reason': 'not_turn_limit'}
+        failure_reason = 'diff_not_fully_read'
         path, raw, lines = _diff()
         _require_complete_diff(events, path, lines)
+        failure_reason = 'proof_unavailable'
         _write_proof(proof_file, {**_revision_binding(raw), 'session_id': session})
     except (OSError, ValueError, RuntimeError):
-        return {'ready': 'false', 'reason': 'missing_or_incomplete_evidence'}
+        return {'ready': 'false', 'reason': failure_reason}
     return {'ready': 'true', 'reason': 'turn_limit_after_complete_diff_read', 'session_id': session}
 
 

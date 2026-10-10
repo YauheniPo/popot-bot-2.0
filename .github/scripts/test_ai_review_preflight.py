@@ -1386,15 +1386,80 @@ class NousReviewTest(unittest.TestCase):
         self.assertEqual(request.call_count, 2)
         self.assertTrue(all(call.args[0].full_url == "https://openrouter.ai/api/v1/messages" for call in request.call_args_list))
 
+    def test_claude_probe_accepts_the_same_wrapped_contract_as_publication(self):
+        document = '{"summary":"ok","findings":[],"thread_verdicts":[]}'
+        for text in (document, '```json\n' + document + '\n```', 'Review result:\n' + document):
+            with self.subTest(text=text):
+                response = {'content': [{'type': 'text', 'text': text}]}
+                self.assertTrue(ai_review_preflight._probe_response_valid(response, 'claude'))
+
+    def test_claude_probe_retries_one_invalid_contract_without_repeating_tool_probe(self):
+        tool = {'content': [{'type': 'tool_use', 'name': 'review_model_preflight', 'input': {'status': 'ok'}}]}
+        invalid = {'content': [{'type': 'text', 'text': '{"summary":"unfinished"}'}]}
+        valid = {'content': [{'type': 'text', 'text': '{"summary":"ok","findings":[],"thread_verdicts":[]}'}]}
+        with (
+            mock.patch.object(ai_review_preflight, '_read_probe_response', side_effect=[tool, invalid, valid]) as request,
+            mock.patch.object(ai_review_preflight.time, 'sleep') as sleep,
+        ):
+            ai_review_preflight.probe('fixture-key', 'claude', 'nous', 'fixture/model:free')
+        self.assertEqual(request.call_count, 3)
+        self.assertEqual([call.args[2] for call in request.call_args_list], ['tools', 'claude', 'claude'])
+        self.assertLessEqual(sum(call.args[0] for call in sleep.call_args_list), 1)
+
+    def test_claude_probe_rejects_invalid_contracts_and_truncated_output(self):
+        for document in (
+            {'summary': '', 'findings': [], 'thread_verdicts': []},
+            {'summary': 'ok', 'findings': [], 'thread_verdicts': [], 'unexpected': True},
+            {'summary': 'ok', 'findings': [{}], 'thread_verdicts': []},
+        ):
+            with self.subTest(document=document):
+                self.assertFalse(ai_review_preflight._probe_response_valid(
+                    {'content': [{'type': 'text', 'text': json.dumps(document)}]}, 'claude'))
+        truncated = {'stop_reason': 'max_tokens', 'content': [{'type': 'text', 'text':
+            '{"summary":"ok","findings":[],"thread_verdicts":[]}'}]}
+        self.assertFalse(ai_review_preflight._probe_response_valid(truncated, 'claude'))
+
+    def test_claude_probe_classifies_missing_text_and_unexpected_items(self):
+        self.assertEqual(ai_review_preflight._claude_probe_failure(None), 'invalid_messages_envelope')
+        self.assertEqual(ai_review_preflight._claude_probe_failure({'content': {}}), 'invalid_messages_envelope')
+        for blocks in ([], [{'type': 'thinking', 'thinking': 'private'}], [{'type': 'text', 'text': None}]):
+            with self.subTest(blocks=blocks):
+                self.assertEqual(ai_review_preflight._claude_probe_failure({'content': blocks}), 'missing_text')
+        document = {'summary': 'ok', 'findings': [], 'thread_verdicts': [
+            {'thread_id': 'fixture', 'verdict': 'needs_human', 'reason': 'No real review was requested.'},
+        ]}
+        self.assertEqual(ai_review_preflight._claude_probe_failure(
+            {'content': [{'type': 'text', 'text': json.dumps(document)}]}), 'unexpected_review_items')
+
+    def test_claude_contract_retries_share_budget_with_transport_and_do_not_log_content(self):
+        invalid = {'content': [{'type': 'text', 'text': 'private provider response'}]}
+        request = ai_review_preflight._probe_request('fixture-key', 'claude', 'nous', 'fixture/model:free')
+        for first, delay in ((invalid, 1), (urllib.error.URLError('private transport error'), 15)):
+            log = io.StringIO()
+            with (
+                self.subTest(first=type(first).__name__),
+                mock.patch.object(ai_review_preflight, '_read_probe_response', side_effect=[first, invalid]) as read,
+                mock.patch.object(ai_review_preflight.time, 'sleep') as sleep,
+                mock.patch('sys.stderr', log),
+            ):
+                with self.assertRaisesRegex(RuntimeError, 'invalid_review_json') as error:
+                    ai_review_preflight._request_probe_response(request, 2, 90, 'nous', 'fixture/model:free', 'claude')
+                self.assertEqual(read.call_count, 2)
+                sleep.assert_called_once_with(delay)
+                self.assertNotIn('private', log.getvalue() + str(error.exception))
+
     def test_claude_smoke_probe_rejects_non_contract_json(self):
         tool = {"content": [{"type": "tool_use", "name": "review_model_preflight", "input": {"status": "ok"}}]}
         invalid = {"content": [{"type": "text", "text": '{"summary":"ok"}'}]}
         replies = []
-        for data in (tool, invalid):
+        for data in (tool, invalid, invalid):
             response = mock.MagicMock()
             response.__enter__.return_value = io.StringIO(json.dumps(data))
             replies.append(response)
-        with mock.patch.object(ai_review_preflight.urllib.request, "urlopen", side_effect=replies):
+        with (
+            mock.patch.object(ai_review_preflight.urllib.request, "urlopen", side_effect=replies),
+            mock.patch.object(ai_review_preflight.time, "sleep"),
+        ):
             with self.assertRaisesRegex(RuntimeError, "claude probe"):
                 ai_review_preflight.probe("test-key", "claude", "openrouter", "vendor/model")
 
@@ -1402,11 +1467,14 @@ class NousReviewTest(unittest.TestCase):
         tool = {"content": [{"type": "tool_use", "name": "review_model_preflight", "input": {"status": "ok"}}]}
         malformed = {"content": [{"type": "text", "text": '{"summary":'}]}
         replies = []
-        for data in (tool, malformed):
+        for data in (tool, malformed, malformed):
             response = mock.MagicMock()
             response.__enter__.return_value = io.StringIO(json.dumps(data))
             replies.append(response)
-        with mock.patch.object(ai_review_preflight.urllib.request, "urlopen", side_effect=replies):
+        with (
+            mock.patch.object(ai_review_preflight.urllib.request, "urlopen", side_effect=replies),
+            mock.patch.object(ai_review_preflight.time, "sleep"),
+        ):
             with self.assertRaisesRegex(RuntimeError, "claude probe"):
                 ai_review_preflight.probe("test-key", "claude", "openrouter", "vendor/model")
 

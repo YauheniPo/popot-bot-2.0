@@ -147,6 +147,18 @@ class FinalizeTests(unittest.TestCase):
         self.execution.unlink()
         self.assertEqual(finalize.prepare(self.execution, self.proof)['ready'], 'false')
 
+    def test_missing_log_is_distinguished_from_incomplete_diff(self):
+        self.assertEqual(finalize.prepare(self.execution, self.proof)['reason'], 'execution_unavailable')
+        events = self.events()
+        events[2]['message']['content'][0]['content'] = '1→diff --git a/app.py b/app.py'
+        self.assertEqual(self.prepare(events)['reason'], 'diff_not_fully_read')
+
+    def test_proof_write_failure_has_a_safe_distinct_reason(self):
+        with mock.patch.object(finalize.os, 'replace', side_effect=OSError('private path')):
+            result = self.prepare()
+        self.assertEqual(result, {'ready': 'false', 'reason': 'proof_unavailable'})
+        self.assertFalse(self.proof.exists())
+
     def test_invalid_or_mixed_session_ids_never_enter_action_arguments(self):
         for value in ('', '" --model other', 'd47dd0b4-8b56-41df-966d-3cae8ee6a80d'):
             events = self.events()

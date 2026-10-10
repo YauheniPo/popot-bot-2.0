@@ -199,6 +199,12 @@ NVIDIA's direct Chat Completions endpoint does not supply one. Claude runs a sho
 it checks tool calling and the exact review JSON contract in separate requests.
 The Claude smoke test uses up to two attempts with a 90-second timeout per check, so an
 unavailable or incompatible model is reported before the full Claude run.
+Its JSON check uses the same exact schema and Markdown/prose-wrapper handling
+as publication. An invalid response gets one retry after one second within that
+same two-attempt budget; the successful tool check is not repeated. Truncated
+output, empty summaries, extra fields and invented findings are not readiness.
+Failures report a bounded reason such as `output_truncated`, `missing_text` or
+`invalid_review_json`, without logging the response or reasoning.
 Model IDs are passed verbatim, and model access is checked using the CI key.
 
 `PR_REVIEWER=0` (also the unset default) runs all three reviewers:
@@ -306,6 +312,10 @@ line of the exact diff was returned successfully. The saved proof contains only
 the session ID, base/head SHAs and diff hash. Resumed output must match that proof,
 contain no tool calls, and pass the existing JSON and diff-anchor validation.
 Partial reads, other SDK errors and timeouts go directly to the ready fallback.
+`execution_unavailable` means the action left no execution file, as can happen
+when the runner stops it at the step deadline. It is distinct from
+`diff_not_fully_read`, which means a completed, turn-limited session lacks proof
+of reading the complete diff. Neither condition permits finalization.
 Finalization is attempted once per route; its failure also moves to fallback or
 reports the review as unavailable. No partial/error output counts as success.
 A completed SDK run with invalid output still gets one full validation retry.

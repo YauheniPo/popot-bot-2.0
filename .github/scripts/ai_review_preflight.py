@@ -14,6 +14,7 @@ import urllib.request
 
 from claude_review_runner import _rate_limit_details
 from direct_review_stream import StreamFailure, read_response, watchdog
+from pr_review_context import _json_response_text
 from review_execution import safe_label
 
 MODEL = "moonshotai/kimi-k3"
@@ -53,6 +54,10 @@ class ProbeFailure(RuntimeError):
     def __init__(self, reason: str, details: dict | None = None):
         super().__init__(reason)
         self.details = details or {}
+
+
+class ProbeContractFailure(ProbeFailure):
+    """A response failed local validation; the message contains no provider prose."""
 
 
 def completion_payload(body: dict[str, object], provider: str = "ollama-cloud") -> dict[str, object]:
@@ -192,6 +197,27 @@ def _probe_request(api_key: str, kind: str, provider: str, model: str) -> urllib
     return urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
 
 
+def _claude_probe_failure(result: object) -> str:
+    """Use the publisher's exact JSON contract, including its wrapper handling."""
+    if not isinstance(result, dict) or not isinstance(result.get("content"), list):
+        return "invalid_messages_envelope"
+    if result.get("stop_reason") == "max_tokens":
+        return "output_truncated"
+    content = "".join(
+        block["text"] for block in result["content"]
+        if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
+    ).strip()
+    if not content:
+        return "missing_text"
+    try:
+        parsed = json.loads(_json_response_text(content))
+    except (RuntimeError, ValueError):
+        return "invalid_review_json"
+    if parsed["findings"] or parsed["thread_verdicts"]:
+        return "unexpected_review_items"
+    return ""
+
+
 def _probe_response_valid(result: object, kind: str) -> bool:
     if not isinstance(result, dict):
         return False
@@ -204,20 +230,7 @@ def _probe_response_valid(result: object, kind: str) -> bool:
             for block in blocks
         )
     if kind == "claude":
-        try:
-            content = "".join(
-                block.get("text", "") for block in result.get("content", [])
-                if isinstance(block, dict) and block.get("type") == "text"
-            ).strip()
-            parsed = json.loads(content)
-            return (
-                isinstance(parsed, dict)
-                and isinstance(parsed.get("summary"), str)
-                and isinstance(parsed.get("findings"), list)
-                and isinstance(parsed.get("thread_verdicts"), list)
-            )
-        except (TypeError, AttributeError, ValueError):
-            return False
+        return not _claude_probe_failure(result)
     try:
         content = result["choices"][0]["message"]["content"]
         if content.strip().startswith("```"):
@@ -286,8 +299,13 @@ def _request_probe_response(request: urllib.request.Request, attempts: int, time
             f"(timeout {timeout}s)", file=sys.stderr,
         )
         try:
-            result = _read_probe_response(request, timeout, kind, provider)
+            result = _read_checked_probe_response(request, timeout, kind, provider)
             break
+        except ProbeContractFailure as error:
+            if attempt == attempts - 1:
+                raise
+            print(f"[preflight] {error}", file=sys.stderr)
+            delay = 1
         except urllib.error.HTTPError as error:
             delay, rate_limit_retried = _probe_http_retry(
                 error, provider, kind, attempt, attempts, remaining, rate_limit_retried,
@@ -306,6 +324,14 @@ def _request_probe_response(request: urllib.request.Request, attempts: int, time
         remaining -= delay
         print(f"[preflight] retry_wait={delay}s; no provider request in flight", file=sys.stderr)
         time.sleep(delay)
+    return result
+
+
+def _read_checked_probe_response(request: urllib.request.Request, timeout: int, kind: str, provider: str) -> object:
+    result = _read_probe_response(request, timeout, kind, provider)
+    failure = _claude_probe_failure(result) if kind == "claude" else ""
+    if failure:
+        raise ProbeContractFailure(f"{provider} {kind} probe failed response contract: {failure}")
     return result
 
 
