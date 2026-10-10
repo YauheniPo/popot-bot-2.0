@@ -190,8 +190,9 @@ def _probe_request(api_key: str, kind: str, provider: str, model: str) -> urllib
             body["messages"] = [{
                 "role": "user",
                 "content": (
-                    "Return exactly one JSON object with string summary, an array findings, "
-                    "and an array thread_verdicts. Use empty arrays. No markdown."
+                    "This is an API readiness check, not a code review. "
+                    "Return exactly this JSON object, with no additional keys, markdown or explanation:\n"
+                    '{"summary":"Ready","findings":[],"thread_verdicts":[]}'
                 ),
             }]
     return urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")

@@ -1325,6 +1325,14 @@ class OllamaReviewTest(unittest.TestCase):
 
 
 class NousReviewTest(unittest.TestCase):
+    def test_claude_smoke_prompt_supplies_an_unambiguous_valid_example(self):
+        request = ai_review_preflight._probe_request('fixture-key', 'claude', 'nous', 'fixture/model')
+        prompt = json.loads(request.data)['messages'][0]['content']
+        document = json.loads(prompt[prompt.index('{'):prompt.rindex('}') + 1])
+        self.assertTrue(document['summary'].strip())
+        self.assertEqual(document['findings'], [])
+        self.assertEqual(document['thread_verdicts'], [])
+
     def test_provider_uses_only_the_nous_key_and_preserves_model_ids(self):
         for provider in ("nous", "nous-portal", "nous-api"):
             with self.subTest(provider=provider), mock.patch.dict(os.environ, {

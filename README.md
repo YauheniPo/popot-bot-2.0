@@ -199,6 +199,8 @@ NVIDIA's direct Chat Completions endpoint does not supply one. Claude runs a sho
 it checks tool calling and the exact review JSON contract in separate requests.
 The Claude smoke test uses up to two attempts with a 90-second timeout per check, so an
 unavailable or incompatible model is reported before the full Claude run.
+The JSON request supplies a complete readiness object with a non-empty summary
+and empty findings/verdicts; the model is not asked to invent a review without code.
 Its JSON check uses the same exact schema and Markdown/prose-wrapper handling
 as publication. An invalid response gets one retry after one second within that
 same two-attempt budget; the successful tool check is not repeated. Truncated
@@ -315,7 +317,16 @@ Partial reads, other SDK errors and timeouts go directly to the ready fallback.
 `execution_unavailable` means the action left no execution file, as can happen
 when the runner stops it at the step deadline. It is distinct from
 `diff_not_fully_read`, which means a completed, turn-limited session lacks proof
-of reading the complete diff. Neither condition permits finalization.
+of reading the complete diff. The unavailable-review report includes matched
+and total line counts, Read call counts and failed Read counts. It never includes
+source lines or tool error bodies. Neither condition permits finalization.
+Before the full review starts, the adapter calculates exact, non-overlapping
+Read pages bounded by bytes and lines and supplies their offsets and limits in
+the prompt. A single line exceeding the byte target occupies its own page and
+is never dropped; a truncated Read still cannot prove full diff coverage.
+The model must read all pages before exploring supporting files;
+the plan itself is not proof of reading or a completed review. The existing
+turn and wall-clock limits remain unchanged.
 Finalization is attempted once per route; its failure also moves to fallback or
 reports the review as unavailable. No partial/error output counts as success.
 A completed SDK run with invalid output still gets one full validation retry.

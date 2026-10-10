@@ -153,6 +153,47 @@ class FinalizeTests(unittest.TestCase):
         events[2]['message']['content'][0]['content'] = '1→diff --git a/app.py b/app.py'
         self.assertEqual(self.prepare(events)['reason'], 'diff_not_fully_read')
 
+    def test_partial_read_reports_exact_coverage_without_exposing_content(self):
+        events = self.events()
+        events[2]['message']['content'][0]['content'] = '1→diff --git a/app.py b/app.py'
+        call, result = copy.deepcopy(events[1:3])
+        call['message']['content'][0]['id'] = 'failed-read'
+        result['message']['content'][0].update(tool_use_id='failed-read', is_error=True, content='private error')
+        events[3:3] = [call, result]
+        prepared = self.prepare(events)
+        self.assertEqual(prepared['reason'], 'diff_not_fully_read')
+        self.assertEqual(json.loads(prepared['read_coverage']), {
+            'matched_lines': 1, 'total_lines': 2, 'read_calls': 2, 'failed_reads': 1,
+        })
+        self.assertNotIn('private', json.dumps(prepared))
+        self.assertFalse(self.proof.exists())
+
+    def test_read_plan_covers_every_line_in_bounded_pages_without_source_text(self):
+        lines = ['private source ' + 'Ж' * 100 for _ in range(650)]
+        self.diff.write_text('\n'.join(lines) + '\n')
+        plan = finalize.read_plan()
+        self.assertEqual(plan['total_lines'], len(lines))
+        self.assertEqual(plan['diff_bytes'], self.diff.stat().st_size)
+        self.assertNotIn('private', json.dumps(plan))
+        visited = []
+        for page in plan['pages']:
+            first = page['offset'] - 1
+            indexes = range(first, first + page['limit'])
+            visited.extend(indexes)
+            self.assertLessEqual(page['limit'], finalize.MAX_READ_PAGE_LINES)
+            self.assertLessEqual(sum(len(f'{i + 1}→{lines[i]}\n'.encode()) for i in indexes), finalize.MAX_READ_PAGE_BYTES)
+        self.assertEqual(visited, list(range(len(lines))))
+
+    def test_read_plan_honors_line_limit_and_isolates_oversized_lines_without_dropping_them(self):
+        self.diff.write_text('\n' * 650)
+        plan = finalize.read_plan()
+        self.assertGreater(len(plan['pages']), 1)
+        self.assertTrue(all(page['limit'] <= finalize.MAX_READ_PAGE_LINES for page in plan['pages']))
+        self.diff.write_text('before\n' + 'x' * finalize.MAX_READ_PAGE_BYTES + '\nafter\n')
+        self.assertEqual(finalize.read_plan()['pages'], [
+            {'offset': 1, 'limit': 1}, {'offset': 2, 'limit': 1}, {'offset': 3, 'limit': 1},
+        ])
+
     def test_proof_write_failure_has_a_safe_distinct_reason(self):
         with mock.patch.object(finalize.os, 'replace', side_effect=OSError('private path')):
             result = self.prepare()
@@ -233,6 +274,33 @@ class FinalizeTests(unittest.TestCase):
         self.assertIn('ready=true\n', outputs.read_text())
         self.assertIn('session_id=' + SESSION + '\n', outputs.read_text())
         self.assertEqual(json.loads(self.output.read_text()), REVIEW)
+
+    def test_plan_cli_outputs_only_numeric_ranges_and_needs_no_execution_log(self):
+        output = self.root / 'github-output'
+        with mock.patch.dict(os.environ, {'GITHUB_OUTPUT': str(output)}), contextlib.redirect_stdout(io.StringIO()):
+            self.run_cli('plan')
+        key, value = output.read_text().strip().split('=', 1)
+        self.assertEqual(key, 'read_plan')
+        self.assertEqual(json.loads(value)['pages'], [{'offset': 1, 'limit': 2}])
+        self.assertFalse(self.proof.exists())
+
+    def test_finalization_cli_still_requires_execution_and_proof_paths(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            for arguments in (('prepare',), ('extract', '--execution-file', str(self.execution))):
+                with self.subTest(command=arguments[0]), self.assertRaises(SystemExit) as error:
+                    self.run_cli(*arguments)
+                self.assertEqual(error.exception.code, 2)
+
+    def test_workflow_provides_same_read_plan_to_each_full_review_attempt(self):
+        workflow = yaml.safe_load((Path(__file__).parents[1] / 'workflows/pr-ai-review.yml').read_text())
+        steps = {step.get('id'): step for step in workflow['jobs']['claude-code-plugin-review']['steps']}
+        self.assertIn('claude_review_finalize.py plan', steps['claude_diff']['run'])
+        for route in ('primary', 'primary_retry', 'fallback', 'fallback_retry'):
+            self.assertIn('steps.claude_diff.outputs.read_plan', steps['claude_review_' + route]['with']['prompt'])
+        report = steps['report_claude_review_unavailable']
+        for route in ('PRIMARY', 'FALLBACK'):
+            self.assertIn('outputs.read_coverage', report['env'][route + '_DIFF_READ'])
+            self.assertIn('$' + route + '_DIFF_READ', report['run'])
 
     def test_cli_rejections_do_not_expose_execution_or_exception_text(self):
         self.execution.write_text('secret response')

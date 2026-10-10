@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Allow one tool-free completion of a fully read, turn-limited Claude review."""
+"""Plan bounded diff reads and finalize only a fully read, turn-limited review."""
 
 import argparse
 import hashlib
@@ -11,6 +11,16 @@ import subprocess
 import tempfile
 
 import pr_review_context as context
+
+
+MAX_READ_PAGE_BYTES = 16000
+MAX_READ_PAGE_LINES = 300
+
+
+class IncompleteDiffRead(RuntimeError):
+    def __init__(self, coverage):
+        super().__init__('diff_incomplete')
+        self.coverage = coverage
 
 
 def _root_events(events):
@@ -39,6 +49,24 @@ def _diff():
     return path, raw, raw.decode('utf-8').splitlines()
 
 
+def read_plan():
+    """Supply exact Read offsets; never embed diff contents in action outputs."""
+    _, raw, lines = _diff()
+    pages = []
+    offset, count, size = 1, 0, 0
+    for number, line in enumerate(lines, 1):
+        line_bytes = len(f'{number}→{line}\n'.encode('utf-8'))
+        # Read paginates by line: keep an oversized single line on its own
+        # page rather than dropping it or rejecting the entire review here.
+        if count and (count >= MAX_READ_PAGE_LINES or size + line_bytes > MAX_READ_PAGE_BYTES):
+            pages.append({'offset': offset, 'limit': count})
+            offset, count, size = number, 0, 0
+        count += 1
+        size += line_bytes
+    pages.append({'offset': offset, 'limit': count})
+    return {'total_lines': len(lines), 'diff_bytes': len(raw), 'pages': pages}
+
+
 def _returned_lines(block):
     if block.get('is_error') not in (None, False):
         return []
@@ -53,32 +81,40 @@ def _returned_lines(block):
 
 def _completed_lines(event, pending, lines):
     seen = set()
+    failed = 0
     for block in context._sdk_content(event, 'user'):
         call = block.get('tool_use_id')
         if block.get('type') != 'tool_result' or not isinstance(call, str) or call not in pending:
             continue
         pending.remove(call)
+        failed += block.get('is_error') is True
         for number, text in _returned_lines(block):
             index = int(number) - 1
             if 0 <= index < len(lines) and text == lines[index]:
                 seen.add(index)
-    return seen
+    return seen, failed
 
 
 def _require_complete_diff(events, path, lines):
     """Match every numbered returned line to the current diff, including blank lines."""
     pending = set()
     seen = set()
+    calls, failed = 0, 0
     for event in events:
         if event.get('type') == 'result':
             break
         if event.get('type') == 'system' and event.get('subtype') == 'init':
             pending.clear()
             seen.clear()
+            calls, failed = 0, 0
+        calls += sum(context._is_diff_read_call(block, path) for block in context._sdk_content(event, 'assistant'))
         context._track_diff_calls(event, pending, path)
-        seen.update(_completed_lines(event, pending, lines))
+        completed, errors = _completed_lines(event, pending, lines)
+        seen.update(completed)
+        failed += errors
     if not lines or len(seen) != len(lines):
-        raise RuntimeError('diff_incomplete')
+        raise IncompleteDiffRead({'matched_lines': len(seen), 'total_lines': len(lines),
+                                  'read_calls': calls, 'failed_reads': failed})
 
 
 def _revision_binding(raw):
@@ -116,6 +152,8 @@ def prepare(execution_file, proof_file):
         _require_complete_diff(events, path, lines)
         failure_reason = 'proof_unavailable'
         _write_proof(proof_file, {**_revision_binding(raw), 'session_id': session})
+    except IncompleteDiffRead as error:
+        return {'ready': 'false', 'reason': 'diff_not_fully_read', 'read_coverage': json.dumps(error.coverage)}
     except (OSError, ValueError, RuntimeError):
         return {'ready': 'false', 'reason': failure_reason}
     return {'ready': 'true', 'reason': 'turn_limit_after_complete_diff_read', 'session_id': session}
@@ -152,11 +190,17 @@ def extract(execution_file, proof_file, output_file):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'extract'))
-    parser.add_argument('--execution-file', required=True, type=Path)
-    parser.add_argument('--proof-file', required=True, type=Path)
+    parser.add_argument('command', choices=('plan', 'prepare', 'extract'))
+    parser.add_argument('--execution-file', type=Path)
+    parser.add_argument('--proof-file', type=Path)
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
+    if args.command == 'plan':
+        with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+            output.write('read_plan=' + json.dumps(read_plan(), separators=(',', ':')) + '\n')
+        return
+    if args.execution_file is None or args.proof_file is None:
+        parser.error('--execution-file and --proof-file are required for prepare/extract')
     if args.command == 'prepare':
         values = prepare(args.execution_file, args.proof_file)
         print('Claude finalization: ' + values['reason'])
