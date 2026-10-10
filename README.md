@@ -299,11 +299,20 @@ its SDK execution file before accepting any primary/retry/fallback result.
 Calls without results, empty pages and reads of unrelated files do not count;
 failure triggers the existing retry/fallback path with `diff_not_read`.
 This is an input-access check, not a guarantee of exhaustive or accurate review.
-Claude Code retries the same route once only when the SDK run completed but its
-result failed validation. An SDK failure or the 12-minute step timeout skips
-that repeat and moves directly to the ready fallback; a failed fallback SDK run
-is reported as unavailable. These guards use the step's original `outcome`,
-because `continue-on-error` can make a failed attempt's `conclusion` show success.
+Claude Code caps each full attempt at five minutes and individual SDK requests
+at 90 seconds. When a run reaches `error_max_turns`, one two-minute, tool-free
+completion can resume that same session, only if its execution log proves every
+line of the exact diff was returned successfully. The saved proof contains only
+the session ID, base/head SHAs and diff hash. Resumed output must match that proof,
+contain no tool calls, and pass the existing JSON and diff-anchor validation.
+Partial reads, other SDK errors and timeouts go directly to the ready fallback.
+Finalization is attempted once per route; its failure also moves to fallback or
+reports the review as unavailable. No partial/error output counts as success.
+A completed SDK run with invalid output still gets one full validation retry.
+Reports distinguish finalization from the original attempt. These guards use
+the step's original `outcome`, because `continue-on-error` can make a failed
+attempt's `conclusion` show success. Publication and its verification remain
+required for the aggregate review gate.
 
 Manual GitHub review and the Azure launcher use the same
 direct reviewer. Their `provider` and `model` come from run inputs, including

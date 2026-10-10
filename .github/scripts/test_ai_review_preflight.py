@@ -67,8 +67,20 @@ class OllamaReviewTest(unittest.TestCase):
             outcomes[('extract_claude_review_' + route, 'outcome')] = 'skipped'
 
         outcomes[('claude_review_primary', 'outcome')] = 'failure'
+        self.assertFalse(allows(identified_steps['claude_review_fallback'], outcomes))
+        outcomes[('clear_claude_fallback_execution', 'outcome')] = 'success'
         self.assertTrue(allows(identified_steps['claude_review_fallback'], outcomes))
         self.assertFalse(allows(identified_steps['claude_review_fallback'], outcomes, cancelled=True))
+        for route in ('primary', 'fallback'):
+            prepared = ('prepare_claude_' + route + '_finalize', 'outputs.ready')
+            for ready in ('true', 'false', 'skipped'):
+                outcomes[prepared] = ready
+                step = identified_steps['claude_review_' + route + '_finalize']
+                self.assertEqual(allows(step, outcomes), ready == 'true')
+                self.assertFalse(allows(step, outcomes, cancelled=True))
+        outcomes[('extract_claude_review_primary_finalize', 'outcome')] = 'success'
+        self.assertFalse(allows(identified_steps['claude_review_fallback'], outcomes))
+        self.assertFalse(allows(identified_steps['report_claude_review_unavailable'], outcomes))
 
     def test_json_preflight_switches_provider_after_two_timeouts(self):
         response = self.response({"choices": [{"message": {"content": '{"status":"ok"}'}}]})
@@ -1000,7 +1012,7 @@ class OllamaReviewTest(unittest.TestCase):
             for step in job["steps"]:
                 if "anthropics/claude-code-action@" in step.get("uses", ""):
                     step_id = step.get("id", "")
-                    is_fallback = step_id in ("claude_review_fallback", "claude_review_fallback_retry")
+                    is_fallback = step_id.startswith("claude_review_fallback")
                     if is_fallback:
                         self.assertEqual(step["env"]["ANTHROPIC_BASE_URL"], "${{ steps.claude_models.outputs.secondary_anthropic_base_url }}")
                         self.assertIn("steps.claude_models.outputs.fallback_provider", step["with"]["anthropic_api_key"])
@@ -1269,10 +1281,12 @@ class OllamaReviewTest(unittest.TestCase):
             step for step in job["steps"]
             if "anthropics/claude-code-action@" in step.get("uses", "")
         ]
-        self.assertEqual(len(action_steps), 4)
+        self.assertEqual(len(action_steps), 6)
         for step in action_steps:
             with self.subTest(step=step["id"]):
-                self.assertIn("--max-turns 48", step["with"]["claude_args"])
+                finalization = step['id'].endswith('_finalize')
+                self.assertIn("--max-turns 1" if finalization else "--max-turns 48", step["with"]["claude_args"])
+                self.assertLessEqual(int(step['timeout-minutes']), 2 if finalization else 5)
                 self.assertEqual(
                     step["with"]["show_full_output"],
                     "${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}",
@@ -1427,7 +1441,7 @@ class NousReviewTest(unittest.TestCase):
                         self.assertEqual(step["env"]["NOUS_API_KEY"], "${{ secrets.NOUS_API_KEY }}")
                     if "anthropics/claude-code-action@" in step.get("uses", ""):
                         step_id = step.get("id", "")
-                        if step_id in ("claude_review_fallback", "claude_review_fallback_retry"):
+                        if step_id.startswith("claude_review_fallback"):
                             self.assertEqual(step["env"]["ANTHROPIC_BASE_URL"], "${{ steps.claude_models.outputs.secondary_anthropic_base_url }}")
                         else:
                             self.assertEqual(step["env"]["ANTHROPIC_BASE_URL"], "${{ steps.claude_models.outputs.anthropic_base_url }}")

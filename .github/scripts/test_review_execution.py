@@ -112,6 +112,22 @@ class ExecutionReportTest(unittest.TestCase):
         self.assertEqual(len(report.attempts), 1)
         self.assertIn("Retries: 0", report.summary())
 
+    def test_claude_finalization_is_reported_as_a_separate_validated_attempt(self):
+        for route in ('PRIMARY', 'FALLBACK'):
+            with self.subTest(route=route):
+                report = claude_execution_report({
+                    'CLAUDE_REVIEW_PRIMARY_MODEL': 'primary',
+                    'CLAUDE_REVIEW_FALLBACK_MODEL': 'backup',
+                    f'CLAUDE_REVIEW_{route}_OUTCOME': 'failure',
+                    f'CLAUDE_REVIEW_{route}_FINALIZE_OUTCOME': 'success',
+                    f'CLAUDE_REVIEW_{route}_FINALIZE_VALIDATION': 'success',
+                })
+                self.assertEqual(len(report.attempts), 2)
+                self.assertEqual(report.attempts[-1].route, route.lower() + '_finalize')
+                self.assertIn('Attempts: 2 · Validated: 1', report.summary())
+                self.assertIn('CI attempt #2', report.footer('review'))
+                self.assertEqual(report.attempts[-1].model, 'backup' if route == 'FALLBACK' else 'primary')
+
     def test_claude_fallback_retry_is_counted(self):
         report = claude_execution_report({
             "CLAUDE_REVIEW_PRIMARY_MODEL": "primary",

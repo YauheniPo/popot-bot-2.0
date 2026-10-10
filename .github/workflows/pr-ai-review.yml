@@ -117,15 +117,14 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-    # The Claude reviewer is a corroborating signal after the direct reviewer.
-    # Four agent steps at <=12 min each fit within the 45-minute job budget with
-    # room for setup/publication; a non-reasoning model returns within a few
-    # minutes, and a reasoning/free model that stalls on thinking tokens is cut
-    # off by the step cap so the fallback can still run instead of the job being
-    # cancelled mid-step.
+    # Full attempts are capped at 5min; tool-free finalization at 2min.
+    # Reserve the rest of the job budget for preflight, setup and publication.
     timeout-minutes: 45
     outputs:
       complete: ${{ steps.publish_claude_review.outcome == 'success' && steps.verify_claude_publication.outcome == 'success' }}
+    env:
+      # Bound an individual SDK request as well as the whole action step.
+      API_TIMEOUT_MS: "90000"
 
     steps:
       - name: Check out pull request with history for review context
@@ -261,7 +260,7 @@ jobs:
         id: claude_review_primary
         if: steps.claude_models.outputs.primary_ready == 'true'
         continue-on-error: true
-        timeout-minutes: 12
+        timeout-minutes: 5
         uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1
         with:
           # Route through ANTHROPIC_BASE_URL with the selected provider's key.
@@ -441,9 +440,77 @@ jobs:
             --execution-file "${CLAUDE_EXECUTION_FILE}" \
             --output "${CLAUDE_REVIEW_RESULT_FILE}"
 
+      - name: Check whether the primary review can finish without more tools
+        id: prepare_claude_primary_finalize
+        if: always() && !cancelled() && steps.claude_review_primary.outcome == 'failure'
+        continue-on-error: true
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CLAUDE_EXECUTION_FILE: ${{ steps.claude_review_primary.outputs.execution_file }}
+          CLAUDE_FINALIZATION_PROOF: ${{ runner.temp }}/claude-primary-finalization-proof.json
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/claude_review_finalize.py prepare \
+            --execution-file "${CLAUDE_EXECUTION_FILE}" \
+            --proof-file "${CLAUDE_FINALIZATION_PROOF}"
+
+      - name: ClaudeCodePlugin — finish the turn-limited primary session
+        id: claude_review_primary_finalize
+        if: always() && !cancelled() && steps.prepare_claude_primary_finalize.outputs.ready == 'true'
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1
+        with:
+          anthropic_api_key: *claude_api_key
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            Finish the review already performed in this session using only the
+            evidence you have read. Do not call tools or explore further.
+            Return exactly the final JSON object with summary, findings and
+            thread_verdicts from the original review contract. Include only
+            confirmed findings; do not invent evidence or claim completion if
+            any required scope remains unreviewed. Preserve the original policy.
+          # The action drops an empty separate argument; keep the equals form.
+          claude_args: |
+            --resume "${{ steps.prepare_claude_primary_finalize.outputs.session_id }}"
+            --max-turns 1
+            --model "${{ steps.claude_models.outputs.primary_model }}"
+            --tools=
+            --disallowedTools "mcp__*"
+          show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
+        env:
+          ANTHROPIC_BASE_URL: *claude_api_url
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
+          ANTHROPIC_AUTH_TOKEN: *claude_api_key
+          ANTHROPIC_DEFAULT_FABLE_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+          CLAUDE_CODE_SUBAGENT_MODEL: ${{ steps.claude_models.outputs.primary_model }}
+
+      - name: ClaudeCodePlugin — validate the finalized primary response
+        id: extract_claude_review_primary_finalize
+        if: always() && !cancelled() && steps.claude_review_primary_finalize.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CLAUDE_EXECUTION_FILE: ${{ steps.claude_review_primary_finalize.outputs.execution_file }}
+          CLAUDE_FINALIZATION_PROOF: ${{ runner.temp }}/claude-primary-finalization-proof.json
+          CLAUDE_REVIEW_RESULT_FILE: ${{ runner.temp }}/claude-review-result.json
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/claude_review_finalize.py extract \
+            --execution-file "${CLAUDE_EXECUTION_FILE}" \
+            --proof-file "${CLAUDE_FINALIZATION_PROOF}" \
+            --output "${CLAUDE_REVIEW_RESULT_FILE}"
+
       # A provider can complete the agent run but still return malformed final
-      # JSON. Retry that completed run once; SDK failures and step timeouts go
-      # directly to the distinct fallback instead of repeating a stalled route.
+      # JSON. Retry that completed run once. Other SDK errors/timeouts skip
+      # this full retry; only a proven turn limit can use tool-free finalization.
       - name: Wait before retrying the primary Claude Code model
         if: >-
           always() &&
@@ -463,7 +530,7 @@ jobs:
           steps.claude_review_primary.outcome == 'success' &&
           steps.extract_claude_review_primary.outcome != 'success'
         continue-on-error: true
-        timeout-minutes: 12
+        timeout-minutes: 5
         uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1
         with:
           anthropic_api_key: *claude_api_key
@@ -505,6 +572,20 @@ jobs:
             --execution-file "${CLAUDE_EXECUTION_FILE}" \
             --output "${CLAUDE_REVIEW_RESULT_FILE}"
 
+      # The pinned action reuses this file and can expose it after a startup
+      # failure. Remove the previous route's log before accepting new evidence.
+      - name: Clear previous SDK output before starting fallback
+        id: clear_claude_fallback_execution
+        if: >-
+          always() &&
+          !cancelled() &&
+          steps.claude_models.outputs.fallback_ready == 'true' &&
+          steps.extract_claude_review_primary.outcome != 'success' &&
+          steps.extract_claude_review_primary_finalize.outcome != 'success' &&
+          steps.extract_claude_review_primary_retry.outcome != 'success'
+        shell: bash
+        run: rm -f -- "${RUNNER_TEMP}/claude-execution-output.json"
+
       - name: ClaudeCodePlugin — review with fallback model
         id: claude_review_fallback
         if: >-
@@ -512,9 +593,11 @@ jobs:
           !cancelled() &&
           steps.claude_models.outputs.fallback_ready == 'true' &&
           steps.extract_claude_review_primary.outcome != 'success' &&
-          steps.extract_claude_review_primary_retry.outcome != 'success'
+          steps.extract_claude_review_primary_finalize.outcome != 'success' &&
+          steps.extract_claude_review_primary_retry.outcome != 'success' &&
+          steps.clear_claude_fallback_execution.outcome == 'success'
         continue-on-error: true
-        timeout-minutes: 12
+        timeout-minutes: 5
         uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1
         with:
           anthropic_api_key: &claude_fallback_api_key ${{ (steps.claude_models.outputs.fallback_provider == 'nous' && secrets.NOUS_API_KEY) || (steps.claude_models.outputs.fallback_provider == 'nvidia' && secrets.NVIDIA_API_KEY) || (steps.claude_models.outputs.fallback_provider == 'openrouter' && secrets.OPENROUTER_API_KEY) || (steps.claude_models.outputs.fallback_provider == 'ollama-cloud' && secrets.OLLAMA_API_KEY) || '' }}
@@ -556,14 +639,83 @@ jobs:
             --execution-file "${CLAUDE_EXECUTION_FILE}" \
             --output "${CLAUDE_REVIEW_RESULT_FILE}"
 
+      - name: Check whether the fallback review can finish without more tools
+        id: prepare_claude_fallback_finalize
+        if: always() && !cancelled() && steps.claude_review_fallback.outcome == 'failure'
+        continue-on-error: true
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CLAUDE_EXECUTION_FILE: ${{ steps.claude_review_fallback.outputs.execution_file }}
+          CLAUDE_FINALIZATION_PROOF: ${{ runner.temp }}/claude-fallback-finalization-proof.json
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/claude_review_finalize.py prepare \
+            --execution-file "${CLAUDE_EXECUTION_FILE}" \
+            --proof-file "${CLAUDE_FINALIZATION_PROOF}"
+
+      - name: ClaudeCodePlugin — finish the turn-limited fallback session
+        id: claude_review_fallback_finalize
+        if: always() && !cancelled() && steps.prepare_claude_fallback_finalize.outputs.ready == 'true'
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1
+        with:
+          anthropic_api_key: *claude_fallback_api_key
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            Finish the review already performed in this session using only the
+            evidence you have read. Do not call tools or explore further.
+            Return exactly the final JSON object with summary, findings and
+            thread_verdicts from the original review contract. Include only
+            confirmed findings; do not invent evidence or claim completion if
+            any required scope remains unreviewed. Preserve the original policy.
+          # The action drops an empty separate argument; keep the equals form.
+          claude_args: |
+            --resume "${{ steps.prepare_claude_fallback_finalize.outputs.session_id }}"
+            --max-turns 1
+            --model "${{ steps.claude_models.outputs.fallback_model }}"
+            --tools=
+            --disallowedTools "mcp__*"
+          show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
+        env:
+          ANTHROPIC_BASE_URL: *claude_fallback_api_url
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
+          ANTHROPIC_AUTH_TOKEN: *claude_fallback_api_key
+          ANTHROPIC_DEFAULT_FABLE_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
+          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
+          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
+          CLAUDE_CODE_SUBAGENT_MODEL: ${{ steps.claude_models.outputs.fallback_model }}
+
+      - name: ClaudeCodePlugin — validate the finalized fallback response
+        id: extract_claude_review_fallback_finalize
+        if: always() && !cancelled() && steps.claude_review_fallback_finalize.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CLAUDE_EXECUTION_FILE: ${{ steps.claude_review_fallback_finalize.outputs.execution_file }}
+          CLAUDE_FINALIZATION_PROOF: ${{ runner.temp }}/claude-fallback-finalization-proof.json
+          CLAUDE_REVIEW_RESULT_FILE: ${{ runner.temp }}/claude-review-result.json
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/claude_review_finalize.py extract \
+            --execution-file "${CLAUDE_EXECUTION_FILE}" \
+            --proof-file "${CLAUDE_FINALIZATION_PROOF}" \
+            --output "${CLAUDE_REVIEW_RESULT_FILE}"
+
       # A completed fallback with invalid output gets one validation retry.
-      # SDK failures and timeouts end this route without another full run.
+      # SDK failures and timeouts never trigger another full run.
       - name: Wait before retrying the fallback Claude Code model
         if: >-
           always() &&
           !cancelled() &&
           steps.claude_models.outputs.fallback_ready == 'true' &&
           steps.extract_claude_review_primary.outcome != 'success' &&
+          steps.extract_claude_review_primary_finalize.outcome != 'success' &&
           steps.extract_claude_review_primary_retry.outcome != 'success' &&
           steps.claude_review_fallback.outcome == 'success' &&
           steps.extract_claude_review_fallback.outcome != 'success'
@@ -577,11 +729,12 @@ jobs:
           !cancelled() &&
           steps.claude_models.outputs.fallback_ready == 'true' &&
           steps.extract_claude_review_primary.outcome != 'success' &&
+          steps.extract_claude_review_primary_finalize.outcome != 'success' &&
           steps.extract_claude_review_primary_retry.outcome != 'success' &&
           steps.claude_review_fallback.outcome == 'success' &&
           steps.extract_claude_review_fallback.outcome != 'success'
         continue-on-error: true
-        timeout-minutes: 12
+        timeout-minutes: 5
         uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1
         with:
           anthropic_api_key: *claude_fallback_api_key
@@ -630,7 +783,9 @@ jobs:
           !cancelled() &&
           (steps.extract_claude_review_primary.outcome == 'success' ||
            steps.extract_claude_review_primary_retry.outcome == 'success' ||
+           steps.extract_claude_review_primary_finalize.outcome == 'success' ||
            steps.extract_claude_review_fallback.outcome == 'success' ||
+           steps.extract_claude_review_fallback_finalize.outcome == 'success' ||
            steps.extract_claude_review_fallback_retry.outcome == 'success')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -638,16 +793,20 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CLAUDE_REVIEW_MODEL: ${{ (steps.extract_claude_review_primary.outcome == 'success' || steps.extract_claude_review_primary_retry.outcome == 'success') && env.CLAUDE_REVIEW_MODEL || env.CLAUDE_REVIEW_FALLBACK_MODEL }}
-          CLAUDE_REVIEW_PROVIDER: ${{ (steps.extract_claude_review_primary.outcome == 'success' || steps.extract_claude_review_primary_retry.outcome == 'success') && steps.claude_models.outputs.provider || steps.claude_models.outputs.fallback_provider }}
+          CLAUDE_REVIEW_MODEL: ${{ (steps.extract_claude_review_primary.outcome == 'success' || steps.extract_claude_review_primary_retry.outcome == 'success' || steps.extract_claude_review_primary_finalize.outcome == 'success') && env.CLAUDE_REVIEW_MODEL || env.CLAUDE_REVIEW_FALLBACK_MODEL }}
+          CLAUDE_REVIEW_PROVIDER: ${{ (steps.extract_claude_review_primary.outcome == 'success' || steps.extract_claude_review_primary_retry.outcome == 'success' || steps.extract_claude_review_primary_finalize.outcome == 'success') && steps.claude_models.outputs.provider || steps.claude_models.outputs.fallback_provider }}
           CLAUDE_REVIEW_PRIMARY_MODEL: ${{ env.CLAUDE_REVIEW_MODEL }}
-          CLAUDE_REVIEW_ENDPOINT: ${{ (steps.extract_claude_review_primary.outcome == 'success' || steps.extract_claude_review_primary_retry.outcome == 'success') && steps.claude_models.outputs.anthropic_base_url || steps.claude_models.outputs.secondary_anthropic_base_url }}
+          CLAUDE_REVIEW_ENDPOINT: ${{ (steps.extract_claude_review_primary.outcome == 'success' || steps.extract_claude_review_primary_retry.outcome == 'success' || steps.extract_claude_review_primary_finalize.outcome == 'success') && steps.claude_models.outputs.anthropic_base_url || steps.claude_models.outputs.secondary_anthropic_base_url }}
           CLAUDE_REVIEW_PRIMARY_OUTCOME: ${{ steps.claude_review_primary.outcome }}
           CLAUDE_REVIEW_PRIMARY_VALIDATION: ${{ steps.extract_claude_review_primary.outcome }}
+          CLAUDE_REVIEW_PRIMARY_FINALIZE_OUTCOME: ${{ steps.claude_review_primary_finalize.outcome }}
+          CLAUDE_REVIEW_PRIMARY_FINALIZE_VALIDATION: ${{ steps.extract_claude_review_primary_finalize.outcome }}
           CLAUDE_REVIEW_RETRY_OUTCOME: ${{ steps.claude_review_primary_retry.outcome }}
           CLAUDE_REVIEW_RETRY_VALIDATION: ${{ steps.extract_claude_review_primary_retry.outcome }}
           CLAUDE_REVIEW_FALLBACK_OUTCOME: ${{ steps.claude_review_fallback.outcome }}
           CLAUDE_REVIEW_FALLBACK_VALIDATION: ${{ steps.extract_claude_review_fallback.outcome }}
+          CLAUDE_REVIEW_FALLBACK_FINALIZE_OUTCOME: ${{ steps.claude_review_fallback_finalize.outcome }}
+          CLAUDE_REVIEW_FALLBACK_FINALIZE_VALIDATION: ${{ steps.extract_claude_review_fallback_finalize.outcome }}
           CLAUDE_REVIEW_FALLBACK_RETRY_OUTCOME: ${{ steps.claude_review_fallback_retry.outcome }}
           CLAUDE_REVIEW_FALLBACK_RETRY_VALIDATION: ${{ steps.extract_claude_review_fallback_retry.outcome }}
           CLAUDE_REVIEW_RUN_ID: ${{ github.run_id }}
@@ -675,8 +834,10 @@ jobs:
           always() &&
           !cancelled() &&
           steps.extract_claude_review_primary.outcome != 'success' &&
+          steps.extract_claude_review_primary_finalize.outcome != 'success' &&
           steps.extract_claude_review_primary_retry.outcome != 'success' &&
           steps.extract_claude_review_fallback.outcome != 'success' &&
+          steps.extract_claude_review_fallback_finalize.outcome != 'success' &&
           steps.extract_claude_review_fallback_retry.outcome != 'success'
         shell: bash
         env:
@@ -689,6 +850,9 @@ jobs:
           PRIMARY_REASON: ${{ steps.claude_models.outputs.primary_reason || 'Readiness not established; see logs.' }}
           PRIMARY_OUTCOME: ${{ steps.claude_review_primary.outcome }}
           PRIMARY_RESULT_OUTCOME: ${{ steps.extract_claude_review_primary.outcome }}
+          PRIMARY_FINALIZE_REASON: ${{ steps.prepare_claude_primary_finalize.outputs.reason || 'not_attempted' }}
+          PRIMARY_FINALIZE_OUTCOME: ${{ steps.claude_review_primary_finalize.outcome }}
+          PRIMARY_FINALIZE_RESULT_OUTCOME: ${{ steps.extract_claude_review_primary_finalize.outcome }}
           PRIMARY_RETRY_OUTCOME: ${{ steps.claude_review_primary_retry.outcome }}
           PRIMARY_RETRY_RESULT_OUTCOME: ${{ steps.extract_claude_review_primary_retry.outcome }}
           FALLBACK_MODEL: ${{ steps.claude_models.outputs.fallback_model || env.CLAUDE_REVIEW_FALLBACK_MODEL }}
@@ -696,6 +860,9 @@ jobs:
           FALLBACK_REASON: ${{ steps.claude_models.outputs.fallback_reason || 'Readiness not established; see logs.' }}
           FALLBACK_OUTCOME: ${{ steps.claude_review_fallback.outcome }}
           FALLBACK_RESULT_OUTCOME: ${{ steps.extract_claude_review_fallback.outcome }}
+          FALLBACK_FINALIZE_REASON: ${{ steps.prepare_claude_fallback_finalize.outputs.reason || 'not_attempted' }}
+          FALLBACK_FINALIZE_OUTCOME: ${{ steps.claude_review_fallback_finalize.outcome }}
+          FALLBACK_FINALIZE_RESULT_OUTCOME: ${{ steps.extract_claude_review_fallback_finalize.outcome }}
           FALLBACK_RETRY_OUTCOME: ${{ steps.claude_review_fallback_retry.outcome }}
           FALLBACK_RETRY_RESULT_OUTCOME: ${{ steps.extract_claude_review_fallback_retry.outcome }}
         run: |
@@ -710,6 +877,9 @@ jobs:
             echo "- Primary \`${PRIMARY_MODEL}\`: ready=${PRIMARY_READY}, first=${PRIMARY_OUTCOME}/${PRIMARY_RESULT_OUTCOME}, retry=${PRIMARY_RETRY_OUTCOME}/${PRIMARY_RETRY_RESULT_OUTCOME}"
             echo "- Fallback \`${FALLBACK_MODEL}\`: ready=${FALLBACK_READY}, first=${FALLBACK_OUTCOME}/${FALLBACK_RESULT_OUTCOME}, retry=${FALLBACK_RETRY_OUTCOME}/${FALLBACK_RETRY_RESULT_OUTCOME}"
             echo
+            printf -- '- Primary finalization: %s, %s/%s\n- Fallback finalization: %s, %s/%s\n\n' \
+              "$PRIMARY_FINALIZE_REASON" "$PRIMARY_FINALIZE_OUTCOME" "$PRIMARY_FINALIZE_RESULT_OUTCOME" \
+              "$FALLBACK_FINALIZE_REASON" "$FALLBACK_FINALIZE_OUTCOME" "$FALLBACK_FINALIZE_RESULT_OUTCOME"
             echo "Set repository variable \`CLAUDE_REVIEW_DEBUG=true\` for one rerun to inspect the provider's SDK output."
             echo
             echo "<!-- claude-pr-review-unavailable:${HEAD_SHA}:${REVIEW_RUN_ID} -->"
@@ -734,6 +904,9 @@ jobs:
               printf -- '- Fallback `%s`: ready=%s, first=%s/%s, retry=%s/%s\n\n' \
                 "${FALLBACK_MODEL}" "${FALLBACK_READY}" "${FALLBACK_OUTCOME}" "${FALLBACK_RESULT_OUTCOME}" \
                 "${FALLBACK_RETRY_OUTCOME}" "${FALLBACK_RETRY_RESULT_OUTCOME}"
+              printf -- '- Primary finalization: %s, %s/%s\n- Fallback finalization: %s, %s/%s\n\n' \
+                "$PRIMARY_FINALIZE_REASON" "$PRIMARY_FINALIZE_OUTCOME" "$PRIMARY_FINALIZE_RESULT_OUTCOME" \
+                "$FALLBACK_FINALIZE_REASON" "$FALLBACK_FINALIZE_OUTCOME" "$FALLBACK_FINALIZE_RESULT_OUTCOME"
               printf '[CI run](https://github.com/%s/actions/runs/%s)\n' "${GITHUB_REPOSITORY}" "${REVIEW_RUN_ID}"
             } >"${RUNNER_TEMP}/claude-unavailable-comment.md"; then
               echo "::warning::Could not build the unavailability comment body."
