@@ -137,7 +137,8 @@ repository **Settings → Secrets and variables → Actions → Variables**.
 | --- | --- | --- |
 | Provider | `DIRECT_REVIEW_PROVIDER` | `CLAUDE_REVIEW_PROVIDER` |
 | Primary model | `DIRECT_REVIEW_MODEL` | `CLAUDE_REVIEW_MODEL` |
-| Fallback model on the same provider | `DIRECT_REVIEW_FALLBACK_MODEL` | `CLAUDE_REVIEW_FALLBACK_MODEL` |
+| Fallback provider | `DIRECT_REVIEW_FALLBACK_PROVIDER` | `CLAUDE_REVIEW_FALLBACK_PROVIDER` |
+| Fallback model | `DIRECT_REVIEW_FALLBACK_MODEL` | `CLAUDE_REVIEW_FALLBACK_MODEL` |
 | Custom API base URL | Selected by the provider adapter | `CLAUDE_REVIEW_BASE_URL` (optional) |
 
 Use a model ID accepted by the selected provider. The provider selector supports
@@ -180,15 +181,32 @@ CLAUDE_REVIEW_MODEL=<portal-tool-capable-model-id>
 
 The existing `DIRECT_REVIEW_FALLBACK_MODEL` and `CLAUDE_REVIEW_FALLBACK_MODEL`
 also accept Portal model IDs. Manual GitHub and Azure runs select `provider=nous`
-and supply `model` in their run parameters. For the standard Portal connection,
-direct review uses Chat Completions. Do not assume a Portal catalog entry also
-works for inference or supports Anthropic Messages: on 2026-10-02, the Fin free
+and supply `model` in their run parameters.
+
+Manual/Azure direct review uses the same `DIRECT_REVIEW_FALLBACK_MODEL` and
+`DIRECT_REVIEW_FALLBACK_PROVIDER` repository variables and defaults as PR review.
+Changing the primary run parameters does not change that fallback pair; update
+both fallback variables together when changing its route. A fallback is used
+only after its preflight succeeds, and a truncated primary answer still fails
+when no validated fallback is available.
+
+For the standard Portal connection, direct review uses Chat Completions. Do not
+assume a Portal catalog entry also works for inference or supports Anthropic
+Messages: on 2026-10-02, the Fin free
 route returned HTTP 404 in CI, while Sante passed tool/JSON checks and completed
 the Claude review. Claude and Observable require an Anthropic-compatible route;
 NVIDIA's direct Chat Completions endpoint does not supply one. Claude runs a short smoke test before starting:
 it checks tool calling and the exact review JSON contract in separate requests.
 The Claude smoke test uses up to two attempts with a 90-second timeout per check, so an
 unavailable or incompatible model is reported before the full Claude run.
+The JSON request supplies a complete readiness object with a non-empty summary
+and empty findings/verdicts; the model is not asked to invent a review without code.
+Its JSON check uses the same exact schema and Markdown/prose-wrapper handling
+as publication. An invalid response gets one retry after one second within that
+same two-attempt budget; the successful tool check is not repeated. Truncated
+output, empty summaries, extra fields and invented findings are not readiness.
+Failures report a bounded reason such as `output_truncated`, `missing_text` or
+`invalid_review_json`, without logging the response or reasoning.
 Model IDs are passed verbatim, and model access is checked using the CI key.
 
 `PR_REVIEWER=0` (also the unset default) runs all three reviewers:
@@ -204,11 +222,9 @@ when Direct API fails. `1` runs only Direct API; `2` runs both agent reviewers
 without Direct API. Owner-only, same-repository and non-draft safeguards apply
 to all three. A newer revision cancels the previous run.
 
-Claude Code uses `CLAUDE_REVIEW_*` provider and model settings, not
-`DIRECT_REVIEW_*`. The legacy `CLAUDE_CODE_REVIEW_MODEL` variable overrides the
-effective primary model for both preflight and execution. All SDK roles and
-retries use the model emitted by preflight; changing only `CLAUDE_REVIEW_MODEL`
-requires clearing or updating that legacy override if it is set.
+Claude Code selects its provider with `CLAUDE_REVIEW_PROVIDER` and its primary
+model with `CLAUDE_REVIEW_MODEL`. Preflight checks that model, and all SDK roles
+and retries use the model emitted by preflight.
 Observable independently selects both provider/model pairs with
 `OBSERVABLE_REVIEW_PROVIDER`, `OBSERVABLE_REVIEW_MODEL`,
 `OBSERVABLE_REVIEW_FALLBACK_PROVIDER` and `OBSERVABLE_REVIEW_FALLBACK_MODEL`.
@@ -220,25 +236,50 @@ identity variables or credentials are required. Each publishes its own PR
 summary and inline findings. The observable reviewer never resolves or replies
 to other reviewers' threads, avoiding races between the parallel jobs.
 
-The default routes, checked against catalogs on 2026-10-02, are:
+The default routes, checked against catalogs and live CI on 2026-10-09–10, are:
 
 | Reviewer | Primary | Fallback |
 | --- | --- | --- |
-| Direct API | `nous / inclusionai/ling-3.0-flash-sante:free` | `openrouter / google/gemma-4-31b-it:free` |
-| Claude Code | `nous / inclusionai/ling-3.0-flash-sante:free` | `openrouter / google/gemma-4-31b-it:free` |
-| Observable | `openrouter / cohere/north-mini-code:free` | `nous / inclusionai/ling-3.0-flash-sante:free` |
+| Direct API | `nvidia / nvidia/nemotron-3-super-120b-a12b` | `openrouter / google/gemma-4-31b-it:free` |
+| Claude Code | `openrouter / cohere/north-mini-code:free` | `nous / poolside/laguna-s-2.1:free` |
+| Observable | `openrouter / cohere/north-mini-code:free` | `nous / poolside/laguna-s-2.1:free` |
 
 Repository Actions variables override these YAML defaults; update both when
-retiring a route. The parallel agent jobs start on different providers, and
-each reviewer has a fallback on another provider. Different providers can still
-share an upstream quota. Catalog presence is not a successful inference check;
-the CI preflight and validated review result remain the operational evidence.
+retiring a route.
+Direct API uses the existing NVIDIA NIM key. A full review of PR #70 at
+`ad4a03b` validated both chunks and all 14 eligible files in 112.9 provider seconds
+in [run 37979872334](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/37979872334).
+Claude Code uses North through OpenRouter; it completed and published the SDK
+review in about 94 seconds in
+[run 37931661305, attempt 7](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/37931661305/attempts/7).
+Its fallback is the free Laguna route through
+[Nous Portal](https://portal.nousresearch.com/models).
+The same Laguna Chat Completions route repeatedly streamed unfinished reviews
+to the deadline, so it is no longer the Direct API default. NVIDIA's hosted
+Chat Completions endpoint does not replace an Anthropic Messages route for Claude.
+OpenRouter routes share its account-level free-model quota; switching only the
+model cannot bypass an exhausted account quota. Claude and Observable share the
+North route; their Nous fallback has a separate provider quota. The NVIDIA Direct API route also has an
+independent provider quota. No paid replacement is selected
+automatically. Catalog presence is not a successful inference check; the CI
+preflight and validated review result remain the operational evidence.
 
-Direct API retries HTTP 429 on a dedicated ladder of 1, 2, 5 and 10 minutes
-that does not consume its general four-request budget for transport, JSON and
-schema retries; a longer provider `Retry-After` extends a step up to 15 minutes,
-and the review deadline still bounds every wait. A confirmed OpenRouter free-model
-daily limit skips that ladder and immediately tries the configured fallback.
+Direct and owner-approved review load trusted reviewer scripts from `main`.
+Changes to those scripts in a feature branch take effect there only after they
+reach `main`; model/provider Actions variables apply to newly started runs
+without requiring that merge. Manual GitHub and Azure launch-form defaults
+remain separate from repository variables, as described below.
+
+Direct API gives HTTP 429 one retry after a 60-second reset window, then switches
+to the configured fallback model and provider. Each route spends at most 60 seconds
+waiting for rate limits; two persistently limited routes spend at most two minutes
+in backoff, excluding API request durations and preflight. A longer provider
+`Retry-After` or reset hint skips that route immediately instead of retrying before
+the reset. The general four-request budget for transport, JSON and schema retries
+remains separate, and the review deadline still bounds every wait. Logs number
+physical API requests, show the separate retry budgets, and emit a backoff heartbeat
+every 30 seconds explicitly saying that no provider request is in flight.
+A confirmed OpenRouter free-model daily limit immediately tries the configured fallback.
 Other retryable errors keep exponential backoff (1, 2, 4 seconds) with provider
 hints capped at 90 seconds.
 
@@ -266,6 +307,39 @@ its SDK execution file before accepting any primary/retry/fallback result.
 Calls without results, empty pages and reads of unrelated files do not count;
 failure triggers the existing retry/fallback path with `diff_not_read`.
 This is an input-access check, not a guarantee of exhaustive or accurate review.
+Claude Code caps each full attempt at five minutes and individual SDK requests
+at 90 seconds. When a run reaches `error_max_turns`, or completes successfully
+but its final text fails the review JSON schema, one two-minute, tool-free
+completion can resume that same session, only if its execution log proves every
+line of the exact diff was returned successfully. The saved proof contains only
+the session ID, base/head SHAs and diff hash. Resumed output must match that proof,
+contain no tool calls, and pass the existing JSON and diff-anchor validation.
+Other SDK errors and timeouts go directly to the ready fallback. Partial reads
+cannot authorize tool-free completion.
+`execution_unavailable` means the action left no execution file, as can happen
+when the runner stops it at the step deadline. It is distinct from
+`diff_not_fully_read`, which means an otherwise recoverable session lacks proof
+of reading the complete diff. The unavailable-review report includes matched
+and total line counts, Read call counts and failed Read counts. It never includes
+source lines or tool error bodies. Neither condition permits finalization.
+Before the full review starts, the adapter calculates exact, non-overlapping
+Read pages bounded by bytes and lines and supplies their offsets and limits in
+the prompt. A single line exceeding the byte target occupies its own page and
+is never dropped; a truncated Read still cannot prove full diff coverage.
+The model must read all pages before exploring supporting files;
+the plan itself is not proof of reading or a completed review. The existing
+turn and wall-clock limits remain unchanged.
+Finalization is attempted once per route; its failure also moves to fallback or
+reports the review as unavailable. No partial/error output counts as success.
+A completed SDK run with invalid output gets one full validation retry only
+when tool-free completion was not authorized. Once authorized, its failure goes
+to fallback without restarting the full review. `invalid_output_after_complete_diff_read`
+identifies this format-repair path; a schema-valid result is never eligible for
+tool-free format repair solely because a later diff-anchor or file-write check failed.
+Reports distinguish finalization from the original attempt. These guards use
+the step's original `outcome`, because `continue-on-error` can make a failed
+attempt's `conclusion` show success. Publication and its verification remain
+required for the aggregate review gate.
 
 Manual GitHub review and the Azure launcher use the same
 direct reviewer. Their `provider` and `model` come from run inputs, including
@@ -355,6 +429,15 @@ fallback equal to the failed primary does not grant another retry budget.
 Each probe attempt logs its model, attempt number, and timeout. Preflight calls
 may incur provider charges, even though they are excluded from the published
 review request totals.
+For OpenRouter HTTP 429 without a usable `Retry-After` or rate-limit reset hint,
+preflight waits 60 seconds before one permitted retry, then moves on to the
+configured alternate route if rate limiting persists. Explicit server hints
+remain authoritative: a reset beyond 60 seconds skips the route. Two transport
+failures or watchdog timeouts stop a probe and allow fallback, rather than making
+four slow requests to an unavailable endpoint. Other transient HTTP failures retain
+the existing attempt limits and 120-second total retry-wait budget per probe.
+Confirmed daily exhaustion and HTTP 404 do not trigger a rate-limit retry.
+An unknown 429 does not prove daily quota exhaustion.
 Direct JSON preflight requests `stream=true` and uses the same bounded response
 reader as the full review. Providers returning an ordinary JSON response remain
 supported. A successful small probe checks transport compatibility, not whether
@@ -407,6 +490,18 @@ counts, never the reasoning or response text. SSE keepalives do not reset the
 inactivity deadline. `provider_processing=unknown` is intentional: runner
 liveness does not prove the provider is thinking. A stream must terminate cleanly
 before JSON/schema/anchor validation; partial responses are not successful reviews.
+Direct review requests up to **4096 output tokens** for the compact JSON answer.
+For providers that explicitly require reasoning, compatibility requests allow
+up to **8192 tokens**, shared by hidden reasoning and the answer. Large input
+diffs retain their existing chunk limits; they do not require a 32K-token answer.
+A response stopped by its token limit remains an `output_limit` failure, even
+if the received text happens to parse as JSON; the configured fallback can then
+run without repeating the same insufficient output budget on the primary.
+The SSE reader also caps visible completion text at **32,000 characters**. This
+stops routes that ignore `max_tokens` and keep producing an unfinished answer
+before they spend the full 300-second deadline. Hidden reasoning has its own
+token/time bounds and does not count against the visible-text cap. Exceeding the
+cap fails the route with `output_limit`; no partial JSON is published.
 Ollama receives the requested reasoning effort via its supported
 [`reasoning_effort`](https://docs.ollama.com/api/openai-compatibility) field,
 instead of silently reverting to the model's default thinking mode. Nous receives

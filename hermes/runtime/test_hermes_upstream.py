@@ -11,6 +11,7 @@ import contextlib
 import hashlib
 import importlib.util
 import io
+import json
 import os
 import logging
 from pathlib import Path
@@ -19,7 +20,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest import mock
 import zipfile
@@ -97,6 +98,104 @@ class HermesUpstreamTests(unittest.TestCase):
                 self.assertIn(old, source, marker)
                 source = source.replace(old, new, 1)
         return source
+
+    def tool_guardrails(self, **overrides):
+        # Execute the pinned controller and result classifier. Only the unrelated
+        # utils import is isolated; all inputs here are valid JSON.
+        classification = ModuleType("agent.tool_result_classification")
+        exec((Path(UPSTREAM) / "agent/tool_result_classification.py").read_text(),
+             classification.__dict__)
+        guardrails = ModuleType("hermes_guardrails_fixture")
+        with mock.patch.dict(sys.modules, {
+            "agent.tool_result_classification": classification,
+            "utils": SimpleNamespace(safe_json_loads=json.loads),
+            guardrails.__name__: guardrails,
+        }):
+            exec(self.patched_source("agent/tool_guardrails.py"), guardrails.__dict__)
+        config = guardrails.ToolCallGuardrailConfig(**{
+            "hard_stop_enabled": True, "exact_failure_warn_after": 1,
+            "exact_failure_block_after": 4, "same_tool_failure_halt_after": 6,
+            **overrides,
+        })
+        return guardrails, guardrails.ToolCallGuardrailController(config)
+
+    def test_patch_failure_guidance_requires_fresh_read_and_current_revision(self):
+        guardrails, controller = self.tool_guardrails()
+        result = json.dumps({"error": "Could not find a match for old_string"})
+        decision = controller.after_call("patch", {"path": "test.py"}, result)
+        self.assertEqual(decision.action, "warn")
+        self.assertFalse(decision.should_halt)
+        for instruction in ("read_file", "already", "HEAD", "same", "diff"):
+            self.assertIn(instruction, decision.message)
+        self.assertIn(decision.message, guardrails.append_toolguard_guidance(result, decision))
+
+    def test_write_refusal_guidance_preserves_read_before_write(self):
+        _guardrails, controller = self.tool_guardrails()
+        decision = controller.after_call("write_file", {"path": "test.py"},
+                                         json.dumps({"error": "Refusing to overwrite unread file"}))
+        self.assertEqual(decision.action, "warn")
+        self.assertIn("read_file", decision.message)
+        self.assertIn("overwrite", decision.message)
+        self.assertIn("bypass", decision.message)
+
+    def test_mutation_guidance_does_not_echo_replacement_contents(self):
+        _guardrails, controller = self.tool_guardrails()
+        args = {"path": "test.py", "old_string": "SYNTHETIC_SECRET_OLD",
+                "new_string": "SYNTHETIC_SECRET_NEW"}
+        decision = controller.after_call("patch", args, json.dumps({"error": "no match"}))
+        self.assertNotIn(args["old_string"], decision.message)
+        self.assertNotIn(args["new_string"], decision.message)
+
+    def test_exact_failure_limit_survives_readonly_rechecks(self):
+        for limit in (2, 4, 5):
+            with self.subTest(limit=limit):
+                _guardrails, controller = self.tool_guardrails(exact_failure_block_after=limit)
+                args = {"path": "test.py", "old_string": "old", "new_string": "new"}
+                for _ in range(limit):
+                    self.assertEqual(controller.before_call("patch", args).action, "allow")
+                    controller.after_call("patch", args, json.dumps({"error": "no match"}))
+                controller.after_call("read_file", {"path": "test.py"}, json.dumps({"content": "new"}))
+                decision = controller.before_call("patch", args)
+                self.assertEqual(decision.code, "repeated_exact_failure_block")
+                self.assertTrue(decision.should_halt)
+
+    def test_corrected_payload_and_landed_patch_allow_progress(self):
+        _guardrails, controller = self.tool_guardrails()
+        args = {"path": "test.py", "old_string": "stale", "new_string": "fixed"}
+        controller.after_call("patch", args, json.dumps({"error": "no match"}))
+        corrected = {**args, "old_string": "current"}
+        self.assertEqual(controller.before_call("patch", corrected).action, "allow")
+        decision = controller.after_call("patch", corrected,
+                                         json.dumps({"success": True, "diff": "landed"}))
+        self.assertEqual(decision.action, "allow")
+        self.assertEqual(controller.before_call("patch", args).action, "allow")
+
+    def test_same_tool_failure_halt_remains_enabled(self):
+        _guardrails, controller = self.tool_guardrails()
+        for attempt in range(controller.config.same_tool_failure_halt_after):
+            decision = controller.after_call("patch", {"old_string": str(attempt)},
+                                             json.dumps({"error": "no match"}))
+        self.assertEqual(decision.code, "same_tool_failure_halt")
+        self.assertTrue(decision.should_halt)
+
+    def test_disabled_warnings_do_not_force_recovery_guidance(self):
+        _guardrails, controller = self.tool_guardrails(warnings_enabled=False)
+        decision = controller.after_call("patch", {}, json.dumps({"error": "no match"}))
+        self.assertEqual(decision.action, "allow")
+
+    def test_landed_patch_with_diagnostics_is_not_reported_as_failed(self):
+        _guardrails, controller = self.tool_guardrails()
+        result = json.dumps({"success": True, "diff": "landed",
+                             "lsp_diagnostics": "ERROR: synthetic diagnostic"})
+        decision = controller.after_call("patch", {"path": "test.py"}, result)
+        self.assertEqual(decision.action, "allow")
+        self.assertFalse(controller._exact_failure_counts)
+
+    def test_other_tools_keep_native_exact_failure_warning(self):
+        _guardrails, controller = self.tool_guardrails()
+        decision = controller.after_call("web_extract", {}, json.dumps({"error": "timeout"}))
+        self.assertEqual(decision.code, "repeated_exact_failure_warning")
+        self.assertNotIn("read_file", decision.message)
 
     def test_attached_cron_skills_use_native_selection_and_global_denies(self):
         # Execute the pinned scheduler and model_tools selectors rather than a

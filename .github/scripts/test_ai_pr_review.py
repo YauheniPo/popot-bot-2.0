@@ -164,9 +164,45 @@ class AnnotatedDiffTest(unittest.TestCase):
         for reason in ("response_limit", "output_limit", "stream_incomplete", "watchdog_already_active"):
             self.assertFalse(reviewer._retryable_request_error(reviewer.RequestError(reason, reason=reason)))
 
-    def test_ollama_review_budget_is_sized_for_large_reviews(self) -> None:
-        self.assertGreaterEqual(reviewer.MAX_OUTPUT_TOKENS, 32_000)
-        self.assertGreaterEqual(reviewer.REASONING_OUTPUT_TOKENS, 32_000)
+    def test_output_limit_rejects_even_valid_json_and_uses_configured_fallback(self):
+        primary_review = {"summary": "Unfinished primary review.", "findings": []}
+        fallback_review = {"summary": "Completed fallback review.", "findings": []}
+        responses = []
+        for document, finish_reason in ((primary_review, 'length'), (fallback_review, 'stop')):
+            events = [
+                {"choices": [{"delta": {"content": json.dumps(document)}}]},
+                {"choices": [{"delta": {}, "finish_reason": finish_reason}]},
+            ]
+            wire = b''.join(b'data: ' + json.dumps(event).encode() + b'\n\n' for event in events)
+            response = io.BytesIO(wire + b'data: [DONE]\n\n')
+            response.headers = {"Content-Type": "text/event-stream"}
+            responses.append(response)
+        chunk = reviewer.ReviewChunk('RIGHT 1|+value', frozenset({'app.py'}), ('app.py',))
+        with (
+            mock.patch.dict(reviewer.os.environ, {
+                'DIRECT_REVIEW_FALLBACK_MODEL': 'fixture/fallback:free',
+                'DIRECT_REVIEW_FALLBACK_PROVIDER': 'openrouter',
+                'OPENROUTER_API_KEY': 'test-key',
+            }, clear=True),
+            mock.patch.object(reviewer, 'ACTIVE_PROVIDER', 'openrouter'),
+            mock.patch.object(reviewer, 'OLLAMA_URL', 'https://openrouter.ai/api/v1/chat/completions'),
+            mock.patch.object(reviewer, 'REVIEW_DEADLINE', reviewer.ReviewDeadline(600)),
+            mock.patch.object(reviewer, 'read_review_rules', return_value='rules'),
+            mock.patch.object(reviewer.urllib.request, 'urlopen', side_effect=responses) as request,
+            mock.patch('builtins.print'),
+        ):
+            result = reviewer.review_chunk('test-key', 'fixture/primary:free', (), chunk, 1, 1)
+        self.assertEqual(result, fallback_review)
+        self.assertEqual(request.call_count, 2)
+        payloads = [json.loads(call.args[0].data) for call in request.call_args_list]
+        self.assertEqual([payload['model'] for payload in payloads],
+                         ['fixture/primary:free', 'fixture/fallback:free'])
+        self.assertTrue(all(payload['max_tokens'] == reviewer.MAX_OUTPUT_TOKENS for payload in payloads))
+        self.assertTrue(all(response.closed for response in responses))
+
+    def test_large_input_reviews_keep_distinct_json_and_reasoning_budgets(self) -> None:
+        self.assertGreater(reviewer.MAX_OUTPUT_TOKENS, 0)
+        self.assertGreater(reviewer.REASONING_OUTPUT_TOKENS, reviewer.MAX_OUTPUT_TOKENS)
         self.assertGreaterEqual(reviewer.MAX_CHUNK_CHARACTERS, 80_000)
         self.assertGreaterEqual(reviewer.MAX_REVIEW_CHUNKS, 100)
 
@@ -1016,7 +1052,7 @@ class OllamaCloudRequestTest(unittest.TestCase):
         retry_body = request.call_args_list[1].args[3]
         self.assertEqual(first_body["max_tokens"], reviewer.MAX_OUTPUT_TOKENS)
         self.assertEqual(retry_body["max_tokens"], reviewer.REASONING_OUTPUT_TOKENS)
-        self.assertGreaterEqual(
+        self.assertGreater(
             reviewer.REASONING_OUTPUT_TOKENS, reviewer.MAX_OUTPUT_TOKENS
         )
 
@@ -1072,8 +1108,7 @@ class OllamaCloudRequestTest(unittest.TestCase):
             reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
 
         self.assertEqual(request.call_count, 2)
-        # First 429 retry uses the new ladder: 60s (1 minute)
-        sleep.assert_called_once_with(60.0)
+        self.assertEqual(sum(call.args[0] for call in sleep.call_args_list), 60.0)
 
     def test_regenerates_after_malformed_structured_json(self) -> None:
         malformed = {
@@ -1401,7 +1436,7 @@ class OllamaCloudRequestTest(unittest.TestCase):
 
         self.assertEqual(result["findings"], [])
         self.assertEqual(request.call_count, 4)
-        sleep.assert_called_once_with(60.0)
+        self.assertEqual(sum(call.args[0] for call in sleep.call_args_list), 60.0)
 
     def test_uses_provider_reset_header_for_rate_limit_retry(self) -> None:
         response = {
@@ -1441,7 +1476,7 @@ class OllamaCloudRequestTest(unittest.TestCase):
         ):
             reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
 
-        sleep.assert_called_once_with(60.0)
+        self.assertEqual(sum(call.args[0] for call in sleep.call_args_list), 60.0)
 
     def test_spaces_chunk_requests_below_configured_rpm(self) -> None:
         chunks = (
@@ -2075,6 +2110,88 @@ class ThreadTriageTest(unittest.TestCase):
         self.assertIn("azure-devops", marker)
 
 
+class FastRateLimitFallbackTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.now = 0.0
+        self.enterContext(mock.patch.object(reviewer.time, "monotonic", side_effect=lambda: self.now))
+        self.sleep = self.enterContext(mock.patch.object(reviewer.time, "sleep", side_effect=self.advance))
+        self.enterContext(mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(2400)))
+        self.enterContext(mock.patch.object(reviewer, "EXECUTION_REPORT", None))
+        self.enterContext(mock.patch.object(reviewer, "ACTIVE_PROVIDER", "openrouter"))
+        self.enterContext(mock.patch.object(reviewer, "ACTIVE_ROUTE", "primary"))
+        self.enterContext(mock.patch.object(reviewer, "OLLAMA_URL", reviewer.provider_config("openrouter")[2]))
+        self.enterContext(mock.patch.object(reviewer, "read_review_rules", return_value="rules"))
+        self.enterContext(mock.patch.dict(reviewer.os.environ, {
+            "DIRECT_REVIEW_MODEL_MODE": "ordinary",
+            "DIRECT_REVIEW_FALLBACK_PROVIDER": "nvidia",
+            "DIRECT_REVIEW_FALLBACK_MODEL": "fixture/backup",
+            "NVIDIA_API_KEY": "PRIVATE_BACKUP_KEY",
+        }, clear=True))
+        self.chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        self.response = {"choices": [{"message": {"content": json.dumps({"summary": "Reviewed.", "findings": []})}}]}
+        self.log = self.enterContext(mock.patch("sys.stderr", new_callable=io.StringIO))
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+    def test_repeated_429_switches_to_another_provider_after_one_wait(self) -> None:
+        limited = reviewer.RequestError("PRIVATE provider error", status=429)
+        with mock.patch.object(reviewer, "request_json", side_effect=[limited, limited, self.response]) as request:
+            result = reviewer.review_chunk("PRIVATE_PRIMARY_KEY", "fixture/primary:free", (), self.chunk, 1, 1)
+
+        self.assertEqual(result["findings"], [])
+        self.assertEqual([call.args[3]["model"] for call in request.call_args_list],
+                         ["fixture/primary:free", "fixture/primary:free", "fixture/backup"])
+        self.assertEqual(request.call_args.args[0], reviewer.provider_config("nvidia")[2])
+        self.assertEqual(request.call_args.args[2]["Authorization"], "Bearer PRIVATE_BACKUP_KEY")
+        self.assertLessEqual(self.now, 60)
+        self.assertNotIn("PRIVATE_BACKUP_KEY", self.log.getvalue())
+        self.assertNotIn("PRIVATE_PRIMARY_KEY", self.log.getvalue())
+
+    def test_two_rate_limited_routes_fail_with_short_total_wait(self) -> None:
+        limited = reviewer.RequestError("rate limited", status=429)
+        with mock.patch.object(reviewer, "request_json", side_effect=limited) as request:
+            with self.assertRaises(reviewer.RequestError):
+                reviewer.review_chunk("primary-key", "fixture/primary:free", (), self.chunk, 1, 1)
+
+        self.assertEqual(request.call_count, 4)
+        self.assertLessEqual(self.now, 120)
+        self.assertEqual([call.args[3]["model"] for call in request.call_args_list],
+                         ["fixture/primary:free"] * 2 + ["fixture/backup"] * 2)
+
+    def test_long_reset_hint_uses_other_provider_without_early_retry(self) -> None:
+        limited = reviewer.RequestError("rate limited", status=429, retry_after_seconds=180)
+        with mock.patch.object(reviewer, "request_json", side_effect=[limited, self.response]) as request:
+            result = reviewer.review_chunk("primary-key", "fixture/primary:free", (), self.chunk, 1, 1)
+
+        self.assertEqual(result["findings"], [])
+        self.assertEqual([call.args[3]["model"] for call in request.call_args_list],
+                         ["fixture/primary:free", "fixture/backup"])
+        self.sleep.assert_not_called()
+        self.assertIn("reset", self.log.getvalue())
+
+    def test_wait_has_heartbeat_and_physical_request_numbers(self) -> None:
+        limited = reviewer.RequestError("rate limited", status=429)
+        with mock.patch.object(reviewer, "request_json", side_effect=[limited, self.response]):
+            reviewer.request_with_transient_retries({}, {"model": "fixture/primary:free"}, reviewer.ReviewAttempts())
+
+        self.assertEqual(self.now, 60)
+        self.assertTrue(all(call.args[0] <= reviewer.MODEL_HEARTBEAT_SECONDS for call in self.sleep.call_args_list))
+        self.assertIn("primary request 1 (general attempt 1/", self.log.getvalue())
+        self.assertIn("primary request 2 (general attempt 1/", self.log.getvalue())
+        self.assertIn("rate-limit retry 1/", self.log.getvalue())
+        self.assertGreaterEqual(self.log.getvalue().count("no provider request in flight"), 2)
+
+    def test_cancel_during_backoff_does_not_request_another_route(self) -> None:
+        limited = reviewer.RequestError("rate limited", status=429)
+        self.sleep.side_effect = KeyboardInterrupt
+        with mock.patch.object(reviewer, "request_json", side_effect=limited) as request:
+            with self.assertRaises(KeyboardInterrupt):
+                reviewer.review_chunk("primary-key", "fixture/primary:free", (), self.chunk, 1, 1)
+
+        self.assertEqual(request.call_count, 1)
+
+
 class RateLimitLadderTest(unittest.TestCase):
     """Tests for the dedicated 429 retry ladder."""
 
@@ -2097,7 +2214,7 @@ class RateLimitLadderTest(unittest.TestCase):
                 reviewer.request_with_transient_retries({}, {"model": "review-model"}, attempts)
 
         self.assertEqual(request.call_count, 1)
-        sleep.assert_called_once_with(60.0)
+        self.assertEqual(sum(call.args[0] for call in sleep.call_args_list), 60.0)
         self.assertEqual(now[0], 60.0)
         self.assertEqual(attempts.used, 0)
         self.assertEqual(attempts.rate_limit_used, 1)
@@ -2108,16 +2225,16 @@ class RateLimitLadderTest(unittest.TestCase):
         response = object()
 
         with (
-            mock.patch.object(reviewer, "request_json", side_effect=[rate_limited] * 4 + [response]) as request,
+            mock.patch.object(reviewer, "request_json", side_effect=[rate_limited, response]) as request,
             mock.patch.object(reviewer.time, "sleep") as sleep,
         ):
             result = reviewer.request_with_transient_retries({}, {"model": "review-model"}, attempts)
 
         self.assertIs(result, response)
-        self.assertEqual(request.call_count, 5)
-        self.assertEqual(sleep.call_count, 4)
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(sum(call.args[0] for call in sleep.call_args_list), 60.0)
         self.assertEqual(attempts.used, 1)
-        self.assertEqual(attempts.rate_limit_used, 4)
+        self.assertEqual(attempts.rate_limit_used, 1)
 
     def test_free_daily_429_uses_fallback_without_waiting(self) -> None:
         chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
@@ -2163,9 +2280,9 @@ class RateLimitLadderTest(unittest.TestCase):
             reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
 
         self.assertEqual(request.call_count, 2)
-        sleep.assert_called_once_with(60.0)
+        self.assertEqual(sum(call.args[0] for call in sleep.call_args_list), 60.0)
 
-    def test_second_429_retry_uses_120s_ladder_step(self) -> None:
+    def test_second_429_stops_the_route(self) -> None:
         response = {
             "choices": [
                 {"message": {"content": json.dumps({"summary": "Reviewed.", "findings": []})}}
@@ -2185,13 +2302,14 @@ class RateLimitLadderTest(unittest.TestCase):
             mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
             mock.patch.object(reviewer.time, "sleep") as sleep,
         ):
-            reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
+            with self.assertRaises(reviewer.RequestError):
+                reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
 
-        self.assertEqual(request.call_count, 3)
-        sleep.assert_has_calls([mock.call(60.0), mock.call(120.0)])
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(sum(call.args[0] for call in sleep.call_args_list), 60.0)
 
-    def test_provider_retry_after_extends_ladder_step(self) -> None:
-        """Provider Retry-After header extends the ladder step when longer."""
+    def test_long_provider_retry_after_skips_the_route(self) -> None:
+        """Do not spend several minutes waiting or retry before a server reset."""
         response = {
             "choices": [
                 {"message": {"content": json.dumps({"summary": "Reviewed.", "findings": []})}}
@@ -2209,14 +2327,13 @@ class RateLimitLadderTest(unittest.TestCase):
             mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
             mock.patch.object(reviewer.time, "sleep") as sleep,
         ):
-            reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
+            with self.assertRaises(reviewer.RequestError):
+                reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
 
-        self.assertEqual(request.call_count, 2)
-        # max(60, 200) = 200
-        sleep.assert_called_once_with(200.0)
+        self.assertEqual(request.call_count, 1)
+        sleep.assert_not_called()
 
-    def test_provider_retry_after_capped_at_max(self) -> None:
-        """Provider Retry-After is capped at MAX_RATE_LIMIT_RETRY_DELAY_SECONDS (900s)."""
+    def test_excessive_provider_retry_after_does_not_sleep(self) -> None:
         response = {
             "choices": [
                 {"message": {"content": json.dumps({"summary": "Reviewed.", "findings": []})}}
@@ -2235,18 +2352,13 @@ class RateLimitLadderTest(unittest.TestCase):
             mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(2000.0)),
             mock.patch.object(reviewer.time, "sleep") as sleep,
         ):
-            reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
+            with self.assertRaises(reviewer.RequestError):
+                reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
 
-        self.assertEqual(request.call_count, 2)
-        # Capped at 900s
-        sleep.assert_called_once_with(900.0)
+        self.assertEqual(request.call_count, 1)
+        sleep.assert_not_called()
 
-    def test_429_ladder_exhausted_after_4_retries(self) -> None:
-        """Five consecutive 429s walk the whole ladder, then the route is abandoned.
-
-        429 retries do not spend the general attempt budget (MAX_REQUEST_ATTEMPTS),
-        so the dedicated ladder alone bounds them: 1 initial call + 4 retries.
-        """
+    def test_429_ladder_exhausted_after_one_retry(self) -> None:
         chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
         errors = [reviewer.RequestError("rate limited", status=429)] * 5
         with (
@@ -2262,11 +2374,8 @@ class RateLimitLadderTest(unittest.TestCase):
             with self.assertRaises(reviewer.RequestError):
                 reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
 
-        self.assertEqual(request.call_count, 5)
-        self.assertEqual(
-            sleep.call_args_list,
-            [mock.call(60.0), mock.call(120.0), mock.call(300.0), mock.call(600.0)],
-        )
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(sum(call.args[0] for call in sleep.call_args_list), 60.0)
 
     def test_429_after_general_retries_still_uses_the_ladder(self) -> None:
         """A 429 on the last general attempt is not raised; the ladder still applies."""
@@ -2290,10 +2399,8 @@ class RateLimitLadderTest(unittest.TestCase):
             reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
 
         self.assertEqual(request.call_count, 5)
-        self.assertEqual(
-            sleep.call_args_list,
-            [mock.call(1.0), mock.call(2.0), mock.call(4.0), mock.call(60.0)],
-        )
+        self.assertEqual(sleep.call_args_list[:3], [mock.call(1.0), mock.call(2.0), mock.call(4.0)])
+        self.assertEqual(sum(call.args[0] for call in sleep.call_args_list[3:]), 60.0)
 
     def test_non_429_errors_use_exponential_backoff(self) -> None:
         """Non-429 retryable errors keep pure exponential backoff (1/2/4s), no 15s floor."""
@@ -2331,7 +2438,10 @@ class RateLimitLadderTest(unittest.TestCase):
 
 
 class RateLimitLadderEdgeCaseTest(unittest.TestCase):
-    """Edge case tests for the 429 retry ladder implementation."""
+    """Exercise retry accounting with a multi-step fixture, independent of defaults."""
+
+    def setUp(self) -> None:
+        self.enterContext(mock.patch.object(reviewer, "RATE_LIMIT_RETRY_LADDER", (60.0, 120.0, 300.0, 600.0)))
 
     def test_rate_limit_retry_delay_first_step(self) -> None:
         """First 429 retry uses 60s ladder step."""
@@ -2431,10 +2541,8 @@ class RateLimitLadderEdgeCaseTest(unittest.TestCase):
             reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
 
         self.assertEqual(request.call_count, 5)
-        self.assertEqual(
-            sleep.call_args_list,
-            [mock.call(60.0), mock.call(120.0), mock.call(300.0), mock.call(600.0)],
-        )
+        self.assertEqual(sum(call.args[0] for call in sleep.call_args_list), 1080.0)
+        self.assertTrue(all(call.args[0] <= reviewer.MODEL_HEARTBEAT_SECONDS for call in sleep.call_args_list))
 
     def test_429_retries_do_not_spend_the_general_attempt_budget(self) -> None:
         """Even with a general budget of 2, four 429 retries run and the 5th call succeeds."""
@@ -2459,10 +2567,8 @@ class RateLimitLadderEdgeCaseTest(unittest.TestCase):
             reviewer.review_chunk("api-key", "review-model", (), chunk, 1, 1)
 
         self.assertEqual(request.call_count, 5)
-        self.assertEqual(
-            sleep.call_args_list,
-            [mock.call(60.0), mock.call(120.0), mock.call(300.0), mock.call(600.0)],
-        )
+        self.assertEqual(sum(call.args[0] for call in sleep.call_args_list), 1080.0)
+        self.assertTrue(all(call.args[0] <= reviewer.MODEL_HEARTBEAT_SECONDS for call in sleep.call_args_list))
 
 
 if __name__ == "__main__":

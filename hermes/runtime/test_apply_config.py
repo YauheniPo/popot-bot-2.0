@@ -353,6 +353,7 @@ class ApplyConfigTests(unittest.TestCase):
             "agent.max_turns",
             "goals.max_turns",
             "model.max_tokens",
+            "tool_loop_guardrails.warn_after.exact_failure",
             "tool_loop_guardrails.hard_stop_after.exact_failure",
             "tool_loop_guardrails.hard_stop_after.same_tool_failure",
             "tool_loop_guardrails.hard_stop_after.idempotent_no_progress",
@@ -361,6 +362,8 @@ class ApplyConfigTests(unittest.TestCase):
         ):
             self.assertIs(type(runtime[key]), int, key)
             self.assertGreater(runtime[key], 0, key)
+        self.assertLess(runtime["tool_loop_guardrails.warn_after.exact_failure"],
+                        runtime["tool_loop_guardrails.hard_stop_after.exact_failure"])
         for key in ("proactive_prune_tokens", "agent.agent_cache.idle_ttl_secs"):
             self.assertIs(type(runtime[key]), int, key)
             self.assertGreaterEqual(runtime[key], 0, key)

@@ -33,18 +33,13 @@ on:
       model:
         description: Model for the direct reviewer
         required: true
-        default: inclusionai/ling-3.0-flash-sante:free
-        # Rationale: Grafana review metrics (88 runs) show nous/ling-3.0-flash-sante:free
-        # as primary with 90% chunk completion rate and 146s avg. Switched from
-        # openrouter/ling-3.0-flash-fin:free which hit output_limit on large full_branch
-        # reviews despite 17/17 success rate on smaller jobs.
+        default: nvidia/nemotron-3-super-120b-a12b
+        # Verified NIM route; every run must pass the live JSON preflight.
         type: string
       provider:
         description: Provider for the direct reviewer
         required: true
-        default: nous
-        # Rationale: nous provider hosts the primary model (ling-3.0-flash-sante:free)
-        # with highest throughput in Grafana metrics. Previously used openrouter.
+        default: nvidia
         type: choice
         options:
           - ollama-cloud
@@ -322,6 +317,8 @@ jobs:
         with:
           model: ${{ inputs.model }}
           provider: ${{ inputs.provider }}
+          fallback_model: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'google/gemma-4-31b-it:free' }}
+          fallback_provider: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'openrouter' }}
           base_sha: ${{ steps.context.outputs.base_sha }}
           head_sha: ${{ steps.context.outputs.head_sha }}
           pr_number: ${{ steps.context.outputs.pr_number }}

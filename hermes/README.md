@@ -220,6 +220,20 @@ sudo systemctl restart hermes-gateway.service
   локальные точки отката через `/rollback`.
 - **Защита от runaway loops.** В одном turn разрешено не больше 20 web searches
   и 10 subagents; повторяющиеся ошибки останавливаются hard-stop механизмом.
+  `tool_loop_guardrails.warn_after.exact_failure: 1` предупреждает после первой
+  ошибки, `hard_stop_after.exact_failure: 4` разрешает до четырёх неудачных
+  одинаковых вызовов; следующий блокируется. Лимит ошибок одного tool с разными
+  аргументами остаётся 6. После ошибки `patch`/`write_file` managed runtime
+  добавляет подсказку: перечитать цель через `read_file`, для репозитория сверить HEAD/diff,
+  проверить, не применена ли правка уже, и повторить только исправленный вызов.
+  Это не отключает read-before-write, approvals или hard stop. Порог предупреждения
+  общий для ошибок tools; специальная подсказка относится только к файловым записям.
+  Настройки находятся в `vps_runtime.set` файла `config/vps-defaults.yml`.
+  `agent.max_verify_nudges` — отдельный native бюджет проверки перед завершением
+  (по умолчанию 3), а `agent.max_turns` — общий лимит работы; они не увеличивают
+  число повторов одного неудачного patch. Инструкции также требуют сверять
+  AI-review/Sonar с текущей ревизией: уже исправленный файл не нужно менять
+  ради старого замечания. Изменения начинают действовать после deploy и новой сессии.
 - **Проверка coding-результата.** `agent.verify_on_stop: true` включает проверку
   свежего подтверждения после изменений кода и в Telegram. Режим `auto` на
   messaging surfaces её отключает. Native проверка имеет ограниченное число
@@ -2199,6 +2213,20 @@ chat-команда не принимает credentials или произвол�
 Политика применяется при deploy;
 уже выполняющаяся задача сохраняет ранее загруженную цепочку.
 
+9 октября 2026 в исключения добавлены пары `nvidia / qwen/qwen3-next-80b-a3b-instruct`
+(HTTP 410), `nvidia / google/gemma-4-31b-it` (четыре таймаута по 90 секунд
+до получения headers) и `nous / inclusionai/ling-3.0-flash-sante:free`
+(HTTP 404 в Messages API). Sante также удалена из `default_routes`.
+Пара `openrouter / poolside/laguna-s-2.1:free` исключена после двух
+незавершённых ответов Direct API review по 300 секунд; та же Laguna через Nous
+завершила проверку текущего PR и остаётся разрешённой.
+Ранее проверенные `nous / inclusionai/ling-3.0-flash-fin:free` и
+`nous / meituan/longcat-2.0:free` внесены в тот же список из-за HTTP 404.
+Это результаты конкретных probes, а не утверждение, что модель недоступна
+у всех провайдеров. Перед снятием исключения повторите live-проверку точной пары.
+Временный HTTP 429 сам по себе не добавляет модель в постоянные исключения.
+Этот список управляет fallback Hermes; маршруты GitHub AI review задаются отдельно.
+
 Базовый список сверён с каталогами **29 сентября 2026**. Бесплатные варианты
 `inclusionai/ling-3.0-flash-fin:free` и `meituan/longcat-2.0:free` вернули 404
 при фактическом запуске, хотя каталог Nous всё ещё показывает второй ID.
@@ -2210,8 +2238,7 @@ NVIDIA Super сохранил бесплатный endpoint; его ошибка
 | 1 | `openrouter` | `google/gemma-4-31b-it:free` | Бесплатная мультиязычная модель с tools для общего анализа |
 | 2 | `nous` | `stepfun/step-3.7-flash:free` | Бесплатная рекомендация Nous, tools и длинный контекст |
 | 3 | `openrouter` | `nvidia/nemotron-3-super-120b-a12b:free` | Nemotron 3 Super 120B: tools, контекст 262K, бесплатный маршрут OpenRouter |
-| 4 | `nous` | `inclusionai/ling-3.0-flash-sante:free` | Доступен в каталоге Nous, ранее работал для PR review |
-| 5 | `nvidia` | `nvidia/nemotron-3-super-120b-a12b` | Бесплатный NIM endpoint с поддержкой tools |
+| 4 | `nvidia` | `nvidia/nemotron-3-super-120b-a12b` | Бесплатный NIM endpoint с поддержкой tools |
 
 Источники: [каталог OpenRouter](https://openrouter.ai/api/v1/models),
 [Gemma 4 free](https://openrouter.ai/google/gemma-4-31b-it:free),
@@ -2604,10 +2631,16 @@ Azure CLI, Sonar scanner или MCP для чтения API не требует�
    SonarQube проекта YauheniPo_popot-bot-2.0». Проверка должна вернуть данные
    проекта; наличие имени переменной само по себе не подтверждает доступ.
 
-Оба токена опциональны для deploy. Если токен не добавлен, Hermes сообщит
-имя недостающей переменной; значения токенов не нужно передавать в чат.
-Инструкции используют Azure PAT через HTTP Basic, Sonar token через Bearer
-и читают значения из окружения внутри Python-процесса.
+Оба токена опциональны для deploy. Managed-инструкция требует перед сообщением
+об отсутствии токена проверить окружение процесса запроса и `$HERMES_HOME/.env` (по умолчанию
+`~/.hermes/.env`) через уже установленный dotenv parser с `interpolate=False`.
+Значение выбранного ключа остаётся внутри процесса: файл не выводится в контекст,
+не исполняется как shell-код и не экспортирует все ключи. Ошибки чтения файла,
+сети и HTTP отличаются от отсутствия ключа; значения токенов не нужно передавать
+в чат. Azure PAT используется через HTTP Basic, Sonar token — через Bearer.
+Если прямой Sonar API недоступен, агент читает Sonar Check Runs и annotations
+через существующий `gh` для точного HEAD проекта. Успешный Quality Gate не
+доказывает отсутствие issues и не определяет severity оставшегося замечания.
 
 Для чтения Azure builds/logs выдайте Build: Read; для запуска pipeline —
 Build: Read & execute; для чтения репозиториев — Code: Read. В Sonar права

@@ -15,6 +15,9 @@ from typing import TextIO
 # Count wire bytes including JSON framing, not just completion text. A 32K-token
 # budget can produce tens of thousands of small SSE envelopes (>2 MiB).
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+# Review JSON needs far less visible text than its SSE framing. Some free
+# routes ignore max_tokens and keep streaming without a stop marker.
+MAX_CONTENT_CHARACTERS = 32_000
 
 
 class StreamFailure(RuntimeError):
@@ -139,6 +142,8 @@ def _apply_choice(choice, content, progress):
     if isinstance(details, list) and details and not reasoning:
         reasoning = json.dumps(details)
     progress.record(content=text, reasoning=reasoning)
+    if progress.content_chars > MAX_CONTENT_CHARACTERS:
+        raise StreamFailure("output_limit")
     content.append(text)
     return choice.get("finish_reason")
 

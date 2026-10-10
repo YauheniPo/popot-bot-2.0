@@ -14,6 +14,7 @@ import urllib.request
 
 from claude_review_runner import _rate_limit_details
 from direct_review_stream import StreamFailure, read_response, watchdog
+from pr_review_context import _json_response_text
 from review_execution import safe_label
 
 MODEL = "moonshotai/kimi-k3"
@@ -34,6 +35,7 @@ PLAIN_JSON_PROVIDERS = frozenset({"ollama-cloud", "nvidia", "nous"})
 NOUS_MAX_OUTPUT_TOKENS = 32_000
 REQUEST_TIMEOUT_SECONDS = 90
 MAX_ATTEMPTS = 4
+MAX_TRANSPORT_ATTEMPTS = 2
 # Free OpenRouter routes can queue before producing a response. Keep the
 # smoke check bounded, but allow the configured primary model one retry so a
 # transient queue or gateway timeout does not immediately block the review.
@@ -42,6 +44,8 @@ SMOKE_MAX_ATTEMPTS = 2
 SMOKE_FALLBACK_MAX_ATTEMPTS = 2
 RETRYABLE_STATUSES = {408, 429, 500, 502, 503, 504}
 MAX_RETRY_WAIT_SECONDS = 120
+# Without a server hint, allow an OpenRouter per-minute window to reset.
+OPENROUTER_RATE_LIMIT_RETRY_SECONDS = 60
 
 
 class ProbeFailure(RuntimeError):
@@ -50,6 +54,10 @@ class ProbeFailure(RuntimeError):
     def __init__(self, reason: str, details: dict | None = None):
         super().__init__(reason)
         self.details = details or {}
+
+
+class ProbeContractFailure(ProbeFailure):
+    """A response failed local validation; the message contains no provider prose."""
 
 
 def completion_payload(body: dict[str, object], provider: str = "ollama-cloud") -> dict[str, object]:
@@ -182,11 +190,33 @@ def _probe_request(api_key: str, kind: str, provider: str, model: str) -> urllib
             body["messages"] = [{
                 "role": "user",
                 "content": (
-                    "Return exactly one JSON object with string summary, an array findings, "
-                    "and an array thread_verdicts. Use empty arrays. No markdown."
+                    "This is an API readiness check, not a code review. "
+                    "Return exactly this JSON object, with no additional keys, markdown or explanation:\n"
+                    '{"summary":"Ready","findings":[],"thread_verdicts":[]}'
                 ),
             }]
     return urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
+
+
+def _claude_probe_failure(result: object) -> str:
+    """Use the publisher's exact JSON contract, including its wrapper handling."""
+    if not isinstance(result, dict) or not isinstance(result.get("content"), list):
+        return "invalid_messages_envelope"
+    if result.get("stop_reason") == "max_tokens":
+        return "output_truncated"
+    content = "".join(
+        block["text"] for block in result["content"]
+        if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
+    ).strip()
+    if not content:
+        return "missing_text"
+    try:
+        parsed = json.loads(_json_response_text(content))
+    except (RuntimeError, ValueError):
+        return "invalid_review_json"
+    if parsed["findings"] or parsed["thread_verdicts"]:
+        return "unexpected_review_items"
+    return ""
 
 
 def _probe_response_valid(result: object, kind: str) -> bool:
@@ -201,20 +231,7 @@ def _probe_response_valid(result: object, kind: str) -> bool:
             for block in blocks
         )
     if kind == "claude":
-        try:
-            content = "".join(
-                block.get("text", "") for block in result.get("content", [])
-                if isinstance(block, dict) and block.get("type") == "text"
-            ).strip()
-            parsed = json.loads(content)
-            return (
-                isinstance(parsed, dict)
-                and isinstance(parsed.get("summary"), str)
-                and isinstance(parsed.get("findings"), list)
-                and isinstance(parsed.get("thread_verdicts"), list)
-            )
-        except (TypeError, AttributeError, ValueError):
-            return False
+        return not _claude_probe_failure(result)
     try:
         content = result["choices"][0]["message"]["content"]
         if content.strip().startswith("```"):
@@ -229,6 +246,8 @@ def _http_retry_delay(error, provider: str, kind: str, attempt: int, attempts: i
         details = _rate_limit_details(error) if error.code == 429 else {}
     failure = ProbeFailure(f"{provider} {kind} probe failed with HTTP {error.code}", details)
     delay = max(15 * (attempt + 1), details.get("retry_after_seconds", 0))
+    if error.code == 429 and provider == "openrouter" and "retry_after_seconds" not in details:
+        delay = max(delay, OPENROUTER_RATE_LIMIT_RETRY_SECONDS)
     if details:
         print(f"[preflight] rate_limit {json.dumps(details, sort_keys=True)}", file=sys.stderr)
     if (error.code not in RETRYABLE_STATUSES or attempt == attempts - 1
@@ -244,28 +263,58 @@ def _stream_retry_delay(error: StreamFailure, provider: str, kind: str, attempt:
     return 15 * (attempt + 1)
 
 
+def _probe_http_retry(error: urllib.error.HTTPError, provider: str, kind: str, attempt: int,
+                      attempts: int, remaining: float, rate_limit_retried: bool) -> tuple[float, bool]:
+    """HTTP retries share the wait budget and allow only one rate-limit reset."""
+    limited = error.code == 429
+    retry_attempt = attempts - 1 if limited and rate_limit_retried else attempt
+    wait_budget = min(remaining, OPENROUTER_RATE_LIMIT_RETRY_SECONDS) if limited else remaining
+    delay = _http_retry_delay(error, provider, kind, retry_attempt, attempts, wait_budget)
+    return delay, rate_limit_retried or limited
+
+
+def _probe_transport_retry(error: BaseException, provider: str, kind: str, attempt: int,
+                           attempts: int, failures: int) -> tuple[float, int]:
+    """Watchdog and IO failures consume the same transport attempt budget."""
+    failures += 1
+    retry_attempt = attempts - 1 if failures >= MAX_TRANSPORT_ATTEMPTS else attempt
+    if isinstance(error, StreamFailure):
+        delay = _stream_retry_delay(error, provider, kind, retry_attempt, attempts)
+        return delay, failures
+    if retry_attempt == attempts - 1:
+        raise RuntimeError(f"{provider} {kind} probe failed or timed out") from None
+    return 15 * (attempt + 1), failures
+
+
 def _request_probe_response(request: urllib.request.Request, attempts: int, timeout: int,
                             provider: str, model: str, kind: str) -> object:
     result: object = None
     remaining = MAX_RETRY_WAIT_SECONDS
+    rate_limit_retried = False
+    transport_failures = 0
     for attempt in range(attempts):
         if remaining <= 0:
             raise RuntimeError(f"{provider} {kind} probe retry wait budget exhausted")
-        delay = 15 * (attempt + 1)
         print(
             f"{provider} {model}: {kind} probe attempt {attempt + 1}/{attempts} "
             f"(timeout {timeout}s)", file=sys.stderr,
         )
         try:
-            result = _read_probe_response(request, timeout, kind, provider)
+            result = _read_checked_probe_response(request, timeout, kind, provider)
             break
-        except StreamFailure as error:
-            delay = _stream_retry_delay(error, provider, kind, attempt, attempts)
-        except urllib.error.HTTPError as error:
-            delay = _http_retry_delay(error, provider, kind, attempt, attempts, remaining)
-        except (urllib.error.URLError, TimeoutError, ConnectionError, IncompleteRead):
+        except ProbeContractFailure as error:
             if attempt == attempts - 1:
-                raise RuntimeError(f"{provider} {kind} probe failed or timed out") from None
+                raise
+            print(f"[preflight] {error}", file=sys.stderr)
+            delay = 1
+        except urllib.error.HTTPError as error:
+            delay, rate_limit_retried = _probe_http_retry(
+                error, provider, kind, attempt, attempts, remaining, rate_limit_retried,
+            )
+        except (StreamFailure, urllib.error.URLError, TimeoutError, ConnectionError, IncompleteRead) as error:
+            delay, transport_failures = _probe_transport_retry(
+                error, provider, kind, attempt, attempts, transport_failures,
+            )
         except ValueError:
             raise RuntimeError(f"{provider} {kind} probe returned invalid JSON") from None
         # Pace only the next request; the final retryable response raises above
@@ -276,6 +325,14 @@ def _request_probe_response(request: urllib.request.Request, attempts: int, time
         remaining -= delay
         print(f"[preflight] retry_wait={delay}s; no provider request in flight", file=sys.stderr)
         time.sleep(delay)
+    return result
+
+
+def _read_checked_probe_response(request: urllib.request.Request, timeout: int, kind: str, provider: str) -> object:
+    result = _read_probe_response(request, timeout, kind, provider)
+    failure = _claude_probe_failure(result) if kind == "claude" else ""
+    if failure:
+        raise ProbeContractFailure(f"{provider} {kind} probe failed response contract: {failure}")
     return result
 
 
