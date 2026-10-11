@@ -519,6 +519,12 @@ the nested `reasoning` object supported by its gateway, including `effort=none`
 and the existing `effort=low` retry when a model requires reasoning. Both primary
 and fallback review requests retain these controls; they are requests to the
 provider, not a guarantee that every model will finish within the deadline.
+For NVIDIA-hosted `nvidia/nemotron-3-*` models, the direct adapter translates
+`effort=none` into `chat_template_kwargs.enable_thinking=false`, the
+[documented NVIDIA control](https://docs.nvidia.com/nim/large-language-models/2.0.4/turbo/get-started-nemotron-3-super-120b-a12b.html#reasoning).
+This prevents default thinking from consuming the compact JSON answer's entire
+output budget. Requests with other reasoning settings retain their existing
+behaviour; incomplete or token-limited responses still fail validation.
 Wire data is capped at 16 MiB, including SSE framing, independently of the token budget.
 Non-streaming responses remain supported under the same watchdog. Failures have
 explicit reasons such as `inactivity_timeout`, `attempt_timeout`, `connection_error`,

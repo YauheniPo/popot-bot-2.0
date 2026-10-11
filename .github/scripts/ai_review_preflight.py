@@ -82,6 +82,17 @@ def completion_payload(body: dict[str, object], provider: str = "ollama-cloud") 
         effort = reasoning.get("effort")
         if effort in ("none", "low", "medium", "high", "max"):
             payload["reasoning_effort"] = effort
+    model = payload.get("model")
+    if (provider == "nvidia" and isinstance(model, str)
+            and model.startswith("nvidia/nemotron-3-")
+            and isinstance(reasoning, dict) and reasoning.get("effort") == "none"):
+        # Nemotron 3 enables thinking by default; NIM uses a chat-template
+        # flag rather than the gateway's reasoning object to disable it.
+        template_kwargs = payload.get("chat_template_kwargs")
+        payload["chat_template_kwargs"] = {
+            **(template_kwargs if isinstance(template_kwargs, dict) else {}),
+            "enable_thinking": False,
+        }
     max_tokens = payload.get("max_tokens")
     if provider == "nous" and isinstance(max_tokens, int):
         payload["max_tokens"] = min(max_tokens, NOUS_MAX_OUTPUT_TOKENS)
