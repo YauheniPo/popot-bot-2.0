@@ -338,6 +338,38 @@ class AutomaticFallbackFormatTest(unittest.TestCase):
 
 
 class RequestPublicationTest(unittest.TestCase):
+    def test_nvidia_nemotron3_none_effort_reaches_primary_and_fallback_wire(self):
+        url = "https://integrate.api.nvidia.com/v1/chat/completions"
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        for use_fallback in (False, True):
+            with self.subTest(use_fallback=use_fallback):
+                response = io.BytesIO(json.dumps({
+                    "choices": [{"message": {"content": '{"summary":"Reviewed.","findings":[]}'}}],
+                }).encode())
+                failures = [urllib.error.HTTPError(url, 404, "unavailable", {}, io.BytesIO(b'{}'))] if use_fallback else []
+                with (
+                    mock.patch.object(reviewer, "ACTIVE_PROVIDER", "nvidia"),
+                    mock.patch.object(reviewer, "OLLAMA_URL", url),
+                    mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(600)),
+                    mock.patch.dict(reviewer.os.environ, {
+                        "DIRECT_REVIEW_MODEL_MODE": "ordinary",
+                        "DIRECT_REVIEW_FALLBACK_PROVIDER": "nvidia",
+                        "DIRECT_REVIEW_FALLBACK_MODEL": "nvidia/nemotron-3-backup",
+                        "NVIDIA_API_KEY": "fixture-key",
+                    }, clear=True),
+                    mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+                    mock.patch.object(reviewer.urllib.request, "urlopen", side_effect=failures + [response]) as request,
+                    mock.patch("builtins.print"),
+                ):
+                    result = reviewer.review_chunk("fixture-key", "nvidia/nemotron-3-primary", (), chunk, 1, 1)
+                self.assertEqual(result["findings"], [])
+                self.assertEqual(request.call_count, 2 if use_fallback else 1)
+                for call in request.call_args_list:
+                    payload = json.loads(call.args[0].data)
+                    self.assertEqual(payload["chat_template_kwargs"], {"enable_thinking": False})
+                    self.assertEqual(payload["max_tokens"], reviewer.MAX_OUTPUT_TOKENS)
+                    self.assertNotIn("reasoning", payload)
+
     def test_nous_mandatory_reasoning_retry_reaches_wire_with_low_effort(self):
         url = "https://inference-api.nousresearch.com/v1/chat/completions"
         rejected = urllib.error.HTTPError(url, 400, "bad request", {}, io.BytesIO(

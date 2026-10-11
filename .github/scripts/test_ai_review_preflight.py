@@ -417,6 +417,27 @@ class OllamaReviewTest(unittest.TestCase):
             self.assertNotIn("reasoning_effort", ai_review_preflight.completion_payload(body, "nvidia"))
         self.assertNotIn("reasoning_effort", ai_review_preflight.completion_payload({"reasoning": "bad"}))
 
+    def test_nvidia_nemotron3_disables_thinking_only_for_explicit_none_effort(self):
+        body = {"model": "nvidia/nemotron-3-fixture", "reasoning": {"effort": "none", "exclude": True},
+                "chat_template_kwargs": {"custom_setting": True}, "max_tokens": 1234}
+        payload = ai_review_preflight.completion_payload(body, "nvidia")
+        self.assertEqual(payload["chat_template_kwargs"], {"custom_setting": True, "enable_thinking": False})
+        self.assertEqual(payload["max_tokens"], 1234)
+        self.assertNotIn("reasoning", payload)
+        self.assertNotIn("reasoning_effort", payload)
+        self.assertEqual(body["chat_template_kwargs"], {"custom_setting": True})
+        for provider, model, reasoning in (
+            ("nvidia", "vendor/other-model", {"effort": "none"}),
+            ("nvidia", "nvidia/nemotron-3-fixture", {"effort": "low"}),
+            ("nvidia", "nvidia/nemotron-3-fixture", None),
+            ("nvidia", "nvidia/nemotron-3-fixture", "bad"),
+            ("ollama-cloud", "nvidia/nemotron-3-fixture", {"effort": "none"}),
+            ("nous", "nvidia/nemotron-3-fixture", {"effort": "none"}),
+        ):
+            with self.subTest(provider=provider, model=model, reasoning=reasoning):
+                payload = ai_review_preflight.completion_payload({"model": model, "reasoning": reasoning}, provider)
+                self.assertNotIn("chat_template_kwargs", payload)
+
     def test_nous_preserves_reasoning_controls_without_gateway_routing_extensions(self):
         for effort in ("none", "low"):
             with self.subTest(effort=effort):
