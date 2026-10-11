@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 import re
 from collections.abc import Mapping
 
@@ -172,6 +173,26 @@ def claude_execution_report(environment: Mapping[str, str]) -> ExecutionReport:
         environment.get("CLAUDE_REVIEW_PROVIDER", "unknown"),
         environment.get("CLAUDE_REVIEW_ENDPOINT", ""), primary, kind="claude",
     )
+    raw_chunks = environment.get('CLAUDE_REVIEW_CHUNK_EXECUTIONS')
+    if raw_chunks:
+        chunks = json.loads(raw_chunks)
+        if not isinstance(chunks, list) or not 1 <= len(chunks) <= 100:
+            raise RuntimeError('Invalid Claude chunk execution metadata')
+        providers = set()
+        for index, metadata in enumerate(chunks, 1):
+            if not isinstance(metadata, dict) or 'CLAUDE_REVIEW_CHUNK_EXECUTIONS' in metadata:
+                raise RuntimeError('Invalid Claude chunk execution metadata')
+            chunk = claude_execution_report(metadata)
+            for attempt in chunk.attempts:
+                provider_key = 'CLAUDE_REVIEW_FALLBACK_PROVIDER' if attempt.route.startswith('fallback') else 'CLAUDE_REVIEW_PRIMARY_PROVIDER'
+                provider = safe_label(metadata.get(provider_key, chunk.provider))
+                providers.add(provider)
+                attempt.number = len(report.attempts) + 1
+                attempt.unit = f'chunk {index}/{len(chunks)}'
+                attempt.route += '/' + provider
+                report.attempts.append(attempt)
+        report.provider = ' / '.join(sorted(providers))
+        return report
     for stage in ("PRIMARY", "PRIMARY_FINALIZE", "RETRY", "FALLBACK", "FALLBACK_FINALIZE", "FALLBACK_RETRY"):
         outcome = environment.get(f"CLAUDE_REVIEW_{stage}_OUTCOME", "skipped")
         if outcome not in {"success", "failure", "cancelled"}:

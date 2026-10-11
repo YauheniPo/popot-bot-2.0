@@ -97,14 +97,15 @@ inputs:
 runs:
   using: "composite"
   steps:
-    # Trusted tooling checkout (reviewer scripts)
+    # The owner's same-repository revision is trusted; every other author and
+    # manual dispatch uses main. Target contents never choose their own ref.
     - name: Check out trusted reviewer tooling
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       with:
         fetch-depth: 1
         path: reviewer
         persist-credentials: false
-        ref: main
+        ref: ${{ github.event.pull_request.user.login == github.repository_owner && github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner && github.triggering_actor == github.repository_owner && github.event.pull_request.head.sha || 'main' }}
 
     # Target checkout (code under review)
     - name: Check out the review target

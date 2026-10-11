@@ -376,11 +376,11 @@ class ObservableReviewTests(unittest.TestCase):
             self.assertEqual(report["status"], "failed")
             self.assertIn("not a clean review", observer.diagnostics(report))
 
-    def test_parallel_jobs_have_same_predecessor_and_owner_guards(self):
+    def test_observable_waits_for_claude_and_preserves_owner_guards(self):
         workflow = yaml.safe_load((Path(__file__).parents[1]/"workflows/pr-ai-review.yml").read_text())
         base = workflow["jobs"]["claude-code-plugin-review"]
         third = workflow["jobs"]["observable-claude-review"]
-        self.assertEqual(third["needs"], base["needs"])
+        self.assertEqual(third["needs"], ["direct-api-review", "claude-code-plugin-review"])
         self.assertEqual(third["if"], base["if"])
         for step in third["steps"]:
             if "observable_review.py run" in step.get("run", ""):
