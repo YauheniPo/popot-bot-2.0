@@ -17,6 +17,75 @@ sys.path.insert(0, str(Path(__file__).parent))
 import ai_review_preflight
 
 
+class ManualReviewInstructionsTest(unittest.TestCase):
+    def test_manual_instructions_are_wired_from_azure_to_the_reviewer_environment(self):
+        root = Path(__file__).resolve().parents[2]
+        azure = yaml.safe_load((root / "azure-ci/azure-ai-code-review.yml").read_text())
+        parameter = next(p for p in azure["parameters"] if p["name"] == "additionalInstructions")
+        self.assertEqual(parameter["type"], "string")
+        self.assertEqual(parameter["default"], "none")
+        dispatch = next(step for job in azure["jobs"] for step in job["steps"]
+                        if "dispatches" in step.get("bash", ""))
+        self.assertEqual(dispatch["env"]["ADDITIONAL_REVIEW_INSTRUCTIONS"],
+                         "${{ parameters.additionalInstructions }}")
+        self.assertNotIn("${{ parameters.additionalInstructions }}", dispatch["bash"])
+
+        manual = yaml.load((root / ".github/workflows/manual-ai-review.yml").read_text(), Loader=yaml.BaseLoader)
+        entry = manual["on"]["workflow_dispatch"]["inputs"]["additional_instructions"]
+        self.assertEqual(entry["type"], "string")
+        self.assertEqual(entry["required"], "false")
+        self.assertEqual(entry["default"], "")
+        action_call = next(step for step in manual["jobs"]["review"]["steps"]
+                           if step.get("uses") == "./.github/actions/ai-direct-review")
+        self.assertEqual(action_call["with"]["additional_instructions"], "${{ inputs.additional_instructions }}")
+        action = yaml.safe_load((root / ".github/actions/ai-direct-review/action.yml").read_text())
+        self.assertFalse(action["inputs"]["additional_instructions"]["required"])
+        self.assertEqual(action["inputs"]["additional_instructions"]["default"], "")
+        review_step = next(step for step in action["runs"]["steps"]
+                           if "ai_pr_review.py" in step.get("run", ""))
+        self.assertEqual(review_step["env"]["ADDITIONAL_REVIEW_INSTRUCTIONS"],
+                         "${{ inputs.additional_instructions }}")
+        self.assertNotIn("${{ inputs.additional_instructions }}", review_step["run"])
+
+    def test_azure_dispatch_preserves_instruction_text_without_shell_execution(self):
+        root = Path(__file__).resolve().parents[2]
+        azure = yaml.safe_load((root / "azure-ci/azure-ai-code-review.yml").read_text())
+        dispatch = next(step for job in azure["jobs"] for step in job["steps"]
+                        if "dispatches" in step.get("bash", ""))
+        capture_curl = """curl() {
+          while (( $# )); do
+            if [[ "$1" == "--data" ]]; then
+              printf '%s' "$2" > "${CAPTURE_PATH}"
+              return
+            fi
+            shift
+          done
+          return 1
+        }
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Path(directory) / "dispatch.json"
+            marker = Path(directory) / "shell-executed"
+            text = f'Проверь "restore" и legacy API.\r\n$(touch {marker})\n`touch {marker}`'
+            for instructions, expected in ((text, text), ("", ""), ("none", "")):
+                with self.subTest(instructions=instructions):
+                    result = subprocess.run(
+                        ["bash", "-c", capture_curl + dispatch["bash"]], capture_output=True, text=True,
+                        env={**os.environ, "CAPTURE_PATH": str(capture),
+                             "GITHUB_ACTIONS_TOKEN": "fixture-token", "GITHUB_REPOSITORY": "owner/repo",
+                             "GITHUB_WORKFLOW_FILE": "manual-ai-review.yml", "REQUEST_ID": "ado-42",
+                             "TARGET_REF": "feature/review", "BASE_REF": "main", "REVIEW_SCOPE": "branch_diff",
+                             "REVIEW_MODEL": "fixture/model", "REVIEW_PROVIDER": "nvidia", "PUBLISH_MODE": "auto",
+                             "ADDITIONAL_REVIEW_INSTRUCTIONS": instructions},
+                    )
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    payload = json.loads(capture.read_text())
+                    self.assertEqual(payload["inputs"]["additional_instructions"], expected)
+                    self.assertEqual(payload["inputs"]["request_id"], "ado-42")
+                    self.assertFalse(marker.exists())
+                    self.assertNotIn(text, result.stdout + result.stderr)
+
+
 class OllamaReviewTest(unittest.TestCase):
     def test_claude_failed_sdk_attempt_switches_routes_without_full_retry(self):
         root = Path(__file__).resolve().parents[2]

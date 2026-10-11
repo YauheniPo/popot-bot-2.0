@@ -3,6 +3,7 @@
 import ast
 import asyncio
 import copy
+import errno
 import importlib.util
 import os
 import sys
@@ -87,6 +88,12 @@ class FallbackPolicyTests(unittest.TestCase):
                 with self.assertRaises(ValueError) as error:
                     self.policy.filter_fallback_routes(self.config, self.config['fallback_providers'])
                 self.assertNotIn('secret', str(error.exception))
+
+    def test_paid_openrouter_is_filtered_before_pre_agent_provider_resolution(self):
+        chain = [{'provider': 'openrouter', 'model': 'paid-model'},
+                 {'provider': 'openrouter', 'model': 'backup:free'},
+                 {'provider': 'nous', 'model': 'backup'}]
+        self.assertEqual(self.policy.filter_fallback_routes(self.config, chain), chain[1:])
 
     def test_chat_edits_preserve_exclusions_and_list_explains_skipped_routes(self):
         excluded = [{'provider': 'openrouter', 'model': 'blocked:free'}]
@@ -352,6 +359,95 @@ class FallbackIntegrationTests(unittest.TestCase):
         ast.parse(source)
         return source
 
+    def cron_runtime(self):
+        # Execute the pinned scheduler's real setup/constructor and fallback
+        # reader. Only credentials, clients, MCP and unrelated prompt I/O are stubbed.
+        fallback = {}
+        exec(self.patched('hermes_cli/fallback_config.py'), fallback)
+        config = {'fallback_policy': {'excluded_routes': [{'provider': 'nvidia', 'model': 'blocked'}]},
+                  'fallback_providers': [{'provider': 'nvidia', 'model': 'blocked'},
+                                         {'provider': 'openrouter', 'model': 'paid'},
+                                         {'provider': 'nvidia', 'model': 'backup-a'},
+                                         {'provider': 'nous', 'model': 'backup-b'}]}
+        auth_error = type('AuthError', (Exception,), {})
+        resolver = mock.Mock()
+        ns = {'logger': mock.Mock(), 'contextlib': __import__('contextlib'), 'errno': errno,
+              '_CronAgentSetup': lambda **kw: SimpleNamespace(blocked=None, fallback_notice=None, **kw),
+              'get_fallback_chain': fallback['get_fallback_chain'],
+              '_guard_job_credential_exfil': mock.Mock(), '_cron_preflight_enabled': lambda cfg: True,
+              '_load_prefill_messages': lambda *a: None, '_load_credential_pool': lambda *a: None,
+              '_resolve_job_reasoning_config': lambda *a: None, '_init_cron_mcp_tools': mock.Mock(),
+              '_empty_requested_mcp_toolsets': lambda *a: None,
+              '_resolve_cron_enabled_toolsets': lambda *a: [], '_resolve_cron_disabled_toolsets': lambda *a: [],
+              '_blocked_config_result': lambda *a: (False, '', '', 'blocked'),
+              '_sched': SimpleNamespace(get_fallback_chain=fallback['get_fallback_chain']),
+              'cron_env_setting': lambda key: '', '_credential_store_scope_label': lambda: 'fixture'}
+        names = {'_preflight_check_provider_key', '_preflight_or_block', '_resolve_job_runtime',
+                 '_is_transient_provider_resolve_error',
+                 '_resolve_cron_agent_setup', '_construct_cron_agent', '_fallback_entries', '_init_fallback_chain'}
+        constants = {'_TRANSIENT_NET_EXC_NAMES', '_DNS_FAILURE_NEEDLES', '_TRANSIENT_OSERROR_NEEDLES',
+                     '_TRANSIENT_HTTP_NEEDLES', '_TRANSIENT_ERRNOS'}
+        for path in ('cron/scheduler_preflight.py', 'cron/scheduler.py', 'agent/agent_init.py'):
+            tree = ast.parse(self.patched(path))
+            for node in tree.body:
+                if isinstance(node, ast.FunctionDef) and node.name in names:
+                    exec('from __future__ import annotations\n' + ast.unparse(node), ns)
+                elif isinstance(node, ast.Assign) and any(
+                    isinstance(target, ast.Name) and target.id in constants for target in node.targets
+                ):
+                    exec(ast.unparse(node), ns)
+        ns['_preflight_job_config'] = ns['_preflight_check_provider_key']
+        self.enterContext(mock.patch.dict('sys.modules', {
+            'hermes_cli.fallback_config': SimpleNamespace(**fallback),
+            'hermes_cli.providers': SimpleNamespace(ALIASES={}),
+            'hermes_cli.runtime_provider': SimpleNamespace(resolve_runtime_provider=resolver,
+                                                         format_runtime_provider_error=lambda exc: 'unavailable'),
+            'hermes_cli.auth': SimpleNamespace(AuthError=auth_error, is_rate_limited_auth_error=lambda exc: False),
+            'hermes_cli.config': SimpleNamespace(resolve_turn_limit=lambda value: 10),
+            'agent.agent_runtime_helpers': SimpleNamespace(sync_credential_pool_entry_id=lambda agent: None),
+        }))
+        jc = SimpleNamespace(cfg=config, model='selected', model_cfg={'provider': 'primary'}, cron_default_provider='')
+        job = {'id': 'cron-fixture', 'model': 'selected', 'provider': 'primary'}
+        return ns, resolver, auth_error, jc, job
+
+    def test_cron_primary_auth_or_network_failure_tries_eligible_backups_in_order(self):
+        ns, resolver, auth_error, jc, job = self.cron_runtime()
+        for primary_error in (auth_error('missing primary credential'),
+                              ConnectionError(errno.ECONNRESET, 'connection reset')):
+            with self.subTest(error=type(primary_error).__name__):
+                resolver.reset_mock()
+                resolver.side_effect = [primary_error, auth_error('missing backup credential'), {'provider': 'nous'}]
+                setup = ns['_resolve_cron_agent_setup'](job, job['id'], 'fixture', jc)
+                self.assertIsNone(setup.blocked)
+                self.assertEqual((setup.runtime['provider'], setup.model), ('nous', 'backup-b'))
+                self.assertEqual([c.kwargs['requested'] for c in resolver.call_args_list],
+                                 ['primary', 'nvidia', 'nous'])
+                self.assertIn('fallback', setup.fallback_notice)
+                self.assertEqual(job['model'], 'selected')
+        resolver.reset_mock()
+        resolver.side_effect = auth_error('all providers unavailable')
+        with self.assertRaisesRegex(RuntimeError, 'unavailable'):
+            ns['_resolve_cron_agent_setup'](job, job['id'], 'fixture', jc)
+        self.assertEqual(resolver.call_count, 3)
+
+    def test_cron_agent_receives_the_chain_for_failures_during_generation(self):
+        ns, resolver, _auth_error, jc, job = self.cron_runtime()
+        resolver.return_value = {'provider': 'primary', 'base_url': 'https://primary.example.test', 'api_key': 'fixture'}
+        setup = ns['_resolve_cron_agent_setup'](job, job['id'], 'fixture', jc)
+        expected = jc.cfg['fallback_providers'][2:]
+        self.assertEqual(setup.fallback_model, expected)
+        constructor = mock.Mock()
+        ns['_construct_cron_agent'](constructor, job, jc.cfg, setup, workdir=None, session_id='session', session_db=None)
+        supplied = constructor.call_args.kwargs
+        self.assertEqual(supplied['fallback_model'], expected)
+        self.assertEqual(supplied['platform'], 'cron')
+        self.assertTrue(supplied['quiet_mode'])
+        # Quiet cron execution must still initialize the native failover chain.
+        agent = SimpleNamespace(quiet_mode=True)
+        ns['_init_fallback_chain'](agent, supplied['fallback_model'])
+        self.assertEqual(agent._fallback_chain, expected)
+        self.assertEqual(agent._fallback_index, 0)
+
     def test_registered_idle_handler_checks_authorization_and_uses_routed_home(self):
         registry = self.patched('hermes_cli/commands.py')
         self.assertIn('CommandDef("fallback"', registry)
@@ -414,6 +510,54 @@ class FallbackIntegrationTests(unittest.TestCase):
             self.assertFalse(ns['try_activate_fallback'](agent, 'billing'))
         self.assertEqual([call.args[0] for call in resolver.call_args_list], ['nous', 'ollama-cloud'])
         self.assertEqual(agent._fallback_index, len(agent._fallback_chain))
+
+    def test_cron_in_request_fallback_switches_provider_without_resetting_history(self):
+        policy = load_module('cron_fallback_runtime', ROOT / 'runtime/fallback-policy.py')
+        tree = ast.parse(self.patched('agent/chat_completion_helpers.py'))
+        fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'try_activate_fallback')
+        ns = {'logger': mock.Mock(), '_fallback_chain_exhausted': lambda *a: False,
+              '_fallback_entry_key': lambda fb: (fb['provider'], fb['model']),
+              '_should_skip_fallback_candidate': lambda *a: False,
+              '_fallback_api_mode_hint': lambda *a: (True, 'chat_completions'),
+              '_fallback_reason_text': lambda reason: str(reason),
+              **{name: mock.Mock() for name in ('_rebind_fallback_credential_pool',
+                  '_update_fallback_context_compressor', '_reresolve_fallback_reasoning_config',
+                  '_rescope_fallback_extra_body', 'rewrite_prompt_model_identity',
+                  '_buffer_fallback_notice', '_log_fallback_activated', '_reset_stale_streak')}}
+        exec('from __future__ import annotations\n' + ast.unparse(fn), ns)
+        client = SimpleNamespace(base_url='https://backup.example.test', api_key='backup-private')
+        resolver = mock.Mock(side_effect=[(None, None), (client, 'backup-b')])
+        def swap(agent, replacement, *args):
+            agent.client, agent.api_key = replacement, replacement.api_key
+        modules = {
+            'hermes_cli.providers': SimpleNamespace(ALIASES={}, is_actual_route=lambda *a: False),
+            'agent.fallback_cooldown': SimpleNamespace(_arm_rate_limit_cooldown=lambda *a, **kw: None,
+                                                      switch_deferred_by_reset=lambda *a: False),
+            'hermes_cli.fallback_config': SimpleNamespace(begin_fallback_walk=policy.begin_fallback_walk,
+                allow_fallback_candidate=policy.allow_fallback_candidate, resolve_entry_api_key=lambda fb: None),
+            'agent.auxiliary_client': SimpleNamespace(resolve_provider_client=resolver),
+            'hermes_cli.model_normalize': SimpleNamespace(normalize_model_for_provider=lambda model, provider: model),
+            'agent.client_lifecycle': SimpleNamespace(_swap_fallback_clients=swap),
+            'agent.agent_runtime_helpers': SimpleNamespace(sync_credential_pool_entry_id=lambda agent: None),
+            'agent.native_compaction': SimpleNamespace(resolve_native_compaction_capabilities=lambda **kw: {}),
+        }
+        history = [{'role': 'user', 'content': 'Run the scheduled digest'}]
+        primary = {'model': 'selected', 'provider': 'ollama-cloud'}
+        agent = SimpleNamespace(platform='cron', quiet_mode=True, model='selected', provider='ollama-cloud',
+            base_url='https://primary.example.test', _fallback_index=0, _fallback_activated=False,
+            _primary_runtime=dict(primary), messages=history,
+            _anthropic_prompt_cache_policy=lambda **kw: (False, False), _ensure_lmstudio_runtime_loaded=mock.Mock(),
+            _fallback_chain=[{'provider': 'nvidia', 'model': 'backup-a'}, {'provider': 'nous', 'model': 'backup-b'}])
+        with mock.patch.dict('sys.modules', modules):
+            self.assertTrue(ns['try_activate_fallback'](agent, 'rate_limit'))
+        self.assertEqual((agent.provider, agent.model), ('nous', 'backup-b'))
+        self.assertIs(agent.client, client)
+        self.assertEqual(agent.api_key, client.api_key)
+        self.assertIs(agent.messages, history)
+        self.assertEqual(agent._primary_runtime, primary)
+        self.assertTrue(agent._provider_fallback_active)
+        self.assertEqual(resolver.call_count, 2)
+        self.assertIn('using backup-b via nous', ns['_buffer_fallback_notice'].call_args.args[1])
 
     def test_chat_edit_refreshes_cached_chain_during_cooldown_without_replaying_turn(self):
         tree = ast.parse(self.patched('gateway/run_config_loaders.py'))

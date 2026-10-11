@@ -441,14 +441,15 @@ class InstallAgentReachAdditionalCoverageTests(unittest.TestCase):
             [sys.executable, str(SCRIPT), '--revision', self.pin],
             capture_output=True,
             text=True,
+            # Exercise the real entry point without discovering a user's uv or
+            # installing packages into their home during a test run.
+            env={**os.environ, 'HOME': str(self.home), 'HERMES_HOME': str(self.home / '.hermes'),
+                 'PATH': str(self.home / 'no-bin')},
             timeout=5
         )
-        # Script will fail (either missing uv or installation failed), but should execute main()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertTrue(
-            'Agent-Reach installation failed' in result.stderr or
-            'uv is required' in result.stderr
-        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('uv is required', result.stderr)
+        self.assertFalse((self.home / '.local').exists())
 
     # ---- resolve-tool-version line 73: sys.exit(main()) ----
     def test_resolve_tool_version_sys_exit_entry_point(self):
