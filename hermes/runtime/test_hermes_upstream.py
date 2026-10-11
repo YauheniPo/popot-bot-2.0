@@ -14,6 +14,7 @@ import io
 import json
 import os
 import logging
+import re
 from pathlib import Path
 import stat
 import subprocess
@@ -37,6 +38,197 @@ UPSTREAM = os.environ.get("HERMES_UPSTREAM_DIR")
 
 @unittest.skipUnless(UPSTREAM, "HERMES_UPSTREAM_DIR is not configured")
 class HermesUpstreamTests(unittest.TestCase):
+    def test_chat_switch_syncs_all_cron_only_after_success_and_never_for_once(self):
+        source = self.patched_source('gateway/slash_commands_model.py')
+        tree = ast.parse(source)
+        method = next(node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)
+                      and node.name == '_commit_model_switch_locked')
+        namespace = {'asyncio': asyncio, 'logger': mock.Mock()}
+        exec('from __future__ import annotations\n' + ast.unparse(
+            ast.Module(body=[method], type_ignores=[])), namespace)
+        for once, picker, switch_error, persist_error in (
+            (False, False, None, None), (False, True, None, None),
+            (True, False, None, None), (False, False, 'switch failed', None),
+            (False, False, None, OSError('private diagnostic')),
+        ):
+            with self.subTest(once=once, picker=picker, failed=bool(switch_error or persist_error)):
+                runner = SimpleNamespace(
+                    _switch_cached_agent_model=mock.Mock(return_value=switch_error),
+                    _record_model_switch=mock.AsyncMock(return_value=None),
+                    _model_switch_confirmation=mock.AsyncMock(return_value='Chat model changed'))
+                context = SimpleNamespace(one_turn=once, reasoning_effort='')
+                selection = SimpleNamespace(new_model='selected', target_provider='provider')
+                persist = mock.Mock(return_value=True, side_effect=persist_error)
+                with mock.patch.dict(sys.modules, {'cron.shared_model': SimpleNamespace(persist_chat_model=persist)}):
+                    reply = asyncio.run(namespace['_commit_model_switch_locked'](
+                        runner, selection, context, source=None, picker=picker))
+                if once or switch_error:
+                    persist.assert_not_called()
+                else:
+                    persist.assert_called_once_with(selection)
+                    if persist_error:
+                        self.assertIn('Cron model was not updated', reply)
+                        self.assertNotIn('private diagnostic', reply)
+                    else:
+                        self.assertIn('all agent cron jobs', reply)
+
+    def test_cli_cron_sync_requires_a_successful_permanent_choice(self):
+        tree = ast.parse(self.patched_source('hermes_cli/cli_model_switch_mixin.py'))
+        method = next(node for node in tree.body if getattr(node, 'name', '') == '_commit_model_switch')
+        ns = {'_print_switch_summary': mock.Mock()}
+        exec('from __future__ import annotations\n' + ast.unparse(ast.Module(body=[method], type_ignores=[])), ns)
+        for once, swapped, saved in ((False, True, True), (True, True, True),
+                                     (False, False, True), (False, True, False)):
+            with self.subTest(once=once, swapped=swapped, saved=saved):
+                cli = mock.Mock(model='old')
+                cli._stage_and_swap_model.return_value = swapped
+                persist = mock.Mock(return_value=True, side_effect=None if saved else OSError('private detail'))
+                display = mock.Mock()
+                selection = object()
+                with mock.patch.dict(sys.modules, {
+                    'cli': SimpleNamespace(HermesCLI=mock.Mock(), _cprint=display, logger=mock.Mock()),
+                    'cron.shared_model': SimpleNamespace(persist_chat_model=persist),
+                }):
+                    ns['_commit_model_switch'](cli, selection, persist_global=False, one_turn=once)
+                if once or not swapped:
+                    persist.assert_not_called()
+                else:
+                    persist.assert_called_once_with(selection)
+                    self.assertIn('all agent cron jobs' if saved else 'Cron model was not updated',
+                                  str(display.call_args_list))
+                    self.assertNotIn('private detail', str(display.call_args_list))
+
+    def test_tui_cron_sync_ignores_once_automatic_adoption_and_failed_switches(self):
+        tree = ast.parse(self.patched_source('tui_gateway/model_switch.py'))
+        method = next(node for node in tree.body if getattr(node, 'name', '') == '_apply_model_switch')
+        for once, pin, swapped, saved in ((False, True, True, True), (True, True, True, True),
+                                         (False, False, True, True), (False, True, False, True),
+                                         (False, True, True, False)):
+            with self.subTest(once=once, pin=pin, swapped=swapped, saved=saved):
+                ns = {'contextlib': contextlib, 'logger': mock.Mock(),
+                      '_switch_request': lambda *a: ('selected', 'provider', once, False, ''),
+                      '_current_model_runtime': lambda *a: ('old-provider', 'old', '', ''),
+                      '_snapshot_agent_model_runtime': mock.Mock(), '_merge_preflight_warning': mock.Mock(),
+                      '_commit_agent_switch': mock.Mock(side_effect=None if swapped else ValueError('failed'))}
+                exec('from __future__ import annotations\n' + ast.unparse(
+                    ast.Module(body=[method], type_ignores=[])), ns)
+                selection = SimpleNamespace(success=True, new_model='selected', target_provider='provider',
+                                            base_url='', api_key='private-key', api_mode='chat', warning_message='')
+                persist = mock.Mock(return_value=True, side_effect=None if saved else OSError('private detail'))
+                with mock.patch.dict(sys.modules, {
+                    'hermes_cli.model_switch': SimpleNamespace(switch_model=lambda **kw: selection),
+                    'hermes_cli.config': SimpleNamespace(load_config=lambda: {},
+                                                        get_compatible_custom_providers=lambda cfg: []),
+                    'cron.shared_model': SimpleNamespace(persist_chat_model=persist),
+                }):
+                    call = ns['_apply_model_switch']
+                    session = {'agent': mock.Mock()}
+                    kwargs = {'confirm_expensive_model': True, 'pin_session_override': pin}
+                    if swapped:
+                        response = call('session', session, 'selected', **kwargs)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'failed'):
+                            call('session', session, 'selected', **kwargs)
+                if once or not pin or not swapped:
+                    persist.assert_not_called()
+                else:
+                    persist.assert_called_once_with(selection)
+                    self.assertIn('all agent cron jobs' if saved else 'Cron model was not updated', response['warning'])
+                    self.assertNotIn('private detail', response['warning'])
+
+    def test_managed_cron_model_migration_preserves_native_job_records(self):
+        # A separate interpreter keeps the real upstream imports/profile globals
+        # isolated from the AST fixtures in the other compatibility tests.
+        script = '''
+import copy, importlib.util, os, sys, tempfile
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('configurator', sys.argv[1])
+configurator = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(configurator)
+with tempfile.TemporaryDirectory() as directory:
+    home = Path(directory)
+    os.environ['HERMES_HOME'] = directory
+    (home / 'hermes-agent').symlink_to(sys.argv[2])
+    jobs = configurator._load_cron_store(home)
+    homes = (home, home / 'profiles/builder')
+    before = {}
+    for location in homes:
+        location.mkdir(parents=True, exist_ok=True)
+        with jobs.use_cron_store(location):
+            jobs.create_job(prompt='fixture', schedule='every 1h', provider='old', model='old',
+                            base_url='https://old.invalid', deliver='telegram:123')
+            jobs.create_job(prompt='paused', schedule='every 1h', provider='old', model='old', paused=True)
+            jobs.create_job(prompt='script', schedule='every 1h', no_agent=True, script='/tmp/fixture.sh')
+            before[location] = copy.deepcopy(jobs.load_jobs())
+    settings = {'vps_hermes': {'config': {'manage_cron_job_models': True,
+        'managed_overlay': {'model': {'provider': 'fixture-cloud', 'default': 'fixture-model'}}}}}
+    assert configurator.sync_cron_models(home, settings) == 4
+    stamps = {}
+    for location in homes:
+        with jobs.use_cron_store(location):
+            expected = before[location]
+            for record in expected:
+                if not record['no_agent']:
+                    record.update(provider='fixture-cloud', model='fixture-model', base_url=None)
+            assert jobs.load_jobs() == expected
+            stamps[location] = (location / 'cron/jobs.json').stat().st_mtime_ns
+    assert configurator.sync_cron_models(home, settings) == 0
+    for location in homes:
+        assert (location / 'cron/jobs.json').stat().st_mtime_ns == stamps[location]
+    settings['vps_hermes']['config']['managed_overlay']['cron'] = {'follow_chat_model': True}
+    assert configurator.sync_cron_models(home, settings) == 4
+    for location in homes:
+        with jobs.use_cron_store(location):
+            expected = before[location]
+            for record in expected:
+                if not record['no_agent']:
+                    record.update(provider=None, model=None, base_url=None)
+            assert jobs.load_jobs() == expected
+    assert configurator.sync_cron_models(home, settings) == 0
+    corrupt = home / 'cron/jobs.json'
+    corrupt.write_text('{broken')
+    try:
+        configurator.sync_cron_models(home, settings)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError('corrupt storage must fail the deployment')
+    assert corrupt.read_text() == '{broken'
+'''
+        result = subprocess.run([sys.executable, '-c', script,
+                                 str(ROOT / 'runtime/apply-config.py'), str(Path(UPSTREAM).resolve())],
+                                text=True, capture_output=True, timeout=30, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_shared_cron_model_reads_the_root_config_even_inside_a_profile(self):
+        script = '''
+import importlib.util, json, os, sys, tempfile
+from pathlib import Path
+sys.path.insert(0, sys.argv[2])
+spec = importlib.util.spec_from_file_location('shared', sys.argv[1])
+shared = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(shared)
+with tempfile.TemporaryDirectory() as directory:
+    home = Path(directory)
+    profile = home / 'profiles/builder'
+    profile.mkdir(parents=True)
+    (profile / 'config.yaml').write_text('cron: {model: profile-pin}')
+    job = {'model': 'job-pin', 'provider': 'old', 'base_url': 'https://old.invalid'}
+    for model in ('first-chat-choice', 'next-chat-choice'):
+        route = {'model': model, 'provider': 'chat-provider', 'base_url': None}
+        (home / 'config.yaml').write_text(json.dumps({
+            'cron': {'follow_chat_model': True, 'shared_model': route}}))
+        for location in (home, profile):
+            os.environ['HERMES_HOME'] = str(location)
+            assert shared.routed_job(job) == route
+    assert job['model'] == 'job-pin'
+    assert (profile / 'config.yaml').read_text() == 'cron: {model: profile-pin}'
+'''
+        result = subprocess.run([sys.executable, '-c', script,
+                                 str(ROOT / 'runtime/cron_shared_model.py'), str(Path(UPSTREAM).resolve())],
+                                text=True, capture_output=True, timeout=30, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_native_full_backup_walker_agrees_with_update_verifier(self):
         # Execute the pinned source's real walker and its constants without
         # importing the unrelated CLI/provider dependency graph.
@@ -197,6 +389,112 @@ class HermesUpstreamTests(unittest.TestCase):
         self.assertEqual(decision.code, "repeated_exact_failure_warning")
         self.assertNotIn("read_file", decision.message)
 
+    def test_search_budget_warns_before_cap_without_losing_results(self):
+        for cap, threshold in ((1, 1), (5, 4), (20, 16), (30, 24)):
+            with self.subTest(cap=cap):
+                module, _controller = self.tool_guardrails()
+                _, controller = self.tool_guardrails(
+                    loop_caps=module.LoopCapConfig(max_web_searches=cap))
+                for count in range(1, cap + 1):
+                    args = {"query": f"different query {count}"}
+                    self.assertTrue(controller.before_call("web_search", args).allows_execution)
+                    result = json.dumps({"results": [{"url": f"https://example.com/{count}"}]})
+                    decision = controller.after_call("web_search", args, result)
+                    self.assertFalse(decision.should_halt)
+                    if count >= threshold:
+                        self.assertEqual(decision.code, "loop_web_search_budget_warning")
+                        self.assertIn(f"{cap - count} remaining", decision.message)
+                        self.assertIn("web_extract", decision.message)
+                        self.assertIn("partial", decision.message)
+                        self.assertTrue(module.append_toolguard_guidance(result, decision).startswith(result))
+                    else:
+                        self.assertEqual(decision.action, "allow")
+                decision = controller.before_call("web_search", {"query": "extra"})
+                self.assertEqual(decision.code, "loop_web_search_cap")
+                self.assertTrue(decision.should_halt)
+                self.assertEqual(controller._turn_web_search_count, cap)
+                controller.reset_for_turn()
+                self.assertEqual(controller._turn_web_search_count, 0)
+
+    def test_search_budget_respects_disabled_warnings_and_disabled_cap(self):
+        module, _controller = self.tool_guardrails()
+        for cap, warnings in ((0, True), (2, False)):
+            with self.subTest(cap=cap, warnings=warnings):
+                _, controller = self.tool_guardrails(
+                    warnings_enabled=warnings,
+                    loop_caps=module.LoopCapConfig(max_web_searches=cap))
+                for count in range(2):
+                    args = {"query": str(count)}
+                    controller.before_call("web_search", args)
+                    decision = controller.after_call("web_search", args, json.dumps({"results": [count]}))
+                    self.assertEqual(decision.action, "allow")
+                decision = controller.before_call("web_search", {"query": "extra"})
+                self.assertEqual(decision.should_halt, bool(cap))
+
+    def test_search_error_guidance_diagnoses_backend_without_repeating_queries(self):
+        _module, controller = self.tool_guardrails()
+        args = {"query": "SYNTHETIC_PRIVATE_QUERY"}
+        controller.before_call("web_search", args)
+        decision = controller.after_call("web_search", args, json.dumps({"error": "HTTP 429"}))
+        self.assertEqual(decision.code, "repeated_exact_failure_warning")
+        for instruction in ("rate", "credentials", "web_extract", "partial"):
+            self.assertIn(instruction, decision.message)
+        self.assertNotIn(args["query"], decision.message)
+        for attempt in range(1, controller.config.same_tool_failure_halt_after):
+            decision = controller.after_call("web_search", {"query": str(attempt)},
+                                             json.dumps({"error": "HTTP 429"}))
+        self.assertEqual(decision.code, "same_tool_failure_halt")
+        self.assertTrue(decision.should_halt)
+
+    def test_search_cap_report_distinguishes_budget_from_failed_retries(self):
+        module, _controller = self.tool_guardrails()
+        tree = ast.parse(self.patched_source("run_agent.py"))
+        method = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+                      and node.name == "_toolguard_controlled_halt_response")
+        namespace = {"ToolGuardrailDecision": module.ToolGuardrailDecision}
+        exec(ast.unparse(ast.Module(body=[method], type_ignores=[])), namespace)
+        report = namespace[method.name]
+        for code, tool, message in (
+            ("loop_web_search_cap", "web_search", "budget exhausted"),
+            ("same_tool_failure_halt", "web_search", "Repeated search errors"),
+            ("repeated_exact_failure_block", "patch", "Repeated patch errors"),
+        ):
+            with self.subTest(code=code):
+                decision = module.ToolGuardrailDecision("block", code, message, tool, 20)
+                text = report(SimpleNamespace(), decision)
+                self.assertIn("incomplete", text.lower())
+                self.assertNotIn("continue", text)
+                self.assertNotIn("result above", text)
+                if code == "loop_web_search_cap":
+                    self.assertIn("20", text)
+                    self.assertIn("successful", text)
+                    self.assertNotIn("without making progress", text)
+                else:
+                    self.assertIn(message, text)
+
+    def test_cron_rejects_guardrail_halt_even_when_native_result_says_completed(self):
+        tree = ast.parse(self.patched_source("cron/scheduler.py"))
+        function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                        and node.name == "_final_response_from_result")
+        namespace = {"logger": mock.Mock()}
+        exec(ast.unparse(ast.Module(body=[function], type_ignores=[])), namespace)
+        finalize = namespace[function.name]
+        agent = SimpleNamespace(_format_turn_completion_explanation=lambda *args, **kwargs: "")
+        with mock.patch.dict(sys.modules, {
+            "gateway.media_repair": SimpleNamespace(
+                repair_explicit_computer_use_media_paths=lambda text, messages: text),
+            "hermes_state_errors": SimpleNamespace(PERSISTENCE_ERROR_CAUSES=()),
+        }):
+            result = {"completed": True, "failed": False, "final_response": "Search budget exhausted",
+                      "turn_exit_reason": "guardrail_halt"}
+            with self.assertRaisesRegex(RuntimeError, "Search budget exhausted"):
+                finalize(result, "fixture", "Monitor", agent)
+            result["turn_exit_reason"] = "text_response(stop)"
+            result["final_response"] = "Verified report"
+            self.assertEqual(finalize(result, "fixture", "Monitor", agent), "Verified report")
+            result.update(completed=False, turn_exit_reason="max_iterations_reached(10)")
+            self.assertEqual(finalize(result, "fixture", "Monitor", agent), "Verified report")
+
     def test_attached_cron_skills_use_native_selection_and_global_denies(self):
         # Execute the pinned scheduler and model_tools selectors rather than a
         # second implementation of their allow/deny logic. Avoid importing the
@@ -335,12 +633,337 @@ class HermesUpstreamTests(unittest.TestCase):
                 with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
                     result = patches.main()
                 self.assertEqual(result, 0, output.getvalue())
+                for source_name, target_name in (("competitor_digest.py", "competitor_digest.py"),
+                                                 ("cron_shared_model.py", "shared_model.py")):
+                    helper = destination / "cron" / target_name
+                    self.assertEqual(helper.read_bytes(), (ROOT / "runtime" / source_name).read_bytes())
+                    paths.add("cron/" + target_name)
                 first = {path: (destination / path).read_text() for path in paths}
                 for path, source in first.items():
                     compile(source, path, "exec")
                 with contextlib.redirect_stdout(io.StringIO()):
                     self.assertEqual(patches.main(), 0)
                 self.assertEqual(first, {path: (destination / path).read_text() for path in paths})
+
+    def competitor_scheduler(self, outcome="delivered"):
+        from hermes.runtime.test_competitor_digest import CompetitorDigestTests
+        fixture = CompetitorDigestTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fence = mock.Mock(owner=None, cancel_event=None)
+        fence.lost.return_value = False
+        fence.transport_cancelled.return_value = False
+        fence.side_effect_fence.side_effect = lambda: contextlib.nullcontext(True)
+        ns = {"os": os, "logger": mock.Mock(), "_FireOwnership": mock.Mock(return_value=fence),
+              "_get_hermes_home": lambda: fixture.home, "create_execution": lambda *a, **k: {"id": "exec"},
+              "claim_dispatch": lambda *a: True, "mark_execution_running": lambda *a: True,
+              "_RunDelivery": lambda **kw: SimpleNamespace(
+                  delivery_attempted=False, delivery_error=None, should_deliver=False,
+                  unresolved_origin=False, blocked_config=False, incident_acked=False,
+                  failure_incident_id=None, side_effect_ownership_lost=False, **kw),
+              "_FireClaimLostDuringSideEffect": type("ClaimLost", (Exception,), {}),
+              "save_job_output": mock.Mock(return_value="saved.md"),
+              "self_removal_delivery_allowed": lambda *a: False,
+              "_is_interrupted": lambda *a: outcome == "interrupted",
+              "_consume_interrupted_flag": lambda *a: False,
+              "_compose_run_delivery": lambda job, **kw: (
+                  kw["final_response"] if kw["success"] else "failure notice", False, False, False, None),
+              "_is_cron_silence_response": lambda content: content == "[SILENT]",
+              "SILENT_MARKER": "[SILENT]", "_normalize_deliver_value": lambda v: v,
+              "_delivery_lane_value": lambda *a, **k: "origin",
+              "_resolve_delivery_targets": lambda *a, **k: [] if outcome == "no_target" else ["telegram"],
+              "_cron_failure_marker_error": lambda *a: None,
+              "_finish_completed_run": mock.Mock(return_value=True),
+              "_deliver_crash_failure": mock.Mock(return_value=(None, "delivered")),
+              **{name: mock.Mock() for name in ("_teardown_cron_agent", "_record_fire_ownership_lost",
+                                               "mark_job_run", "finish_execution", "_finish_interrupted_run")}}
+        tree = ast.parse(self.patched_source("cron/scheduler.py"))
+        selected = [node for node in tree.body if getattr(node, "name", "") in {
+            "_run_one_job_body", "_save_compose_deliver"}]
+        exec("from __future__ import annotations\n" + ast.unparse(ast.Module(body=selected, type_ignores=[])), ns)
+
+        def run(job, **kw):
+            prompt = kw["extra_prompt"] or ""
+            self.assertIn("MANDATORY RUNTIME PUBLICATION CONTRACT", prompt)
+            self.assertIsNotNone(kw["competitor_guard"])
+            kw["defer_agent_teardown"].append("agent")
+            path = Path(re.search(r"report artifact at (.+?\.json)", prompt)[1])
+            guard = SimpleNamespace(run_id=path.stem,
+                                    window_start=fixture.module.timestamp(re.search(r"window_start=([^,]+)", prompt)[1]),
+                                    window_end=fixture.module.timestamp(re.search(r"window_end=(\S+?)\. JSON", prompt)[1]))
+            record = fixture.record(guard, complete=True, events=outcome != "silent")
+            if outcome == "invalid":
+                record["coverage"].pop()
+            path.write_text(json.dumps(record))
+            fixture.watch_path.write_text(json.dumps(dict(fixture.watch, last_cutoff="2030-01-01")))
+            if outcome == "cancel":
+                raise KeyboardInterrupt()
+            if outcome == "lost":
+                fence.lost.return_value = True
+            if outcome == "fenced":
+                fence.side_effect_fence.side_effect = lambda: contextlib.nullcontext(False)
+            return True, "Unvalidated output", "[SILENT]", None
+
+        def deliver(job, content, **kw):
+            if outcome == "queued":
+                job["last_delivery_queued"] = True
+            if outcome == "suppressed":
+                job["_notification_all_targets_suppressed"] = True
+            if outcome == "unverified":
+                job["last_delivery_unverified"] = ["telegram"]
+            if outcome == "cancel_after_send":
+                fence.transport_cancelled.return_value = True
+            return "delivery failed" if outcome == "failed" else None
+
+        ns["run_job"] = mock.Mock(side_effect=run)
+        ns["_deliver_result"] = mock.Mock(side_effect=deliver)
+        secrets = SimpleNamespace(build_profile_secret_scope=mock.Mock(), set_secret_scope=mock.Mock(),
+                                  reset_secret_scope=mock.Mock())
+        terminal = SimpleNamespace(install_profile_terminal_scope=mock.Mock(), reset_terminal_scope=mock.Mock())
+        modules = mock.patch.dict(sys.modules, {"cron.competitor_digest": fixture.module,
+                                  "agent.secret_scope": secrets, "tools.terminal_scope": terminal})
+        modules.start()
+        self.addCleanup(modules.stop)
+        return fixture, ns, secrets, terminal
+
+    def competitor_agent_run(self, outcome="repaired", shared_route=None):
+        fixture, _, _, _ = self.competitor_scheduler()
+        guard = fixture.begin()
+        fixture.save(guard, {"events": []})
+        agent = mock.Mock()
+        scope = mock.Mock(workdir=None, task_id="task-1")
+        history = [{"role": "assistant", "content": "Evidence collected"}]
+        cancellation = mock.Mock()
+        responses = [{"completed": True, "final_response": "done", "messages": history},
+                     {"completed": True, "final_response": "corrected", "messages": history}]
+        if outcome == "no_history":
+            responses[0].pop("messages")
+        if outcome == "exhausted":
+            responses[0]["completed"] = False
+
+        def run_model(*args, **kwargs):
+            if outcome == "provider_unreachable":
+                raise RuntimeError("provider unavailable")
+            if kwargs.get("conversation_history") is not None:
+                self.assertIs(args[0], agent)
+                self.assertEqual(kwargs["conversation_history"], history)
+                self.assertIs(args[6], cancellation)
+                if outcome == "timeout":
+                    raise TimeoutError("repair timed out")
+                if outcome == "repaired":
+                    fixture.save(guard, fixture.record(guard, complete=True))
+            return responses.pop(0)
+
+        cancellation.is_set.return_value = outcome == "cancelled"
+        namespace = {"logger": mock.Mock(), "_prepare_job_prompt": lambda *a: (None, "research"),
+                     "_hermes_now": lambda: fixture.module.utc_now(),
+                     "_CronRunScope": mock.Mock(return_value=scope),
+                     "_load_cron_job_config": mock.Mock(return_value=SimpleNamespace(cfg={}, model="test-model")),
+                     "_resolve_cron_agent_setup": mock.Mock(return_value=SimpleNamespace(
+                         blocked=None, model="test-model", fallback_notice=None)),
+                     "_construct_cron_agent": mock.Mock(return_value=agent),
+                     "_run_agent_with_watchdog": mock.Mock(side_effect=run_model),
+                     "_final_response_from_result": lambda r, *a: r["final_response"],
+                     "_cron_failure_marker_error": lambda *a: None,
+                     "_is_cron_silence_response": lambda s: s == "[SILENT]",
+                     "_run_doc_header": lambda *a: "# Run\n", "_open_cron_session_db": lambda *a: None,
+                     **{name: mock.Mock() for name in (
+                         "_reload_dotenv_and_publish_delivery_target", "_FireAudit", "_teardown_cron_agent")}}
+        tree = ast.parse(self.patched_source("cron/scheduler.py"))
+        selected = [node for node in tree.body if getattr(node, "name", "") == "run_job"]
+        exec("from __future__ import annotations\n" + ast.unparse(ast.Module(body=selected, type_ignores=[])), namespace)
+        modules = {"run_agent": SimpleNamespace(AIAgent=mock.Mock()),
+                   "cron.shared_model": SimpleNamespace(
+                       routed_job=lambda job: {**job, **shared_route} if shared_route else job),
+                   "cron.unreachable_retry": SimpleNamespace(is_model_unreachable_failure=lambda *a: True),
+                   "cron.quota_hold": SimpleNamespace(hold_seconds_from_failure=lambda *a: 300),
+                   "cron.scheduler_diagnostics": SimpleNamespace(format_run_error=lambda e: str(e)),
+                   "cron.scheduler_detached_worker": SimpleNamespace(
+                       defer_teardown_to_running_worker=lambda *a: False)}
+        with mock.patch.dict(sys.modules, modules):
+            success, output, response, error = namespace["run_job"](
+                fixture.job, competitor_guard=guard, cancel_event=cancellation)
+        namespace["_teardown_cron_agent"].assert_called_once_with(agent, fixture.job["id"])
+        self.assertFalse(guard.state_path.exists())
+        namespace["fixture_job"] = fixture.job
+        return namespace, success, output, response, error
+
+    def test_shared_cron_route_reaches_native_setup_without_losing_run_bookkeeping(self):
+        route = {"model": "chat-choice", "provider": "chat-provider", "base_url": None}
+        for outcome in ("repaired", "provider_unreachable"):
+            with self.subTest(outcome=outcome):
+                ns, success, _output, _response, _error = self.competitor_agent_run(outcome, route)
+                original_job = ns["fixture_job"]
+                model_job = ns["_load_cron_job_config"].call_args.args[0]
+                self.assertEqual({key: model_job[key] for key in route}, route)
+                self.assertIsNot(model_job, original_job)
+                self.assertIs(ns["_resolve_cron_agent_setup"].call_args.args[0], model_job)
+                self.assertIs(ns["_construct_cron_agent"].call_args.args[1], original_job)
+                self.assertIs(ns["_run_agent_with_watchdog"].call_args.args[2], original_job)
+                self.assertEqual(success, outcome == "repaired")
+                if not success:
+                    self.assertEqual(original_job["_quota_hold_seconds"], 300)
+                    self.assertTrue(original_job["_model_unreachable"])
+
+    def test_competitor_run_repairs_in_same_agent_with_history_and_watchdog(self):
+        namespace, success, output, response, error = self.competitor_agent_run()
+        self.assertTrue(success)
+        self.assertIsNone(error)
+        self.assertIn("Launched a team challenge", response)
+        self.assertIn(response, output)
+        self.assertEqual(namespace["_run_agent_with_watchdog"].call_count, 2)
+
+    def test_competitor_run_repair_failure_never_returns_success_or_retries_again(self):
+        for outcome, calls, diagnostic in (("invalid", 2, "missing company coverage"),
+                                           ("timeout", 2, "repair timed out"),
+                                           ("cancelled", 1, "repair cancelled"),
+                                           ("no_history", 1, "missing research history"),
+                                           ("exhausted", 1, "budget exhausted")):
+            with self.subTest(outcome=outcome):
+                ns, success, _output, response, error = self.competitor_agent_run(outcome)
+                self.assertFalse(success)
+                self.assertEqual(response, "")
+                self.assertIn(diagnostic, error)
+                self.assertEqual(ns["_run_agent_with_watchdog"].call_count, calls)
+
+    def test_watchdog_forwards_history_only_when_repair_supplies_it(self):
+        import concurrent.futures
+        import contextvars
+        import threading
+        import time
+        tree = ast.parse(self.patched_source("cron/scheduler.py"))
+        selected = [node for node in tree.body if getattr(node, "name", "") == "_run_agent_with_watchdog"]
+        ns = {"concurrent": __import__("concurrent"), "contextvars": contextvars,
+              "threading": threading, "time": time, "_cron_inactivity_seconds": lambda: 0}
+        exec("from __future__ import annotations\n" + ast.unparse(ast.Module(body=selected, type_ignores=[])), ns)
+        for history in (None, [{"role": "assistant", "content": "sources"}]):
+            with self.subTest(history=history):
+                agent = mock.Mock()
+                agent.run_conversation.return_value = {"completed": True}
+                result = ns["_run_agent_with_watchdog"](
+                    agent, "prompt", {}, "job", "name", "task", None, conversation_history=history)
+                expected = {"conversation_history": history} if history is not None else {}
+                agent.run_conversation.assert_called_once_with("prompt", task_id="task", **expected)
+                self.assertTrue(result["completed"])
+
+    def test_execution_receipt_does_not_treat_unverified_transport_as_delivered(self):
+        tree = ast.parse(self.patched_source("cron/scheduler.py"))
+        selected = [node for node in tree.body if getattr(node, "name", "") in {
+            "_finish_completed_run", "_classify_delivery_outcome"}]
+        ns = {"self_removal_delivery_allowed": lambda *a: False,
+              "mark_job_run": mock.Mock(return_value=True), "finish_execution": mock.Mock(),
+              "_normalize_deliver_value": lambda v: v, "_delivery_lane_value": lambda *a, **k: "telegram"}
+        exec("from __future__ import annotations\n" + ast.unparse(ast.Module(body=selected, type_ignores=[])), ns)
+        run = SimpleNamespace(job={"id": "job", "last_delivery_unverified": ["telegram"]},
+                              success=True, error=None, delivery_error=None, should_deliver=True,
+                              blocked_config=False, unresolved_origin=False, incident_acked=False)
+        self.assertTrue(ns["_finish_completed_run"](run, "owner", "exec-1"))
+        ns["finish_execution"].assert_called_once_with(
+            "exec-1", success=True, error=None, delivery_outcome="unverified")
+
+    def manual_completion(self):
+        tree = ast.parse(self.patched_source("tools/cronjob_tools.py"))
+        names = {"_manual_run_completion", "_latest_job_output_excerpt", "_manual_run_delivery_note"}
+        selected = [node for node in tree.body if getattr(node, "name", "") in names]
+        namespace = {"time": SimpleNamespace(time=lambda: 100), "Path": Path,
+                     "get_job": lambda *a: {"last_status": "ok", "next_run_at": "later"}}
+        exec("from __future__ import annotations\n" + ast.unparse(ast.Module(body=selected, type_ignores=[])), namespace)
+        return namespace
+
+    def test_manual_completion_never_calls_failure_delivery_a_report(self):
+        result = {"success": False, "error": "invalid artifact", "execution_id": "exec-1",
+                  "execution_status": "failed", "delivery_outcome": "delivered"}
+        ns = self.manual_completion()
+        with mock.patch.dict(ns, {"_latest_job_output_excerpt": mock.Mock(return_value="OLD REPORT")}) as patched:
+            completion = ns["_manual_run_completion"](result, "job-1", "Fitness", "telegram:123", 90)
+            patched["_latest_job_output_excerpt"].assert_not_called()
+        self.assertEqual(completion["status"], "error")
+        self.assertIn("exec-1", completion["summary"])
+        self.assertIn("failure notification", completion["summary"])
+        self.assertNotIn("output was delivered", completion["summary"])
+        self.assertNotIn("OLD REPORT", completion["summary"])
+
+    def test_manual_completion_requires_confirmed_execution_delivery(self):
+        ns = self.manual_completion()
+        for status, outcome in ((None, None), ("completed", "queued"),
+                                ("completed", "unverified"), ("completed", "suppressed")):
+            with self.subTest(outcome=outcome):
+                result = {"success": True, "execution_status": status, "delivery_outcome": outcome}
+                completion = ns["_manual_run_completion"](result, "job-1", "Fitness", "telegram:123", 90)
+                self.assertNotIn("report delivered", completion["summary"])
+                self.assertNotIn("output was delivered", completion["summary"])
+
+    def test_manual_completion_reads_exact_run_response_without_prompt_or_old_file(self):
+        ns = self.manual_completion()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_dir = root / "job-1"
+            job_dir.mkdir()
+            current = job_dir / "current.md"
+            current.write_text("# Cron Job: Fitness\n## Prompt\nINTERNAL INSTRUCTIONS\n## Response\nNEW REPORT")
+            (job_dir / "z-later.md").write_text("UNRELATED REPORT")
+            modules = {"cron.jobs": SimpleNamespace(get_cron_output_dir=lambda: root)}
+            result = {"success": True, "execution_id": "exec-1", "execution_status": "completed",
+                      "delivery_outcome": "delivered", "output_file": str(current)}
+            with mock.patch.dict(sys.modules, modules):
+                completion = ns["_manual_run_completion"](result, "job-1", "Fitness", "telegram:123", 90)
+            self.assertIn("report delivered", completion["summary"])
+            self.assertIn("NEW REPORT", completion["summary"])
+            self.assertNotIn("INTERNAL INSTRUCTIONS", completion["summary"])
+            self.assertNotIn("UNRELATED REPORT", completion["summary"])
+
+    def test_competitor_scheduler_renders_artifact_before_delivery_and_checkpoints(self):
+        fixture, ns, secrets, terminal = self.competitor_scheduler()
+        self.assertTrue(ns["_run_one_job_body"](fixture.job))
+        body = ns["_deliver_result"].call_args.args[1]
+        self.assertIn("Launched a team challenge", body)
+        self.assertNotIn("[SILENT]", body)
+        self.assertIn(body, ns["save_job_output"].call_args.args[1])
+        self.assertEqual(json.loads(fixture.watch_path.read_text())["last_run_status"], "ok")
+        ns["_teardown_cron_agent"].assert_called_once()
+        secrets.reset_secret_scope.assert_called_once()
+        terminal.reset_terminal_scope.assert_called_once()
+        fixture.begin()  # Lock was released after the scheduler finished.
+
+    def test_competitor_scheduler_failure_paths_never_checkpoint_or_leak_lock(self):
+        for outcome in ("invalid", "failed", "queued", "no_target", "suppressed", "unverified",
+                        "interrupted", "lost", "fenced", "cancel", "cancel_after_send"):
+            with self.subTest(outcome=outcome):
+                fixture, ns, secrets, terminal = self.competitor_scheduler(outcome)
+                if outcome == "cancel":
+                    with self.assertRaises(KeyboardInterrupt):
+                        ns["_run_one_job_body"](fixture.job)
+                else:
+                    ns["_run_one_job_body"](fixture.job)
+                self.assertEqual(json.loads(fixture.watch_path.read_text()), fixture.watch)
+                if outcome in {"invalid", "lost", "fenced", "cancel"}:
+                    ns["_deliver_result"].assert_not_called()
+                ns["_teardown_cron_agent"].assert_called_once()
+                secrets.reset_secret_scope.assert_called_once()
+                terminal.reset_terminal_scope.assert_called_once()
+                fixture.begin()
+
+    def test_competitor_scheduler_silent_complete_report_commits_without_send(self):
+        fixture, ns, _secrets, _terminal = self.competitor_scheduler("silent")
+        self.assertTrue(ns["_run_one_job_body"](fixture.job))
+        ns["_deliver_result"].assert_not_called()
+        self.assertEqual(json.loads(fixture.watch_path.read_text())["last_run_status"], "ok")
+
+    def test_detached_delivery_preserves_unverified_receipt_for_publication_gate(self):
+        tree = ast.parse(self.patched_source("cron/scheduler_delivery.py"))
+        selected = [node for node in tree.body if getattr(node, "name", "") == "_deliver_result"]
+        ns = {"os": os, "BOT_CHAT_PLATFORM": "bot-chat", "_record_delivery_verification": mock.Mock(),
+              "_resolve_delivery_targets": lambda *a, **kw: [{"platform": "telegram"}]}
+        exec("from __future__ import annotations\n" + ast.unparse(ast.Module(body=selected, type_ignores=[])), ns)
+        job = {"id": "job", "execution_id": "exec"}
+        receipts = ["telegram:synthetic"]
+        with mock.patch.dict(os.environ, {"_HERMES_CRON_EXTERNAL_WORKER": "exec"}), mock.patch.dict(
+            sys.modules, {"cron.delivery_queue": SimpleNamespace(
+                enqueue_and_wait=lambda *a, **kw: None, get_status=lambda *a: {"status": "delivered"}),
+                "cron.jobs": SimpleNamespace(get_job=lambda *a: {"last_delivery_unverified": receipts})}
+        ):
+            self.assertIsNone(ns["_deliver_result"](job, "report"))
+        self.assertEqual(job.get("last_delivery_unverified"), receipts)
 
 
 if __name__ == "__main__":

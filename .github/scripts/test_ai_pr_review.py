@@ -633,6 +633,69 @@ class ReviewDeadlineTest(unittest.TestCase):
                 reviewer.configured_review_budget()
 
 
+class AdditionalReviewInstructionsTest(unittest.TestCase):
+    def test_launch_instructions_supplement_review_and_triage_and_survive_review_fallback(self):
+        instructions = 'Проверь восстановление настроек.\nСохрани "legacy" API и `$()` как текст.'
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        for operation in ("review", "triage"):
+            with (
+                self.subTest(operation=operation),
+                mock.patch.dict(reviewer.os.environ, {
+                    "ADDITIONAL_REVIEW_INSTRUCTIONS": instructions,
+                    "DIRECT_REVIEW_FALLBACK_MODEL": "fixture/backup",
+                    "DIRECT_REVIEW_FALLBACK_PROVIDER": "nvidia",
+                    "DIRECT_REVIEW_MODEL_MODE": "strict",
+                }),
+                mock.patch.object(reviewer, "ACTIVE_PROVIDER", "nvidia"),
+                mock.patch.object(reviewer, "read_review_rules", return_value="mandatory shared policy"),
+                mock.patch.object(reviewer, "request_reasoning_compatible_review",
+                                  side_effect=reviewer.RequestError("primary unavailable") if operation == "review" else None,
+                                  return_value={"verdicts": []}) as primary,
+                mock.patch.object(reviewer, "request_fallback_review",
+                                  return_value={"summary": "Reviewed.", "findings": [], "verdicts": []}) as fallback,
+                mock.patch("builtins.print"),
+            ):
+                if operation == "review":
+                    reviewer.review_chunk("key", "fixture/primary", (), chunk, 1, 1)
+                else:
+                    reviewer.request_thread_triage("key", "fixture/primary", (), [])
+                bodies = [primary.call_args.args[1]]
+                if operation == "review":
+                    bodies.append(fallback.call_args.args[2])
+                for body in bodies:
+                    messages = body["messages"]
+                    self.assertEqual(len(messages), 2)
+                    self.assertEqual(messages[0]["role"], "system")
+                    self.assertIn("mandatory shared policy", messages[0]["content"])
+                    self.assertIn("REQUIRED_JSON_SCHEMA", messages[0]["content"])
+                    self.assertNotIn(instructions, messages[0]["content"])
+                    self.assertEqual(messages[1]["role"], "user")
+                    self.assertIn(instructions, messages[1]["content"])
+                    self.assertIn("supplement", messages[1]["content"])
+                    self.assertIn("do not override", messages[1]["content"])
+                    self.assertEqual(messages[-1]["role"], "user")
+                    self.assertIn("RIGHT 1|+value" if operation == "review" else "REVIEW_THREADS",
+                                  messages[-1]["content"])
+
+    def test_blank_or_missing_instructions_preserve_the_existing_request(self):
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        for instructions in (None, "", " \r\n\t "):
+            with (
+                self.subTest(instructions=instructions),
+                mock.patch.dict(reviewer.os.environ),
+                mock.patch.object(reviewer, "read_review_rules", return_value="mandatory shared policy"),
+                mock.patch.object(reviewer, "request_reasoning_compatible_review",
+                                  return_value={"summary": "Reviewed.", "findings": []}) as request,
+            ):
+                reviewer.os.environ.pop("ADDITIONAL_REVIEW_INSTRUCTIONS", None)
+                if instructions is not None:
+                    reviewer.os.environ["ADDITIONAL_REVIEW_INSTRUCTIONS"] = instructions
+                reviewer.review_chunk("key", "fixture/primary", (), chunk, 1, 1)
+                messages = request.call_args.args[1]["messages"]
+                self.assertEqual(len(messages), 2)
+                self.assertIn("RIGHT 1|+value", messages[1]["content"])
+
+
 class OllamaCloudRequestTest(unittest.TestCase):
     def test_four_attempts_are_shared_by_transport_json_and_reasoning_retries(self):
         valid = {"choices": [{"message": {"content": '{"summary":"Reviewed.","findings":[]}'}}]}

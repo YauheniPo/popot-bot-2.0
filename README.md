@@ -348,6 +348,16 @@ the defaults displayed in the launch form. Set both there; changing the PR's
 The direct reviewer uses `DIRECT_REVIEW_MODEL` for every supported provider.
 The model validated by preflight is passed to the review step automatically.
 
+In Azure **Run pipeline**, use **Additional review instructions**
+(`additionalInstructions`) to add context or a focus for this run, for example:
+"Check that backup restore preserves existing user settings and legacy API behaviour."
+Leave its default `none` to use only the standard instructions. The equivalent
+optional GitHub **Run workflow** input is `additional_instructions`; an empty
+or whitespace-only value adds nothing. The text accompanies every diff chunk,
+including fallback requests, and re-evaluation of existing review threads. It
+supplements `.github/REVIEWER.md` and the direct adapter instructions; mandatory
+scope, evidence, JSON format and publication rules still apply.
+
 The Azure summary links to the GitHub run, published review and available
 PR/findings pages. Review-report artifacts remain uploaded for collection and
 diagnostics; the summary does not include a separate artifact-page link.

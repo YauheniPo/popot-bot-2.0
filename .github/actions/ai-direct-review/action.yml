@@ -65,6 +65,10 @@ inputs:
     description: "External request ID"
     required: false
     default: ""
+  additional_instructions:
+    description: "Optional instructions that supplement the standard review policy"
+    required: false
+    default: ""
   sonar_token:
     description: "SonarCloud token for optional PR context"
     required: false
@@ -240,6 +244,7 @@ runs:
         REVIEW_INCLUDE_REVIEWER_FILES: ${{ steps.direct_context.outputs.full_branch_review_required }}
         REVIEW_ORIGIN: ${{ inputs.review_origin }}
         REVIEW_REQUEST_ID: ${{ inputs.request_id }}
+        ADDITIONAL_REVIEW_INSTRUCTIONS: ${{ inputs.additional_instructions }}
         SONAR_REVIEW_CONTEXT_FILE: ${{ inputs.include_sonar == 'true' && 'sonar-review-context.json' || '' }}
       run: |
         set -euo pipefail

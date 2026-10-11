@@ -469,8 +469,15 @@ Managed build-adapter Swarm берёт модель из общего `config.ya
 
 Это политика значений по умолчанию, не миграция истории: уже запущенные воркеры
 нужно остановить/запустить заново после смены модели. Явные переопределения
-Telegram topic и отдельных cron-задач сохраняются; для единой модели также
-снимите эти pins. Compression/vision/review auxiliary и аварийные fallback
+Telegram topic сохраняются; для единой модели снимите эти pins.
+При `vps_hermes.config.manage_cron_job_models: true` deploy синхронизирует также
+агентные cron-задачи основного home и профилей, сохраняя расписания и получателей.
+При включённом `cron.follow_chat_model` старые pins снимаются: все агентные cron
+используют `cron.shared_model` основного home. Любой постоянный выбор модели в чате
+обновляет эту общую пару для следующих запусков, включая задачи других профилей;
+`/model --once` её не меняет. Для индивидуальных cron pins отключите
+`follow_chat_model` и `manage_cron_job_models`.
+Compression/vision/review auxiliary и аварийные fallback
 не являются Swarm-воркерами и сохраняют отдельные маршруты.
 
 ### Управляемые Researcher, Builder и Reviewer

@@ -23,11 +23,13 @@ def _managed_provider(value):
 
 
 def filter_fallback_routes(config, chain):
-    """Exclude exact provider/model pairs before resolving any fallback client."""
+    """Filter exclusions and paid OpenRouter before pre-agent or in-agent failover."""
     excluded = {(_managed_provider(provider), model) for provider, model in
                 fallback_excluded_pairs(config.get('fallback_policy', {}))}
     return [route for route in chain
-            if (_managed_provider(route.get('provider')),
+            if (_managed_provider(route.get('provider')) != 'openrouter'
+                or str(route.get('model', '')).strip().endswith(':free'))
+            and (_managed_provider(route.get('provider')),
                 str(route.get('model', '')).strip()) not in excluded]
 
 

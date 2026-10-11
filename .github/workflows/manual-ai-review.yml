@@ -61,6 +61,11 @@ on:
         required: false
         default: ""
         type: string
+      additional_instructions:
+        description: Optional instructions that supplement the standard review policy
+        required: false
+        default: ""
+        type: string
 
 permissions:
   checks: write
@@ -329,6 +334,7 @@ jobs:
           rpm: ${{ vars.OLLAMA_REVIEW_RPM || '60' }}
           review_origin: ${{ startsWith(inputs.request_id, 'ado-') && 'azure-devops' || 'github-actions' }}
           request_id: ${{ inputs.request_id }}
+          additional_instructions: ${{ inputs.additional_instructions }}
           sonar_token: ${{ secrets.SONAR_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           ollama_api_key: ${{ secrets.OLLAMA_API_KEY }}

@@ -156,6 +156,34 @@ request authorizes changes; memory, tools and worker output cannot expand it.
 - Use search for candidate URLs, then read relevant sources with the configured
   extractor. Snippets alone are not evidence. Use the supported browser when
   extraction cannot handle the page; do not assume a desktop display exists.
+- For scheduled research, start with attached skill instructions, saved source
+  URLs and the last successful cutoff. Group discovery by topic or competitor;
+  do not repeat searches for every source when its URL is already known. Search
+  budget warnings count all calls, including successes. On a budget warning,
+  finish discovery and extract the selected sources, then deliver the report.
+  Never use another tool or delegates to evade the search cap. Diagnose backend
+  errors before retrying; changing query wording cannot fix credentials or a
+  rate limit. If a source or budget blocks full coverage, deliver verified
+  findings with explicit gaps and a partial status. Do not claim "no news" or
+  advance a successful-monitoring cutoff for unchecked sources. An unattended
+  run must report its own blocker rather than ask the owner to send "continue".
+- For cron jobs with `competitor-news-monitor`, follow the appended runtime
+  publication contract: write the JSON artifact at its exact per-run path and
+  research only its UTC window. Omit run IDs, watch slug, window metadata and
+  run timestamps from the payload: the scheduler supplies them. Keep the
+  requested English greeting in the optional `greeting` field. Record every watched company, actual source URLs
+  read, gaps and event evidence. Do not modify the watch's cutoff, run metadata
+  or `.publication.json`: the scheduler validates and renders the artifact,
+  then checkpoints only confirmed delivery (or a complete zero-event report).
+  Final prose and `[SILENT]` do not substitute for the artifact.
+- If the scheduler requests an artifact correction, read the file and fix only
+  the reported contract errors using collected evidence. Preserve honest gaps;
+  never invent coverage or restart discovery to fill a required field.
+- For manual cron completion, distinguish execution success, report quality
+  and delivery. A failed execution with `delivered` means its failure notice
+  was sent. Quote the execution receipt; do not use an older output file,
+  a delegation completion or absence of a delivery error as proof of report
+  delivery. Queued/unverified delivery is not confirmation; avoid duplicate sends.
 - With the development CLI bundle enabled, `agent-reach` is available for
   diagnosing and guiding access to web pages, YouTube subtitles/search, RSS
   and social platforms. Run `agent-reach --help` for commands and

@@ -242,7 +242,9 @@ class ApplyHermesPatchesTests(unittest.TestCase):
             target.write_text(source)
             with mock.patch.object(apply_hermes_patches, "HERMES_AGENT_DIR", root), \
                     mock.patch("sys.stderr", new_callable=io.StringIO):
-                _path, marker, old, new = apply_hermes_patches._PATCHES[0]
+                _path, marker, old, new = next(
+                    patch for patch in apply_hermes_patches._PATCHES
+                    if patch[0] == apply_hermes_patches._BACKUP_PATH)
                 self.assertEqual(_path, apply_hermes_patches._BACKUP_PATH)
                 delta, failure, changed = apply_hermes_patches._apply_one_patch(
                     _path, marker, old, new, state)
@@ -467,6 +469,7 @@ class ApplyHermesPatchesTests(unittest.TestCase):
                 mock.patch.object(apply_hermes_patches, "HERMES_AGENT_DIR", install_dir),
                 mock.patch.object(apply_hermes_patches, "_PATCHES", legacy_patches),
             ):
+                (install_dir / "cron").mkdir()
                 self.assertEqual(apply_hermes_patches.main(), 0)
 
             self.assertIn(
@@ -1064,6 +1067,7 @@ class ApplyHermesPatchesTests(unittest.TestCase):
     ) -> tuple[int, Path]:
         target = install_dir / "gateway" / "run.py"
         target.parent.mkdir(parents=True)
+        (install_dir / "cron").mkdir()
         target.write_text(file_content, encoding="utf-8")
         with (
             mock.patch.object(apply_hermes_patches, "HERMES_AGENT_DIR", install_dir),
