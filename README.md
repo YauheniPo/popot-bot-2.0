@@ -213,12 +213,14 @@ Model IDs are passed verbatim, and model access is checked using the CI key.
 
 ```text
 Direct API
-  ├── Claude Code Plugin
-  └── Observable Messages Review
+  → Claude Code Plugin (serial SDK chunks → validated aggregate)
+  → Observable Messages Review
 ```
 
-The two agent jobs start **in parallel after Direct API finishes**, including
-when Direct API fails. `1` runs only Direct API; `2` runs both agent reviewers
+The reviewers run **sequentially**, including when an earlier reviewer fails.
+Observable waits for Claude's chunks, retries and publication gate, avoiding
+overlapping requests against their shared provider quota. `1` runs only Direct
+API; `2` runs both agent reviewers
 without Direct API. Owner-only, same-repository and non-draft safeguards apply
 to all three. A newer revision cancels the previous run.
 
@@ -264,10 +266,13 @@ independent provider quota. No paid replacement is selected
 automatically. Catalog presence is not a successful inference check; the CI
 preflight and validated review result remain the operational evidence.
 
-Direct and owner-approved review load trusted reviewer scripts from `main`.
-Changes to those scripts in a feature branch take effect there only after they
-reach `main`; model/provider Actions variables apply to newly started runs
-without requiring that merge. Manual GitHub and Azure launch-form defaults
+For same-repository PRs authored, triggered and rerun by the repository owner,
+review tooling and policy come from the immutable PR head SHA, including Direct
+API and owner-approved review. Script fixes take effect in that PR before merge.
+Other authors, forks and manual dispatches load reviewer tooling from `main`;
+the outsider PR checkout remains review data and cannot select executable tooling.
+Ordinary component build/test jobs still test the PR code. Model/provider Actions
+variables apply to newly started runs. Manual GitHub and Azure launch-form defaults
 remain separate from repository variables, as described below.
 
 Direct API gives HTTP 429 one retry after a 60-second reset window, then switches
@@ -290,9 +295,11 @@ instead of retrying before the reset. During backoff, CI logs a heartbeat every
 15 seconds explicitly saying that no provider request is in flight. A confirmed
 OpenRouter free-model daily limit skips another free model on the same provider;
 an upstream/model limit still permits the configured fallback. No unconfigured
-model or paid OpenRouter route is selected. When no route remains usable due to limits,
-remaining chunks are skipped and the job fails rather than reporting a clean
-review. The expandable execution history separates request duration from retry
+model or paid OpenRouter route is selected. When no route remains usable due to
+limits, remaining chunks are skipped and the runner reports failure. The
+corroborating job still publishes partial results or failure diagnostics and
+does not gate Direct API or Claude Code; it never advertises that partial run
+as a complete review. The expandable execution history separates request duration from retry
 waiting and shows sanitized limit diagnostics, while the summary shows validated,
 failed and skipped chunk counts. Partial results remain in the JSON report but
 are not published as a complete review. A bare 429 does not prove daily quota
@@ -302,10 +309,12 @@ All three publishers suppress repeats of settled reviewer findings, including
 Observable threads. That read-only recognition does not let Claude or Direct API
 automatically resolve Observable threads. Direct API includes its diff chunks in
 the model request. Both agent reviewers require successful diff-read evidence:
-Claude Code checks a matching Read call and non-error, numbered tool result in
-its SDK execution file before accepting any primary/retry/fallback result.
+Claude Code checks every numbered line of each exact diff chunk against matching
+successful Read results in its SDK execution file before accepting any
+primary/retry/fallback result. A valid JSON answer after reading only part of a
+chunk is rejected.
 Calls without results, empty pages and reads of unrelated files do not count;
-failure triggers the existing retry/fallback path with `diff_not_read`.
+Failure triggers the existing retry/fallback path.
 This is an input-access check, not a guarantee of exhaustive or accurate review.
 Claude Code caps each full attempt at five minutes and individual SDK requests
 at 90 seconds. When a run reaches `error_max_turns`, or completes successfully
@@ -322,13 +331,30 @@ when the runner stops it at the step deadline. It is distinct from
 of reading the complete diff. The unavailable-review report includes matched
 and total line counts, Read call counts and failed Read counts. It never includes
 source lines or tool error bodies. Neither condition permits finalization.
-Before the full review starts, the adapter calculates exact, non-overlapping
+Before SDK review, the adapter splits the exact diff into chunks bounded by
+`CLAUDE_REVIEW_CHUNK_MAX_BYTES` (default 32000) and
+`CLAUDE_REVIEW_CHUNK_MAX_LINES` (default 600). `PR_REVIEW_MAX_CHUNKS` caps the
+matrix at 100 by default and cannot exceed 100. An oversized line or excess
+chunks fails planning explicitly; no diff is shortened or omitted.
+Model preflight runs once before the matrix. The matrix uses `max-parallel: 1`
+and independent sessions; each chunk retains the existing bounded retry and
+tool-free finalization paths. A continuation inside a file/hunk includes its
+original file header and LEFT/RIGHT line context in the prompt.
+For each chunk, the adapter calculates exact, non-overlapping
 Read pages bounded by bytes and lines and supplies their offsets and limits in
 the prompt. A single line exceeding the byte target occupies its own page and
 is never dropped; a truncated Read still cannot prove full diff coverage.
 The model must read all pages before exploring supporting files;
 the plan itself is not proof of reading or a completed review. The existing
-turn and wall-clock limits remain unchanged.
+turn and wall-clock limits apply per chunk.
+Only normalized, validated results and sanitized route metadata enter the
+one-day artifacts; SDK traces and credentials are not uploaded. Aggregation
+recomputes the full plan and requires exactly one successful result for every
+chunk, bound to the base/head SHAs, full diff hash, run ID and run attempt.
+Duplicate findings are merged and conflicting thread verdicts become
+`needs_human`. Publication happens once after full coverage is validated.
+Use **Re-run all jobs** to repeat this workflow: results from a previous attempt
+cannot fill missing chunks when only failed jobs are rerun.
 Finalization is attempted once per route; its failure also moves to fallback or
 reports the review as unavailable. No partial/error output counts as success.
 A completed SDK run with invalid output gets one full validation retry only
@@ -338,8 +364,11 @@ identifies this format-repair path; a schema-valid result is never eligible for
 tool-free format repair solely because a later diff-anchor or file-write check failed.
 Reports distinguish finalization from the original attempt. These guards use
 the step's original `outcome`, because `continue-on-error` can make a failed
-attempt's `conclusion` show success. Publication and its verification remain
-required for the aggregate review gate.
+attempt's `conclusion` show success. After diagnostics, an unconditional
+non-cancelled completion step fails the stable `claude-code-plugin-review` job
+unless the complete result was published and its revision marker verified.
+The aggregate review gate also requires that publication. A provider outage,
+missing chunk, partial read or publication error cannot turn into a clean review.
 
 Manual GitHub review and the Azure launcher use the same
 direct reviewer. Their `provider` and `model` come from run inputs, including
@@ -378,7 +407,8 @@ starts the owner-approved direct review. The workflow removes the label before
 reviewing, so every new revision needs a deliberate new approval. It runs trusted
 review tooling from `main` and treats the pull-request checkout as data only;
 the contributor's scripts are never executed with review credentials. A new
-commit cancels an in-progress review of the old revision. The label is created
+commit does not replace or cancel the explicitly approved immutable revision;
+reviewing the new revision requires applying the label again. The label is created
 in the repository and can be applied from the pull request's Labels menu.
 
 Configure each fallback model together with its matching `*_FALLBACK_PROVIDER`;
