@@ -723,6 +723,60 @@ def _require_exact_keys(value: object, expected: frozenset[str], label: str) -> 
     return value
 
 
+def claude_review_schema() -> dict:
+    """SDK draft-07 schema; the deterministic validator remains authoritative."""
+    text = {"type": "string", "minLength": 1, "pattern": r"\S"}
+    finding = {
+        "severity": {"type": "string", "enum": ["P1", "P2"]},
+        "path": text, "side": {"type": "string", "enum": ["LEFT", "RIGHT"]},
+        "line": {"type": "integer", "minimum": 1},
+        "title": text, "impact": text, "fix": text,
+    }
+    verdict = {
+        "thread_id": {**text, "maxLength": 200},
+        "verdict": {"type": "string", "enum": ["confirmed", "fixed", "rejected", "needs_human"]},
+        "reason": text,
+    }
+    def record(properties):
+        return {"type": "object", "properties": properties,
+                "required": list(properties), "additionalProperties": False}
+    return record({
+        "summary": text,
+        "findings": {"type": "array", "items": record(finding), "maxItems": 5},
+        "thread_verdicts": {"type": "array", "items": record(verdict), "maxItems": 200},
+    })
+
+
+def review_failure_code(error: Exception) -> str:
+    """Allow-list diagnostic codes, never forward provider text or file paths."""
+    codes = {
+        "Claude review output has an invalid top-level object": "invalid_review_keys",
+        "Claude review output has an invalid summary": "invalid_summary",
+        "Claude review output has an invalid findings array": "invalid_findings",
+        "Claude review output has an invalid thread_verdicts array": "invalid_thread_verdicts",
+        "Claude review output has an invalid finding object": "invalid_finding_keys",
+        "Claude review output has an invalid finding value": "invalid_finding_value",
+        "Claude review output has an invalid thread verdict object": "invalid_thread_verdict_keys",
+        "Claude review output has an invalid thread verdict value": "invalid_thread_verdict_value",
+        "Claude review output contains no schema-valid JSON object": "invalid_review_json",
+        "Claude execution output contains no final text response": "missing_result",
+        "Claude execution output is unavailable": "execution_unavailable",
+        "Claude execution output is not valid JSON": "invalid_execution_json",
+        "diff_incomplete": "diff_not_fully_read",
+    }
+    internal = {
+        "invalid_session_events", "invalid_session_id", "mixed_sessions", "chunk_execution_failed",
+        "finalization_revision_mismatch", "finalization_session_mismatch", "finalization_failed",
+        "finalization_used_tools", "finalization_used_subagent", "finalization_missing_result",
+        "invalid_chunk_index", "chunk_revision_mismatch", "missing_chunk_results",
+        "invalid_chunk_results", "incomplete_chunk_review", "chunk_limit_exceeded",
+        "oversized_diff_line", "invalid_diff_size", "invalid_chunk_limit", "invalid_result_size",
+        "invalid_scope_context",
+    }
+    message = str(error)
+    return codes.get(message, message if message in internal else "validation_unavailable")
+
+
 def _validate_claude_result_contract(result: object) -> dict:
     document = _require_exact_keys(
         result,
@@ -745,7 +799,9 @@ def _validate_claude_result_contract(result: object) -> dict:
         finding = _require_exact_keys(raw, finding_keys, "finding")
         line = finding["line"]
         if (
-            finding["severity"] not in {"P1", "P2"}
+            not isinstance(finding["severity"], str)
+            or not isinstance(finding["side"], str)
+            or finding["severity"] not in {"P1", "P2"}
             or finding["side"] not in {"LEFT", "RIGHT"}
             or isinstance(line, bool)
             or not isinstance(line, int)
@@ -761,7 +817,8 @@ def _validate_claude_result_contract(result: object) -> dict:
     for raw in verdicts:
         verdict = _require_exact_keys(raw, verdict_keys, "thread verdict")
         if (
-            verdict["verdict"] not in {"confirmed", "fixed", "rejected", "needs_human"}
+            not isinstance(verdict["verdict"], str)
+            or verdict["verdict"] not in {"confirmed", "fixed", "rejected", "needs_human"}
             or not isinstance(verdict["thread_id"], str)
             or not verdict["thread_id"].strip()
             or len(verdict["thread_id"]) > 200
@@ -898,6 +955,9 @@ def _result_event_text(event: dict[str, object]) -> str | None:
         return None
     if event.get("is_error") is True:
         raise RuntimeError("Claude Code reported an unsuccessful result")
+    if event.get("structured_output") is not None:
+        document = _validate_claude_result_contract(event["structured_output"])
+        return json.dumps(document, ensure_ascii=False, separators=(",", ":"))
     result = event.get("result")
     if isinstance(result, str) and result.strip():
         return result.strip()

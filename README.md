@@ -317,12 +317,19 @@ Calls without results, empty pages and reads of unrelated files do not count;
 Failure triggers the existing retry/fallback path.
 This is an input-access check, not a guarantee of exhaustive or accurate review.
 Claude Code caps each full attempt at five minutes and individual SDK requests
-at 90 seconds. When a run reaches `error_max_turns`, or completes successfully
-but its final text fails the review JSON schema, one two-minute, tool-free
-completion can resume that same session, only if its execution log proves every
+at 90 seconds. Every SDK attempt receives the exact review JSON Schema via
+`--json-schema`; the adapter reads and independently validates `structured_output`.
+Ordinary final JSON remains supported for older execution logs. An invalid
+structured result cannot be replaced with ordinary prose or a different result.
+When a run reaches `error_max_turns` or `error_max_structured_output_retries`,
+or completes successfully with invalid review JSON, one two-minute completion
+with up to three turns can resume that same session, only if its execution log proves every
 line of the exact diff was returned successfully. The saved proof contains only
 the session ID, base/head SHAs and diff hash. Resumed output must match that proof,
-contain no tool calls, and pass the existing JSON and diff-anchor validation.
+contain no exploration calls, and pass the existing JSON and diff-anchor validation.
+The only allowed call is the SDK-owned `StructuredOutput` sink whose input must
+equal the terminal structured result; Read, Glob, Grep, subprocesses, MCP and
+subagents remain forbidden during completion.
 Other SDK errors and timeouts go directly to the ready fallback. Partial reads
 cannot authorize tool-free completion.
 `execution_unavailable` means the action left no execution file, as can happen
@@ -336,9 +343,18 @@ Before SDK review, the adapter splits the exact diff into chunks bounded by
 `CLAUDE_REVIEW_CHUNK_MAX_LINES` (default 600). `PR_REVIEW_MAX_CHUNKS` caps the
 matrix at 100 by default and cannot exceed 100. An oversized line or excess
 chunks fails planning explicitly; no diff is shortened or omitted.
-Model preflight runs once before the matrix. The matrix uses `max-parallel: 1`
-and independent sessions; each chunk retains the existing bounded retry and
-tool-free finalization paths. A continuation inside a file/hunk includes its
+The SDK diff uses three unchanged context lines per hunk instead of twenty,
+preserving every addition and deletion. The reviewer reads full constructs and
+supporting files when needed. Preflight, thread collection and advisory Sonar
+collection each run once before the matrix. Each chunk receives only threads
+and Sonar issues for its files; threads on unchanged files are assigned to the
+first chunk once. Context reads are batched and successful reads are not repeated.
+The matrix uses `max-parallel: 1` and independent sessions. After a chunk exhausts
+its bounded recovery paths, `fail-fast: true` cancels the remaining chunks:
+complete publication is already impossible, so their provider requests would
+only waste quota. The aggregate job still reports unavailability and fails.
+Checks use readable names such as `Claude review — chunk 2`.
+A continuation inside a file/hunk includes its
 original file header and LEFT/RIGHT line context in the prompt.
 For each chunk, the adapter calculates exact, non-overlapping
 Read pages bounded by bytes and lines and supplies their offsets and limits in
@@ -357,9 +373,9 @@ Use **Re-run all jobs** to repeat this workflow: results from a previous attempt
 cannot fill missing chunks when only failed jobs are rerun.
 Finalization is attempted once per route; its failure also moves to fallback or
 reports the review as unavailable. No partial/error output counts as success.
-A completed SDK run with invalid output gets one full validation retry only
-when tool-free completion was not authorized. Once authorized, its failure goes
-to fallback without restarting the full review. `invalid_output_after_complete_diff_read`
+A completed SDK run gets one full reread only for `diff_not_fully_read`.
+Formatting problems use same-session completion, then fallback without
+restarting the full review. `invalid_output_after_complete_diff_read`
 identifies this format-repair path; a schema-valid result is never eligible for
 tool-free format repair solely because a later diff-anchor or file-write check failed.
 Reports distinguish finalization from the original attempt. These guards use
@@ -369,6 +385,10 @@ non-cancelled completion step fails the stable `claude-code-plugin-review` job
 unless the complete result was published and its revision marker verified.
 The aggregate review gate also requires that publication. A provider outage,
 missing chunk, partial read or publication error cannot turn into a clean review.
+Failed validation logs an allow-listed reason such as `invalid_review_keys`,
+`invalid_finding_value`, `finalization_session_mismatch` or `diff_not_fully_read`.
+Provider text, credentials, source contents and arbitrary exception messages
+are never included in these diagnostics.
 
 Manual GitHub review and the Azure launcher use the same
 direct reviewer. Their `provider` and `model` come from run inputs, including

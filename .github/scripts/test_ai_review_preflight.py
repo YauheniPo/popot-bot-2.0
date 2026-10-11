@@ -122,16 +122,19 @@ class OllamaReviewTest(unittest.TestCase):
         for route in ('primary', 'fallback'):
             retry = identified_steps['claude_review_' + route + '_retry']
             wait = named_steps['Wait before retrying the ' + route + ' Claude Code model']
-            for sdk_outcome, validation_outcome, expected_retry in (
-                ('failure', 'skipped', False),
-                ('cancelled', 'skipped', False),
-                ('skipped', 'skipped', False),
-                ('success', 'failure', True),
-                ('success', 'success', False),
+            for sdk_outcome, validation_outcome, reason, expected_retry in (
+                ('failure', 'skipped', 'execution_unavailable', False),
+                ('cancelled', 'skipped', '', False),
+                ('skipped', 'skipped', '', False),
+                ('success', 'failure', 'diff_not_fully_read', True),
+                ('success', 'failure', 'invalid_output_after_complete_diff_read', False),
+                ('success', 'failure', 'invalid_execution_log', False),
+                ('success', 'success', '', False),
             ):
                 with self.subTest(route=route, sdk=sdk_outcome, validation=validation_outcome):
                     outcomes[('claude_review_' + route, 'outcome')] = sdk_outcome
                     outcomes[('extract_claude_review_' + route, 'outcome')] = validation_outcome
+                    outcomes[('prepare_claude_' + route + '_finalize', 'outputs.reason')] = reason
                     for step in (wait, retry):
                         self.assertEqual(allows(step, outcomes), expected_retry)
                         self.assertFalse(allows(step, outcomes, cancelled=True))
@@ -143,6 +146,7 @@ class OllamaReviewTest(unittest.TestCase):
             outcomes[('extract_claude_review_' + route, 'outcome')] = 'failure'
             prepared = ('prepare_claude_' + route + '_finalize', 'outputs.ready')
             outcomes[prepared] = 'true'
+            outcomes[('prepare_claude_' + route + '_finalize', 'outputs.reason')] = 'invalid_output_after_complete_diff_read'
             for final_outcome in ('success', 'failure', 'cancelled'):
                 outcomes[('extract_claude_review_' + route + '_finalize', 'outcome')] = final_outcome
                 for step in (wait, retry):
@@ -1395,7 +1399,7 @@ class OllamaReviewTest(unittest.TestCase):
         for step in action_steps:
             with self.subTest(step=step["id"]):
                 finalization = step['id'].endswith('_finalize')
-                self.assertIn("--max-turns 1" if finalization else "--max-turns 48", step["with"]["claude_args"])
+                self.assertIn("--max-turns 3" if finalization else "--max-turns 48", step["with"]["claude_args"])
                 self.assertLessEqual(int(step['timeout-minutes']), 2 if finalization else 5)
                 self.assertEqual(
                     step["with"]["show_full_output"],

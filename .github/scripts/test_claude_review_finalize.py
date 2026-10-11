@@ -377,7 +377,7 @@ class FinalizeTests(unittest.TestCase):
                 self.assertIn('--resume', step['with']['claude_args'])
                 self.assertIn('--tools=', step['with']['claude_args'])
                 self.assertIn('--disallowedTools "mcp__*"', step['with']['claude_args'])
-                self.assertIn('--max-turns 1', step['with']['claude_args'])
+                self.assertIn('--max-turns 3', step['with']['claude_args'])
                 self.assertLessEqual(step['timeout-minutes'], 2)
                 self.assertLessEqual(steps['claude_review_' + route]['timeout-minutes'], 5)
                 self.assertIn('extract_claude_review_' + route + '_finalize.outcome', steps['publish_claude_review']['if'])
