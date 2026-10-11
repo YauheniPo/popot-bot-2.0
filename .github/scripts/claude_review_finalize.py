@@ -112,9 +112,11 @@ def _require_complete_diff(events, path, lines):
         completed, errors = _completed_lines(event, pending, lines)
         seen.update(completed)
         failed += errors
+    coverage = {'matched_lines': len(seen), 'total_lines': len(lines),
+                'read_calls': calls, 'failed_reads': failed}
     if not lines or len(seen) != len(lines):
-        raise IncompleteDiffRead({'matched_lines': len(seen), 'total_lines': len(lines),
-                                  'read_calls': calls, 'failed_reads': failed})
+        raise IncompleteDiffRead(coverage)
+    return coverage
 
 
 def _revision_binding(raw):
@@ -139,6 +141,8 @@ def _write_proof(path, proof):
 def _completion_reason(result):
     if result.get('subtype') == 'error_max_turns' and result.get('is_error') is True:
         return 'turn_limit_after_complete_diff_read'
+    if result.get('subtype') == 'error_max_structured_output_retries' and result.get('is_error') is True:
+        return 'output_retry_limit_after_complete_diff_read'
     if result.get('subtype') == 'success' and result.get('is_error') is False:
         try:
             context._json_response_text(context._result_event_text(result) or '')
@@ -161,14 +165,15 @@ def prepare(execution_file, proof_file):
             return {'ready': 'false', 'reason': 'not_recoverable_result'}
         failure_reason = 'diff_not_fully_read'
         path, raw, lines = _diff()
-        _require_complete_diff(events, path, lines)
+        coverage = _require_complete_diff(events, path, lines)
         failure_reason = 'proof_unavailable'
         _write_proof(proof_file, {**_revision_binding(raw), 'session_id': session})
     except IncompleteDiffRead as error:
         return {'ready': 'false', 'reason': 'diff_not_fully_read', 'read_coverage': json.dumps(error.coverage)}
     except (OSError, ValueError, RuntimeError):
         return {'ready': 'false', 'reason': failure_reason}
-    return {'ready': 'true', 'reason': reason, 'session_id': session}
+    return {'ready': 'true', 'reason': reason, 'session_id': session,
+            'read_coverage': json.dumps(coverage)}
 
 
 def extract(execution_file, proof_file, output_file):
@@ -189,8 +194,16 @@ def extract(execution_file, proof_file, output_file):
         raise RuntimeError('finalization_session_mismatch')
     if result.get('subtype') != 'success' or result.get('is_error') is not False:
         raise RuntimeError('finalization_failed')
-    if any(block.get('type') == 'tool_use' for event in events for block in context._sdk_content(event, 'assistant')):
-        raise RuntimeError('finalization_used_tools')
+    for event in events:
+        for block in context._sdk_content(event, 'assistant'):
+            if block.get('type') == 'tool_use':
+                # JSON Schema adds this SDK-owned output sink even with
+                # --tools=. It cannot read or execute anything. All other
+                # calls remain forbidden, including namespaced imitations.
+                if (block.get('name') != 'StructuredOutput'
+                        or result.get('structured_output') is None
+                        or block.get('input') != result['structured_output']):
+                    raise RuntimeError('finalization_used_tools')
     text = context._result_event_text(result)
     if not text:
         raise RuntimeError('finalization_missing_result')
@@ -227,5 +240,6 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError):
-        raise SystemExit('Claude finalization failed validation; no review result was produced.') from None
+    except (OSError, ValueError, RuntimeError, TypeError, KeyError, subprocess.CalledProcessError) as error:
+        raise SystemExit('Claude finalization failed validation [' + context.review_failure_code(error)
+                         + ']; no review result was produced.') from None

@@ -206,7 +206,7 @@ class WorkflowTests(unittest.TestCase):
     def test_chunks_are_serial_and_observable_waits_for_final_claude_job(self):
         matrix = self.jobs['claude-review-chunks']['strategy']
         self.assertEqual(matrix['max-parallel'], 1)
-        self.assertFalse(matrix['fail-fast'])
+        self.assertTrue(matrix['fail-fast'])
         self.assertIn('claude-code-plugin-review', self.jobs['observable-claude-review']['needs'])
         self.assertIn('!cancelled()', self.jobs['observable-claude-review']['if'])
 

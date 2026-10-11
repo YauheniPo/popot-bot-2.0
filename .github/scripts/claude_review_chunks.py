@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Plan serial Claude SDK chunks and publish only a complete revision-bound set."""
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -25,7 +26,7 @@ def _limit(name, default, maximum):
 
 def exact_diff():
     return subprocess.run(
-        ['git', 'diff', '--no-ext-diff', '--no-textconv', '--find-renames', '--unified=20',
+        ['git', '-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--no-textconv', '--find-renames', '--unified=3',
          context._required_commit_sha('BASE_SHA'), context._required_commit_sha('HEAD_SHA'), '--', '.'],
         cwd=Path.cwd(), capture_output=True, check=True, encoding='utf-8', timeout=30,
     ).stdout
@@ -84,6 +85,67 @@ def _start_context(lines):
     if left is not None:
         result.update(next_left=left, next_right=right)
     return result
+
+
+def _diff_path(raw):
+    if raw.startswith('"'):
+        octal_utf8 = bool(re.search(r'(?<!\\)(?:\\\\)*\\[23][0-7]{2}', raw))
+        raw = ast.literal_eval(raw)
+        # Git's C quoting represents UTF-8 bytes with octal escapes.
+        if octal_utf8:
+            try:
+                raw = raw.encode('latin1').decode('utf-8')
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                pass
+    return raw
+
+
+def scope_paths(diff, start, end):
+    """Include both rename sides and files split across chunk boundaries."""
+    lines = diff.splitlines()
+    boundaries = [i for i, line in enumerate(lines) if line.startswith('diff --git ')] + [len(lines)]
+    paths = set()
+    for first, last in zip(boundaries, boundaries[1:]):
+        if first >= end or last < start:
+            continue
+        header = lines[first][len('diff --git '):]
+        # Unquoted filenames can contain spaces. Retain every valid boundary
+        # under ambiguity rather than silently losing the actual path.
+        for match in re.finditer(r' (?="?b/)', header):
+            try:
+                left, right = _diff_path(header[:match.start()]), _diff_path(header[match.end():])
+            except (ValueError, SyntaxError):
+                continue
+            if left.startswith('a/') and right.startswith('b/'):
+                paths.update((left[2:], right[2:]))
+        for line in lines[first + 1:last]:
+            if line.startswith('@@ '):
+                break
+            for prefix in ('--- ', '+++ ', 'rename from ', 'rename to '):
+                if line.startswith(prefix):
+                    path = _diff_path(line[len(prefix):])
+                    if prefix in ('--- ', '+++ ') and path.startswith(('a/', 'b/')):
+                        path = path[2:]
+                    if path != '/dev/null':
+                        paths.add(path)
+    return paths
+
+
+def scoped_context(paths, threads, sonar, all_paths=None):
+    threads, sonar = json.loads(threads), json.loads(sonar)
+    if not isinstance(threads, list) or not isinstance(sonar, dict):
+        raise RuntimeError('invalid_scope_context')
+    # Assign threads on unchanged files to the first chunk once. They remain
+    # an independent triage obligation without loading them into every chunk.
+    relevant = [item for item in threads if isinstance(item, dict)
+                and (item.get('path') in paths
+                     or (all_paths is not None and item.get('path') not in all_paths))]
+    issues = sonar.get('issues', [])
+    if not isinstance(issues, list):
+        raise RuntimeError('invalid_scope_context')
+    return {'thread_context': relevant,
+            'sonar_context': {**sonar, 'issues': [item for item in issues
+                             if isinstance(item, dict) and item.get('path') in paths]}}
 
 
 def select(index, digest):
@@ -174,6 +236,13 @@ def main():
         scope = select(args.index, args.sha256)
         _outputs({'chunk_scope': scope})
         _outputs({'read_plan': finalize.read_plan()})
+        current = plan()
+        unit = current['chunks'][args.index - 1]
+        paths = scope_paths(current['diff'], unit['start'], unit['end'])
+        all_paths = scope_paths(current['diff'], 1, len(current['diff'].splitlines())) if args.index == 1 else None
+        _outputs(scoped_context(paths, os.environ.get('CLAUDE_REVIEW_THREADS', '[]'),
+                                os.environ.get('CLAUDE_REVIEW_SONAR', '{"issues":[]}'), all_paths))
+        _outputs({'json_schema': context.claude_review_schema()})
     elif args.command == 'extract':
         extract(args.execution_file, args.output)
     elif args.command == 'record':
@@ -216,5 +285,6 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except (OSError, ValueError, RuntimeError, TypeError, KeyError, subprocess.SubprocessError):
-        raise SystemExit('Claude chunk review is incomplete or invalid; no completed review was produced.') from None
+    except (OSError, ValueError, RuntimeError, TypeError, KeyError, subprocess.SubprocessError) as error:
+        raise SystemExit('Claude chunk review is incomplete or invalid [' + context.review_failure_code(error)
+                         + ']; no completed review was produced.') from None
