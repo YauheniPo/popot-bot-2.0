@@ -58,11 +58,18 @@ class ReliabilityTests(unittest.TestCase):
             full.extract(self.execution, self.output)
         self.assertEqual(json.loads(self.output.read_text()), REVIEW)
 
+    def test_plain_json_result_is_extracted_with_full_read_evidence(self):
+        self.execution.write_text(json.dumps(self.events({'result': json.dumps(REVIEW)})))
+        with mock.patch.object(context, '_changed_paths', return_value=set()):
+            full.extract(self.execution, self.output)
+        self.assertEqual(json.loads(self.output.read_text()), REVIEW)
+
     def test_full_review_preparation_keeps_large_diff_without_chunking(self):
         diff = 'diff --git a/app.py b/app.py\n' + '+changed line\n' * 4000
         with mock.patch.object(full, 'exact_diff', return_value=diff):
             prepared = full.prepare()
         self.assertEqual(self.diff.read_text(), diff)
+        self.assertEqual(set(prepared), {'read_plan'})
         self.assertEqual(prepared['read_plan']['total_lines'], 4001)
         self.assertEqual(sum(page['limit'] for page in prepared['read_plan']['pages']), 4001)
 
@@ -82,7 +89,7 @@ class ReliabilityTests(unittest.TestCase):
 
     def test_full_review_cli_writes_prepare_outputs_and_requires_extract_paths(self):
         outputs = self.root / 'github-output'
-        payload = {'read_plan': {'total_lines': 2}, 'json_schema': {'type': 'object'}}
+        payload = {'read_plan': {'total_lines': 2}}
         with mock.patch.object(full, 'prepare', return_value=payload), \
                 mock.patch.object(sys, 'argv', [full.__file__, 'prepare']), \
                 mock.patch.dict(os.environ, {'GITHUB_OUTPUT': str(outputs)}):
@@ -285,20 +292,16 @@ class WorkflowReliabilityTests(unittest.TestCase):
         self.assertNotIn('strategy', job)
         for route in ('primary', 'primary_retry', 'fallback', 'fallback_retry', 'primary_finalize', 'fallback_finalize'):
             step = steps['claude_review_' + route]
-            if route.endswith('finalize'):
-                # PR #75: resume returned terminal success without the optional
-                # structured_output field. The action rejects --json-schema
-                # before our proof/JSON validator can inspect that result.
-                self.assertNotIn('--json-schema', step['with']['claude_args'])
+            self.assertNotIn('--json-schema', step['with']['claude_args'])
+            self.assertNotIn('StructuredOutput', step['with']['claude_args'])
+            if not route.endswith('finalize'):
+                self.assertIn('steps.review_threads.outputs.context', step['with']['prompt'])
+                self.assertIn('steps.sonar_context.outputs.context', step['with']['prompt'])
+                self.assertIn('exactly one JSON object', step['with']['prompt'])
+            else:
                 self.assertIn('Return exactly', step['with']['prompt'])
                 self.assertIn('--max-turns 3', step['with']['claude_args'])
                 self.assertIn('--tools=', step['with']['claude_args'])
-            else:
-                self.assertIn('--json-schema', step['with']['claude_args'])
-                self.assertIn('steps.claude_diff.outputs.json_schema', step['with']['claude_args'])
-                self.assertIn('steps.review_threads.outputs.context', step['with']['prompt'])
-                self.assertIn('steps.sonar_context.outputs.context', step['with']['prompt'])
-                self.assertIn('StructuredOutput', step['with']['prompt'])
         for source in ('review_threads', 'sonar_context'):
             self.assertIn(source, steps)
             self.assertIn("steps.claude_models.outputs.primary_ready == 'true'", steps[source]['if'])

@@ -13,8 +13,10 @@ import tempfile
 import pr_review_context as context
 
 
-MAX_READ_PAGE_BYTES = 16000
-MAX_READ_PAGE_LINES = 300
+# Larger bounded pages reduce tool-call overhead on large PRs while keeping
+# every Read result small enough to inspect and verify independently.
+MAX_READ_PAGE_BYTES = 48000
+MAX_READ_PAGE_LINES = 900
 
 
 class IncompleteDiffRead(RuntimeError):
@@ -143,6 +145,9 @@ def _completion_reason(result):
         return 'turn_limit_after_complete_diff_read'
     if result.get('subtype') == 'error_max_structured_output_retries' and result.get('is_error') is True:
         return 'output_retry_limit_after_complete_diff_read'
+    if (result.get('subtype') == 'success' and result.get('is_error') is True
+            and result.get('structured_output') is None):
+        return 'missing_structured_output_after_complete_diff_read'
     if result.get('subtype') == 'success' and result.get('is_error') is False:
         try:
             context._json_response_text(context._result_event_text(result) or '')

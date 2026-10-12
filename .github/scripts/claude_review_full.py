@@ -24,7 +24,7 @@ def prepare():
     if not 0 < len(diff.encode('utf-8')) <= context.MAX_CLAUDE_EXECUTION_FILE_BYTES:
         raise RuntimeError('invalid_diff_size')
     (Path.cwd() / '.ci-pr-review.diff').write_text(diff, encoding='utf-8')
-    return {'read_plan': finalize.read_plan(), 'json_schema': context.claude_review_schema()}
+    return {'read_plan': finalize.read_plan()}
 
 
 def extract(execution_file, output_file):
