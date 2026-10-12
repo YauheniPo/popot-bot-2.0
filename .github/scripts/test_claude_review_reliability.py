@@ -29,13 +29,13 @@ class ReliabilityTests(unittest.TestCase):
         self.enterContext(mock.patch.object(Path, 'cwd', return_value=self.root))
         self.enterContext(mock.patch.dict(os.environ, {
             'BASE_SHA': 'a' * 40, 'HEAD_SHA': 'b' * 40,
-            'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1',
+            'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1', 'RUNNER_TEMP': str(self.root),
         }))
         self.diff = self.root / '.ci-pr-review.diff'
         self.diff.write_text('first\nsecond\n')
         self.execution = self.root / 'execution.json'
         self.proof = self.root / 'proof.json'
-        self.output = self.root / 'result.json'
+        self.output = self.root / 'claude-review-result.json'
 
     def events(self, result=None):
         return [
@@ -65,6 +65,35 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(self.diff.read_text(), diff)
         self.assertEqual(prepared['read_plan']['total_lines'], 4001)
         self.assertEqual(sum(page['limit'] for page in prepared['read_plan']['pages']), 4001)
+
+    def test_full_review_rejects_empty_and_oversized_diffs(self):
+        for diff in ('', 'x' * (context.MAX_CLAUDE_EXECUTION_FILE_BYTES + 1)):
+            with self.subTest(diff_size=len(diff)), mock.patch.object(full, 'exact_diff', return_value=diff):
+                with self.assertRaisesRegex(RuntimeError, 'invalid_diff_size'):
+                    full.prepare()
+
+    def test_full_review_rejects_a_failed_terminal_sdk_result(self):
+        events = self.events()
+        events[-1].update(subtype='error_api_error', is_error=True)
+        self.execution.write_text(json.dumps(events))
+        with self.assertRaisesRegex(RuntimeError, 'review_execution_failed'):
+            full.extract(self.execution, self.output)
+        self.assertFalse(self.output.exists())
+
+    def test_full_review_cli_writes_prepare_outputs_and_requires_extract_paths(self):
+        outputs = self.root / 'github-output'
+        payload = {'read_plan': {'total_lines': 2}, 'json_schema': {'type': 'object'}}
+        with mock.patch.object(full, 'prepare', return_value=payload), \
+                mock.patch.object(sys, 'argv', [full.__file__, 'prepare']), \
+                mock.patch.dict(os.environ, {'GITHUB_OUTPUT': str(outputs)}):
+            full.main()
+        self.assertEqual(dict(line.split('=', 1) for line in outputs.read_text().splitlines()), {
+            key: json.dumps(value, separators=(',', ':')) for key, value in payload.items()
+        })
+        with mock.patch.object(sys, 'argv', [full.__file__, 'extract']), \
+                self.assertRaises(SystemExit) as failure:
+            full.main()
+        self.assertEqual(failure.exception.code, 2)
 
     def test_full_review_rejects_partial_read_and_accepts_complete_result(self):
         events = self.events()
@@ -167,7 +196,7 @@ class ReliabilityTests(unittest.TestCase):
             self.events()[-1]]
         self.execution.write_text(json.dumps(completed))
         with mock.patch.object(context, '_changed_paths', return_value=set()):
-            finalize.extract(self.execution, self.proof, self.output)
+            finalize.extract(self.execution, self.proof)
         self.assertEqual(json.loads(self.output.read_text()), REVIEW)
         self.output.unlink()
         for name, value in (('Read', REVIEW), ('mcp__StructuredOutput', REVIEW),
@@ -176,7 +205,7 @@ class ReliabilityTests(unittest.TestCase):
             invalid[1]['message']['content'][0].update(name=name, input=value)
             self.execution.write_text(json.dumps(invalid))
             with self.subTest(name=name), self.assertRaises(RuntimeError):
-                finalize.extract(self.execution, self.proof, self.output)
+                finalize.extract(self.execution, self.proof)
             self.assertFalse(self.output.exists())
 
     def test_resumed_json_content_cannot_select_the_output_path(self):
@@ -190,7 +219,7 @@ class ReliabilityTests(unittest.TestCase):
                                 'result': json.dumps(document)}]
         self.execution.write_text(json.dumps(completed))
         with mock.patch.object(finalize.context, '_changed_paths', return_value=set()):
-            finalize.extract(self.execution, self.proof, self.output)
+            finalize.extract(self.execution, self.proof)
         self.assertEqual(json.loads(self.output.read_text()), document)
         self.assertEqual(victim.read_text(), 'original')
 

@@ -496,13 +496,11 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CLAUDE_EXECUTION_FILE: ${{ steps.claude_review_primary_finalize.outputs.execution_file }}
           CLAUDE_FINALIZATION_PROOF: ${{ runner.temp }}/claude-primary-finalization-proof.json
-          CLAUDE_REVIEW_RESULT_FILE: ${{ runner.temp }}/claude-review-result.json
         run: |
           set -euo pipefail
           python3 .github/scripts/claude_review_finalize.py extract \
             --execution-file "${CLAUDE_EXECUTION_FILE}" \
-            --proof-file "${CLAUDE_FINALIZATION_PROOF}" \
-            --output "${CLAUDE_REVIEW_RESULT_FILE}"
+            --proof-file "${CLAUDE_FINALIZATION_PROOF}"
 
       # Reread once only for incomplete diff evidence. Format problems use
       # bounded same-session completion, then switch routes without repeating
@@ -512,7 +510,6 @@ jobs:
           always() &&
           !cancelled() &&
           steps.claude_models.outputs.primary_ready == 'true' &&
-          steps.claude_review_primary.outcome == 'success' &&
           steps.extract_claude_review_primary.outcome != 'success' &&
           steps.prepare_claude_primary_finalize.outputs.reason == 'diff_not_fully_read'
         shell: bash
@@ -524,7 +521,6 @@ jobs:
           always() &&
           !cancelled() &&
           steps.claude_models.outputs.primary_ready == 'true' &&
-          steps.claude_review_primary.outcome == 'success' &&
           steps.extract_claude_review_primary.outcome != 'success' &&
           steps.prepare_claude_primary_finalize.outputs.reason == 'diff_not_fully_read'
         continue-on-error: true
@@ -701,16 +697,15 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CLAUDE_EXECUTION_FILE: ${{ steps.claude_review_fallback_finalize.outputs.execution_file }}
           CLAUDE_FINALIZATION_PROOF: ${{ runner.temp }}/claude-fallback-finalization-proof.json
-          CLAUDE_REVIEW_RESULT_FILE: ${{ runner.temp }}/claude-review-result.json
         run: |
           set -euo pipefail
           python3 .github/scripts/claude_review_finalize.py extract \
             --execution-file "${CLAUDE_EXECUTION_FILE}" \
-            --proof-file "${CLAUDE_FINALIZATION_PROOF}" \
-            --output "${CLAUDE_REVIEW_RESULT_FILE}"
+            --proof-file "${CLAUDE_FINALIZATION_PROOF}"
 
-      # Retry a completed fallback only if it could not use tool-free completion.
-      # SDK failures, timeouts and failed completions never trigger a full rerun.
+      # Retry only when a terminal SDK result proves that the diff read was
+      # incomplete. SDK failures without that proof, timeouts and other failures
+      # never trigger a full rerun.
       - name: Wait before retrying the fallback Claude Code model
         if: >-
           always() &&
@@ -719,7 +714,6 @@ jobs:
           steps.extract_claude_review_primary.outcome != 'success' &&
           steps.extract_claude_review_primary_finalize.outcome != 'success' &&
           steps.extract_claude_review_primary_retry.outcome != 'success' &&
-          steps.claude_review_fallback.outcome == 'success' &&
           steps.extract_claude_review_fallback.outcome != 'success' &&
           steps.prepare_claude_fallback_finalize.outputs.reason == 'diff_not_fully_read'
         shell: bash
@@ -734,7 +728,6 @@ jobs:
           steps.extract_claude_review_primary.outcome != 'success' &&
           steps.extract_claude_review_primary_finalize.outcome != 'success' &&
           steps.extract_claude_review_primary_retry.outcome != 'success' &&
-          steps.claude_review_fallback.outcome == 'success' &&
           steps.extract_claude_review_fallback.outcome != 'success' &&
           steps.prepare_claude_fallback_finalize.outputs.reason == 'diff_not_fully_read'
         continue-on-error: true
