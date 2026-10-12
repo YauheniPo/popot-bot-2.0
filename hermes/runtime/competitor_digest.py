@@ -136,25 +136,43 @@ def event_keys(event):
             for link in event["primary_evidence_urls"]}
 
 
+def _validate_row(row, companies, covered):
+    if not isinstance(row, dict) or row.get("company") not in companies - covered:
+        raise ValueError("competitor report: unknown or duplicate coverage company")
+    new_covered = covered | {row["company"]}
+    checked = strings(row.get("checked_urls"))
+    for link in checked:
+        url(link)
+    gaps = strings(row.get("gaps"))
+    status = row.get("status")
+    if (status not in {"complete", "partial", "not_checked"}
+            or status == "complete" and (not checked or gaps)
+            or status != "complete" and not gaps
+            or status == "not_checked" and checked):
+        raise ValueError("competitor report: inconsistent coverage status")
+    return new_covered
+
+
 def validate_coverage(coverage, companies):
     if not isinstance(coverage, list) or len(coverage) != len(companies):
         raise ValueError("competitor report: missing company coverage")
     covered = set()
     for row in coverage:
-        if not isinstance(row, dict) or row.get("company") not in companies - covered:
-            raise ValueError("competitor report: unknown or duplicate coverage company")
-        covered.add(row["company"])
-        checked = strings(row.get("checked_urls"))
-        for link in checked:
-            url(link)
-        gaps = strings(row.get("gaps"))
-        status = row.get("status")
-        if (status not in {"complete", "partial", "not_checked"}
-                or status == "complete" and (not checked or gaps)
-                or status != "complete" and not gaps
-                or status == "not_checked" and checked):
-            raise ValueError("competitor report: inconsistent coverage status")
+        covered = _validate_row(row, companies, covered)
     return coverage
+
+def _validate_event_fields(event):
+    for field in ("what_changed", "why_it_matters", "confidence", "confidence_reason"):
+        text(event.get(field))
+
+
+def _check_event_links(event, coverage):
+    links = strings(event.get("primary_evidence_urls"))
+    if not links:
+        raise ValueError("competitor report: missing evidence URLs")
+    checked = next(c["checked_urls"] for c in coverage if c["company"] == event["company"])
+    if not {canonical_url(link) for link in links} <= {canonical_url(link) for link in checked}:
+        raise ValueError("competitor report: event evidence was not recorded as read")
 
 
 def validate_event(event, watch, coverage, start, end):
@@ -168,20 +186,13 @@ def validate_event(event, watch, coverage, start, end):
                      if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)
                      else start <= timestamp(value) <= end)
     except ValueError:
-        raise ValueError("competitor report: invalid event date") from None
+        raise ValueError("competitor report: invalid event date")
     if not in_window:
         raise ValueError("competitor report: event outside the requested window")
-    links = strings(event.get("primary_evidence_urls"))
-    if not links:
-        raise ValueError("competitor report: missing evidence URLs")
-    checked = next(c["checked_urls"] for c in coverage if c["company"] == event["company"])
-    if not {canonical_url(link) for link in links} <= {canonical_url(link) for link in checked}:
-        raise ValueError("competitor report: event evidence was not recorded as read")
-    for field in ("what_changed", "why_it_matters", "confidence", "confidence_reason"):
-        text(event.get(field))
+    _check_event_links(event, coverage)
+    _validate_event_fields(event)
     if event.get("follow_up"):
         text(event["follow_up"])
-
 
 def validate(record, watch, start, end, run_id):
     for field, expected in (("run_id", run_id), ("watch_slug", watch["watch_slug"]),

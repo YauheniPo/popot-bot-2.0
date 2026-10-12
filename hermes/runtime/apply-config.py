@@ -141,18 +141,19 @@ def _load_cron_store(home: Path):
         raise RuntimeError('cannot import installed Hermes cron storage API') from error
 
 
-def _cron_homes(home: Path) -> list[Path]:
-    """Validate existing cron stores before starting a managed migration."""
-    homes = [home]
-    profiles = home / 'profiles'
+def _ensure_profiles_directory_not_symlink(profiles: Path) -> None:
     if profiles.is_symlink():
         raise ValueError('Hermes profiles directory must not be a symlink')
+
+def _add_valid_profile_homes(profiles: Path, homes: list[Path]) -> None:
     if profiles.exists():
         for profile in sorted(profiles.iterdir()):
             if profile.is_symlink():
                 raise ValueError('Hermes profile directories must not be symlinks')
             if profile.is_dir():
                 homes.append(profile)
+
+def _validate_and_collect_cron_stores(homes: list[Path]) -> list[Path]:
     existing = []
     for location in homes:
         cron = location / 'cron'
@@ -164,6 +165,14 @@ def _cron_homes(home: Path) -> list[Path]:
                 raise ValueError('Hermes cron jobs.json must be a regular file')
             existing.append(location)
     return existing
+
+def _cron_homes(home: Path) -> list[Path]:
+    'Validate existing cron stores before starting a managed migration.'
+    homes = [home]
+    profiles = home / 'profiles'
+    _ensure_profiles_directory_not_symlink(profiles)
+    _add_valid_profile_homes(profiles, homes)
+    return _validate_and_collect_cron_stores(homes)
 
 
 def sync_cron_models(home: Path, settings: dict[str, Any]) -> int:

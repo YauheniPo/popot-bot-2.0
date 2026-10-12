@@ -12,6 +12,7 @@ import yaml
 from hermes_fallback_exclusions import fallback_excluded_pairs
 
 
+FREE_SUFFIX = ":free"
 class FallbackCommandError(ValueError):
     """Safe, authored command feedback (never raw config or provider errors)."""
 
@@ -28,7 +29,7 @@ def filter_fallback_routes(config, chain):
                 fallback_excluded_pairs(config.get('fallback_policy', {}))}
     return [route for route in chain
             if (_managed_provider(route.get('provider')) != 'openrouter'
-                or str(route.get('model', '')).strip().endswith(':free'))
+                or str(route.get('model', '')).strip().endswith(FREE_SUFFIX))
             and (_managed_provider(route.get('provider')),
                 str(route.get('model', '')).strip()) not in excluded]
 
@@ -47,8 +48,8 @@ def validate_fallback_routes(routes, allowed):
                 or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/:+-]*', model)
                 or '://' in model):
             raise FallbackCommandError('Недопустимый provider/model. Провайдер должен быть разрешён в deploy-конфиге.')
-        if provider == 'openrouter' and not model.endswith(':free'):
-            raise FallbackCommandError('Для OpenRouter разрешены только модели с суффиксом :free.')
+        if provider == 'openrouter' and not model.endswith(FREE_SUFFIX):
+            raise FallbackCommandError('Для OpenRouter разрешены только модели с суффиксом FREE_SUFFIX.')
         identity = (provider, model)
         if identity in seen:
             raise FallbackCommandError('Список содержит повторный маршрут.')
@@ -149,7 +150,7 @@ def begin_fallback_walk(agent, reason):
 def allow_fallback_candidate(agent, candidate):
     provider = _managed_provider(candidate.get('provider'))
     model = str(candidate.get('model', '')).strip()
-    if provider == 'openrouter' and not model.endswith(':free'):
+    if provider == 'openrouter' and not model.endswith(FREE_SUFFIX):
         return False
     return (provider not in getattr(agent, '_managed_quota_providers', ())
             and (provider, model) not in getattr(agent, '_managed_rate_limited_routes', ()))
