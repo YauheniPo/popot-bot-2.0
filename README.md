@@ -317,7 +317,7 @@ Calls without results, empty pages and reads of unrelated files do not count;
 Failure triggers the existing retry/fallback path.
 This is an input-access check, not a guarantee of exhaustive or accurate review.
 Claude Code caps each full attempt at five minutes and individual SDK requests
-at 90 seconds. Every SDK attempt receives the exact review JSON Schema via
+at 90 seconds. Every full SDK attempt receives the exact review JSON Schema via
 `--json-schema`; the adapter reads and independently validates `structured_output`.
 Ordinary final JSON remains supported for older execution logs. An invalid
 structured result cannot be replaced with ordinary prose or a different result.
@@ -327,6 +327,10 @@ with up to three turns can resume that same session, only if its execution log p
 line of the exact diff was returned successfully. The saved proof contains only
 the session ID, base/head SHAs and diff hash. Resumed output must match that proof,
 contain no exploration calls, and pass the existing JSON and diff-anchor validation.
+Completion explicitly asks for ordinary final JSON without `--json-schema`:
+resumed gateway sessions can report SDK success without `structured_output`,
+which otherwise makes the action reject the run before the adapter validates it.
+The deterministic review contract remains mandatory, including for ordinary JSON.
 The only allowed call is the SDK-owned `StructuredOutput` sink whose input must
 equal the terminal structured result; Read, Glob, Grep, subprocesses, MCP and
 subagents remain forbidden during completion.
