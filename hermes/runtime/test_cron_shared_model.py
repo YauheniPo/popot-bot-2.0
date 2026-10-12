@@ -80,6 +80,11 @@ class SharedCronModelTests(unittest.TestCase):
             shared.persist_chat_model(self.selection)
         self.assertFalse(self.writes)
 
+    def test_non_mapping_cron_configuration_is_rejected(self):
+        self.config['cron'] = ['invalid']
+        with self.assertRaisesRegex(ValueError, 'shared cron config must be a mapping'):
+            shared.routed_job({'id': 'a'})
+
     def test_write_failure_propagates_and_keeps_old_route(self):
         self.modules['utils'].atomic_roundtrip_yaml_update = mock.Mock(side_effect=OSError('denied'))
         with self.assertRaises(OSError):

@@ -107,6 +107,50 @@ class ApplyConfigTests(unittest.TestCase):
             self.assertEqual(apply_config.sync_cron_models(Path(directory), settings), 0)
             loader.assert_not_called()
 
+    def test_load_cron_store_requires_and_imports_installed_storage_api(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            with self.assertRaisesRegex(RuntimeError, 'storage API is missing'):
+                apply_config._load_cron_store(home)
+
+            source = home / 'hermes-agent'
+            jobs_file = source / 'cron/jobs.py'
+            jobs_file.parent.mkdir(parents=True)
+            jobs_file.write_text('# installed API fixture')
+            with mock.patch.object(apply_config.sys, 'path', list(apply_config.sys.path)) as search_path:
+                api = object()
+                with mock.patch.object(apply_config.importlib, 'import_module', return_value=api) as importer:
+                    self.assertIs(apply_config._load_cron_store(home), api)
+                    self.assertIn(str(source), search_path)
+                    importer.assert_called_once_with('cron.jobs')
+
+                with mock.patch.object(apply_config.importlib, 'import_module', side_effect=ImportError):
+                    with self.assertRaisesRegex(RuntimeError, 'cannot import installed Hermes cron storage API'):
+                        apply_config._load_cron_store(home)
+
+    def test_cron_model_sync_rejects_non_regular_store_and_disappearing_job(self):
+        settings = {'vps_hermes': {'config': {'manage_cron_job_models': True,
+            'managed_overlay': {'model': {'provider': 'fixture-cloud', 'default': 'fixture-model'}}}}}
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / 'cron').mkdir()
+            (home / 'cron/jobs.json').mkdir()
+            with self.assertRaisesRegex(ValueError, 'must be a regular file'):
+                apply_config.sync_cron_models(home, settings)
+
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / 'cron').mkdir()
+            (home / 'cron/jobs.json').write_text('{"jobs": []}')
+            jobs = mock.Mock()
+            jobs.use_cron_store.side_effect = lambda _home: contextlib.nullcontext()
+            jobs._jobs_lock.side_effect = contextlib.nullcontext
+            jobs.load_jobs.return_value = [{'id': 'vanished', 'model': 'old'}]
+            jobs.update_job.return_value = None
+            with mock.patch.object(apply_config, '_load_cron_store', return_value=jobs):
+                with self.assertRaisesRegex(RuntimeError, 'disappeared during managed model update'):
+                    apply_config.sync_cron_models(home, settings)
+
     def test_main_reports_cron_model_sync_failure_instead_of_success(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)

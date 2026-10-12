@@ -334,8 +334,10 @@ The deterministic review contract remains mandatory, including for ordinary JSON
 The only allowed call is the SDK-owned `StructuredOutput` sink whose input must
 equal the terminal structured result; Read, Glob, Grep, subprocesses, MCP and
 subagents remain forbidden during completion.
-Other SDK errors and timeouts go directly to the ready fallback. Partial reads
-cannot authorize tool-free completion.
+Finalization writes atomically to the fixed `claude-review-result.json` in
+`RUNNER_TEMP`; the CLI and model cannot choose the destination. Other SDK errors
+and timeouts go directly to the ready fallback. Partial reads cannot authorize
+tool-free completion.
 `execution_unavailable` means the action left no execution file, as can happen
 when the runner stops it at the step deadline. It is distinct from
 `diff_not_fully_read`, which means an otherwise recoverable session lacks proof
@@ -361,11 +363,13 @@ reading or a completed review.
 Primary and fallback full attempts each have a ten-minute deadline and 48-turn
 limit; same-session completion has a two-minute deadline and three-turn limit.
 A ready fallback is used after primary failure. One full reread per route is
-allowed only after a successful SDK run with incomplete diff-read evidence;
-timeouts and SDK failures never trigger repeated full attempts on the same
-route. The job has a 55-minute overall deadline, including setup, preflight,
-bounded recovery and publication. Free-provider availability is not guaranteed;
-an unavailable provider produces an explicit failed review, never a clean result.
+allowed only when a supported terminal SDK result proves the diff read was
+incomplete, even if the action step itself ended in failure. Timeouts without a
+terminal execution record and other unrecoverable SDK failures do not trigger a
+full rerun on that route. The job has a 55-minute overall deadline, including
+setup, preflight, bounded recovery and publication. Free-provider availability
+is not guaranteed; an unavailable provider produces an explicit failed review,
+never a clean result.
 Only a schema-valid result with complete matching Read evidence can reach the
 deterministic publisher. SDK traces and credentials are not uploaded as
 artifacts. Publication occurs once, and the job then verifies the marker for
@@ -374,9 +378,9 @@ failure fails the Claude job and the review completion gate.
 A rerun prepares a fresh whole-diff session; no prior chunk artifacts are used.
 Finalization is attempted once per route; its failure also moves to fallback or
 reports the review as unavailable. No partial/error output counts as success.
-A completed SDK run gets one full reread only for `diff_not_fully_read`.
-Formatting problems use same-session completion, then fallback without
-restarting the full review. `invalid_output_after_complete_diff_read`
+Only the `diff_not_fully_read` reason triggers that reread. Formatting problems
+use same-session completion, then fallback without restarting the full review.
+`invalid_output_after_complete_diff_read`
 identifies this format-repair path; a schema-valid result is never eligible for
 tool-free format repair solely because a later diff-anchor or file-write check failed.
 Reports distinguish finalization from the original attempt and show complete

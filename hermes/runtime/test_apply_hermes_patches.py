@@ -162,6 +162,51 @@ class ApplyHermesPatchesTests(unittest.TestCase):
         self.assertEqual(patches["# Local Hermes: digest feedback callback"][0],
                          "plugins/platforms/telegram/adapter.py")
 
+    def test_cron_helper_install_is_idempotent_and_rejects_symlink_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_dir = root / "source"
+            source_dir.mkdir()
+            script = source_dir / "apply-hermes-patches.py"
+            source = source_dir / "cron_shared_model.py"
+            source.write_bytes(MODULE_PATH.with_name("cron_shared_model.py").read_bytes())
+            install = root / "install"
+            target = install / "cron/shared_model.py"
+            target.parent.mkdir(parents=True)
+            with mock.patch.object(apply_hermes_patches, "__file__", str(script)), \
+                    mock.patch.object(apply_hermes_patches, "HERMES_AGENT_DIR", install):
+                self.assertTrue(apply_hermes_patches._install_cron_helper("cron_shared_model.py", "shared_model.py"))
+                self.assertEqual(target.read_bytes(), source.read_bytes())
+                self.assertFalse(apply_hermes_patches._install_cron_helper("cron_shared_model.py", "shared_model.py"))
+
+                outside = root / "outside.py"
+                outside.write_text("keep")
+                target.unlink()
+                target.symlink_to(outside)
+                with self.assertRaisesRegex(apply_hermes_patches.PatchMigrationError, "must not be a symlink"):
+                    apply_hermes_patches._install_cron_helper("cron_shared_model.py", "shared_model.py")
+                self.assertEqual(outside.read_text(), "keep")
+
+    def test_main_reports_cron_helper_installation_errors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            migrations = {
+                name: mock.Mock(return_value=0)
+                for name in ("_migrate_installed_model_global", "_migrate_installed_gw_restart",
+                             "_migrate_installed_doctor_handler", "_migrate_installed_telegram_usage_ranking",
+                             "_migrate_installed_portal_info")
+            }
+            install = mock.Mock(side_effect=[False, OSError("disk full")])
+            output, errors = io.StringIO(), io.StringIO()
+            with mock.patch.multiple(
+                apply_hermes_patches,
+                HERMES_AGENT_DIR=Path(directory), _PATCHES=(),
+                _load_patch_state=mock.Mock(return_value={}), _save_patch_state=mock.Mock(),
+                _install_cron_helper=install, **migrations,
+            ), mock.patch("sys.stdout", output), mock.patch("sys.stderr", errors):
+                self.assertEqual(apply_hermes_patches.main(), 1)
+            self.assertIn("cannot install cron helper: disk full", errors.getvalue())
+            self.assertIn("cron/shared_model.py", errors.getvalue())
+
     def test_backup_only_cli_dispatch_and_repeat(self):
         script_path = str(MODULE_PATH)
         with tempfile.TemporaryDirectory() as directory:

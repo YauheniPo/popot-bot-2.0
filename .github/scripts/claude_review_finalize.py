@@ -176,7 +176,7 @@ def prepare(execution_file, proof_file):
             'read_coverage': json.dumps(coverage)}
 
 
-def extract(execution_file, proof_file, output_file):
+def extract(execution_file, proof_file):
     proof_path = context._validate_cli_path(proof_file, 'proof file')
     if proof_path.stat().st_size > 4096:
         raise RuntimeError('invalid_finalization_proof')
@@ -208,8 +208,20 @@ def extract(execution_file, proof_file, output_file):
     if not text:
         raise RuntimeError('finalization_missing_result')
     normalized = context._normalized_claude_result(text, binding['base_sha'], binding['head_sha'])
-    output = context._validate_cli_path(output_file, 'output file')
-    output.write_text(normalized + '\n', encoding='utf-8')
+    runner_temp = Path(os.environ.get('RUNNER_TEMP', ''))
+    if not runner_temp.is_absolute() or not runner_temp.is_dir():
+        raise RuntimeError('runner_temp_unavailable')
+    output = runner_temp.resolve() / 'claude-review-result.json'
+    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=output.parent,
+                                     prefix='.claude-review-result-', delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(normalized + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+            os.replace(temporary, output)
+        finally:
+            temporary.unlink(missing_ok=True)
     print('Validated the resumed Claude review against its session, revisions and complete diff-read evidence.')
 
 
@@ -218,7 +230,6 @@ def main():
     parser.add_argument('command', choices=('plan', 'prepare', 'extract'))
     parser.add_argument('--execution-file', type=Path)
     parser.add_argument('--proof-file', type=Path)
-    parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     if args.command == 'plan':
         with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
@@ -232,9 +243,7 @@ def main():
         with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
             output.writelines(f'{key}={value}\n' for key, value in values.items())
     else:
-        if args.output is None:
-            parser.error('--output is required for extract')
-        extract(args.execution_file, args.proof_file, args.output)
+        extract(args.execution_file, args.proof_file)
 
 
 if __name__ == '__main__':

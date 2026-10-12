@@ -36,6 +36,7 @@ class CompetitorDigestTests(unittest.TestCase):
                     "prompt": "Run ~/.hermes/competitor-watches/fitness.json",
                     "deliver": "preserve", "model": "personal-model"}
         self.clock = mock.patch.object(self.module, "utc_now", return_value=NOW)
+        self.utc_now = self.module.utc_now
         self.clock.start()
         self.addCleanup(self.clock.stop)
         self.guards = []
@@ -45,6 +46,57 @@ class CompetitorDigestTests(unittest.TestCase):
         guard = self.module.begin_run(self.job, self.home)
         self.guards.append(guard)
         return guard
+
+    def test_utc_clock_is_timezone_aware(self):
+        self.assertEqual(self.utc_now().utcoffset().total_seconds(), 0)
+
+    def test_secure_path_rejects_parent_traversal(self):
+        with self.assertRaisesRegex(ValueError, "path outside watch directory"):
+            self.module.secure_path(self.home, self.home / ".." / "outside.json")
+
+    def test_read_json_rejects_non_regular_files(self):
+        directory = self.home / "not-a-json-file"
+        self.module.os.mkfifo(directory)
+        with self.assertRaisesRegex(ValueError, "JSON must be a regular file"):
+            self.module.read_json(directory)
+
+    def test_write_json_rejects_oversized_data_and_cleans_failed_atomic_write(self):
+        target = self.home / "state.json"
+        with self.assertRaisesRegex(ValueError, "JSON exceeds size limit"):
+            self.module.write_json(target, {"payload": "x" * self.module.MAX_JSON_BYTES})
+        with mock.patch.object(self.module.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                self.module.write_json(target, {"safe": True})
+        self.assertEqual(list(self.home.glob(".competitor-*")), [])
+
+    def test_begin_run_accepts_a_single_skill_string(self):
+        guard = self.module.begin_run(dict(self.job, skills=self.module.SKILL), self.home)
+        self.guards.append(guard)
+        self.assertIsNotNone(guard)
+
+    def test_pending_window_is_preserved_and_future_cutoff_releases_lock(self):
+        state_path = self.home / "competitor-watches/fitness/.publication.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text(json.dumps({
+            "config": self.module.config(self.watch),
+            "last_cutoff": "2026-09-30T00:00:00Z",
+            "pending_window_start": "2026-09-20T00:00:00Z",
+        }))
+        guard = self.begin()
+        self.assertEqual(guard.window_start.isoformat(), "2026-09-20T00:00:00+00:00")
+        guard.close()
+
+        state_path.write_text(json.dumps({
+            "config": self.module.config(self.watch),
+            "last_cutoff": "2030-01-01T00:00:00Z",
+        }))
+        with self.assertRaisesRegex(ValueError, "checkpoint is in the future"):
+            self.begin()
+        state_path.write_text(json.dumps({
+            "config": self.module.config(self.watch),
+            "last_cutoff": "2026-09-30T00:00:00Z",
+        }))
+        self.assertIsNotNone(self.begin())
 
     def record(self, guard, complete=False, events=True):
         return {
@@ -256,6 +308,7 @@ class CompetitorDigestTests(unittest.TestCase):
             lambda r: r["events"][0].update(primary_evidence_urls=[]),
             lambda r: r["events"][0].update(primary_evidence_urls=["javascript:alert(1)"]),
             lambda r: r["events"][0].update(primary_evidence_urls=["https://token@example.com/"]),
+            lambda r: r["events"][0].update(primary_evidence_urls=["https://other.example/news"]),
             lambda r: r["events"][0].update(company="Unwatched"),
             lambda r: r["events"][0].update(category="invented"),
             lambda r: r["events"][0].update(event_date="2027-01-01"),
@@ -265,6 +318,8 @@ class CompetitorDigestTests(unittest.TestCase):
             lambda r: r.update(window_start="2000-01-01T00:00:00Z"),
             lambda r: r.update(coverage_complete="true"),
             lambda r: r.update(errors=[{"error": "not text"}]),
+            lambda r: r.update(greeting="g" * 161),
+            lambda r: r.update(events=None),
         ]
         guard = self.begin()
         for mutate in mutations:
@@ -274,6 +329,27 @@ class CompetitorDigestTests(unittest.TestCase):
                 self.save(guard, record)
                 with self.assertRaises(ValueError):
                     guard.finalize()
+
+    def test_coverage_rejects_unknown_or_duplicate_company_rows(self):
+        coverage = self.record(self.begin())["coverage"]
+        coverage[0]["company"] = "Unwatched"
+        with self.assertRaisesRegex(ValueError, "unknown or duplicate coverage company"):
+            self.module.validate_coverage(coverage, {"BetterMe", "Simple"})
+
+    def test_follow_up_is_validated_and_rendered(self):
+        guard = self.begin()
+        record = self.record(guard)
+        record["events"][0]["follow_up"] = "Check next quarter"
+        self.save(guard, record)
+        self.assertIn("Follow-up: Check next quarter", guard.finalize())
+
+    def test_nonhashable_json_fields_become_validation_errors(self):
+        guard = self.begin()
+        record = self.record(guard)
+        record["coverage"][0]["status"] = []
+        self.save(guard, record)
+        with self.assertRaisesRegex(self.module.ReportValidationError, "invalid JSON field type"):
+            guard.finalize()
 
     def test_same_watch_concurrent_run_is_rejected_and_lock_released(self):
         guard = self.begin()

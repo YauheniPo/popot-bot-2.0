@@ -52,6 +52,33 @@ class WorkflowTests(unittest.TestCase):
             if 'anthropics/claude-code-action@' in step.get('uses', ''):
                 self.assertIn('steps.claude_models.outputs.', step['with']['claude_args'])
 
+    def test_incomplete_diff_retries_even_when_sdk_attempt_failed(self):
+        step_list = self.jobs['claude-code-plugin-review']['steps']
+        steps = {step.get('id'): step for step in step_list}
+        for step_id, action_id, readiness_id, prepare_id in (
+            ('claude_review_primary_retry', 'claude_review_primary', 'primary_ready', 'prepare_claude_primary_finalize'),
+            ('claude_review_fallback_retry', 'claude_review_fallback', 'fallback_ready', 'prepare_claude_fallback_finalize'),
+        ):
+            with self.subTest(step=step_id):
+                condition = steps[step_id]['if']
+                self.assertIn('!cancelled()', condition)
+                self.assertIn(f"steps.claude_models.outputs.{readiness_id} == 'true'", condition)
+                self.assertIn(f"steps.{prepare_id}.outputs.reason == 'diff_not_fully_read'", condition)
+                self.assertIn(f"steps.extract_{action_id}.outcome != 'success'", condition)
+                self.assertNotIn(f"steps.{action_id}.outcome == 'success'", condition)
+
+        for step_id, action_id, prepare_id in (
+            ('wait_primary_retry', 'claude_review_primary', 'prepare_claude_primary_finalize'),
+            ('wait_fallback_retry', 'claude_review_fallback', 'prepare_claude_fallback_finalize'),
+        ):
+            expected_name = ('Wait before retrying the primary' if step_id == 'wait_primary_retry'
+                             else 'Wait before retrying the fallback')
+            step = next(step for step in step_list if step.get('name', '').startswith(expected_name))
+            with self.subTest(step=step_id):
+                condition = step['if']
+                self.assertIn(f"steps.{prepare_id}.outputs.reason == 'diff_not_fully_read'", condition)
+                self.assertNotIn(f"steps.{action_id}.outcome == 'success'", condition)
+
     def test_owner_tooling_rule_resolves_all_untrusted_cases_to_main(self):
         owner = 'owner'
         sha = 'a' * 40
