@@ -319,7 +319,8 @@ jobs:
             the policy passes and candidate validation are complete.
 
             Inspect all changes in this diff systematically. Perform correctness/security,
-            deployment/operations, and tests/API-contract passes, then validate every
+            deployment/operations, and tests/API-contract passes on each segment,
+            then check interactions between related segments and validate every
             candidate against the exact diff. Report at most five findings for the
             whole pull request. Before reporting one, prove an exact changed anchor,
             a causal path to failure, concrete user/security/operational impact, and
@@ -338,19 +339,19 @@ jobs:
             ${{ steps.claude_diff.outputs.read_plan }}
             An oversized single line gets its own page; disclose incomplete scope
             if Read truncates it instead of treating that page as fully read.
-            Use the exact offset and limit of each page with Read. Batch independent
-            page calls in the same turn. Track completed pages; do not reread them
-            or search other files until all diff pages have been read. A failed
-            page is incomplete; do not silently skip it. Final JSON
+            Use the exact offset and limit of each page with Read. Treat every
+            page as a separate diff segment and read all segments before analyzing
+            them or searching other files. Batch independent page calls in the
+            same turn. Track completed pages; do not reread them. A failed page
+            is incomplete; do not silently skip it. Final JSON
             is rejected unless the execution log contains a successful Read result
             with numbered lines from that exact file; failed reads and empty pages
             do not count. Disclose any unreviewed scope; reading a page alone does
             not establish complete coverage. Use Read,
             Glob, or Grep only when additional repository context is necessary. Batch
             independent reads in the same turn. Do not call Bash, Agent/subagents,
-            GitHub/MCP tools or skills. StructuredOutput is the SDK-owned output
-            sink, authorized only to submit the final review object. Reserve
-            enough turns to validate candidates and return the final structured result;
+            GitHub/MCP tools or skills. Reserve enough turns to validate candidates
+            and return the final JSON response;
             do not continue exploring after every changed file has been covered.
             Do not put progress narration such as "page 1 of N" or a list of
             remaining files in the final summary. The publisher reports execution
@@ -362,14 +363,19 @@ jobs:
             materially new evidence or a substantially better fix. Do not post or
             reply to GitHub comments yourself.
 
-            Submit the final review through the SDK's StructuredOutput tool using
-            the supplied JSON Schema. All required fields must be present:
-            summary, findings and thread_verdicts. Use empty arrays only when
-            there are no supported findings or applicable threads. Do not replace
-            the structured result with prose, omit supported findings or invent
-            evidence to satisfy the schema. The deterministic adapter validates
-            the contract, full diff-read evidence and changed anchors before any
-            result can be published.
+            Return exactly one JSON object as the final response, without Markdown
+            or surrounding prose. It must contain only summary (a non-empty
+            string), findings and thread_verdicts. Each finding must contain
+            exactly severity (P1 or P2), path (repository-relative), side (LEFT
+            or RIGHT), line (positive integer), title, impact and fix (non-empty
+            strings). There can be at most five findings. Each thread verdict
+            must contain exactly thread_id (at most 200 characters), verdict
+            (confirmed, fixed, rejected or needs_human) and reason. There can be
+            at most 200 thread verdicts. Use empty arrays only when there are no
+            supported findings or applicable threads. Do not omit supported
+            findings or invent evidence to satisfy the contract. The deterministic
+            adapter validates the JSON contract, full diff-read evidence and
+            changed anchors before publication.
 
           # Keep Claude read-only and remove unavailable tools from model context,
           # rather than merely denying them after they consume a turn. Keep the
@@ -379,9 +385,8 @@ jobs:
           claude_args: |
             --max-turns 48
             --model "${{ steps.claude_models.outputs.primary_model }}"
-            --json-schema '${{ steps.claude_diff.outputs.json_schema }}'
             --tools "Read,Glob,Grep"
-            --allowedTools "Read,Glob,Grep,StructuredOutput"
+            --allowedTools "Read,Glob,Grep"
             --disallowedTools "mcp__github_comment__*,mcp__github_ci__*,mcp__github_inline_comment__*,mcp__github_file_ops__*"
           # Full tool traces remain off unless a repository owner explicitly
           # enables the debug variable; they can contain sensitive output.
@@ -533,9 +538,8 @@ jobs:
           claude_args: |
             --max-turns 48
             --model "${{ steps.claude_models.outputs.primary_model }}"
-            --json-schema '${{ steps.claude_diff.outputs.json_schema }}'
             --tools "Read,Glob,Grep"
-            --allowedTools "Read,Glob,Grep,StructuredOutput"
+            --allowedTools "Read,Glob,Grep"
             --disallowedTools "mcp__github_comment__*,mcp__github_ci__*,mcp__github_inline_comment__*,mcp__github_file_ops__*"
           show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
         env:
@@ -605,9 +609,8 @@ jobs:
           claude_args: |
             --max-turns 48
             --model "${{ steps.claude_models.outputs.fallback_model }}"
-            --json-schema '${{ steps.claude_diff.outputs.json_schema }}'
             --tools "Read,Glob,Grep"
-            --allowedTools "Read,Glob,Grep,StructuredOutput"
+            --allowedTools "Read,Glob,Grep"
             --disallowedTools "mcp__github_comment__*,mcp__github_ci__*,mcp__github_inline_comment__*,mcp__github_file_ops__*"
           show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
         env:
@@ -740,9 +743,8 @@ jobs:
           claude_args: |
             --max-turns 48
             --model "${{ steps.claude_models.outputs.fallback_model }}"
-            --json-schema '${{ steps.claude_diff.outputs.json_schema }}'
             --tools "Read,Glob,Grep"
-            --allowedTools "Read,Glob,Grep,StructuredOutput"
+            --allowedTools "Read,Glob,Grep"
             --disallowedTools "mcp__github_comment__*,mcp__github_ci__*,mcp__github_inline_comment__*,mcp__github_file_ops__*"
           show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
         env:

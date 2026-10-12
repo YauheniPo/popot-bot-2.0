@@ -120,6 +120,26 @@ class FinalizeTests(unittest.TestCase):
         events[-1].update(subtype='success', is_error=False)
         self.assertEqual(self.prepare(events)['reason'], 'invalid_output_after_complete_diff_read')
 
+    def test_missing_structured_output_can_be_recovered_only_after_complete_diff_read(self):
+        events = self.events()
+        events[-1].update(subtype='success', is_error=True)
+        prepared = self.prepare(events)
+        self.assertEqual(prepared['ready'], 'true')
+        self.assertEqual(prepared['reason'], 'missing_structured_output_after_complete_diff_read')
+        self.execution.write_text(json.dumps(self.completed()))
+        with contextlib.redirect_stdout(io.StringIO()):
+            finalize.extract(self.execution, self.proof)
+        self.assertEqual(json.loads(self.output.read_text()), REVIEW)
+
+        self.proof.unlink()
+        self.output.unlink()
+        events[2]['message']['content'][0]['content'] = '1→diff --git a/app.py b/app.py'
+        prepared = self.prepare(events)
+        self.assertEqual(prepared['ready'], 'false')
+        self.assertEqual(prepared['reason'], 'diff_not_fully_read')
+        self.assertFalse(self.proof.exists())
+        self.assertFalse(self.output.exists())
+
     def test_paginated_reads_preserve_blank_lines_and_indentation(self):
         self.diff.write_text('first\n\n\tindented\nlast\n')
         events = self.events()
@@ -185,7 +205,7 @@ class FinalizeTests(unittest.TestCase):
                 self.assertFalse(self.proof.exists())
 
     def test_other_sdk_failures_and_missing_logs_never_resume(self):
-        for subtype in ('error_during_execution', 'success', 'error_max_budget_usd'):
+        for subtype in ('error_during_execution', 'error_max_budget_usd'):
             events = self.events()
             events[-1]['subtype'] = subtype
             with self.subTest(subtype=subtype):
@@ -231,7 +251,7 @@ class FinalizeTests(unittest.TestCase):
         self.assertEqual(visited, list(range(len(lines))))
 
     def test_read_plan_honors_line_limit_and_isolates_oversized_lines_without_dropping_them(self):
-        self.diff.write_text('\n' * 650)
+        self.diff.write_text('\n' * 1500)
         plan = finalize.read_plan()
         self.assertGreater(len(plan['pages']), 1)
         self.assertTrue(all(page['limit'] <= finalize.MAX_READ_PAGE_LINES for page in plan['pages']))
@@ -239,6 +259,13 @@ class FinalizeTests(unittest.TestCase):
         self.assertEqual(finalize.read_plan()['pages'], [
             {'offset': 1, 'limit': 1}, {'offset': 2, 'limit': 1}, {'offset': 3, 'limit': 1},
         ])
+
+    def test_large_diff_read_plan_uses_few_bounded_pages(self):
+        self.diff.write_text('\n'.join('x' * 54 for _ in range(5575)) + '\n')
+        plan = finalize.read_plan()
+        self.assertEqual(plan['total_lines'], 5575)
+        self.assertLessEqual(len(plan['pages']), 8)
+        self.assertTrue(all(page['limit'] <= finalize.MAX_READ_PAGE_LINES for page in plan['pages']))
 
     def test_proof_write_failure_has_a_safe_distinct_reason(self):
         with mock.patch.object(finalize.os, 'replace', side_effect=OSError('private path')):

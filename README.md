@@ -317,23 +317,23 @@ Calls without results, empty pages and reads of unrelated files do not count;
 Failure triggers the existing retry/fallback path.
 This is an input-access check, not a guarantee of exhaustive or accurate review.
 Claude Code caps each full attempt at ten minutes and individual SDK requests
-at 90 seconds. Every full SDK attempt receives the exact review JSON Schema via
-`--json-schema`; the adapter reads and independently validates `structured_output`.
-Ordinary final JSON remains supported for older execution logs. An invalid
-structured result cannot be replaced with ordinary prose or a different result.
+at 90 seconds. Full attempts request one JSON object in the final response
+instead of relying on the SDK's optional `StructuredOutput` tool:
+Anthropic-compatible gateways can report success while omitting that field,
+causing the action to reject an otherwise recoverable response. The adapter
+accepts terminal result text or `structured_output`, then validates the same
+strict review contract locally. Invalid JSON or schema never reaches publication.
 When a run reaches `error_max_turns` or `error_max_structured_output_retries`,
-or completes successfully with invalid review JSON, one two-minute completion
-with up to three turns can resume that same session, only if its execution log proves every
-line of the exact diff was returned successfully. The saved proof contains only
+reports SDK success without structured output, or completes with invalid review
+JSON, one two-minute completion with up to three turns can resume that same
+session, only if its execution log proves every line of the exact diff was
+returned successfully. The saved proof contains only
 the session ID, base/head SHAs and diff hash. Resumed output must match that proof,
 contain no exploration calls, and pass the existing JSON and diff-anchor validation.
-Completion explicitly asks for ordinary final JSON without `--json-schema`:
-resumed gateway sessions can report SDK success without `structured_output`,
-which otherwise makes the action reject the run before the adapter validates it.
-The deterministic review contract remains mandatory, including for ordinary JSON.
-The only allowed call is the SDK-owned `StructuredOutput` sink whose input must
-equal the terminal structured result; Read, Glob, Grep, subprocesses, MCP and
-subagents remain forbidden during completion.
+Completion explicitly asks for ordinary final JSON and uses no tools. Read,
+Glob, Grep, subprocesses, MCP and subagents remain forbidden during completion;
+the deterministic review contract, complete diff evidence and changed-anchor
+checks remain mandatory.
 Finalization writes atomically to the fixed `claude-review-result.json` in
 `RUNNER_TEMP`; the CLI and model cannot choose the destination. Other SDK errors
 and timeouts go directly to the ready fallback. Partial reads cannot authorize
@@ -355,9 +355,10 @@ run once in the same job. The direct reviewer runs first; Observable runs after
 Claude. Each reviewer retains its own provider configuration.
 For the complete diff, the adapter calculates exact, non-overlapping Read pages
 bounded by bytes and lines and supplies their offsets and limits in the prompt.
-A single line exceeding the byte target occupies its own page and is never
-dropped; a truncated Read still cannot prove full diff coverage. Pages are input
-pagination within one session, not separate review jobs. The model must read
+A page is capped at 48,000 bytes and 900 lines. A single line exceeding the byte
+target occupies its own page and is never dropped; a truncated Read still cannot
+prove full diff coverage. These pages are input pagination within one session,
+not separate review jobs. The model must read
 all pages before exploring supporting files; the plan alone is not proof of
 reading or a completed review.
 Primary and fallback full attempts each have a ten-minute deadline and 48-turn
