@@ -337,11 +337,11 @@ class FinalizeTests(unittest.TestCase):
 
     def test_workflow_provides_same_read_plan_to_each_full_review_attempt(self):
         workflow = yaml.safe_load((Path(__file__).parents[1] / 'workflows/pr-ai-review.yml').read_text())
-        steps = {step.get('id'): step for step in workflow['jobs']['claude-review-chunks']['steps']}
-        self.assertIn('claude_review_chunks.py select', steps['claude_diff']['run'])
+        steps = {step.get('id'): step for step in workflow['jobs']['claude-code-plugin-review']['steps']}
+        self.assertIn('claude_review_full.py prepare', steps['claude_diff']['run'])
         for route in ('primary', 'primary_retry', 'fallback', 'fallback_retry'):
             self.assertIn('steps.claude_diff.outputs.read_plan', steps['claude_review_' + route]['with']['prompt'])
-        report = steps['report_claude_chunk_unavailable']
+        report = steps['report_claude_review_unavailable']
         for route in ('PRIMARY', 'FALLBACK'):
             self.assertIn('outputs.read_coverage', report['env'][route + '_DIFF_READ'])
             self.assertIn('$' + route + '_DIFF_READ', report['run'])
@@ -367,7 +367,7 @@ class FinalizeTests(unittest.TestCase):
 
     def test_workflow_finalization_is_bounded_and_cannot_publish_without_validation(self):
         workflow = yaml.safe_load((Path(__file__).parents[1] / 'workflows/pr-ai-review.yml').read_text())
-        job = workflow['jobs']['claude-review-chunks']
+        job = workflow['jobs']['claude-code-plugin-review']
         steps = {step.get('id'): step for step in job['steps']}
         for route in ('primary', 'fallback'):
             with self.subTest(route=route):
@@ -379,7 +379,7 @@ class FinalizeTests(unittest.TestCase):
                 self.assertIn('--disallowedTools "mcp__*"', step['with']['claude_args'])
                 self.assertIn('--max-turns 3', step['with']['claude_args'])
                 self.assertLessEqual(step['timeout-minutes'], 2)
-                self.assertLessEqual(steps['claude_review_' + route]['timeout-minutes'], 5)
+                self.assertLessEqual(steps['claude_review_' + route]['timeout-minutes'], 10)
                 self.assertIn('extract_claude_review_' + route + '_finalize.outcome', steps['publish_claude_review']['if'])
         self.assertIn('extract_claude_review_primary_finalize.outcome', steps['claude_review_fallback']['if'])
         cleanup = steps['clear_claude_fallback_execution']
