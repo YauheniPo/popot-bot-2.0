@@ -523,11 +523,11 @@ jobs:
           prompt: &claude_finalize_prompt |
             Finish the review already performed in this session using only the
             evidence you have read. Do not explore further or call Read, Glob,
-            Grep, Bash, subagents or MCP tools. Only StructuredOutput is authorized
-            to submit the final object matching the supplied JSON Schema.
+            Grep, Bash, subagents or MCP tools. Return the review object directly
+            as your final JSON text; do not depend on an SDK output tool.
             If your previous final response was not valid review JSON, correct
             its format without discarding supported findings or thread verdicts.
-            Submit exactly the final JSON object with summary, findings and
+            Return exactly the final JSON object with summary, findings and
             thread_verdicts from the original review contract. Include no
             Markdown, progress narration or additional keys. Include only
             confirmed findings; do not invent evidence or claim completion if
@@ -544,7 +544,6 @@ jobs:
             --resume "${{ steps.prepare_claude_primary_finalize.outputs.session_id }}"
             --max-turns 3
             --model "${{ needs.claude-review-plan.outputs.primary_model }}"
-            --json-schema '${{ steps.claude_diff.outputs.json_schema }}'
             --tools=
             --disallowedTools "mcp__*"
           show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}
@@ -750,7 +749,6 @@ jobs:
             --resume "${{ steps.prepare_claude_fallback_finalize.outputs.session_id }}"
             --max-turns 3
             --model "${{ needs.claude-review-plan.outputs.fallback_model }}"
-            --json-schema '${{ steps.claude_diff.outputs.json_schema }}'
             --tools=
             --disallowedTools "mcp__*"
           show_full_output: ${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}

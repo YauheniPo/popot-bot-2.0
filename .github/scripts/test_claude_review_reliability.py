@@ -118,6 +118,36 @@ class ReliabilityTests(unittest.TestCase):
                 finalize.extract(self.execution, self.proof, self.output)
             self.assertFalse(self.output.exists())
 
+    def test_resumed_json_content_cannot_select_the_output_path(self):
+        victim = self.root / 'victim.txt'
+        victim.write_text('original')
+        events = self.events({'subtype': 'error_max_turns', 'is_error': True})
+        self.execution.write_text(json.dumps(events))
+        self.assertEqual(finalize.prepare(self.execution, self.proof)['ready'], 'true')
+        document = {**REVIEW, 'summary': str(victim)}
+        completed = [events[0], {**self.events()[-1], 'structured_output': None,
+                                'result': json.dumps(document)}]
+        self.execution.write_text(json.dumps(completed))
+        with mock.patch.object(finalize.context, '_changed_paths', return_value=set()):
+            finalize.extract(self.execution, self.proof, self.output)
+        self.assertEqual(json.loads(self.output.read_text()), document)
+        self.assertEqual(victim.read_text(), 'original')
+
+    def test_chunk_report_content_cannot_select_the_output_path(self):
+        victim = self.root / 'victim.txt'
+        victim.write_text('original')
+        document = {**REVIEW, 'summary': str(victim)}
+        result = self.root / 'review.json'
+        result.write_text(json.dumps(document))
+        unit = {'index': 1, 'start': 1, 'end': 2, 'sha256': chunks._digest(self.diff.read_text())}
+        with mock.patch.object(chunks, 'plan', return_value={'binding': {}, 'chunks': [unit]}), \
+                mock.patch.object(sys, 'argv', [chunks.__file__, 'record', '--index', '1',
+                    '--sha256', unit['sha256'], '--result', str(result), '--output', str(self.output)]), \
+                mock.patch.dict(os.environ, {'CLAUDE_REVIEW_PROVIDER': 'fixture', 'CLAUDE_REVIEW_MODEL': 'fixture/model'}):
+            chunks.main()
+        self.assertEqual(json.loads(self.output.read_text())['result'], document)
+        self.assertEqual(victim.read_text(), 'original')
+
     def test_cli_diagnostic_names_invalid_schema_without_echoing_response(self):
         events = self.events({'structured_output': {'summary': 'private-response'}})
         self.execution.write_text(json.dumps(events))
@@ -195,12 +225,17 @@ class WorkflowReliabilityTests(unittest.TestCase):
         self.assertEqual(job['strategy']['max-parallel'], 1)
         for route in ('primary', 'primary_retry', 'fallback', 'fallback_retry', 'primary_finalize', 'fallback_finalize'):
             step = steps['claude_review_' + route]
-            self.assertIn('--json-schema', step['with']['claude_args'])
-            self.assertIn('steps.claude_diff.outputs.json_schema', step['with']['claude_args'])
             if route.endswith('finalize'):
+                # PR #75: resume returned terminal success without the optional
+                # structured_output field. The action rejects --json-schema
+                # before our proof/JSON validator can inspect that result.
+                self.assertNotIn('--json-schema', step['with']['claude_args'])
+                self.assertIn('Return exactly', step['with']['prompt'])
                 self.assertIn('--max-turns 3', step['with']['claude_args'])
                 self.assertIn('--tools=', step['with']['claude_args'])
             else:
+                self.assertIn('--json-schema', step['with']['claude_args'])
+                self.assertIn('steps.claude_diff.outputs.json_schema', step['with']['claude_args'])
                 self.assertIn('steps.claude_diff.outputs.thread_context', step['with']['prompt'])
                 self.assertIn('steps.claude_diff.outputs.sonar_context', step['with']['prompt'])
                 self.assertIn('StructuredOutput', step['with']['prompt'])
