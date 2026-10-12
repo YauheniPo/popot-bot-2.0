@@ -49,7 +49,7 @@ def validate_fallback_routes(routes, allowed):
                 or '://' in model):
             raise FallbackCommandError('Недопустимый provider/model. Провайдер должен быть разрешён в deploy-конфиге.')
         if provider == 'openrouter' and not model.endswith(FREE_SUFFIX):
-            raise FallbackCommandError('Для OpenRouter разрешены только модели с суффиксом FREE_SUFFIX.')
+            raise FallbackCommandError(f'Для OpenRouter разрешены только модели с суффиксом {FREE_SUFFIX}.')
         identity = (provider, model)
         if identity in seen:
             raise FallbackCommandError('Список содержит повторный маршрут.')

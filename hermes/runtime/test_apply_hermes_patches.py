@@ -544,9 +544,15 @@ class ApplyHermesPatchesTests(unittest.TestCase):
         helper = patches["# Local Hermes: qualified provider/model target"].split(
             "\ndef parse_model_switch_args", 1)[0]
         namespace = {}
+        aliases = {"nim": "nvidia"}
+
+        def normalize(name):
+            return aliases.get(name, name)
+
+        known_providers = {"nous", "nvidia", "ollama-cloud", "openrouter", "anthropic", "openai"}
         provider_module = SimpleNamespace(
-            get_provider=lambda name, **_kwargs: object() if name in {"nous", "nvidia"} else None,
-            normalize_provider=lambda name: name,
+            get_provider=lambda name, **_kwargs: object() if normalize(name) in known_providers else None,
+            normalize_provider=normalize,
         )
         with mock.patch.dict(sys.modules, {
             "hermes_cli": mock.Mock(), "hermes_cli.providers": provider_module,
@@ -557,6 +563,14 @@ class ApplyHermesPatchesTests(unittest.TestCase):
                              ("meituan/longcat-2.0:free", "nous"))
             self.assertEqual(parse("nvidia/nvidia/nemotron-3-super", ""),
                              ("nvidia/nemotron-3-super", "nvidia"))
+            self.assertEqual(parse("nim/nvidia/nemotron-3-super", ""),
+                             ("nvidia/nemotron-3-super", "nvidia"))
+            self.assertEqual(parse("ollama-cloud/deepseek-ai/deepseek-v4.1-flash", ""),
+                             ("deepseek-ai/deepseek-v4.1-flash", "ollama-cloud"))
+            self.assertEqual(parse("openrouter/anthropic/claude-sonnet-4", ""),
+                             ("anthropic/claude-sonnet-4", "openrouter"))
+            self.assertEqual(parse("anthropic/claude-sonnet-4", ""),
+                             ("claude-sonnet-4", "anthropic"))
             self.assertEqual(parse("inclusionai/ling-3.0:free", ""),
                              ("inclusionai/ling-3.0:free", ""))
             self.assertEqual(parse("nous/model", "openrouter"),
@@ -595,7 +609,7 @@ class ApplyHermesPatchesTests(unittest.TestCase):
             )
 
         provider_module = SimpleNamespace(
-            get_provider=lambda name, **_kwargs: object() if name == "nous" else None,
+            get_provider=lambda name, **_kwargs: object() if name in {"nous", "ollama-cloud"} else None,
             normalize_provider=lambda name: name,
         )
         namespace = {
@@ -607,9 +621,9 @@ class ApplyHermesPatchesTests(unittest.TestCase):
         }):
             exec(source, namespace)
             request = namespace["parse_model_switch_args"](
-                "nous/meituan/longcat-2.0:free --global")
-        self.assertEqual(request.target, "meituan/longcat-2.0:free")
-        self.assertEqual(request.explicit_provider, "nous")
+                "ollama-cloud/deepseek-ai/deepseek-v4.1-flash --global")
+        self.assertEqual(request.target, "deepseek-ai/deepseek-v4.1-flash")
+        self.assertEqual(request.explicit_provider, "ollama-cloud")
         self.assertEqual(request.scope, "global")
         global_handler = next(new for _path, marker, _old, new in apply_hermes_patches._PATCHES
                               if marker == "# Local Hermes: model_global handler")

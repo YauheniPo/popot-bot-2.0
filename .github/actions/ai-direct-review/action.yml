@@ -44,11 +44,11 @@ inputs:
   fallback_model:
     description: "Fallback model"
     required: false
-    default: "nvidia/nemotron-3-ultra-550b-a55b:free"
+    default: "poolside/laguna-s-2.1:free"
   fallback_provider:
     description: "Fallback provider"
     required: false
-    default: "openrouter"
+    default: "nous"
   rpm:
     description: "Requests per minute limit"
     required: false

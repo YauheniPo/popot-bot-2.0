@@ -242,7 +242,7 @@ The default routes, checked against catalogs and live CI on 2026-10-09–10, are
 
 | Reviewer | Primary | Fallback |
 | --- | --- | --- |
-| Direct API | `nvidia / nvidia/nemotron-3-super-120b-a12b` | `openrouter / google/gemma-4-31b-it:free` |
+| Direct API | `nvidia / nvidia/nemotron-3-super-120b-a12b` | `nous / poolside/laguna-s-2.1:free` |
 | Claude Code | `openrouter / cohere/north-mini-code:free` | `nous / poolside/laguna-s-2.1:free` |
 | Observable | `openrouter / cohere/north-mini-code:free` | `nous / poolside/laguna-s-2.1:free` |
 
@@ -251,13 +251,15 @@ retiring a route.
 Direct API uses the existing NVIDIA NIM key. A full review of PR #70 at
 `ad4a03b` validated both chunks and all 14 eligible files in 112.9 provider seconds
 in [run 37979872334](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/37979872334).
+Its Nous fallback is the free Laguna Chat Completions route; it completed a full
+review through Nous in [run 37927539259](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/37927539259).
 Claude Code uses North through OpenRouter; it completed and published the SDK
 review in about 94 seconds in
 [run 37931661305, attempt 7](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/37931661305/attempts/7).
 Its fallback is the free Laguna route through
-[Nous Portal](https://portal.nousresearch.com/models).
-The same Laguna Chat Completions route repeatedly streamed unfinished reviews
-to the deadline, so it is no longer the Direct API default. NVIDIA's hosted
+[Nous Portal](https://portal.nousresearch.com/models). The Direct API uses this
+route only after a successful live preflight; provider availability and free
+quota can still prevent fallback. NVIDIA's hosted
 Chat Completions endpoint does not replace an Anthropic Messages route for Claude.
 OpenRouter routes share its account-level free-model quota; switching only the
 model cannot bypass an exhausted account quota. Claude and Observable share the

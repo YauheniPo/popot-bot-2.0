@@ -103,6 +103,7 @@ class WorkflowTests(unittest.TestCase):
                     terms = []
                     for clause in group.split(' && '):
                         operands = clause.split(' == ')
+                        operands = [token.strip().strip('() ') for token in operands]
                         operands = [values[token] if token in values else token.strip("'") for token in operands]
                         terms.append(operands[0] == operands[1] if len(operands) == 2 else operands[0])
                     alternatives.append(terms[-1] if all(terms) else False)

@@ -568,7 +568,12 @@ with tempfile.TemporaryDirectory() as directory:
         self.assertIs(plain["doctor"], runner._handle_doctor_command)
         self.assertNotIn("model_global", plain)
         handler = runner._gateway_idle_command_handlers()["model_global"]
-        for args, expected in (("", "/model --global"), ("example --provider local", "/model example --provider local --global")):
+        for args, expected in (
+            ("", "/model --global"),
+            ("example --provider local", "/model example --provider local --global"),
+            ("ollama-cloud/deepseek-ai/deepseek-v4.1-flash",
+             "/model ollama-cloud/deepseek-ai/deepseek-v4.1-flash --global"),
+        ):
             event = SimpleNamespace(text="/model_global", get_command_args=lambda: args)
             self.assertEqual(asyncio.run(handler(event)), "handled")
             self.assertEqual(event.text, expected)

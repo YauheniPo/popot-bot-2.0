@@ -2268,6 +2268,10 @@ sudo -u hermes -H /home/hermes/.local/bin/hermes cron status
 именно его, а оставшаяся часть передаётся как model ID. Например,
 `/model nous/stepfun/step-3.7-flash:free` выбирает provider `nous` и модель
 `stepfun/step-3.7-flash:free`; `/model_global` делает тот же выбор глобальным.
+Для Ollama Cloud, например, можно использовать
+`/model ollama-cloud/deepseek-ai/deepseek-v4.1-flash`; первая часть выбирает
+provider, а весь остаток, включая вложенный `deepseek-ai/`, передаётся как model
+ID. Тот же маршрут задаётся глобально через `/model_global`.
 Буквальная команда `/global-model` не существует: используйте `/model_global`
 или `/model <provider>/<model> --global`. Если нужна модель агрегатора, чей
 vendor-префикс совпадает с именем встроенного провайдера, явно укажите

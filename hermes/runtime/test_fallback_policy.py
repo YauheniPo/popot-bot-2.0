@@ -95,6 +95,15 @@ class FallbackPolicyTests(unittest.TestCase):
                  {'provider': 'nous', 'model': 'backup'}]
         self.assertEqual(self.policy.filter_fallback_routes(self.config, chain), chain[1:])
 
+    def test_openrouter_validation_error_shows_the_required_suffix(self):
+        with self.assertRaises(self.policy.FallbackCommandError) as error:
+            self.policy.validate_fallback_routes(
+                [{'provider': 'openrouter', 'model': 'paid-model'}],
+                self.config['fallback_policy']['allowed_providers'],
+            )
+        self.assertIn(':free', str(error.exception))
+        self.assertNotIn('FREE_SUFFIX', str(error.exception))
+
     def test_chat_edits_preserve_exclusions_and_list_explains_skipped_routes(self):
         excluded = [{'provider': 'openrouter', 'model': 'blocked:free'}]
         self.config['fallback_policy']['excluded_routes'] = excluded

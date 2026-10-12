@@ -200,7 +200,7 @@ def extract(execution_file, proof_file):
         if result.get('subtype') != 'success' or result.get('is_error') is not False:
             raise RuntimeError('finalization_failed')
 
-def _ensure_no_tool_use_except_structured(events, result):
+    def _ensure_no_tool_use_except_structured(events, result):
         for event in events:
             for block in context._sdk_content(event, 'assistant'):
                 if block.get('type') == 'tool_use':
@@ -209,6 +209,7 @@ def _ensure_no_tool_use_except_structured(events, result):
                                or block.get('input') != result['structured_output'])
                     if invalid:
                         raise RuntimeError('finalization_used_tools')
+
     def _write_normalized_output(text, binding):
         normalized = context._normalized_claude_result(text, binding['base_sha'], binding['head_sha'])
         runner_temp = Path(os.environ.get('RUNNER_TEMP', ''))
@@ -219,7 +220,7 @@ def _ensure_no_tool_use_except_structured(events, result):
                                          prefix='.claude-review-result-', delete=False) as stream:
             temporary = Path(stream.name)
             try:
-                stream.write(normalized + '\\n')
+                stream.write(normalized + '\n')
                 stream.flush()
                 os.fsync(stream.fileno())
                 os.replace(temporary, output)
