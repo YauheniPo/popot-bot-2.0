@@ -540,6 +540,10 @@ CI запускает тот же сценарий в строгом режим�
 bash hermes/check.sh --require-tools
 ```
 
+Workflow устанавливает `prometheus` (для `promtool`), `ripgrep` и `shellcheck`
+без рекомендуемых apt-пакетов, которые проверкам не нужны. Лимит job — 30 минут,
+чтобы медленная загрузка с Ubuntu mirror не обрывала сами проверки.
+
 После установки на Debian/Ubuntu VPS дополнительно:
 
 ```bash
