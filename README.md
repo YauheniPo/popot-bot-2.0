@@ -213,13 +213,13 @@ Model IDs are passed verbatim, and model access is checked using the CI key.
 
 ```text
 Direct API
-  → Claude Code Plugin (serial SDK chunks → validated aggregate)
+  → Claude Code Plugin (one complete diff → validated publication)
   → Observable Messages Review
 ```
 
 The reviewers run **sequentially**, including when an earlier reviewer fails.
-Observable waits for Claude's chunks, retries and publication gate, avoiding
-overlapping requests against their shared provider quota. `1` runs only Direct
+Observable waits for Claude's complete review, recovery and publication gate,
+avoiding overlapping requests against their shared provider quota. `1` runs only Direct
 API; `2` runs both agent reviewers
 without Direct API. Owner-only, same-repository and non-draft safeguards apply
 to all three. A newer revision cancels the previous run.
@@ -309,14 +309,14 @@ All three publishers suppress repeats of settled reviewer findings, including
 Observable threads. That read-only recognition does not let Claude or Direct API
 automatically resolve Observable threads. Direct API includes its diff chunks in
 the model request. Both agent reviewers require successful diff-read evidence:
-Claude Code checks every numbered line of each exact diff chunk against matching
+Claude Code checks every numbered line of the complete exact diff against matching
 successful Read results in its SDK execution file before accepting any
-primary/retry/fallback result. A valid JSON answer after reading only part of a
-chunk is rejected.
+primary/retry/fallback result. A valid JSON answer after reading only part of the
+diff is rejected.
 Calls without results, empty pages and reads of unrelated files do not count;
 Failure triggers the existing retry/fallback path.
 This is an input-access check, not a guarantee of exhaustive or accurate review.
-Claude Code caps each full attempt at five minutes and individual SDK requests
+Claude Code caps each full attempt at ten minutes and individual SDK requests
 at 90 seconds. Every full SDK attempt receives the exact review JSON Schema via
 `--json-schema`; the adapter reads and independently validates `structured_output`.
 Ordinary final JSON remains supported for older execution logs. An invalid
@@ -342,39 +342,36 @@ when the runner stops it at the step deadline. It is distinct from
 of reading the complete diff. The unavailable-review report includes matched
 and total line counts, Read call counts and failed Read counts. It never includes
 source lines or tool error bodies. Neither condition permits finalization.
-Before SDK review, the adapter splits the exact diff into chunks bounded by
-`CLAUDE_REVIEW_CHUNK_MAX_BYTES` (default 32000) and
-`CLAUDE_REVIEW_CHUNK_MAX_LINES` (default 600). `PR_REVIEW_MAX_CHUNKS` caps the
-matrix at 100 by default and cannot exceed 100. An oversized line or excess
-chunks fails planning explicitly; no diff is shortened or omitted.
-The SDK diff uses three unchanged context lines per hunk instead of twenty,
-preserving every addition and deletion. The reviewer reads full constructs and
-supporting files when needed. Preflight, thread collection and advisory Sonar
-collection each run once before the matrix. Each chunk receives only threads
-and Sonar issues for its files; threads on unchanged files are assigned to the
-first chunk once. Context reads are batched and successful reads are not repeated.
-The matrix uses `max-parallel: 1` and independent sessions. After a chunk exhausts
-its bounded recovery paths, `fail-fast: true` cancels the remaining chunks:
-complete publication is already impossible, so their provider requests would
-only waste quota. The aggregate job still reports unavailability and fails.
-Checks use readable names such as `Claude review — chunk 2`.
-A continuation inside a file/hunk includes its
-original file header and LEFT/RIGHT line context in the prompt.
-For each chunk, the adapter calculates exact, non-overlapping
-Read pages bounded by bytes and lines and supplies their offsets and limits in
-the prompt. A single line exceeding the byte target occupies its own page and
-is never dropped; a truncated Read still cannot prove full diff coverage.
-The model must read all pages before exploring supporting files;
-the plan itself is not proof of reading or a completed review. The existing
-turn and wall-clock limits apply per chunk.
-Only normalized, validated results and sanitized route metadata enter the
-one-day artifacts; SDK traces and credentials are not uploaded. Aggregation
-recomputes the full plan and requires exactly one successful result for every
-chunk, bound to the base/head SHAs, full diff hash, run ID and run attempt.
-Duplicate findings are merged and conflicting thread verdicts become
-`needs_human`. Publication happens once after full coverage is validated.
-Use **Re-run all jobs** to repeat this workflow: results from a previous attempt
-cannot fill missing chunks when only failed jobs are rerun.
+Claude Code runs in one `claude-code-plugin-review` job and one whole-diff
+session per attempt. There is no chunk matrix, artifact collection or aggregate
+publication job. The exact base/head diff is never truncated or shortened to
+fit a review; empty or oversized input fails preparation explicitly.
+The SDK diff uses three unchanged context lines per hunk, preserving every
+addition and deletion. The reviewer reads full constructs and supporting files
+when needed. Preflight, thread collection and advisory Sonar collection each
+run once in the same job. The direct reviewer runs first; Observable runs after
+Claude. Each reviewer retains its own provider configuration.
+For the complete diff, the adapter calculates exact, non-overlapping Read pages
+bounded by bytes and lines and supplies their offsets and limits in the prompt.
+A single line exceeding the byte target occupies its own page and is never
+dropped; a truncated Read still cannot prove full diff coverage. Pages are input
+pagination within one session, not separate review jobs. The model must read
+all pages before exploring supporting files; the plan alone is not proof of
+reading or a completed review.
+Primary and fallback full attempts each have a ten-minute deadline and 48-turn
+limit; same-session completion has a two-minute deadline and three-turn limit.
+A ready fallback is used after primary failure. One full reread per route is
+allowed only after a successful SDK run with incomplete diff-read evidence;
+timeouts and SDK failures never trigger repeated full attempts on the same
+route. The job has a 55-minute overall deadline, including setup, preflight,
+bounded recovery and publication. Free-provider availability is not guaranteed;
+an unavailable provider produces an explicit failed review, never a clean result.
+Only a schema-valid result with complete matching Read evidence can reach the
+deterministic publisher. SDK traces and credentials are not uploaded as
+artifacts. Publication occurs once, and the job then verifies the marker for
+the exact revision and run. One missing page, invalid result or publication
+failure fails the Claude job and the review completion gate.
+A rerun prepares a fresh whole-diff session; no prior chunk artifacts are used.
 Finalization is attempted once per route; its failure also moves to fallback or
 reports the review as unavailable. No partial/error output counts as success.
 A completed SDK run gets one full reread only for `diff_not_fully_read`.
@@ -382,13 +379,14 @@ Formatting problems use same-session completion, then fallback without
 restarting the full review. `invalid_output_after_complete_diff_read`
 identifies this format-repair path; a schema-valid result is never eligible for
 tool-free format repair solely because a later diff-anchor or file-write check failed.
-Reports distinguish finalization from the original attempt. These guards use
+Reports distinguish finalization from the original attempt and show complete
+diff-read counts. These guards use
 the step's original `outcome`, because `continue-on-error` can make a failed
 attempt's `conclusion` show success. After diagnostics, an unconditional
 non-cancelled completion step fails the stable `claude-code-plugin-review` job
 unless the complete result was published and its revision marker verified.
 The aggregate review gate also requires that publication. A provider outage,
-missing chunk, partial read or publication error cannot turn into a clean review.
+incomplete diff, partial read or publication error cannot turn into a clean review.
 Failed validation logs an allow-listed reason such as `invalid_review_keys`,
 `invalid_finding_value`, `finalization_session_mismatch` or `diff_not_fully_read`.
 Provider text, credentials, source contents and arbitrary exception messages

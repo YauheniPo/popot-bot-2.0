@@ -1,29 +1,11 @@
 from __future__ import annotations
 
 import unittest
-import json
 
 from review_execution import ExecutionReport, claude_execution_report
 
 
 class ExecutionReportTest(unittest.TestCase):
-    def test_claude_chunk_reports_preserve_actual_routes_and_attempts(self):
-        report = claude_execution_report({
-            'CLAUDE_REVIEW_CHUNK_EXECUTIONS': json.dumps([
-                {'CLAUDE_REVIEW_PROVIDER': 'openrouter', 'CLAUDE_REVIEW_PRIMARY_MODEL': 'primary',
-                 'CLAUDE_REVIEW_PRIMARY_OUTCOME': 'success', 'CLAUDE_REVIEW_PRIMARY_VALIDATION': 'success'},
-                {'CLAUDE_REVIEW_PROVIDER': 'nous', 'CLAUDE_REVIEW_PRIMARY_PROVIDER': 'openrouter',
-                 'CLAUDE_REVIEW_FALLBACK_PROVIDER': 'nous', 'CLAUDE_REVIEW_PRIMARY_MODEL': 'primary',
-                 'CLAUDE_REVIEW_FALLBACK_MODEL': 'backup', 'CLAUDE_REVIEW_PRIMARY_OUTCOME': 'failure',
-                 'CLAUDE_REVIEW_FALLBACK_OUTCOME': 'success', 'CLAUDE_REVIEW_FALLBACK_VALIDATION': 'success'},
-            ]),
-        })
-        self.assertEqual([a.unit for a in report.attempts], ['chunk 1/2', 'chunk 2/2', 'chunk 2/2'])
-        self.assertEqual([a.number for a in report.attempts], [1, 2, 3])
-        rendered = report.summary() + report.details()
-        for expected in ('primary/openrouter', 'backup', 'fallback/nous', 'openrouter', 'Attempts: 3 · Validated: 2 · Retries: 1'):
-            self.assertIn(expected, rendered)
-
     def test_reports_ollama_reasoning_effort_from_actual_payload(self):
         report = ExecutionReport("ollama-cloud", "https://ollama.com/v1/chat/completions", "model")
         attempt = report.begin({"model": "model", "reasoning_effort": "none"})

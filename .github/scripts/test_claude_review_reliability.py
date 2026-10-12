@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import runpy
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -11,7 +12,7 @@ from unittest import mock
 
 import yaml
 
-import claude_review_chunks as chunks
+import claude_review_full as full
 import claude_review_finalize as finalize
 import pr_review_context as context
 
@@ -54,8 +55,68 @@ class ReliabilityTests(unittest.TestCase):
     def test_structured_sdk_result_is_extracted_with_full_read_evidence(self):
         self.execution.write_text(json.dumps(self.events()))
         with mock.patch.object(context, '_changed_paths', return_value=set()):
-            chunks.extract(self.execution, self.output)
+            full.extract(self.execution, self.output)
         self.assertEqual(json.loads(self.output.read_text()), REVIEW)
+
+    def test_full_review_preparation_keeps_large_diff_without_chunking(self):
+        diff = 'diff --git a/app.py b/app.py\n' + '+changed line\n' * 4000
+        with mock.patch.object(full, 'exact_diff', return_value=diff):
+            prepared = full.prepare()
+        self.assertEqual(self.diff.read_text(), diff)
+        self.assertEqual(prepared['read_plan']['total_lines'], 4001)
+        self.assertEqual(sum(page['limit'] for page in prepared['read_plan']['pages']), 4001)
+
+    def test_full_review_rejects_partial_read_and_accepts_complete_result(self):
+        events = self.events()
+        events[2]['message']['content'][0]['content'] = '1→first'
+        self.execution.write_text(json.dumps(events))
+        with self.assertRaises(finalize.IncompleteDiffRead):
+            full.extract(self.execution, self.output)
+        self.assertFalse(self.output.exists())
+        self.execution.write_text(json.dumps(self.events()))
+        with mock.patch.object(full.context, '_changed_paths', return_value=set()):
+            full.extract(self.execution, self.output)
+        self.assertEqual(json.loads(self.output.read_text()), REVIEW)
+
+    def test_full_review_cli_prepares_the_exact_git_revision_and_validates_all_pages(self):
+        def git(*args):
+            return subprocess.check_output(['git', '-C', str(self.root), *args], text=True).strip()
+        git('init', '-q')
+        git('config', 'user.email', 'fixture@example.com')
+        git('config', 'user.name', 'Fixture')
+        source = self.root / 'app.py'
+        source.write_text('old\n')
+        git('add', 'app.py')
+        git('commit', '-qm', 'base')
+        base = git('rev-parse', 'HEAD')
+        source.write_text('changed\n' * 4000)
+        git('add', 'app.py')
+        git('commit', '-qm', 'head')
+        head = git('rev-parse', 'HEAD')
+        outputs = self.root / 'github-output'
+        env = {**os.environ, 'BASE_SHA': base, 'HEAD_SHA': head, 'GITHUB_OUTPUT': str(outputs)}
+        command = [sys.executable, full.__file__]
+        prepared = subprocess.run([*command, 'prepare'], cwd=self.root, env=env, capture_output=True, text=True)
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        expected = subprocess.check_output(['git', '-C', str(self.root), 'diff', '--unified=3', base, head, '--', '.'], text=True)
+        self.assertEqual(self.diff.read_text(), expected)
+        plan = json.loads(outputs.read_text().splitlines()[0].split('=', 1)[1])
+        self.assertGreater(len(plan['pages']), 1)
+        events = self.events()
+        events[2]['message']['content'][0]['content'] = '\n'.join(
+            f'{index}→{line}' for index, line in enumerate(expected.splitlines(), 1))
+        self.execution.write_text(json.dumps(events))
+        result = subprocess.run([*command, 'extract', '--execution-file', str(self.execution),
+                                 '--output', str(self.output)], cwd=self.root, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.output.read_text()), REVIEW)
+        events[-1]['is_error'] = True
+        self.execution.write_text(json.dumps(events))
+        self.output.unlink()
+        result = subprocess.run([*command, 'extract', '--execution-file', str(self.execution),
+                                 '--output', str(self.output)], cwd=self.root, env=env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.output.exists())
 
     def test_invalid_structured_output_cannot_hide_behind_valid_ordinary_text(self):
         event = self.events({'structured_output': {'summary': 'private-response'},
@@ -133,27 +194,22 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(json.loads(self.output.read_text()), document)
         self.assertEqual(victim.read_text(), 'original')
 
-    def test_chunk_report_content_cannot_select_the_output_path(self):
+    def test_full_review_content_cannot_select_the_output_path(self):
         victim = self.root / 'victim.txt'
         victim.write_text('original')
         document = {**REVIEW, 'summary': str(victim)}
-        result = self.root / 'review.json'
-        result.write_text(json.dumps(document))
-        unit = {'index': 1, 'start': 1, 'end': 2, 'sha256': chunks._digest(self.diff.read_text())}
-        with mock.patch.object(chunks, 'plan', return_value={'binding': {}, 'chunks': [unit]}), \
-                mock.patch.object(sys, 'argv', [chunks.__file__, 'record', '--index', '1',
-                    '--sha256', unit['sha256'], '--result', str(result), '--output', str(self.output)]), \
-                mock.patch.dict(os.environ, {'CLAUDE_REVIEW_PROVIDER': 'fixture', 'CLAUDE_REVIEW_MODEL': 'fixture/model'}):
-            chunks.main()
-        self.assertEqual(json.loads(self.output.read_text())['result'], document)
+        self.execution.write_text(json.dumps(self.events({'structured_output': document})))
+        with mock.patch.object(full.context, '_changed_paths', return_value=set()):
+            full.extract(self.execution, self.output)
+        self.assertEqual(json.loads(self.output.read_text()), document)
         self.assertEqual(victim.read_text(), 'original')
 
     def test_cli_diagnostic_names_invalid_schema_without_echoing_response(self):
         events = self.events({'structured_output': {'summary': 'private-response'}})
         self.execution.write_text(json.dumps(events))
-        with mock.patch.object(sys, 'argv', [chunks.__file__, 'extract', '--execution-file', str(self.execution),
+        with mock.patch.object(sys, 'argv', [full.__file__, 'extract', '--execution-file', str(self.execution),
                                            '--output', str(self.output)]), self.assertRaises(SystemExit) as failure:
-            runpy.run_path(chunks.__file__, run_name='__main__')
+            runpy.run_path(full.__file__, run_name='__main__')
         self.assertIn('invalid_review_keys', str(failure.exception))
         self.assertNotIn('private-response', str(failure.exception))
         self.assertFalse(self.output.exists())
@@ -169,46 +225,10 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(schema['properties']['findings']['maxItems'], 5)
         self.assertEqual(schema['properties']['thread_verdicts']['maxItems'], 200)
 
-    def test_scoped_context_includes_continuations_and_rename_sides(self):
-        diff = ('diff --git a/old.py b/new.py\nsimilarity index 80%\n'
-                'rename from old.py\nrename to new.py\n--- a/old.py\n+++ b/new.py\n'
-                '@@ -1,2 +1,2 @@\n-old\n+new\n same\n'
-                'diff --git a/other.py b/other.py\n--- a/other.py\n+++ b/other.py\n'
-                '@@ -1 +1 @@\n-before\n+after\n')
-        self.assertEqual(chunks.scope_paths(diff, 9, 10), {'old.py', 'new.py'})
-        self.assertEqual(chunks.scope_paths(diff, 10, 16), {'old.py', 'new.py', 'other.py'})
-        threads = [{'thread_id': 'a', 'path': 'new.py'}, {'thread_id': 'b', 'path': 'other.py'}]
-        sonar = {'source': 'SonarCloud', 'issues': [{'path': 'new.py'}, {'path': 'other.py'}]}
-        scoped = chunks.scoped_context({'new.py'}, json.dumps(threads), json.dumps(sonar))
-        self.assertEqual(scoped['thread_context'], threads[:1])
-        self.assertEqual(scoped['sonar_context']['issues'], sonar['issues'][:1])
-
-    def test_scoped_context_handles_quoted_paths_and_binary_or_mode_only_changes(self):
-        diff = ('diff --git "a/path\\tname.py" "b/path\\tname.py"\n'
-                'old mode 100644\nnew mode 100755\n'
-                'diff --git a/image.png b/image.png\nBinary files a/image.png and b/image.png differ\n')
-        self.assertEqual(chunks.scope_paths(diff, 2, 5), {'path\tname.py', 'image.png'})
-        quoted = 'diff --git "a/space b/path.py" "b/space b/path.py"\nold mode 100644\nnew mode 100755\n'
-        self.assertEqual(chunks.scope_paths(quoted, 2, 3), {'space b/path.py'})
-        unicode_path = 'diff --git "a/Ã©\\t.py" "b/Ã©\\t.py"\nold mode 100644\nnew mode 100755\n'
-        self.assertEqual(chunks.scope_paths(unicode_path, 1, 3), {'Ã©\t.py'})
-        octal_path = 'diff --git "a/caf\\303\\251.py" "b/caf\\303\\251.py"\nold mode 100644\nnew mode 100755\n'
-        self.assertEqual(chunks.scope_paths(octal_path, 1, 3), {'café.py'})
-
-    def test_unchanged_threads_are_assigned_once_and_context_errors_fail_closed(self):
-        threads = [{'path': 'app.py'}, {'path': 'unchanged.py'}, {'path': 'other.py'}]
-        first = chunks.scoped_context({'app.py'}, json.dumps(threads), '{"issues":[]}', {'app.py', 'other.py'})
-        later = chunks.scoped_context({'other.py'}, json.dumps(threads), '{"issues":[]}')
-        self.assertEqual(first['thread_context'], threads[:2])
-        self.assertEqual(later['thread_context'], threads[2:])
-        for thread_json, sonar_json in (('{}', '{}'), ('[]', '[]'), ('[]', '{"issues":{}}')):
-            with self.subTest(threads=thread_json), self.assertRaises(RuntimeError):
-                chunks.scoped_context({'app.py'}, thread_json, sonar_json)
-
     def test_compact_diff_retains_all_changed_lines_and_uses_exact_revisions(self):
         response = mock.Mock(stdout='fixture diff')
-        with mock.patch.object(chunks.subprocess, 'run', return_value=response) as command:
-            self.assertEqual(chunks.exact_diff(), 'fixture diff')
+        with mock.patch.object(full.subprocess, 'run', return_value=response) as command:
+            self.assertEqual(full.exact_diff(), 'fixture diff')
         arguments = command.call_args.args[0]
         self.assertIn('--unified=3', arguments)
         self.assertIn('a' * 40, arguments)
@@ -216,13 +236,24 @@ class ReliabilityTests(unittest.TestCase):
 
 
 class WorkflowReliabilityTests(unittest.TestCase):
+    def test_claude_review_runs_one_complete_diff_in_one_job(self):
+        workflow = yaml.safe_load((Path(__file__).parents[1] / 'workflows/pr-ai-review.yml').read_text())
+        jobs = workflow['jobs']
+        self.assertNotIn('claude-review-plan', jobs)
+        self.assertNotIn('claude-review-chunks', jobs)
+        job = jobs['claude-code-plugin-review']
+        self.assertEqual(job['needs'], 'direct-api-review')
+        self.assertNotIn('strategy', job)
+        steps = {step.get('id'): step for step in job['steps']}
+        self.assertIn('claude_review_full.py prepare', steps['claude_diff']['run'])
+        self.assertIn('claude_review_full.py extract', steps['extract_claude_review_primary']['run'])
+        self.assertIn('steps.publish_claude_review.outcome', steps['require_claude_completion']['env']['PUBLICATION_OUTCOME'])
+
     def test_sdk_output_and_context_are_bounded_for_every_route(self):
         workflow = yaml.safe_load((Path(__file__).parents[1] / 'workflows/pr-ai-review.yml').read_text())
-        job = workflow['jobs']['claude-review-chunks']
+        job = workflow['jobs']['claude-code-plugin-review']
         steps = {step.get('id'): step for step in job['steps']}
-        self.assertIn('matrix.index', job['name'])
-        self.assertTrue(job['strategy']['fail-fast'])
-        self.assertEqual(job['strategy']['max-parallel'], 1)
+        self.assertNotIn('strategy', job)
         for route in ('primary', 'primary_retry', 'fallback', 'fallback_retry', 'primary_finalize', 'fallback_finalize'):
             step = steps['claude_review_' + route]
             if route.endswith('finalize'):
@@ -236,20 +267,16 @@ class WorkflowReliabilityTests(unittest.TestCase):
             else:
                 self.assertIn('--json-schema', step['with']['claude_args'])
                 self.assertIn('steps.claude_diff.outputs.json_schema', step['with']['claude_args'])
-                self.assertIn('steps.claude_diff.outputs.thread_context', step['with']['prompt'])
-                self.assertIn('steps.claude_diff.outputs.sonar_context', step['with']['prompt'])
+                self.assertIn('steps.review_threads.outputs.context', step['with']['prompt'])
+                self.assertIn('steps.sonar_context.outputs.context', step['with']['prompt'])
                 self.assertIn('StructuredOutput', step['with']['prompt'])
         for source in ('review_threads', 'sonar_context'):
-            plan_steps = {step.get('id'): step for step in workflow['jobs']['claude-review-plan']['steps']}
-            self.assertIn(source, plan_steps)
-            self.assertNotIn(source, steps)
-            self.assertIn("steps.claude_models.outputs.primary_ready == 'true'", plan_steps[source]['if'])
-            self.assertIn("steps.claude_models.outputs.fallback_ready == 'true'", plan_steps[source]['if'])
-        self.assertEqual(job['permissions'], {'contents': 'read'})
-        aggregate = workflow['jobs']['claude-code-plugin-review']
-        self.assertIn('always()', aggregate['if'])
-        self.assertIn('!cancelled()', aggregate['if'])
-        self.assertIn('claude-review-chunks', aggregate['needs'])
+            self.assertIn(source, steps)
+            self.assertIn("steps.claude_models.outputs.primary_ready == 'true'", steps[source]['if'])
+            self.assertIn("steps.claude_models.outputs.fallback_ready == 'true'", steps[source]['if'])
+        self.assertEqual(job['permissions'], {'contents': 'read', 'issues': 'write', 'pull-requests': 'write'})
+        self.assertIn('always()', job['if'])
+        self.assertIn('!cancelled()', job['if'])
 
 
 if __name__ == '__main__':
