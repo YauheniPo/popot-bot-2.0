@@ -105,7 +105,7 @@ runs:
         fetch-depth: 1
         path: reviewer
         persist-credentials: false
-        ref: ${{ github.event.pull_request.user.login == github.repository_owner && github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner && github.triggering_actor == github.repository_owner && github.event.pull_request.head.sha || 'main' }}
+        ref: ${{ (github.event.pull_request.user.login == github.repository_owner && github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner && github.triggering_actor == github.repository_owner && github.event.pull_request.head.sha) || 'main' }}
 
     # Target checkout (code under review)
     - name: Check out the review target

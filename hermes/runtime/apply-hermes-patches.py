@@ -72,6 +72,8 @@ _RETIRED_MODEL_GLOBAL = "model" + chr(45) + "global"
 _GW_RESTART = "gw" + chr(45) + "restart"
 _STATE_FILE = ".local-hermes-patches.json"
 
+_TOOL_GUARDRAILS_PATH = "agent/tool_guardrails.py"
+_GATEWAY_SLASH_COMMANDS_MODEL_PATH = "gateway/slash_commands_model.py"
 
 class PatchMigrationError(RuntimeError):
     """Raised when an installed local patch has an unknown legacy shape."""
@@ -653,7 +655,7 @@ def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000, *, output_fil
         '_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid", "gateway.lock"}\n',
     ),
     (
-        "agent/tool_guardrails.py",
+        _TOOL_GUARDRAILS_PATH,
         _PREFIX + " actionable file mutation warning",
         '''            if warnings and exact_count >= self.config.exact_failure_warn_after:
                 return self._decide("warn", "repeated_exact_failure_warning", tool_name, exact_count, signature)
@@ -668,7 +670,7 @@ def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000, *, output_fil
 ''',
     ),
     (
-        "agent/tool_guardrails.py",
+        _TOOL_GUARDRAILS_PATH,
         _PREFIX + " file mutation retry guidance",
         '''    if tool_name == "terminal":
         return common + (
@@ -703,7 +705,7 @@ def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000, *, output_fil
 ''',
     ),
     (
-        "agent/tool_guardrails.py",
+        _TOOL_GUARDRAILS_PATH,
         _PREFIX + " search budget warning before exhaustion",
         '''        return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
 ''',
