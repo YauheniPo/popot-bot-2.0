@@ -192,10 +192,11 @@ when no validated fallback is available.
 
 For the standard Portal connection, direct review uses Chat Completions. Do not
 assume a Portal catalog entry also works for inference or supports Anthropic
-Messages: on 2026-10-02, the Fin free
-route returned HTTP 404 in CI, while Sante passed tool/JSON checks and completed
-the Claude review. Claude and Observable require an Anthropic-compatible route;
-NVIDIA's direct Chat Completions endpoint does not supply one. Claude runs a short smoke test before starting:
+Messages: on 2026-10-02, the Fin free route returned HTTP 404 in CI. Sante passed
+then, but its Nous tools probe returned HTTP 404 on 2026-10-13, so that old pass
+is not current availability evidence. Claude and Observable require an
+Anthropic-compatible route; NVIDIA's direct Chat Completions endpoint does not
+supply one. Claude runs a short smoke test before starting:
 it checks tool calling and the exact review JSON contract in separate requests.
 The Claude smoke test uses up to two attempts with a 90-second timeout per check, so an
 unavailable or incompatible model is reported before the full Claude run.
@@ -213,12 +214,14 @@ Model IDs are passed verbatim, and model access is checked using the CI key.
 
 ```text
 Direct API
-  ├── Claude Code Plugin
-  └── Observable Messages Review
+  → Claude Code Plugin (one complete diff → validated publication)
+  → Observable Messages Review
 ```
 
-The two agent jobs start **in parallel after Direct API finishes**, including
-when Direct API fails. `1` runs only Direct API; `2` runs both agent reviewers
+The reviewers run **sequentially**, including when an earlier reviewer fails.
+Observable waits for Claude's complete review, recovery and publication gate,
+avoiding overlapping requests against their shared provider quota. `1` runs only Direct
+API; `2` runs both agent reviewers
 without Direct API. Owner-only, same-repository and non-draft safeguards apply
 to all three. A newer revision cancels the previous run.
 
@@ -233,15 +236,15 @@ must be set separately in `OBSERVABLE_REVIEW_BASE_URL`; it never inherits
 `CLAUDE_REVIEW_BASE_URL` with another provider's credentials. Their publication identities are
 fixed in code: `ClaudeCodePlugin` and `ObservableMessagesReview`. No additional
 identity variables or credentials are required. Each publishes its own PR
-summary and inline findings. The observable reviewer never resolves or replies
-to other reviewers' threads, avoiding races between the parallel jobs.
+summary and inline findings. The Observable reviewer never resolves or replies
+to other reviewers' threads, so it cannot mutate their review discussions.
 
-The default routes, checked against catalogs and live CI on 2026-10-09–10, are:
+The workflow defaults and current repository Variables are:
 
 | Reviewer | Primary | Fallback |
 | --- | --- | --- |
-| Direct API | `nvidia / nvidia/nemotron-3-super-120b-a12b` | `openrouter / google/gemma-4-31b-it:free` |
-| Claude Code | `openrouter / cohere/north-mini-code:free` | `nous / poolside/laguna-s-2.1:free` |
+| Direct API | `nvidia / nvidia/nemotron-3-super-120b-a12b` | `nous / poolside/laguna-s-2.1:free` |
+| Claude Code | `ollama-cloud / deepseek-v4.1-flash:cloud` | `nous / poolside/laguna-s-2.1:free` |
 | Observable | `openrouter / cohere/north-mini-code:free` | `nous / poolside/laguna-s-2.1:free` |
 
 Repository Actions variables override these YAML defaults; update both when
@@ -249,25 +252,28 @@ retiring a route.
 Direct API uses the existing NVIDIA NIM key. A full review of PR #70 at
 `ad4a03b` validated both chunks and all 14 eligible files in 112.9 provider seconds
 in [run 37979872334](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/37979872334).
-Claude Code uses North through OpenRouter; it completed and published the SDK
-review in about 94 seconds in
-[run 37931661305, attempt 7](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/37931661305/attempts/7).
-Its fallback is the free Laguna route through
-[Nous Portal](https://portal.nousresearch.com/models).
-The same Laguna Chat Completions route repeatedly streamed unfinished reviews
-to the deadline, so it is no longer the Direct API default. NVIDIA's hosted
-Chat Completions endpoint does not replace an Anthropic Messages route for Claude.
+Its Nous fallback completed a full review in
+[run 37927539259](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/37927539259).
+Claude Code now uses `deepseek-v4.1-flash:cloud` through Ollama Cloud; CI passed
+tool and JSON preflight and published a complete review in
+[run 38275628147, attempt 4](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/38275628147/attempts/4).
+Ollama lists this model at $0.30 per million input tokens and $1.20 per million
+output tokens at peak rates ([pricing](https://ollama.com/pricing)); the fallback
+remains the free Laguna route through [Nous Portal](https://portal.nousresearch.com/models).
+Observable retains its independent North/OpenRouter route. NVIDIA's hosted Chat
+Completions endpoint does not replace an Anthropic Messages route for Claude.
 OpenRouter routes share its account-level free-model quota; switching only the
-model cannot bypass an exhausted account quota. Claude and Observable share the
-North route; their Nous fallback has a separate provider quota. The NVIDIA Direct API route also has an
-independent provider quota. No paid replacement is selected
+model cannot bypass an exhausted account quota. No paid fallback is selected
 automatically. Catalog presence is not a successful inference check; the CI
 preflight and validated review result remain the operational evidence.
 
-Direct and owner-approved review load trusted reviewer scripts from `main`.
-Changes to those scripts in a feature branch take effect there only after they
-reach `main`; model/provider Actions variables apply to newly started runs
-without requiring that merge. Manual GitHub and Azure launch-form defaults
+For same-repository PRs authored, triggered and rerun by the repository owner,
+review tooling and policy come from the immutable PR head SHA, including Direct
+API and owner-approved review. Script fixes take effect in that PR before merge.
+Other authors, forks and manual dispatches load reviewer tooling from `main`;
+the outsider PR checkout remains review data and cannot select executable tooling.
+Ordinary component build/test jobs still test the PR code. Model/provider Actions
+variables apply to newly started runs. Manual GitHub and Azure launch-form defaults
 remain separate from repository variables, as described below.
 
 Direct API gives HTTP 429 one retry after a 60-second reset window, then switches
@@ -290,9 +296,11 @@ instead of retrying before the reset. During backoff, CI logs a heartbeat every
 15 seconds explicitly saying that no provider request is in flight. A confirmed
 OpenRouter free-model daily limit skips another free model on the same provider;
 an upstream/model limit still permits the configured fallback. No unconfigured
-model or paid OpenRouter route is selected. When no route remains usable due to limits,
-remaining chunks are skipped and the job fails rather than reporting a clean
-review. The expandable execution history separates request duration from retry
+model or paid OpenRouter route is selected. When no route remains usable due to
+limits, remaining chunks are skipped and the runner reports failure. The
+corroborating job still publishes partial results or failure diagnostics and
+does not gate Direct API or Claude Code; it never advertises that partial run
+as a complete review. The expandable execution history separates request duration from retry
 waiting and shows sanitized limit diagnostics, while the summary shows validated,
 failed and skipped chunk counts. Partial results remain in the JSON report but
 are not published as a complete review. A bare 429 does not prove daily quota
@@ -302,44 +310,93 @@ All three publishers suppress repeats of settled reviewer findings, including
 Observable threads. That read-only recognition does not let Claude or Direct API
 automatically resolve Observable threads. Direct API includes its diff chunks in
 the model request. Both agent reviewers require successful diff-read evidence:
-Claude Code checks a matching Read call and non-error, numbered tool result in
-its SDK execution file before accepting any primary/retry/fallback result.
+Claude Code checks every numbered line of the complete exact diff against matching
+successful Read results in its SDK execution file before accepting any
+primary/retry/fallback result. A valid JSON answer after reading only part of the
+diff is rejected.
 Calls without results, empty pages and reads of unrelated files do not count;
-failure triggers the existing retry/fallback path with `diff_not_read`.
+Failure triggers the existing retry/fallback path.
 This is an input-access check, not a guarantee of exhaustive or accurate review.
-Claude Code caps each full attempt at five minutes and individual SDK requests
-at 90 seconds. When a run reaches `error_max_turns`, or completes successfully
-but its final text fails the review JSON schema, one two-minute, tool-free
-completion can resume that same session, only if its execution log proves every
-line of the exact diff was returned successfully. The saved proof contains only
+Claude Code caps each full attempt at ten minutes and individual SDK requests
+at 90 seconds. Full attempts request one JSON object in the final response
+instead of relying on the SDK's optional `StructuredOutput` tool:
+Anthropic-compatible gateways can report success while omitting that field,
+causing the action to reject an otherwise recoverable response. The adapter
+accepts terminal result text or `structured_output`, then validates the same
+strict review contract locally. Invalid JSON or schema never reaches publication.
+When a run reaches `error_max_turns` or `error_max_structured_output_retries`,
+reports SDK success without structured output, or completes with invalid review
+JSON, one two-minute completion with up to three turns can resume that same
+session, only if its execution log proves every line of the exact diff was
+returned successfully. The saved proof contains only
 the session ID, base/head SHAs and diff hash. Resumed output must match that proof,
-contain no tool calls, and pass the existing JSON and diff-anchor validation.
-Other SDK errors and timeouts go directly to the ready fallback. Partial reads
-cannot authorize tool-free completion.
+contain no exploration calls, and pass the existing JSON and diff-anchor validation.
+Completion explicitly asks for ordinary final JSON and uses no tools. Read,
+Glob, Grep, subprocesses, MCP and subagents remain forbidden during completion;
+the deterministic review contract, complete diff evidence and changed-anchor
+checks remain mandatory.
+Finalization writes atomically to the fixed `claude-review-result.json` in
+`RUNNER_TEMP`; the CLI and model cannot choose the destination. Other SDK errors
+and timeouts go directly to the ready fallback. Partial reads cannot authorize
+tool-free completion.
 `execution_unavailable` means the action left no execution file, as can happen
 when the runner stops it at the step deadline. It is distinct from
 `diff_not_fully_read`, which means an otherwise recoverable session lacks proof
 of reading the complete diff. The unavailable-review report includes matched
 and total line counts, Read call counts and failed Read counts. It never includes
 source lines or tool error bodies. Neither condition permits finalization.
-Before the full review starts, the adapter calculates exact, non-overlapping
-Read pages bounded by bytes and lines and supplies their offsets and limits in
-the prompt. A single line exceeding the byte target occupies its own page and
-is never dropped; a truncated Read still cannot prove full diff coverage.
-The model must read all pages before exploring supporting files;
-the plan itself is not proof of reading or a completed review. The existing
-turn and wall-clock limits remain unchanged.
+Claude Code runs in one `claude-code-plugin-review` job and one whole-diff
+session per attempt. There is no chunk matrix, artifact collection or aggregate
+publication job. The exact base/head diff is never truncated or shortened to
+fit a review; empty or oversized input fails preparation explicitly.
+The SDK diff uses three unchanged context lines per hunk, preserving every
+addition and deletion. The reviewer reads full constructs and supporting files
+when needed. Preflight, thread collection and advisory Sonar collection each
+run once in the same job. The direct reviewer runs first; Observable runs after
+Claude. Each reviewer retains its own provider configuration.
+For the complete diff, the adapter calculates exact, non-overlapping Read pages
+bounded by bytes and lines and supplies their offsets and limits in the prompt.
+A page is capped at 48,000 bytes and 900 lines. A single line exceeding the byte
+target occupies its own page and is never dropped; a truncated Read still cannot
+prove full diff coverage. These pages are input pagination within one session,
+not separate review jobs. The model must read
+all pages before exploring supporting files; the plan alone is not proof of
+reading or a completed review.
+Primary and fallback full attempts each have a ten-minute deadline and 48-turn
+limit; same-session completion has a two-minute deadline and three-turn limit.
+A ready fallback is used after primary failure. One full reread per route is
+allowed only when a supported terminal SDK result proves the diff read was
+incomplete, even if the action step itself ended in failure. Timeouts without a
+terminal execution record and other unrecoverable SDK failures do not trigger a
+full rerun on that route. The job has a 55-minute overall deadline, including
+setup, preflight, bounded recovery and publication. Free-provider availability
+is not guaranteed; an unavailable provider produces an explicit failed review,
+never a clean result.
+Only a schema-valid result with complete matching Read evidence can reach the
+deterministic publisher. SDK traces and credentials are not uploaded as
+artifacts. Publication occurs once, and the job then verifies the marker for
+the exact revision and run. One missing page, invalid result or publication
+failure fails the Claude job and the review completion gate.
+A rerun prepares a fresh whole-diff session; no prior chunk artifacts are used.
 Finalization is attempted once per route; its failure also moves to fallback or
 reports the review as unavailable. No partial/error output counts as success.
-A completed SDK run with invalid output gets one full validation retry only
-when tool-free completion was not authorized. Once authorized, its failure goes
-to fallback without restarting the full review. `invalid_output_after_complete_diff_read`
+Only the `diff_not_fully_read` reason triggers that reread. Formatting problems
+use same-session completion, then fallback without restarting the full review.
+`invalid_output_after_complete_diff_read`
 identifies this format-repair path; a schema-valid result is never eligible for
 tool-free format repair solely because a later diff-anchor or file-write check failed.
-Reports distinguish finalization from the original attempt. These guards use
+Reports distinguish finalization from the original attempt and show complete
+diff-read counts. These guards use
 the step's original `outcome`, because `continue-on-error` can make a failed
-attempt's `conclusion` show success. Publication and its verification remain
-required for the aggregate review gate.
+attempt's `conclusion` show success. After diagnostics, an unconditional
+non-cancelled completion step fails the stable `claude-code-plugin-review` job
+unless the complete result was published and its revision marker verified.
+The aggregate review gate also requires that publication. A provider outage,
+incomplete diff, partial read or publication error cannot turn into a clean review.
+Failed validation logs an allow-listed reason such as `invalid_review_keys`,
+`invalid_finding_value`, `finalization_session_mismatch` or `diff_not_fully_read`.
+Provider text, credentials, source contents and arbitrary exception messages
+are never included in these diagnostics.
 
 Manual GitHub review and the Azure launcher use the same
 direct reviewer. Their `provider` and `model` come from run inputs, including
@@ -347,6 +404,16 @@ the defaults displayed in the launch form. Set both there; changing the PR's
 `DIRECT_REVIEW_MODEL` repository variable does not change that form's default.
 The direct reviewer uses `DIRECT_REVIEW_MODEL` for every supported provider.
 The model validated by preflight is passed to the review step automatically.
+
+In Azure **Run pipeline**, use **Additional review instructions**
+(`additionalInstructions`) to add context or a focus for this run, for example:
+"Check that backup restore preserves existing user settings and legacy API behaviour."
+Leave its default `none` to use only the standard instructions. The equivalent
+optional GitHub **Run workflow** input is `additional_instructions`; an empty
+or whitespace-only value adds nothing. The text accompanies every diff chunk,
+including fallback requests, and re-evaluation of existing review threads. It
+supplements `.github/REVIEWER.md` and the direct adapter instructions; mandatory
+scope, evidence, JSON format and publication rules still apply.
 
 The Azure summary links to the GitHub run, published review and available
 PR/findings pages. Review-report artifacts remain uploaded for collection and
@@ -368,7 +435,8 @@ starts the owner-approved direct review. The workflow removes the label before
 reviewing, so every new revision needs a deliberate new approval. It runs trusted
 review tooling from `main` and treats the pull-request checkout as data only;
 the contributor's scripts are never executed with review credentials. A new
-commit cancels an in-progress review of the old revision. The label is created
+commit does not replace or cancel the explicitly approved immutable revision;
+reviewing the new revision requires applying the label again. The label is created
 in the repository and can be applied from the pull request's Labels menu.
 
 Configure each fallback model together with its matching `*_FALLBACK_PROVIDER`;
@@ -509,6 +577,12 @@ the nested `reasoning` object supported by its gateway, including `effort=none`
 and the existing `effort=low` retry when a model requires reasoning. Both primary
 and fallback review requests retain these controls; they are requests to the
 provider, not a guarantee that every model will finish within the deadline.
+For NVIDIA-hosted `nvidia/nemotron-3-*` models, the direct adapter translates
+`effort=none` into `chat_template_kwargs.enable_thinking=false`, the
+[documented NVIDIA control](https://docs.nvidia.com/nim/large-language-models/2.0.4/turbo/get-started-nemotron-3-super-120b-a12b.html#reasoning).
+This prevents default thinking from consuming the compact JSON answer's entire
+output budget. Requests with other reasoning settings retain their existing
+behaviour; incomplete or token-limited responses still fail validation.
 Wire data is capped at 16 MiB, including SSE framing, independently of the token budget.
 Non-streaming responses remain supported under the same watchdog. Failures have
 explicit reasons such as `inactivity_timeout`, `attempt_timeout`, `connection_error`,

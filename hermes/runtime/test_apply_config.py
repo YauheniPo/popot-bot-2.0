@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import contextlib
+import copy
 import subprocess
 import io
 import tempfile
@@ -22,6 +24,176 @@ SPEC.loader.exec_module(apply_config)
 
 
 class ApplyConfigTests(unittest.TestCase):
+    def test_deploy_syncs_existing_cron_pins_and_profiles_idempotently(self):
+        settings = {'vps_hermes': {'config': {'manage_cron_job_models': True,
+            'managed_overlay': {'model': {'provider': 'fixture-cloud', 'default': 'fixture-model'}}}}}
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            profile = home / 'profiles' / 'builder'
+            records = {}
+            for location in (home, profile):
+                (location / 'cron').mkdir(parents=True)
+                (location / 'cron/jobs.json').write_text('{"jobs": []}')
+                records[location] = [
+                    {'id': 'pinned', 'provider': 'old', 'model': 'old', 'base_url': 'https://old.invalid',
+                     'schedule': {'kind': 'cron', 'expr': '0 9 * * 5'}, 'next_run_at': '2030-01-01',
+                     'deliver': 'telegram', 'origin': {'chat_id': '123'}, 'last_status': 'ok'},
+                    {'id': 'paused', 'enabled': False, 'state': 'paused', 'model': 'old'},
+                    {'id': 'default', 'provider': None, 'model': None},
+                    {'id': 'script', 'no_agent': True, 'script': '/tmp/script.py', 'model': 'keep'},
+                ]
+            before = copy.deepcopy(records)
+            active = []
+            @contextlib.contextmanager
+            def use_store(location):
+                active.append(location)
+                try:
+                    yield
+                finally:
+                    active.pop()
+            def update(job_id, values):
+                job = next(job for job in records[active[-1]] if job['id'] == job_id)
+                job.update(values)
+                return dict(job)
+            jobs = mock.Mock()
+            jobs.use_cron_store.side_effect = use_store
+            jobs._jobs_lock.side_effect = contextlib.nullcontext
+            jobs.load_jobs.side_effect = lambda: copy.deepcopy(records[active[-1]])
+            jobs.update_job.side_effect = update
+            with mock.patch.object(apply_config, '_load_cron_store', return_value=jobs):
+                self.assertEqual(apply_config.sync_cron_models(home, settings), 6)
+                for location, items in records.items():
+                    for index, job in enumerate(items):
+                        expected = dict(before[location][index])
+                        if not job.get('no_agent'):
+                            expected.update(provider='fixture-cloud', model='fixture-model', base_url=None)
+                        self.assertEqual(job, expected)
+                self.assertEqual(apply_config.sync_cron_models(home, settings), 0)
+            self.assertEqual(jobs.update_job.call_count, 6)
+
+    def test_cron_model_sync_preserves_unmanaged_jobs_and_rejects_invalid_policy(self):
+        with mock.patch.object(apply_config, '_load_cron_store') as loader:
+            for config in ({}, {'manage_cron_job_models': False}):
+                self.assertEqual(apply_config.sync_cron_models(Path('/unused'), {
+                    'vps_hermes': {'config': config}}), 0)
+            for config in ({'manage_cron_job_models': 'false'}, {'manage_cron_job_models': True}):
+                settings = {'vps_hermes': {'config': config}}
+                with self.subTest(config=config), self.assertRaisesRegex(ValueError, 'manage_cron_job_models'):
+                    apply_config.sync_cron_models(Path('/unused'), settings)
+            loader.assert_not_called()
+
+    def test_cron_model_sync_rejects_symlinks_before_loading_any_store(self):
+        settings = {'vps_hermes': {'config': {'manage_cron_job_models': True,
+            'managed_overlay': {'model': {'provider': 'fixture-cloud', 'default': 'fixture-model'}}}}}
+        for relative in ('cron', 'cron/jobs.json', 'cron/.jobs.lock', 'profiles', 'profiles/builder'):
+            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory) / 'home'
+                target = Path(directory) / 'outside'
+                target.mkdir()
+                path = home / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.symlink_to(target)
+                with mock.patch.object(apply_config, '_load_cron_store') as loader:
+                    with self.assertRaisesRegex(ValueError, 'symlink'):
+                        apply_config.sync_cron_models(home, settings)
+                    loader.assert_not_called()
+
+    def test_cron_model_sync_empty_home_needs_no_native_api(self):
+        settings = {'vps_hermes': {'config': {'manage_cron_job_models': True,
+            'managed_overlay': {'model': {'provider': 'fixture-cloud', 'default': 'fixture-model'}}}}}
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            apply_config, '_load_cron_store'
+        ) as loader:
+            self.assertEqual(apply_config.sync_cron_models(Path(directory), settings), 0)
+            loader.assert_not_called()
+
+    def test_load_cron_store_requires_and_imports_installed_storage_api(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            with self.assertRaisesRegex(RuntimeError, 'storage API is missing'):
+                apply_config._load_cron_store(home)
+
+            source = home / 'hermes-agent'
+            jobs_file = source / 'cron/jobs.py'
+            jobs_file.parent.mkdir(parents=True)
+            jobs_file.write_text('# installed API fixture')
+            with mock.patch.object(apply_config.sys, 'path', list(apply_config.sys.path)) as search_path:
+                api = object()
+                with mock.patch.object(apply_config.importlib, 'import_module', return_value=api) as importer:
+                    self.assertIs(apply_config._load_cron_store(home), api)
+                    self.assertIn(str(source), search_path)
+                    importer.assert_called_once_with('cron.jobs')
+
+                with mock.patch.object(apply_config.importlib, 'import_module', side_effect=ImportError):
+                    with self.assertRaisesRegex(RuntimeError, 'cannot import installed Hermes cron storage API'):
+                        apply_config._load_cron_store(home)
+
+    def test_cron_model_sync_rejects_non_regular_store_and_disappearing_job(self):
+        settings = {'vps_hermes': {'config': {'manage_cron_job_models': True,
+            'managed_overlay': {'model': {'provider': 'fixture-cloud', 'default': 'fixture-model'}}}}}
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / 'cron').mkdir()
+            (home / 'cron/jobs.json').mkdir()
+            with self.assertRaisesRegex(ValueError, 'must be a regular file'):
+                apply_config.sync_cron_models(home, settings)
+
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / 'cron').mkdir()
+            (home / 'cron/jobs.json').write_text('{"jobs": []}')
+            jobs = mock.Mock()
+            jobs.use_cron_store.side_effect = lambda _home: contextlib.nullcontext()
+            jobs._jobs_lock.side_effect = contextlib.nullcontext
+            jobs.load_jobs.return_value = [{'id': 'vanished', 'model': 'old'}]
+            jobs.update_job.return_value = None
+            with mock.patch.object(apply_config, '_load_cron_store', return_value=jobs):
+                with self.assertRaisesRegex(RuntimeError, 'disappeared during managed model update'):
+                    apply_config.sync_cron_models(home, settings)
+
+    def test_main_reports_cron_model_sync_failure_instead_of_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            settings = home / 'vps-defaults.yml'
+            settings.write_text('{}')
+            argv = ['apply-config.py', 'apply', '--settings', str(settings), '--hermes-home', directory,
+                    '--hermes-bin', '/opt/hermes/bin/hermes', '--workspace', '/workspace']
+            output, errors = io.StringIO(), io.StringIO()
+            with mock.patch('sys.argv', argv), mock.patch('sys.stdout', output), mock.patch(
+                'sys.stderr', errors
+            ), mock.patch.object(apply_config, 'sync_cron_models', side_effect=RuntimeError('cron update failed')):
+                self.assertEqual(apply_config.main(), 1)
+            self.assertNotIn('settings applied', output.getvalue())
+            self.assertIn('cron update failed', errors.getvalue())
+
+    def test_follow_chat_model_seeds_one_shared_route_and_removes_old_job_pins(self):
+        settings = {'vps_hermes': {'config': {'manage_cron_job_models': True, 'managed_overlay': {
+            'model': {'provider': 'fixture-cloud', 'default': 'fixture-model'},
+            'cron': {'follow_chat_model': True}}}}}
+        expected = {'provider': 'fixture-cloud', 'model': 'fixture-model', 'base_url': None}
+        current = {'cron': {'shared_model': {'provider': 'chat-choice', 'model': 'chosen'}, 'timeout': 123}}
+        operations = apply_config.build_operations(settings, current, {}, set())
+        self.assertIn(apply_config.Operation('set', 'cron.shared_model', expected), operations)
+        self.assertNotIn('cron.timeout', [op.key for op in operations])
+        jobs = mock.Mock()
+        jobs.use_cron_store.side_effect = lambda home: contextlib.nullcontext()
+        jobs._jobs_lock.side_effect = contextlib.nullcontext
+        jobs.load_jobs.return_value = [{'id': 'a', 'model': 'old', 'provider': 'old'}]
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / 'cron').mkdir()
+            (home / 'cron/jobs.json').write_text('{"jobs": []}')
+            with mock.patch.object(apply_config, '_load_cron_store', return_value=jobs):
+                self.assertEqual(apply_config.sync_cron_models(home, settings), 1)
+            jobs.update_job.assert_called_once_with('a', {'provider': None, 'model': None, 'base_url': None})
+            profile = home / 'profiles/builder'
+            profile.mkdir(parents=True)
+            (profile / 'config.yaml').write_text('cron:\n  timeout: 123\n')
+            self.assertEqual(apply_config.sync_profile_models(home, settings), 1)
+            self.assertEqual(apply_config.load_config(profile / 'config.yaml')['cron'], {
+                'timeout': 123, 'model_provider': 'fixture-cloud', 'model': 'fixture-model', 'shared_model': expected})
+            self.assertEqual(apply_config.sync_profile_models(home, settings), 0)
+
     def test_deploy_enables_stop_verification_for_messaging_and_repeated_apply_is_unchanged(self):
         settings = apply_config.load_settings(MODULE_PATH.parent.parent / 'config/vps-defaults.yml')
         current = {'agent': {'verify_on_stop': 'auto'}}
@@ -1255,6 +1427,13 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertEqual(apply_config.cli_value(False), "false")
         self.assertEqual(apply_config.cli_value(42), "42")
         self.assertEqual(apply_config.cli_value(0.5), "0.5")
+
+    def test_shared_cron_route_survives_the_cli_yaml_value_parser(self):
+        route = {'provider': 'fixture-cloud', 'model': 'fixture-model', 'base_url': None}
+        with mock.patch.object(apply_config.subprocess, 'run', return_value=mock.Mock(returncode=0)) as run:
+            apply_config.run_operation(Path('/opt/hermes-bootstrap/bin/hermes'),
+                                       apply_config.Operation('set', 'cron.shared_model', route))
+        self.assertEqual(apply_config.yaml.safe_load(run.call_args.args[0][-1]), route)
 
     def test_run_operation_shells_out_to_the_hermes_cli(self) -> None:
         completed = mock.Mock(returncode=0, stdout="applied\n", stderr="")

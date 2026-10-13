@@ -30,10 +30,12 @@ class FinalizeTests(unittest.TestCase):
         self.diff.write_text('diff --git a/app.py b/app.py\n+fixed\n')
         self.execution = self.root / 'execution.json'
         self.proof = self.root / 'proof.json'
-        self.output = self.root / 'review.json'
+        self.output = self.root / 'claude-review-result.json'
         self.enterContext(mock.patch.object(Path, 'cwd', return_value=self.root))
         self.enterContext(mock.patch.object(finalize.context, '_changed_paths', return_value=set()))
-        self.enterContext(mock.patch.dict(os.environ, {'BASE_SHA': 'a' * 40, 'HEAD_SHA': 'b' * 40}))
+        self.enterContext(mock.patch.dict(os.environ, {
+            'BASE_SHA': 'a' * 40, 'HEAD_SHA': 'b' * 40, 'RUNNER_TEMP': str(self.root),
+        }))
 
     def events(self):
         return [
@@ -68,7 +70,7 @@ class FinalizeTests(unittest.TestCase):
             self.assertEqual(prepared['session_id'], SESSION)
             self.assertEqual(prepared['ready'], 'true')
             self.execution.write_text(json.dumps(self.completed()))
-            finalize.extract(self.execution, self.proof, self.output)
+            finalize.extract(self.execution, self.proof)
         self.assertEqual(json.loads(self.output.read_text()), REVIEW)
         self.assertEqual(self.proof.stat().st_mode & 0o777, 0o600)
         self.assertNotIn('diff --git', self.proof.read_text())
@@ -84,7 +86,7 @@ class FinalizeTests(unittest.TestCase):
         self.assertNotIn('private', json.dumps(prepared))
         self.execution.write_text(json.dumps(self.completed()))
         with contextlib.redirect_stdout(io.StringIO()):
-            finalize.extract(self.execution, self.proof, self.output)
+            finalize.extract(self.execution, self.proof)
         self.assertEqual(json.loads(self.output.read_text()), REVIEW)
 
     def test_output_repair_requires_full_diff_evidence_even_after_sdk_success(self):
@@ -117,6 +119,26 @@ class FinalizeTests(unittest.TestCase):
         events = self.events()
         events[-1].update(subtype='success', is_error=False)
         self.assertEqual(self.prepare(events)['reason'], 'invalid_output_after_complete_diff_read')
+
+    def test_missing_structured_output_can_be_recovered_only_after_complete_diff_read(self):
+        events = self.events()
+        events[-1].update(subtype='success', is_error=True)
+        prepared = self.prepare(events)
+        self.assertEqual(prepared['ready'], 'true')
+        self.assertEqual(prepared['reason'], 'missing_structured_output_after_complete_diff_read')
+        self.execution.write_text(json.dumps(self.completed()))
+        with contextlib.redirect_stdout(io.StringIO()):
+            finalize.extract(self.execution, self.proof)
+        self.assertEqual(json.loads(self.output.read_text()), REVIEW)
+
+        self.proof.unlink()
+        self.output.unlink()
+        events[2]['message']['content'][0]['content'] = '1→diff --git a/app.py b/app.py'
+        prepared = self.prepare(events)
+        self.assertEqual(prepared['ready'], 'false')
+        self.assertEqual(prepared['reason'], 'diff_not_fully_read')
+        self.assertFalse(self.proof.exists())
+        self.assertFalse(self.output.exists())
 
     def test_paginated_reads_preserve_blank_lines_and_indentation(self):
         self.diff.write_text('first\n\n\tindented\nlast\n')
@@ -183,7 +205,7 @@ class FinalizeTests(unittest.TestCase):
                 self.assertFalse(self.proof.exists())
 
     def test_other_sdk_failures_and_missing_logs_never_resume(self):
-        for subtype in ('error_during_execution', 'success', 'error_max_budget_usd'):
+        for subtype in ('error_during_execution', 'error_max_budget_usd'):
             events = self.events()
             events[-1]['subtype'] = subtype
             with self.subTest(subtype=subtype):
@@ -229,7 +251,7 @@ class FinalizeTests(unittest.TestCase):
         self.assertEqual(visited, list(range(len(lines))))
 
     def test_read_plan_honors_line_limit_and_isolates_oversized_lines_without_dropping_them(self):
-        self.diff.write_text('\n' * 650)
+        self.diff.write_text('\n' * 1500)
         plan = finalize.read_plan()
         self.assertGreater(len(plan['pages']), 1)
         self.assertTrue(all(page['limit'] <= finalize.MAX_READ_PAGE_LINES for page in plan['pages']))
@@ -237,6 +259,13 @@ class FinalizeTests(unittest.TestCase):
         self.assertEqual(finalize.read_plan()['pages'], [
             {'offset': 1, 'limit': 1}, {'offset': 2, 'limit': 1}, {'offset': 3, 'limit': 1},
         ])
+
+    def test_large_diff_read_plan_uses_few_bounded_pages(self):
+        self.diff.write_text('\n'.join('x' * 54 for _ in range(5575)) + '\n')
+        plan = finalize.read_plan()
+        self.assertEqual(plan['total_lines'], 5575)
+        self.assertLessEqual(len(plan['pages']), 8)
+        self.assertTrue(all(page['limit'] <= finalize.MAX_READ_PAGE_LINES for page in plan['pages']))
 
     def test_proof_write_failure_has_a_safe_distinct_reason(self):
         with mock.patch.object(finalize.os, 'replace', side_effect=OSError('private path')):
@@ -276,7 +305,7 @@ class FinalizeTests(unittest.TestCase):
                 del events[-1]['result']
             self.execution.write_text(json.dumps(events))
             with self.subTest(case=case), self.assertRaises(RuntimeError):
-                finalize.extract(self.execution, self.proof, self.output)
+                finalize.extract(self.execution, self.proof)
             self.assertFalse(self.output.exists())
 
     def test_proof_is_bound_to_both_revisions_and_exact_diff(self):
@@ -288,7 +317,7 @@ class FinalizeTests(unittest.TestCase):
             changed[key] = 'c' * 64
             self.proof.write_text(json.dumps(changed))
             with self.subTest(key=key), self.assertRaises(RuntimeError):
-                finalize.extract(self.execution, self.proof, self.output)
+                finalize.extract(self.execution, self.proof)
         self.assertFalse(self.output.exists())
 
     def test_invalid_proof_never_accepts_a_successful_response(self):
@@ -296,7 +325,7 @@ class FinalizeTests(unittest.TestCase):
         for proof in (' ' * 4097, '{}', '[]'):
             self.proof.write_text(proof)
             with self.subTest(length=len(proof)), self.assertRaises(RuntimeError):
-                finalize.extract(self.execution, self.proof, self.output)
+                finalize.extract(self.execution, self.proof)
         self.assertFalse(self.output.exists())
 
     def run_cli(self, *arguments):
@@ -314,10 +343,36 @@ class FinalizeTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {'GITHUB_OUTPUT': str(outputs)}), contextlib.redirect_stdout(io.StringIO()):
             self.run_cli('prepare', *common)
             self.execution.write_text(json.dumps(self.completed()))
-            self.run_cli('extract', *common, '--output', str(self.output))
+            self.run_cli('extract', *common)
         self.assertIn('ready=true\n', outputs.read_text())
         self.assertIn('session_id=' + SESSION + '\n', outputs.read_text())
         self.assertEqual(json.loads(self.output.read_text()), REVIEW)
+
+    def test_finalize_cli_cannot_choose_a_different_output_path(self):
+        self.assertEqual(self.prepare()['ready'], 'true')
+        self.execution.write_text(json.dumps(self.completed()))
+        outside = self.root.parent / f'{self.root.name}-outside-review.json'
+        self.addCleanup(lambda: outside.unlink(missing_ok=True))
+        common = ('--execution-file', str(self.execution), '--proof-file', str(self.proof))
+        with self.assertRaises(SystemExit) as failure:
+            self.run_cli('extract', *common, '--output', str(outside))
+        self.assertEqual(failure.exception.code, 2)
+        self.assertFalse(outside.exists())
+
+    def test_finalization_requires_runner_temp_and_cleans_failed_atomic_writes(self):
+        self.assertEqual(self.prepare()['ready'], 'true')
+        self.execution.write_text(json.dumps(self.completed()))
+        for runner_temp in ('', str(self.root / 'missing')):
+            with self.subTest(runner_temp=runner_temp), mock.patch.dict(os.environ, {'RUNNER_TEMP': runner_temp}):
+                with self.assertRaisesRegex(RuntimeError, 'runner_temp_unavailable'):
+                    finalize.extract(self.execution, self.proof)
+                self.assertFalse(self.output.exists())
+
+        with mock.patch.object(finalize.os, 'replace', side_effect=OSError('disk full')):
+            with self.assertRaisesRegex(OSError, 'disk full'):
+                finalize.extract(self.execution, self.proof)
+        self.assertFalse(self.output.exists())
+        self.assertEqual(list(self.root.glob('.claude-review-result-*')), [])
 
     def test_plan_cli_outputs_only_numeric_ranges_and_needs_no_execution_log(self):
         output = self.root / 'github-output'
@@ -338,7 +393,7 @@ class FinalizeTests(unittest.TestCase):
     def test_workflow_provides_same_read_plan_to_each_full_review_attempt(self):
         workflow = yaml.safe_load((Path(__file__).parents[1] / 'workflows/pr-ai-review.yml').read_text())
         steps = {step.get('id'): step for step in workflow['jobs']['claude-code-plugin-review']['steps']}
-        self.assertIn('claude_review_finalize.py plan', steps['claude_diff']['run'])
+        self.assertIn('claude_review_full.py prepare', steps['claude_diff']['run'])
         for route in ('primary', 'primary_retry', 'fallback', 'fallback_retry'):
             self.assertIn('steps.claude_diff.outputs.read_plan', steps['claude_review_' + route]['with']['prompt'])
         report = steps['report_claude_review_unavailable']
@@ -355,10 +410,10 @@ class FinalizeTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {'GITHUB_OUTPUT': str(outputs)}):
                 self.run_cli('prepare', *common)
             with self.assertRaises(SystemExit) as missing:
-                self.run_cli('extract', *common)
+                self.run_cli('extract')
             self.assertEqual(missing.exception.code, 2)
             with self.assertRaises(SystemExit) as invalid:
-                self.run_cli('extract', *common, '--output', str(self.output))
+                self.run_cli('extract', *common)
         self.assertIn('no review result was produced', str(invalid.exception))
         self.assertNotIn('secret response', log.getvalue())
         self.assertNotIn('session_id=', outputs.read_text())
@@ -377,9 +432,9 @@ class FinalizeTests(unittest.TestCase):
                 self.assertIn('--resume', step['with']['claude_args'])
                 self.assertIn('--tools=', step['with']['claude_args'])
                 self.assertIn('--disallowedTools "mcp__*"', step['with']['claude_args'])
-                self.assertIn('--max-turns 1', step['with']['claude_args'])
+                self.assertIn('--max-turns 3', step['with']['claude_args'])
                 self.assertLessEqual(step['timeout-minutes'], 2)
-                self.assertLessEqual(steps['claude_review_' + route]['timeout-minutes'], 5)
+                self.assertLessEqual(steps['claude_review_' + route]['timeout-minutes'], 10)
                 self.assertIn('extract_claude_review_' + route + '_finalize.outcome', steps['publish_claude_review']['if'])
         self.assertIn('extract_claude_review_primary_finalize.outcome', steps['claude_review_fallback']['if'])
         cleanup = steps['clear_claude_fallback_execution']

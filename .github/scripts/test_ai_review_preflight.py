@@ -17,6 +17,75 @@ sys.path.insert(0, str(Path(__file__).parent))
 import ai_review_preflight
 
 
+class ManualReviewInstructionsTest(unittest.TestCase):
+    def test_manual_instructions_are_wired_from_azure_to_the_reviewer_environment(self):
+        root = Path(__file__).resolve().parents[2]
+        azure = yaml.safe_load((root / "azure-ci/azure-ai-code-review.yml").read_text())
+        parameter = next(p for p in azure["parameters"] if p["name"] == "additionalInstructions")
+        self.assertEqual(parameter["type"], "string")
+        self.assertEqual(parameter["default"], "none")
+        dispatch = next(step for job in azure["jobs"] for step in job["steps"]
+                        if "dispatches" in step.get("bash", ""))
+        self.assertEqual(dispatch["env"]["ADDITIONAL_REVIEW_INSTRUCTIONS"],
+                         "${{ parameters.additionalInstructions }}")
+        self.assertNotIn("${{ parameters.additionalInstructions }}", dispatch["bash"])
+
+        manual = yaml.load((root / ".github/workflows/manual-ai-review.yml").read_text(), Loader=yaml.BaseLoader)
+        entry = manual["on"]["workflow_dispatch"]["inputs"]["additional_instructions"]
+        self.assertEqual(entry["type"], "string")
+        self.assertEqual(entry["required"], "false")
+        self.assertEqual(entry["default"], "")
+        action_call = next(step for step in manual["jobs"]["review"]["steps"]
+                           if step.get("uses") == "./.github/actions/ai-direct-review")
+        self.assertEqual(action_call["with"]["additional_instructions"], "${{ inputs.additional_instructions }}")
+        action = yaml.safe_load((root / ".github/actions/ai-direct-review/action.yml").read_text())
+        self.assertFalse(action["inputs"]["additional_instructions"]["required"])
+        self.assertEqual(action["inputs"]["additional_instructions"]["default"], "")
+        review_step = next(step for step in action["runs"]["steps"]
+                           if "ai_pr_review.py" in step.get("run", ""))
+        self.assertEqual(review_step["env"]["ADDITIONAL_REVIEW_INSTRUCTIONS"],
+                         "${{ inputs.additional_instructions }}")
+        self.assertNotIn("${{ inputs.additional_instructions }}", review_step["run"])
+
+    def test_azure_dispatch_preserves_instruction_text_without_shell_execution(self):
+        root = Path(__file__).resolve().parents[2]
+        azure = yaml.safe_load((root / "azure-ci/azure-ai-code-review.yml").read_text())
+        dispatch = next(step for job in azure["jobs"] for step in job["steps"]
+                        if "dispatches" in step.get("bash", ""))
+        capture_curl = """curl() {
+          while (( $# )); do
+            if [[ "$1" == "--data" ]]; then
+              printf '%s' "$2" > "${CAPTURE_PATH}"
+              return
+            fi
+            shift
+          done
+          return 1
+        }
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Path(directory) / "dispatch.json"
+            marker = Path(directory) / "shell-executed"
+            text = f'Проверь "restore" и legacy API.\r\n$(touch {marker})\n`touch {marker}`'
+            for instructions, expected in ((text, text), ("", ""), ("none", "")):
+                with self.subTest(instructions=instructions):
+                    result = subprocess.run(
+                        ["bash", "-c", capture_curl + dispatch["bash"]], capture_output=True, text=True,
+                        env={**os.environ, "CAPTURE_PATH": str(capture),
+                             "GITHUB_ACTIONS_TOKEN": "fixture-token", "GITHUB_REPOSITORY": "owner/repo",
+                             "GITHUB_WORKFLOW_FILE": "manual-ai-review.yml", "REQUEST_ID": "ado-42",
+                             "TARGET_REF": "feature/review", "BASE_REF": "main", "REVIEW_SCOPE": "branch_diff",
+                             "REVIEW_MODEL": "fixture/model", "REVIEW_PROVIDER": "nvidia", "PUBLISH_MODE": "auto",
+                             "ADDITIONAL_REVIEW_INSTRUCTIONS": instructions},
+                    )
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    payload = json.loads(capture.read_text())
+                    self.assertEqual(payload["inputs"]["additional_instructions"], expected)
+                    self.assertEqual(payload["inputs"]["request_id"], "ado-42")
+                    self.assertFalse(marker.exists())
+                    self.assertNotIn(text, result.stdout + result.stderr)
+
+
 class OllamaReviewTest(unittest.TestCase):
     def test_claude_failed_sdk_attempt_switches_routes_without_full_retry(self):
         root = Path(__file__).resolve().parents[2]
@@ -47,20 +116,25 @@ class OllamaReviewTest(unittest.TestCase):
         outcomes = {
             ('claude_models', 'outputs.primary_ready'): 'true',
             ('claude_models', 'outputs.fallback_ready'): 'true',
+            ('claude_diff', 'outcome'): 'success',
+            ('reviewer_policy', 'outcome'): 'success',
         }
         for route in ('primary', 'fallback'):
             retry = identified_steps['claude_review_' + route + '_retry']
             wait = named_steps['Wait before retrying the ' + route + ' Claude Code model']
-            for sdk_outcome, validation_outcome, expected_retry in (
-                ('failure', 'skipped', False),
-                ('cancelled', 'skipped', False),
-                ('skipped', 'skipped', False),
-                ('success', 'failure', True),
-                ('success', 'success', False),
+            for sdk_outcome, validation_outcome, reason, expected_retry in (
+                ('failure', 'skipped', 'execution_unavailable', False),
+                ('cancelled', 'skipped', '', False),
+                ('skipped', 'skipped', '', False),
+                ('success', 'failure', 'diff_not_fully_read', True),
+                ('success', 'failure', 'invalid_output_after_complete_diff_read', False),
+                ('success', 'failure', 'invalid_execution_log', False),
+                ('success', 'success', '', False),
             ):
                 with self.subTest(route=route, sdk=sdk_outcome, validation=validation_outcome):
                     outcomes[('claude_review_' + route, 'outcome')] = sdk_outcome
                     outcomes[('extract_claude_review_' + route, 'outcome')] = validation_outcome
+                    outcomes[('prepare_claude_' + route + '_finalize', 'outputs.reason')] = reason
                     for step in (wait, retry):
                         self.assertEqual(allows(step, outcomes), expected_retry)
                         self.assertFalse(allows(step, outcomes, cancelled=True))
@@ -72,6 +146,7 @@ class OllamaReviewTest(unittest.TestCase):
             outcomes[('extract_claude_review_' + route, 'outcome')] = 'failure'
             prepared = ('prepare_claude_' + route + '_finalize', 'outputs.ready')
             outcomes[prepared] = 'true'
+            outcomes[('prepare_claude_' + route + '_finalize', 'outputs.reason')] = 'invalid_output_after_complete_diff_read'
             for final_outcome in ('success', 'failure', 'cancelled'):
                 outcomes[('extract_claude_review_' + route + '_finalize', 'outcome')] = final_outcome
                 for step in (wait, retry):
@@ -85,6 +160,11 @@ class OllamaReviewTest(unittest.TestCase):
         outcomes[('clear_claude_fallback_execution', 'outcome')] = 'success'
         self.assertTrue(allows(identified_steps['claude_review_fallback'], outcomes))
         self.assertFalse(allows(identified_steps['claude_review_fallback'], outcomes, cancelled=True))
+        for setup in ('claude_diff', 'reviewer_policy'):
+            outcomes[(setup, 'outcome')] = 'failure'
+            self.assertFalse(allows(identified_steps['clear_claude_fallback_execution'], outcomes))
+            self.assertFalse(allows(identified_steps['claude_review_fallback'], outcomes))
+            outcomes[(setup, 'outcome')] = 'success'
         for route in ('primary', 'fallback'):
             prepared = ('prepare_claude_' + route + '_finalize', 'outputs.ready')
             for ready in ('true', 'false', 'skipped'):
@@ -94,6 +174,7 @@ class OllamaReviewTest(unittest.TestCase):
                 self.assertFalse(allows(step, outcomes, cancelled=True))
         outcomes[('extract_claude_review_primary_finalize', 'outcome')] = 'success'
         self.assertFalse(allows(identified_steps['claude_review_fallback'], outcomes))
+        outcomes[('publish_claude_review', 'outcome')] = 'success'
         self.assertFalse(allows(identified_steps['report_claude_review_unavailable'], outcomes))
 
     def test_json_preflight_switches_provider_after_two_timeouts(self):
@@ -153,6 +234,13 @@ class OllamaReviewTest(unittest.TestCase):
         azure = yaml.load((root / 'azure-ci/azure-ai-code-review.yml').read_text(), Loader=yaml.BaseLoader)
         defaults = {key: value.rsplit("'", 2)[1] for key, value in automatic['env'].items()
                     if key.startswith(('DIRECT_REVIEW_', 'CLAUDE_REVIEW_')) and "'" in value}
+        self.assertEqual(
+            (defaults['DIRECT_REVIEW_FALLBACK_PROVIDER'], defaults['DIRECT_REVIEW_FALLBACK_MODEL']),
+            ('nous', 'poolside/laguna-s-2.1:free'),
+        )
+        direct_action = yaml.safe_load((root / '.github/actions/ai-direct-review/action.yml').read_text())
+        self.assertEqual(direct_action['inputs']['fallback_provider']['default'], 'nous')
+        self.assertEqual(direct_action['inputs']['fallback_model']['default'], 'poolside/laguna-s-2.1:free')
         for engine in ('DIRECT', 'CLAUDE'):
             with self.subTest(engine=engine):
                 primary_provider = defaults[engine + '_REVIEW_PROVIDER']
@@ -171,6 +259,8 @@ class OllamaReviewTest(unittest.TestCase):
                 self.assertNotEqual(primary, fallback)
         approved_probe = next(step for step in approved['jobs']['review']['steps']
                               if step.get('id') == 'models')
+        for setting in ('DIRECT_REVIEW_FALLBACK_MODEL', 'DIRECT_REVIEW_FALLBACK_PROVIDER'):
+            self.assertEqual(approved_probe['env'][setting], automatic['env'][setting])
         manual_inputs = manual['on']['workflow_dispatch']['inputs']
         azure_parameters = {entry['name']: entry for entry in azure['parameters']}
         for parameter, setting in (('provider', 'DIRECT_REVIEW_PROVIDER'), ('model', 'DIRECT_REVIEW_MODEL')):
@@ -245,7 +335,8 @@ class OllamaReviewTest(unittest.TestCase):
                        for part in expression.split(' || ')]
             self.assertEqual(next(filter(None, choices)), expected)
         steps = {step.get('id'): step for step in workflow['jobs']['claude-code-plugin-review']['steps']}
-        self.assertEqual(steps['claude_models']['env']['DIRECT_REVIEW_MODEL'], '${{ env.CLAUDE_REVIEW_MODEL }}')
+        preflight = next(step for step in workflow['jobs']['claude-code-plugin-review']['steps'] if step.get('id') == 'claude_models')
+        self.assertEqual(preflight['env']['DIRECT_REVIEW_MODEL'], '${{ env.CLAUDE_REVIEW_MODEL }}')
         for attempt in ('primary', 'primary_retry', 'fallback', 'fallback_retry'):
             route = 'fallback' if attempt.startswith('fallback') else 'primary'
             checked = '${{ steps.claude_models.outputs.' + route + '_model }}'
@@ -348,6 +439,27 @@ class OllamaReviewTest(unittest.TestCase):
             self.assertNotIn("reasoning_effort", ai_review_preflight.completion_payload(body, "nvidia"))
         self.assertNotIn("reasoning_effort", ai_review_preflight.completion_payload({"reasoning": "bad"}))
 
+    def test_nvidia_nemotron3_disables_thinking_only_for_explicit_none_effort(self):
+        body = {"model": "nvidia/nemotron-3-fixture", "reasoning": {"effort": "none", "exclude": True},
+                "chat_template_kwargs": {"custom_setting": True}, "max_tokens": 1234}
+        payload = ai_review_preflight.completion_payload(body, "nvidia")
+        self.assertEqual(payload["chat_template_kwargs"], {"custom_setting": True, "enable_thinking": False})
+        self.assertEqual(payload["max_tokens"], 1234)
+        self.assertNotIn("reasoning", payload)
+        self.assertNotIn("reasoning_effort", payload)
+        self.assertEqual(body["chat_template_kwargs"], {"custom_setting": True})
+        for provider, model, reasoning in (
+            ("nvidia", "vendor/other-model", {"effort": "none"}),
+            ("nvidia", "nvidia/nemotron-3-fixture", {"effort": "low"}),
+            ("nvidia", "nvidia/nemotron-3-fixture", None),
+            ("nvidia", "nvidia/nemotron-3-fixture", "bad"),
+            ("ollama-cloud", "nvidia/nemotron-3-fixture", {"effort": "none"}),
+            ("nous", "nvidia/nemotron-3-fixture", {"effort": "none"}),
+        ):
+            with self.subTest(provider=provider, model=model, reasoning=reasoning):
+                payload = ai_review_preflight.completion_payload({"model": model, "reasoning": reasoning}, provider)
+                self.assertNotIn("chat_template_kwargs", payload)
+
     def test_nous_preserves_reasoning_controls_without_gateway_routing_extensions(self):
         for effort in ("none", "low"):
             with self.subTest(effort=effort):
@@ -409,7 +521,7 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertIn("^[0-9a-f]{40}$", sha_check["run"])
         checkout_index = next(i for i, step in enumerate(direct_job["steps"]) if step.get("uses", "").startswith("actions/checkout@"))
         self.assertLess(direct_job["steps"].index(sha_check), checkout_index)
-        direct_job_text = (root / ".github/workflows/pr-ai-review.yml").read_text().split("  direct-api-review:\n", 1)[1].split("\n  # Preserve the existing job id", 1)[0]
+        direct_job_text = (root / ".github/workflows/pr-ai-review.yml").read_text().split("  direct-api-review:\n", 1)[1].split("\n  claude-code-plugin-review:", 1)[0]
         self.assertEqual(direct_job_text.count("\n    steps:\n"), 1)
         self.assertNotIn("\n    secrets:\n", direct_job_text)
         self.assertNotIn("\n    outputs:\n", direct_job_text)
@@ -617,6 +729,14 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertEqual(sent.full_url, "https://ollama.com/v1/messages")
         self.assertEqual(sent.get_header("Authorization"), "Bearer test-key")
         self.assertEqual(json.loads(sent.data)["model"], "moonshotai/kimi-k3")
+
+    def test_ollama_tool_probe_does_not_force_tool_choice(self):
+        request = ai_review_preflight._probe_request(
+            "test-key", "tools", "ollama-cloud", "fixture/model",
+        )
+        payload = json.loads(request.data)
+        self.assertNotIn("tool_choice", payload)
+        self.assertEqual(payload["tools"][0]["name"], "review_model_preflight")
 
     def test_invalid_successful_responses_do_not_pass_preflight(self):
         for kind, response in [
@@ -973,7 +1093,8 @@ class OllamaReviewTest(unittest.TestCase):
         steps = job["steps"]
         trusted = next(step for step in steps if step.get("id") == "trusted_tooling")
         target = next(step for step in steps if step.get("id") == "target")
-        self.assertEqual(trusted["with"]["ref"], "main")
+        self.assertIn("github.event.pull_request.user.login == github.repository_owner", trusted["with"]["ref"])
+        self.assertIn("|| 'main'", trusted["with"]["ref"])
         self.assertEqual(target["with"]["ref"], "${{ github.event.pull_request.head.sha }}")
         review = next(step for step in steps if step.get("id") == "review")
         self.assertNotIn("working-directory", review)
@@ -1158,9 +1279,8 @@ class OllamaReviewTest(unittest.TestCase):
             )
 
         claude_steps = {step.get("id"): step for job in automatic["jobs"].values() if "steps" in job for step in job["steps"]}
-        # The model preflight is deliberately non-blocking: a provider outage or
-        # rate limit must not fail the corroborating Claude job, which publishes
-        # an "unavailable" report instead. The direct + observable reviews gate.
+        # Preflight failures allow diagnostic publication and fallback checks;
+        # the final Claude completion gate still fails without a valid review.
         self.assertIn("continue-on-error", claude_steps["claude_models"])
         for step_id in ("claude_review_primary", "claude_review_primary_retry"):
             self.assertIn("steps.claude_models.outputs.primary_ready == 'true'", claude_steps[step_id]["if"])
@@ -1196,11 +1316,9 @@ class OllamaReviewTest(unittest.TestCase):
             self.assertEqual(unavailable["env"][name], expression)
             self.assertNotIn(expression, unavailable["run"])
         self.assertEqual(unavailable["env"]["GH_TOKEN"], "${{ secrets.GITHUB_TOKEN }}")
-        # The preflight step is continue-on-error, so when it fails its outputs
-        # are empty and the report would name no model at all. Both model labels
-        # must fall back to the configured env values.
-        self.assertIn("env.CLAUDE_REVIEW_MODEL", unavailable["env"]["PRIMARY_MODEL"])
-        self.assertIn("env.CLAUDE_REVIEW_FALLBACK_MODEL", unavailable["env"]["FALLBACK_MODEL"])
+        chunk_report = claude_steps["report_claude_review_unavailable"]
+        self.assertIn("env.CLAUDE_REVIEW_MODEL", chunk_report["env"]["PRIMARY_MODEL"])
+        self.assertIn("env.CLAUDE_REVIEW_FALLBACK_MODEL", chunk_report["env"]["FALLBACK_MODEL"])
 
         manual_summary = next(
             step for job in manual["jobs"].values() for step in job["steps"]
@@ -1290,7 +1408,7 @@ class OllamaReviewTest(unittest.TestCase):
             Loader=yaml.BaseLoader,
         )
         job = workflow["jobs"]["claude-code-plugin-review"]
-        self.assertEqual(job["timeout-minutes"], "45")
+        self.assertEqual(job["timeout-minutes"], "55")
         action_steps = [
             step for step in job["steps"]
             if "anthropics/claude-code-action@" in step.get("uses", "")
@@ -1299,8 +1417,8 @@ class OllamaReviewTest(unittest.TestCase):
         for step in action_steps:
             with self.subTest(step=step["id"]):
                 finalization = step['id'].endswith('_finalize')
-                self.assertIn("--max-turns 1" if finalization else "--max-turns 48", step["with"]["claude_args"])
-                self.assertLessEqual(int(step['timeout-minutes']), 2 if finalization else 5)
+                self.assertIn("--max-turns 3" if finalization else "--max-turns 48", step["with"]["claude_args"])
+                self.assertLessEqual(int(step['timeout-minutes']), 2 if finalization else 10)
                 self.assertEqual(
                     step["with"]["show_full_output"],
                     "${{ vars.CLAUDE_REVIEW_DEBUG == 'true' }}",

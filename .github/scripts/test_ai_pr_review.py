@@ -338,6 +338,38 @@ class AutomaticFallbackFormatTest(unittest.TestCase):
 
 
 class RequestPublicationTest(unittest.TestCase):
+    def test_nvidia_nemotron3_none_effort_reaches_primary_and_fallback_wire(self):
+        url = "https://integrate.api.nvidia.com/v1/chat/completions"
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        for use_fallback in (False, True):
+            with self.subTest(use_fallback=use_fallback):
+                response = io.BytesIO(json.dumps({
+                    "choices": [{"message": {"content": '{"summary":"Reviewed.","findings":[]}'}}],
+                }).encode())
+                failures = [urllib.error.HTTPError(url, 404, "unavailable", {}, io.BytesIO(b'{}'))] if use_fallback else []
+                with (
+                    mock.patch.object(reviewer, "ACTIVE_PROVIDER", "nvidia"),
+                    mock.patch.object(reviewer, "OLLAMA_URL", url),
+                    mock.patch.object(reviewer, "REVIEW_DEADLINE", reviewer.ReviewDeadline(600)),
+                    mock.patch.dict(reviewer.os.environ, {
+                        "DIRECT_REVIEW_MODEL_MODE": "ordinary",
+                        "DIRECT_REVIEW_FALLBACK_PROVIDER": "nvidia",
+                        "DIRECT_REVIEW_FALLBACK_MODEL": "nvidia/nemotron-3-backup",
+                        "NVIDIA_API_KEY": "fixture-key",
+                    }, clear=True),
+                    mock.patch.object(reviewer, "read_review_rules", return_value="rules"),
+                    mock.patch.object(reviewer.urllib.request, "urlopen", side_effect=failures + [response]) as request,
+                    mock.patch("builtins.print"),
+                ):
+                    result = reviewer.review_chunk("fixture-key", "nvidia/nemotron-3-primary", (), chunk, 1, 1)
+                self.assertEqual(result["findings"], [])
+                self.assertEqual(request.call_count, 2 if use_fallback else 1)
+                for call in request.call_args_list:
+                    payload = json.loads(call.args[0].data)
+                    self.assertEqual(payload["chat_template_kwargs"], {"enable_thinking": False})
+                    self.assertEqual(payload["max_tokens"], reviewer.MAX_OUTPUT_TOKENS)
+                    self.assertNotIn("reasoning", payload)
+
     def test_nous_mandatory_reasoning_retry_reaches_wire_with_low_effort(self):
         url = "https://inference-api.nousresearch.com/v1/chat/completions"
         rejected = urllib.error.HTTPError(url, 400, "bad request", {}, io.BytesIO(
@@ -631,6 +663,69 @@ class ReviewDeadlineTest(unittest.TestCase):
         ):
             with self.assertRaises(RuntimeError):
                 reviewer.configured_review_budget()
+
+
+class AdditionalReviewInstructionsTest(unittest.TestCase):
+    def test_launch_instructions_supplement_review_and_triage_and_survive_review_fallback(self):
+        instructions = 'Проверь восстановление настроек.\nСохрани "legacy" API и `$()` как текст.'
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        for operation in ("review", "triage"):
+            with (
+                self.subTest(operation=operation),
+                mock.patch.dict(reviewer.os.environ, {
+                    "ADDITIONAL_REVIEW_INSTRUCTIONS": instructions,
+                    "DIRECT_REVIEW_FALLBACK_MODEL": "fixture/backup",
+                    "DIRECT_REVIEW_FALLBACK_PROVIDER": "nvidia",
+                    "DIRECT_REVIEW_MODEL_MODE": "strict",
+                }),
+                mock.patch.object(reviewer, "ACTIVE_PROVIDER", "nvidia"),
+                mock.patch.object(reviewer, "read_review_rules", return_value="mandatory shared policy"),
+                mock.patch.object(reviewer, "request_reasoning_compatible_review",
+                                  side_effect=reviewer.RequestError("primary unavailable") if operation == "review" else None,
+                                  return_value={"verdicts": []}) as primary,
+                mock.patch.object(reviewer, "request_fallback_review",
+                                  return_value={"summary": "Reviewed.", "findings": [], "verdicts": []}) as fallback,
+                mock.patch("builtins.print"),
+            ):
+                if operation == "review":
+                    reviewer.review_chunk("key", "fixture/primary", (), chunk, 1, 1)
+                else:
+                    reviewer.request_thread_triage("key", "fixture/primary", (), [])
+                bodies = [primary.call_args.args[1]]
+                if operation == "review":
+                    bodies.append(fallback.call_args.args[2])
+                for body in bodies:
+                    messages = body["messages"]
+                    self.assertEqual(len(messages), 2)
+                    self.assertEqual(messages[0]["role"], "system")
+                    self.assertIn("mandatory shared policy", messages[0]["content"])
+                    self.assertIn("REQUIRED_JSON_SCHEMA", messages[0]["content"])
+                    self.assertNotIn(instructions, messages[0]["content"])
+                    self.assertEqual(messages[1]["role"], "user")
+                    self.assertIn(instructions, messages[1]["content"])
+                    self.assertIn("supplement", messages[1]["content"])
+                    self.assertIn("do not override", messages[1]["content"])
+                    self.assertEqual(messages[-1]["role"], "user")
+                    self.assertIn("RIGHT 1|+value" if operation == "review" else "REVIEW_THREADS",
+                                  messages[-1]["content"])
+
+    def test_blank_or_missing_instructions_preserve_the_existing_request(self):
+        chunk = reviewer.ReviewChunk("RIGHT 1|+value", frozenset({"app.py"}), ("app.py",))
+        for instructions in (None, "", " \r\n\t "):
+            with (
+                self.subTest(instructions=instructions),
+                mock.patch.dict(reviewer.os.environ),
+                mock.patch.object(reviewer, "read_review_rules", return_value="mandatory shared policy"),
+                mock.patch.object(reviewer, "request_reasoning_compatible_review",
+                                  return_value={"summary": "Reviewed.", "findings": []}) as request,
+            ):
+                reviewer.os.environ.pop("ADDITIONAL_REVIEW_INSTRUCTIONS", None)
+                if instructions is not None:
+                    reviewer.os.environ["ADDITIONAL_REVIEW_INSTRUCTIONS"] = instructions
+                reviewer.review_chunk("key", "fixture/primary", (), chunk, 1, 1)
+                messages = request.call_args.args[1]["messages"]
+                self.assertEqual(len(messages), 2)
+                self.assertIn("RIGHT 1|+value", messages[1]["content"])
 
 
 class OllamaCloudRequestTest(unittest.TestCase):

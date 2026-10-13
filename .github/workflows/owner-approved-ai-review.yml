@@ -36,14 +36,14 @@ jobs:
       pull-requests: write
 
     steps:
-      - name: Check out trusted reviewer tooling from main
+      - name: Check out reviewer tooling from the owner revision or main
         id: trusted_tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 1
           path: reviewer
           persist-credentials: false
-          ref: main
+          ref: ${{ github.event.pull_request.user.login == github.repository_owner && github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner && github.triggering_actor == github.repository_owner && github.event.pull_request.head.sha || 'main' }}
 
       # This checkout is untrusted input. No commands or dependencies from this
       # directory are executed; trusted scripts below only read Git data from it.
@@ -89,8 +89,8 @@ jobs:
           NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
           DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'nvidia' }}
           DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'nvidia/nemotron-3-super-120b-a12b' }}
-          DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'google/gemma-4-31b-it:free' }}
-          DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'openrouter' }}
+          DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'poolside/laguna-s-2.1:free' }}
+          DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'nous' }}
         run: python3 reviewer/.github/scripts/ai_review_preflight.py --probe json
 
       - name: Review the approved revision and publish findings
@@ -122,7 +122,7 @@ jobs:
           set -euo pipefail
           # Start Python outside target and in isolated mode. The reviewed
           # checkout can influence only the Git data read after imports are
-          # pinned to the trusted main-branch reviewer scripts.
+          # pinned to the trusted reviewer revision selected above.
           python3 -I - <<'PY'
           import os
           from pathlib import Path

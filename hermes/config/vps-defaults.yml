@@ -56,6 +56,9 @@ vps_deploy:
 # auxiliary settings and compression tuning remain UI-owned.
 vps_hermes:
   config:
+    # Deploy also migrates existing agent cron pins (including paused jobs).
+    # Set false to preserve per-job model overrides across deployments.
+    manage_cron_job_models: true
     ui_owned_sections:
       - model
       - auxiliary
@@ -76,8 +79,8 @@ vps_hermes:
         deadline_seconds: 1800
       model:
         # Single source: deploy also applies this route to existing profiles.
-        default: nvidia/nemotron-3-ultra-550b-a55b
-        provider: nvidia
+        default: mistral-large-4
+        provider: ollama-cloud
       # Deploy applies this ordered list to active fallback_providers on every run.
       # /fallback edits last until the next deploy. Credentials stay in Vault.
       fallback_policy:
@@ -136,9 +139,12 @@ vps_hermes:
           model: nvidia/nemotron-3-super-120b-a12b
           reasoning_effort: none
       # The runtime derives cron's default route from model above; do not
-      # duplicate it here. Explicit per-job pins still take precedence.
+      # duplicate it here. manage_cron_job_models migrates existing job pins.
       cron:
         model_drift_guard: true
+        # Last permanent /model pick applies to all agent cron jobs and profiles.
+        # The shared route is derived from model above at deploy, never duplicated.
+        follow_chat_model: true
       # Let Hermes select only providers whose credentials/capabilities are
       # available. Managed Vault keys still enable Brave and Firecrawl through
       # the capability overlay without breaking manual .env or Nous fallback.

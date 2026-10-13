@@ -13,8 +13,10 @@ import tempfile
 import pr_review_context as context
 
 
-MAX_READ_PAGE_BYTES = 16000
-MAX_READ_PAGE_LINES = 300
+# Larger bounded pages reduce tool-call overhead on large PRs while keeping
+# every Read result small enough to inspect and verify independently.
+MAX_READ_PAGE_BYTES = 48000
+MAX_READ_PAGE_LINES = 900
 
 
 class IncompleteDiffRead(RuntimeError):
@@ -112,9 +114,11 @@ def _require_complete_diff(events, path, lines):
         completed, errors = _completed_lines(event, pending, lines)
         seen.update(completed)
         failed += errors
+    coverage = {'matched_lines': len(seen), 'total_lines': len(lines),
+                'read_calls': calls, 'failed_reads': failed}
     if not lines or len(seen) != len(lines):
-        raise IncompleteDiffRead({'matched_lines': len(seen), 'total_lines': len(lines),
-                                  'read_calls': calls, 'failed_reads': failed})
+        raise IncompleteDiffRead(coverage)
+    return coverage
 
 
 def _revision_binding(raw):
@@ -139,6 +143,11 @@ def _write_proof(path, proof):
 def _completion_reason(result):
     if result.get('subtype') == 'error_max_turns' and result.get('is_error') is True:
         return 'turn_limit_after_complete_diff_read'
+    if result.get('subtype') == 'error_max_structured_output_retries' and result.get('is_error') is True:
+        return 'output_retry_limit_after_complete_diff_read'
+    if (result.get('subtype') == 'success' and result.get('is_error') is True
+            and result.get('structured_output') is None):
+        return 'missing_structured_output_after_complete_diff_read'
     if result.get('subtype') == 'success' and result.get('is_error') is False:
         try:
             context._json_response_text(context._result_event_text(result) or '')
@@ -161,42 +170,77 @@ def prepare(execution_file, proof_file):
             return {'ready': 'false', 'reason': 'not_recoverable_result'}
         failure_reason = 'diff_not_fully_read'
         path, raw, lines = _diff()
-        _require_complete_diff(events, path, lines)
+        coverage = _require_complete_diff(events, path, lines)
         failure_reason = 'proof_unavailable'
         _write_proof(proof_file, {**_revision_binding(raw), 'session_id': session})
     except IncompleteDiffRead as error:
         return {'ready': 'false', 'reason': 'diff_not_fully_read', 'read_coverage': json.dumps(error.coverage)}
     except (OSError, ValueError, RuntimeError):
         return {'ready': 'false', 'reason': failure_reason}
-    return {'ready': 'true', 'reason': reason, 'session_id': session}
+    return {'ready': 'true', 'reason': reason, 'session_id': session,
+            'read_coverage': json.dumps(coverage)}
 
 
-def extract(execution_file, proof_file, output_file):
-    proof_path = context._validate_cli_path(proof_file, 'proof file')
-    if proof_path.stat().st_size > 4096:
-        raise RuntimeError('invalid_finalization_proof')
-    proof = json.loads(proof_path.read_text())
+def extract(execution_file, proof_file):
+    def _validate_and_load_proof(proof_file):
+        proof_path = context._validate_cli_path(proof_file, 'proof file')
+        if proof_path.stat().st_size > 4096:
+            raise RuntimeError('invalid_finalization_proof')
+        return json.loads(proof_path.read_text())
+
+    def _get_session_result_events(execution_file):
+        raw_events = context._claude_execution_events(execution_file)
+        if any(isinstance(event, dict) and event.get('parent_tool_use_id') for event in raw_events):
+            raise RuntimeError('finalization_used_subagent')
+        events = _root_events(raw_events)
+        session, result = _session(events)
+        return session, result, events
+
+    def _validate_result(result):
+        if result.get('subtype') != 'success' or result.get('is_error') is not False:
+            raise RuntimeError('finalization_failed')
+
+    def _ensure_no_tool_use_except_structured(events, result):
+        for event in events:
+            for block in context._sdk_content(event, 'assistant'):
+                if block.get('type') == 'tool_use':
+                    invalid = (block.get('name') != 'StructuredOutput'
+                               or result.get('structured_output') is None
+                               or block.get('input') != result['structured_output'])
+                    if invalid:
+                        raise RuntimeError('finalization_used_tools')
+
+    def _write_normalized_output(text, binding):
+        normalized = context._normalized_claude_result(text, binding['base_sha'], binding['head_sha'])
+        runner_temp = Path(os.environ.get('RUNNER_TEMP', ''))
+        if not runner_temp.is_absolute() or not runner_temp.is_dir():
+            raise RuntimeError('runner_temp_unavailable')
+        output = runner_temp.resolve() / 'claude-review-result.json'
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=output.parent,
+                                         prefix='.claude-review-result-', delete=False) as stream:
+            temporary = Path(stream.name)
+            try:
+                stream.write(normalized + '\n')
+                stream.flush()
+                os.fsync(stream.fileno())
+                os.replace(temporary, output)
+            finally:
+                temporary.unlink(missing_ok=True)
+
+    proof = _validate_and_load_proof(proof_file)
     _, raw, _ = _diff()
     binding = _revision_binding(raw)
     if not isinstance(proof, dict) or any(proof.get(key) != value for key, value in binding.items()):
         raise RuntimeError('finalization_revision_mismatch')
-    raw_events = context._claude_execution_events(execution_file)
-    if any(isinstance(event, dict) and event.get('parent_tool_use_id') for event in raw_events):
-        raise RuntimeError('finalization_used_subagent')
-    events = _root_events(raw_events)
-    session, result = _session(events)
+    session, result, events = _get_session_result_events(execution_file)
     if session != proof.get('session_id'):
         raise RuntimeError('finalization_session_mismatch')
-    if result.get('subtype') != 'success' or result.get('is_error') is not False:
-        raise RuntimeError('finalization_failed')
-    if any(block.get('type') == 'tool_use' for event in events for block in context._sdk_content(event, 'assistant')):
-        raise RuntimeError('finalization_used_tools')
+    _validate_result(result)
+    _ensure_no_tool_use_except_structured(events, result)
     text = context._result_event_text(result)
     if not text:
         raise RuntimeError('finalization_missing_result')
-    normalized = context._normalized_claude_result(text, binding['base_sha'], binding['head_sha'])
-    output = context._validate_cli_path(output_file, 'output file')
-    output.write_text(normalized + '\n', encoding='utf-8')
+    _write_normalized_output(text, binding)
     print('Validated the resumed Claude review against its session, revisions and complete diff-read evidence.')
 
 
@@ -205,7 +249,6 @@ def main():
     parser.add_argument('command', choices=('plan', 'prepare', 'extract'))
     parser.add_argument('--execution-file', type=Path)
     parser.add_argument('--proof-file', type=Path)
-    parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     if args.command == 'plan':
         with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
@@ -219,13 +262,12 @@ def main():
         with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
             output.writelines(f'{key}={value}\n' for key, value in values.items())
     else:
-        if args.output is None:
-            parser.error('--output is required for extract')
-        extract(args.execution_file, args.proof_file, args.output)
+        extract(args.execution_file, args.proof_file)
 
 
 if __name__ == '__main__':
     try:
         main()
-    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError):
-        raise SystemExit('Claude finalization failed validation; no review result was produced.') from None
+    except (OSError, ValueError, RuntimeError, TypeError, KeyError, subprocess.CalledProcessError) as error:
+        raise SystemExit('Claude finalization failed validation [' + context.review_failure_code(error)
+                         + ']; no review result was produced.') from None

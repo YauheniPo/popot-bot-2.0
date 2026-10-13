@@ -18,9 +18,11 @@ Covered customizations (not yet upstream):
  * attached cron skills retain read tools under restricted toolsets, without
    granting skill management or overriding global toolset denies
  * unsuccessful file writes request bounded recovery before a text-response stop
+ * search budgets warn before exhaustion; guardrail reports distinguish caps from errors
  * /status shows reasoning, models, and session-scoped background activity
  * Telegram final replies show the actual provider/model in a copyable block
  * /model accepts an explicit built-in provider/model pair
+ * permanent chat model choices supply one shared route for all agent cron jobs
  * busy-session dispatch handles /gw-restart like /restart
  * Telegram command-menu usage ranking, with explicit user priorities pinned
  * /update is CLI-only: chat/gateway surfaces cannot trigger Hermes's own
@@ -50,6 +52,7 @@ _PREFIX = "# Local Hermes:"
 _CRON_SCHEDULER_PATH = "cron/scheduler.py"
 _TELEGRAM_ADAPTER_PATH = "plugins/platforms/telegram/adapter.py"
 _CRON_SCHEDULER_DELIVERY_PATH = "cron/scheduler_delivery.py"
+_CRONJOB_TOOLS_PATH = "tools/cronjob_tools.py"
 # Relative paths patched by multiple migrations/patches below; named once so
 # the literal isn't duplicated across the file (SonarCloud: duplicated string).
 _HERMES_CLI_COMMANDS_PATH = "hermes_cli/commands.py"
@@ -69,6 +72,8 @@ _RETIRED_MODEL_GLOBAL = "model" + chr(45) + "global"
 _GW_RESTART = "gw" + chr(45) + "restart"
 _STATE_FILE = ".local-hermes-patches.json"
 
+_TOOL_GUARDRAILS_PATH = "agent/tool_guardrails.py"
+_GATEWAY_SLASH_COMMANDS_MODEL_PATH = "gateway/slash_commands_model.py"
 
 class PatchMigrationError(RuntimeError):
     """Raised when an installed local patch has an unknown legacy shape."""
@@ -329,6 +334,317 @@ def _migrate_installed_telegram_usage_ranking() -> int:
 
 
 _PATCHES: list[tuple[str, str, str, str]] = [
+    (
+        _CRON_SCHEDULER_PATH,
+        _PREFIX + " competitor agent guard parameter",
+        '''    cancel_event: Optional[_CancelEventLike] = None, execution_id: Optional[str] = None,
+) -> tuple[bool, str, str, Optional[str]]:
+''',
+        '''    cancel_event: Optional[_CancelEventLike] = None, execution_id: Optional[str] = None,
+    # Local Hermes: competitor agent guard parameter
+    competitor_guard=None,
+) -> tuple[bool, str, str, Optional[str]]:
+''',
+    ),
+    (
+        _CRON_SCHEDULER_PATH,
+        _PREFIX + " competitor repair history parameter",
+        '''    worker_state: Optional[dict] = None,
+) -> dict:
+''',
+        '''    worker_state: Optional[dict] = None,
+    # Local Hermes: competitor repair history parameter
+    conversation_history: Optional[list] = None,
+) -> dict:
+''',
+    ),
+    (
+        _CRON_SCHEDULER_PATH,
+        _PREFIX + " competitor repair history forwarding",
+        '''    _cron_future = _cron_pool.submit(
+        _cron_context.run, agent.run_conversation, prompt, task_id=task_id)
+''',
+        '''    # Local Hermes: competitor repair history forwarding
+    _history_kwargs = ({"conversation_history": conversation_history}
+                       if conversation_history is not None else {})
+    _cron_future = _cron_pool.submit(
+        _cron_context.run, agent.run_conversation, prompt, task_id=task_id, **_history_kwargs)
+''',
+    ),
+    (
+        _CRON_SCHEDULER_PATH,
+        _PREFIX + " competitor bounded artifact repair",
+        '''        final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
+        if (setup.fallback_notice''',
+        '''        final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
+        # Local Hermes: competitor bounded artifact repair
+        if competitor_guard is not None and _cron_failure_marker_error(final_response) is None:
+            def _repair_competitor_artifact(repair_prompt):
+                nonlocal result
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError("Competitor report repair cancelled")
+                if result.get("completed") is False:
+                    raise RuntimeError("Competitor report repair unavailable: agent budget exhausted")
+                history = result.get("messages")
+                if not isinstance(history, list) or not history:
+                    raise RuntimeError("Competitor report repair unavailable: missing research history")
+                logger.info("Job '%s': correcting competitor artifact (one attempt)", job_id)
+                result = _run_agent_with_watchdog(
+                    agent, repair_prompt, job, job_id, job_name, scope.task_id, cancel_event,
+                    worker_state=_worker_state, conversation_history=history)
+                repair_response = _final_response_from_result(result, job_id, job_name, AIAgent)
+                repair_error = _cron_failure_marker_error(repair_response)
+                if repair_error is not None:
+                    raise RuntimeError(repair_error)
+            final_response = competitor_guard.finalize_with_repair(_repair_competitor_artifact)
+        if (setup.fallback_notice''',
+    ),
+    (
+        _CRON_SCHEDULER_PATH,
+        _PREFIX + " competitor run preparation",
+        '''        _run_kwargs = {
+            "defer_agent_teardown": _deferred_agents,
+''',
+        '''        # Local Hermes: competitor run preparation
+        from cron.competitor_digest import begin_run as _begin_competitor_run
+        competitor_guard = _begin_competitor_run(job, _get_hermes_home())
+        if competitor_guard is not None:
+            extra_prompt = competitor_guard.instructions(extra_prompt)
+        _run_kwargs = {
+            "defer_agent_teardown": _deferred_agents,
+''',
+    ),
+    (
+        _CRON_SCHEDULER_PATH,
+        _PREFIX + " competitor guard passed to agent",
+        '''        if fence.cancel_event is not None:
+            _run_kwargs["cancel_event"] = fence.cancel_event
+''',
+        '''        # Local Hermes: competitor guard passed to agent
+        if competitor_guard is not None:
+            _run_kwargs["competitor_guard"] = competitor_guard
+        if fence.cancel_event is not None:
+            _run_kwargs["cancel_event"] = fence.cancel_event
+''',
+    ),
+    (
+        _CRON_SCHEDULER_PATH,
+        _PREFIX + " competitor guard lifetime",
+        '''    _scope_token = None
+    _terminal_scope_token = None
+    try:
+''',
+        '''    # Local Hermes: competitor guard lifetime
+    competitor_guard = None
+    _scope_token = None
+    _terminal_scope_token = None
+    try:
+''',
+    ),
+    (
+        _CRON_SCHEDULER_PATH,
+        _PREFIX + " competitor artifact before publication",
+        '''        try:
+            _save_compose_deliver(
+                d, fence, final_response, output, adapters=adapters, loop=loop, verbose=verbose,
+                execution_token=execution_token)
+''',
+        '''        try:
+            # Local Hermes: competitor artifact before publication
+            if competitor_guard is not None and d.success:
+                final_response = competitor_guard.finalize()
+                output = final_response
+            _save_compose_deliver(
+                d, fence, final_response, output, adapters=adapters, loop=loop, verbose=verbose,
+                execution_token=execution_token, competitor_guard=competitor_guard)
+''',
+    ),
+    (
+        _CRON_SCHEDULER_PATH,
+        _PREFIX + " competitor delivery guard parameter",
+        '''    adapters, loop, verbose: bool, execution_token,
+) -> None:
+''',
+        '''    adapters, loop, verbose: bool, execution_token,
+    # Local Hermes: competitor delivery guard parameter
+    competitor_guard=None,
+) -> None:
+''',
+    ),
+    (
+        _CRON_SCHEDULER_PATH,
+        _PREFIX + " competitor silent checkpoint",
+        '''    if not d.should_deliver:
+        return
+    d.unresolved_origin = (
+''',
+        '''    if not d.should_deliver:
+        # Local Hermes: competitor silent checkpoint
+        # Only the validated zero-event complete report can checkpoint without delivery.
+        if (competitor_guard is not None and d.success and final_response == "[SILENT]"
+                and not fence.lost() and not _is_interrupted(job["id"], execution_token)):
+            with fence.side_effect_fence() as owns_silence:
+                if not owns_silence:
+                    raise _FireClaimLostDuringSideEffect
+                if not fence.transport_cancelled():
+                    competitor_guard.commit()
+        return
+    d.unresolved_origin = (
+''',
+    ),
+    (
+        _CRON_SCHEDULER_PATH,
+        _PREFIX + " competitor delivered checkpoint",
+        '''                for_failure=not d.success,
+            )
+    except Exception as de:
+''',
+        '''                for_failure=not d.success,
+            )
+            # Local Hermes: competitor delivered checkpoint
+            # Queued or suppressed delivery is not confirmation that the report was sent.
+            if (competitor_guard is not None and d.success and not d.delivery_error
+                    and not job.get("last_delivery_queued")
+                    and not job.get("last_delivery_unverified")
+                    and not job.get("_notification_all_targets_suppressed")
+                    and _resolve_delivery_targets(job, for_failure=False)
+                    and not fence.transport_cancelled()
+                    and not _is_interrupted(job["id"], execution_token)):
+                competitor_guard.commit()
+    except Exception as de:
+''',
+    ),
+    (
+        _CRON_SCHEDULER_PATH,
+        _PREFIX + " competitor guard cleanup",
+        '''    finally:
+        # Function-level on purpose: must scope delivery, deferred teardown, claim-loss handling and
+''',
+        '''    finally:
+        # Local Hermes: competitor guard cleanup
+        # Cleanup errors must not prevent the profile's secret/terminal scope reset.
+        if competitor_guard is not None:
+            try:
+                competitor_guard.close()
+            except Exception:
+                logger.error("Competitor report state cleanup failed for job %s", job["id"])
+        # Function-level on purpose: must scope delivery, deferred teardown, claim-loss handling and
+''',
+    ),
+    (
+        _CRON_SCHEDULER_PATH,
+        _PREFIX + " exact manual run output receipt",
+        '''    if verbose and output_file is not None:
+        logger.info("Output saved to: %s", output_file)
+''',
+        '''    # Local Hermes: exact manual run output receipt
+    job["_run_output_file"] = str(output_file) if output_file is not None else None
+    if verbose and output_file is not None:
+        logger.info("Output saved to: %s", output_file)
+''',
+    ),
+    (
+        _CRON_SCHEDULER_PATH,
+        _PREFIX + " execution delivery verification",
+        '''    if delivery_outcome in ("delivered", "not_configured") and not d.success:
+''',
+        '''    # Local Hermes: execution delivery verification
+    if delivery_outcome == "delivered" and job.get("last_delivery_unverified"):
+        delivery_outcome = "unverified"
+    if delivery_outcome in ("delivered", "not_configured") and not d.success:
+''',
+    ),
+    (
+        _CRONJOB_TOOLS_PATH,
+        _PREFIX + " manual run execution receipt",
+        '''        return {"claimed": True, "success": bool(processed and ok), "error": run_error}
+''',
+        '''        # Local Hermes: manual run execution receipt
+        return {"claimed": True, "success": bool(processed and ok), "error": run_error,
+                "execution_id": execution_id,
+                "execution_status": (execution or {}).get("status"),
+                "delivery_outcome": (execution or {}).get("delivery_outcome"),
+                "output_file": job.get("_run_output_file")}
+''',
+    ),
+    (
+        _CRONJOB_TOOLS_PATH,
+        _PREFIX + " exact manual run output excerpt",
+        '''def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[str]:
+''',
+        '''# Local Hermes: exact manual run output excerpt
+def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000, *, output_file=None) -> Optional[str]:
+''',
+    ),
+    (
+        _CRONJOB_TOOLS_PATH,
+        _PREFIX + " manual run response only",
+        '''        files = sorted((get_cron_output_dir() / job_id).glob("*.md"))
+        text = files[-1].read_text(encoding="utf-8", errors="replace").strip() if files else ""
+        if not text:
+            return None
+        if len(text) > max_chars:
+            text = text[:max_chars] + f"\\n… (truncated; full output: {files[-1]})"
+''',
+        '''        # Local Hermes: manual run response only
+        if not output_file:
+            return None  # No file from this execution; never fall back to an older run.
+        path = Path(output_file)
+        if path.is_symlink() or path.resolve().parent != (get_cron_output_dir() / job_id).resolve():
+            return None
+        text = path.read_text(encoding="utf-8", errors="replace").strip()
+        # Upstream documents include the full skill/prompt before the actual answer.
+        # Managed competitor output is already the rendered report without that wrapper.
+        if text.startswith("# Cron Job:"):
+            text = text.rpartition("\\n## Response\\n")[2].strip()
+        if not text:
+            return None
+        if len(text) > max_chars:
+            text = text[:max_chars] + f"\\n… (truncated; full output: {path})"
+''',
+    ),
+    (
+        _CRONJOB_TOOLS_PATH,
+        _PREFIX + " manual run delivery evidence",
+        '''        f"Delivery target: {deliver}" + _manual_run_delivery_note(deliver, refreshed),
+    ]
+''',
+        '''        # Local Hermes: manual run delivery evidence
+        f"Execution: {res.get('execution_id') or 'unavailable'}; "
+        f"status={res.get('execution_status') or 'unverified'}",
+        f"Delivery target: {deliver}",
+    ]
+    outcome = res.get("delivery_outcome") or "unverified"
+    if not res.get("success") or res.get("execution_status") != "completed":
+        lines.append(f"Report not confirmed; failure notification delivery: {outcome}.")
+    elif outcome == "delivered":
+        lines.append("Delivery: report delivered by this execution.")
+    else:
+        lines.append(f"Delivery: {outcome}; report delivery is not confirmed. Do not resend automatically.")
+''',
+    ),
+    (
+        _CRONJOB_TOOLS_PATH,
+        _PREFIX + " manual run successful output only",
+        '''    excerpt = _latest_job_output_excerpt(job_id)
+''',
+        '''    # Local Hermes: manual run successful output only
+    excerpt = (_latest_job_output_excerpt(job_id, output_file=res.get("output_file"))
+               if res.get("success") and res.get("execution_status") == "completed" else None)
+''',
+    ),
+    (
+        _CRON_SCHEDULER_DELIVERY_PATH,
+        _PREFIX + " detached delivery verification receipt",
+        '''        job["last_delivery_queued"] = refreshed.get("last_delivery_queued")
+        return error
+''',
+        '''        job["last_delivery_queued"] = refreshed.get("last_delivery_queued")
+        # Local Hermes: detached delivery verification receipt
+        job["last_delivery_unverified"] = refreshed.get("last_delivery_unverified")
+        return error
+''',
+    ),
     # NOTE: every ``new`` block MUST include its marker as a comment line so
     # the idempotency check (marker already present -> skip) works on re-run.
     (
@@ -339,7 +655,7 @@ _PATCHES: list[tuple[str, str, str, str]] = [
         '_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid", "gateway.lock"}\n',
     ),
     (
-        "agent/tool_guardrails.py",
+        _TOOL_GUARDRAILS_PATH,
         _PREFIX + " actionable file mutation warning",
         '''            if warnings and exact_count >= self.config.exact_failure_warn_after:
                 return self._decide("warn", "repeated_exact_failure_warning", tool_name, exact_count, signature)
@@ -349,17 +665,28 @@ _PATCHES: list[tuple[str, str, str, str]] = [
                 return self._decide(
                     "warn", "repeated_exact_failure_warning", tool_name, exact_count, signature,
                     message=(_tool_failure_recovery_hint(tool_name, same_count)
-                             if tool_name in {"write_file", "patch"} else None),
+                             if tool_name in {"write_file", "patch", "web_search"} else None),
                 )
 ''',
     ),
     (
-        "agent/tool_guardrails.py",
+        _TOOL_GUARDRAILS_PATH,
         _PREFIX + " file mutation retry guidance",
         '''    if tool_name == "terminal":
         return common + (
 ''',
         '''    # Local Hermes: file mutation retry guidance
+    if tool_name == "web_search":
+        return (
+            f"web_search failed {count} time(s). Diagnose the actual tool error before "
+            "another search: distinguish invalid arguments, missing credentials, rate limits "
+            "and transport errors. Rewording a query cannot repair a backend or credentials. "
+            "Respect Retry-After and the remaining budget; use an already configured, "
+            "authorized alternative only when it addresses the failure. For known source "
+            "URLs use web_extract instead of rediscovering them. Do not bypass a guardrail "
+            "through another tool. If coverage remains incomplete, deliver a partial report "
+            "with verified sources and gaps; do not claim no news or advance the success cutoff."
+        )
     if tool_name in {"write_file", "patch"}:
         return (
             f"{tool_name} failed {count} time(s). Before any retry, read the actual targets "
@@ -375,6 +702,65 @@ _PATCHES: list[tuple[str, str, str, str]] = [
         )
     if tool_name == "terminal":
         return common + (
+''',
+    ),
+    (
+        _TOOL_GUARDRAILS_PATH,
+        _PREFIX + " search budget warning before exhaustion",
+        '''        return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
+''',
+        '''        # Local Hermes: search budget warning before exhaustion
+        cap = self.config.loop_caps.max_web_searches
+        searches = self._turn_web_search_count
+        if warnings and tool_name == "web_search" and cap and searches >= max(1, cap - max(1, cap // 5)):
+            return self._decide(
+                "warn", "loop_web_search_budget_warning", tool_name, searches, signature,
+                message=(
+                    f"Search budget: {searches}/{cap} calls used, {max(0, cap - searches)} remaining "
+                    "this turn (successful searches count too). Finish discovery now; use "
+                    "web_extract for relevant URLs already found and prepare the report. "
+                    "Do not start another batch of searches or delegate to evade this budget. "
+                    "If coverage is incomplete, label the report partial, list gaps, and "
+                    "do not advance the success cutoff. An extra search after the cap stops the turn."
+                ),
+            )
+        return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
+''',
+    ),
+    (
+        "run_agent.py",
+        _PREFIX + " truthful guardrail halt report",
+        '''        # Shown to the user as the reply, so no decision codes; the code stays in result["guardrail"].
+        return (
+            f"I stopped retrying because I kept running {decision.tool_name or 'the same tool'} "
+            f"{decision.count} times without making progress. The last result above shows what "
+            "blocked it. Tell me how you'd like to proceed, or send `continue` and I'll try a "
+            "different approach."
+        )
+''',
+        '''        # Local Hermes: truthful guardrail halt report
+        if decision.code == "loop_web_search_cap":
+            return (
+                f"Task incomplete: the configured per-turn web_search budget was exhausted "
+                f"after {decision.count} calls, including successful searches. The extra "
+                "search was blocked; this does not establish a search-provider failure. "
+                "Inspect the run history and narrow the search plan before rerunning; "
+                "for monitoring jobs, do not treat missing coverage as no news."
+            )
+        return (
+            f"Task incomplete: {decision.message} "
+            "Inspect the run history and address the reported limit or tool error before rerunning."
+        )
+''',
+    ),
+    (
+        _CRON_SCHEDULER_PATH,
+        _PREFIX + " cron guardrail halt is not success",
+        '''    if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
+''',
+        '''    # Local Hermes: cron guardrail halt is not success
+    if (turn_exit_reason == "guardrail_halt" or result.get("failed") is True
+            or (result.get("completed") is False and not max_iteration_summary)):
 ''',
     ),
     (
@@ -544,6 +930,93 @@ def _tool_call_logger() -> logging.Logger:
     CommandDef("gw-restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True, busy_policy="dispatch", desktop="terminal",
                aliases=("restart", "gw_restart")),
+''',
+    ),
+    (
+        "gateway/slash_commands_model.py",
+        _PREFIX + " chat model for all cron jobs",
+        '''        global_error = await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
+        reply = await self._model_switch_confirmation(
+            result, ctx, one_turn=one_turn, picker=picker, global_error=global_error,
+        )
+        if ctx.reasoning_effort and not one_turn:
+''',
+        '''        global_error = await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
+        # Local Hermes: chat model for all cron jobs
+        cron_notice = ""
+        if not one_turn:
+            try:
+                from cron.shared_model import persist_chat_model
+                if await asyncio.to_thread(persist_chat_model, result):
+                    cron_notice = "\\nThis model also applies to all agent cron jobs from their next run."
+            except Exception as exc:
+                logger.warning("Shared cron model update failed: %s", type(exc).__name__)
+                cron_notice = "\\n⚠ Cron model was not updated. Retry the model selection; check gateway logs if it persists."
+        reply = await self._model_switch_confirmation(
+            result, ctx, one_turn=one_turn, picker=picker, global_error=global_error,
+        )
+        reply += cron_notice
+        if ctx.reasoning_effort and not one_turn:
+''',
+    ),
+    (
+        _CRON_SCHEDULER_PATH,
+        _PREFIX + " snapshot shared chat model for cron",
+        '''        jc = _load_cron_job_config(job, job_id, job_name)
+        _cfg = jc.cfg
+        model = jc.model
+        setup = _resolve_cron_agent_setup(job, job_id, job_name, jc)
+''',
+        '''        # Local Hermes: snapshot shared chat model for cron
+        from cron.shared_model import routed_job
+        model_job = routed_job(job)
+        jc = _load_cron_job_config(model_job, job_id, job_name)
+        _cfg = jc.cfg
+        model = jc.model
+        setup = _resolve_cron_agent_setup(model_job, job_id, job_name, jc)
+''',
+    ),
+    (
+        "hermes_cli/cli_model_switch_mixin.py",
+        _PREFIX + " CLI model for all cron jobs",
+        '''    if not one_turn:
+        HermesCLI._persist_model_switch_to_session(cli, result)
+''',
+        '''    if not one_turn:
+        HermesCLI._persist_model_switch_to_session(cli, result)
+        # Local Hermes: CLI model for all cron jobs
+        try:
+            from cron.shared_model import persist_chat_model
+            if persist_chat_model(result):
+                _cprint("    This model also applies to all agent cron jobs from their next run.")
+        except Exception as exc:
+            from cli import logger
+            logger.warning("Shared cron model update failed: %s", type(exc).__name__)
+            _cprint("    ⚠ Cron model was not updated. Retry the model selection; check logs if it persists.")
+''',
+    ),
+    (
+        "tui_gateway/model_switch.py",
+        _PREFIX + " TUI model for all cron jobs",
+        '''    if reasoning_effort:
+        _apply_switch_reasoning(sid, session, agent, reasoning_effort, persist_global=persist_global, one_turn=one_turn)
+    return {
+        "value": result.new_model, "warning": result.warning_message or "",
+''',
+        '''    if reasoning_effort:
+        _apply_switch_reasoning(sid, session, agent, reasoning_effort, persist_global=persist_global, one_turn=one_turn)
+    # Local Hermes: TUI model for all cron jobs
+    cron_notice = ""
+    if not one_turn and (pin_session_override or persist_global):
+        try:
+            from cron.shared_model import persist_chat_model
+            if persist_chat_model(result):
+                cron_notice = "\\nThis model also applies to all agent cron jobs from their next run."
+        except Exception as exc:
+            logger.warning("Shared cron model update failed: %s", type(exc).__name__)
+            cron_notice = "\\n⚠ Cron model was not updated. Retry the model selection; check logs if it persists."
+    return {
+        "value": result.new_model, "warning": (result.warning_message or "") + cron_notice,
 ''',
     ),
     (
@@ -1584,6 +2057,18 @@ def _apply_one_patch(
     return 1, None, True
 
 
+def _install_cron_helper(source_name: str, target_name: str) -> bool:
+    """Ship the managed stdlib helper through both Ansible and shell deployment."""
+    source = Path(__file__).with_name(source_name).read_bytes()
+    target = HERMES_AGENT_DIR / 'cron' / target_name
+    if target.is_symlink():
+        raise PatchMigrationError("cron helper must not be a symlink")
+    if target.exists() and target.read_bytes() == source:
+        return False
+    target.write_bytes(source)
+    return True
+
+
 def main(*, backup_only: bool = False, allow_unmatched_backup: bool = False) -> int:
     if not HERMES_AGENT_DIR.is_dir():
         print(
@@ -1617,7 +2102,16 @@ def main(*, backup_only: bool = False, allow_unmatched_backup: bool = False) -> 
         state_changed = state_changed or changed
         if failure is not None:
             failures.append(failure)
-    if applied or migrated:
+    helper_changed = False
+    if not backup_only and not failures:
+        for source_name, target_name in (("competitor_digest.py", "competitor_digest.py"),
+                                         ("cron_shared_model.py", "shared_model.py")):
+            try:
+                helper_changed = _install_cron_helper(source_name, target_name) or helper_changed
+            except (OSError, PatchMigrationError) as exc:
+                print(f"[hermes-patch] ERROR: cannot install cron helper: {exc}", file=sys.stderr)
+                failures.append(f"cron/{target_name}")
+    if applied or migrated or helper_changed:
         print("[hermes-patch] changed")
     if state_changed:
         _save_patch_state(patch_state)

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import re
 import subprocess
 import sys
@@ -20,8 +21,8 @@ from hermes_fallback_exclusions import fallback_excluded_pairs
 _BUSY_INPUT_MODE_KEY = "display.busy_input_mode"
 
 
-def managed_model_values(settings: dict[str, Any]) -> dict[str, str]:
-    """One route for agent defaults; explicit session/job overrides are separate."""
+def managed_model_values(settings: dict[str, Any]) -> dict[str, Any]:
+    """Derive agent defaults and the optional shared cron route from one model."""
     model = settings.get('vps_hermes', {}).get('config', {}).get('managed_overlay', {}).get('model')
     if model is None:
         return {}
@@ -30,11 +31,15 @@ def managed_model_values(settings: dict[str, Any]) -> dict[str, str]:
         for key in ('provider', 'default')
     ):
         raise ValueError('managed model requires non-empty provider and default')
-    return {
+    values = {
         'model.provider': model['provider'], 'model.default': model['default'],
         'delegation.provider': model['provider'], 'delegation.model': model['default'],
         'cron.model_provider': model['provider'], 'cron.model': model['default'],
     }
+    cron = settings.get('vps_hermes', {}).get('config', {}).get('managed_overlay', {}).get('cron', {})
+    if cron.get('follow_chat_model') is True:
+        values['cron.shared_model'] = {'provider': model['provider'], 'model': model['default'], 'base_url': None}
+    return values
 
 
 def managed_exclusion_values(settings: dict[str, Any]) -> dict[str, Any]:
@@ -120,6 +125,85 @@ def sync_profile_models(home: Path, settings: dict[str, Any]) -> int:
     for path, config in pending:
         write_config(path, config)
     return len(pending)
+
+
+def _load_cron_store(home: Path):
+    """Use the installed, pinned Hermes storage API and its native write locks."""
+    source = home / 'hermes-agent'
+    if not (source / 'cron/jobs.py').is_file():
+        raise RuntimeError('installed Hermes cron storage API is missing')
+    # Native storage helpers also import sibling modules lazily during updates.
+    if str(source) not in sys.path:
+        sys.path.insert(0, str(source))
+    try:
+        return importlib.import_module('cron.jobs')
+    except ImportError as error:
+        raise RuntimeError('cannot import installed Hermes cron storage API') from error
+
+
+def _ensure_profiles_directory_not_symlink(profiles: Path) -> None:
+    if profiles.is_symlink():
+        raise ValueError('Hermes profiles directory must not be a symlink')
+
+def _add_valid_profile_homes(profiles: Path, homes: list[Path]) -> None:
+    if profiles.exists():
+        for profile in sorted(profiles.iterdir()):
+            if profile.is_symlink():
+                raise ValueError('Hermes profile directories must not be symlinks')
+            if profile.is_dir():
+                homes.append(profile)
+
+def _validate_and_collect_cron_stores(homes: list[Path]) -> list[Path]:
+    existing = []
+    for location in homes:
+        cron = location / 'cron'
+        path = cron / 'jobs.json'
+        if cron.is_symlink() or path.is_symlink() or (cron / '.jobs.lock').is_symlink():
+            raise ValueError('Hermes cron store and lock must not be symlinks')
+        if path.exists():
+            if not path.is_file():
+                raise ValueError('Hermes cron jobs.json must be a regular file')
+            existing.append(location)
+    return existing
+
+def _cron_homes(home: Path) -> list[Path]:
+    'Validate existing cron stores before starting a managed migration.'
+    homes = [home]
+    profiles = home / 'profiles'
+    _ensure_profiles_directory_not_symlink(profiles)
+    _add_valid_profile_homes(profiles, homes)
+    return _validate_and_collect_cron_stores(homes)
+
+
+def sync_cron_models(home: Path, settings: dict[str, Any]) -> int:
+    """Apply opt-in deployment model policy to agent jobs, including paused jobs."""
+    enabled = settings.get('vps_hermes', {}).get('config', {}).get('manage_cron_job_models', False)
+    if not isinstance(enabled, bool):
+        raise ValueError('manage_cron_job_models must be a boolean')
+    if not enabled:
+        return 0
+    values = managed_model_values(settings)
+    if not values:
+        raise ValueError('manage_cron_job_models requires a managed model')
+    homes = _cron_homes(home)
+    if not homes:
+        return 0
+    jobs = _load_cron_store(home)
+    route = {'provider': values['cron.model_provider'], 'model': values['cron.model'], 'base_url': None}
+    if 'cron.shared_model' in values:
+        # Shared routing is resolved afresh per run; remove obsolete per-job pins.
+        route = dict.fromkeys(route)
+    changed = 0
+    for location in homes:
+        with jobs.use_cron_store(location), jobs._jobs_lock():
+            for job in jobs.load_jobs():
+                if job.get('no_agent') or all(job.get(key) == value for key, value in route.items()):
+                    continue
+                # Pass only route fields: preserve lifecycle, schedule, delivery and history.
+                if jobs.update_job(job['id'], dict(route)) is None:
+                    raise RuntimeError('cron job disappeared during managed model update')
+                changed += 1
+    return changed
 
 
 class Operation(NamedTuple):
@@ -507,6 +591,10 @@ def build_operations(
 
 
 def cli_value(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        # Hermes parses structured values as YAML; Python repr turns None into
+        # the string "None", which is not a valid optional provider endpoint.
+        return yaml.safe_dump(value, default_flow_style=True).strip()
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value)
@@ -970,7 +1058,8 @@ def main() -> int:
         for operation in operations:
             run_operation(args.hermes_bin, operation)
         profiles_changed = sync_profile_models(args.hermes_home, settings)
-        print(f"Hermes runtime settings applied: {len(operations) + profiles_changed} change(s)")
+        jobs_changed = sync_cron_models(args.hermes_home, settings)
+        print(f"Hermes runtime settings applied: {len(operations) + profiles_changed + jobs_changed} change(s)")
         return 0
     except (OSError, ValueError, RuntimeError) as error:
         print(f"error: {error}", file=sys.stderr)

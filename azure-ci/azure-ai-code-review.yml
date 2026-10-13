@@ -86,6 +86,12 @@ parameters:
       - check_annotations
       - draft_pr
 
+  - name: additionalInstructions
+    displayName: Additional review instructions (none = standard instructions only)
+    type: string
+    # Azure runtime parameters require a default; the launcher clears this sentinel.
+    default: none
+
   - name: waitMinutes
     displayName: Minutes to wait for the GitHub review report (0 = do not wait)
     type: number
@@ -167,6 +173,10 @@ jobs:
           PUBLISH_MODE="${PUBLISH_MODE//$'\r'/}"
           REQUEST_ID="${REQUEST_ID//$'\r'/}"
 
+          if [[ "${ADDITIONAL_REVIEW_INSTRUCTIONS}" == "none" ]]; then
+            ADDITIONAL_REVIEW_INSTRUCTIONS=""
+          fi
+
           payload="$(\
             jq -n \
               --arg target_ref "${TARGET_REF}" \
@@ -176,6 +186,7 @@ jobs:
               --arg provider "${REVIEW_PROVIDER}" \
               --arg publish "${PUBLISH_MODE}" \
               --arg request_id "${REQUEST_ID}" \
+              --arg additional_instructions "${ADDITIONAL_REVIEW_INSTRUCTIONS}" \
               '{
                 ref: "main",
                 inputs: {
@@ -185,7 +196,8 @@ jobs:
                   model: $model,
                   provider: $provider,
                   publish: $publish,
-                  request_id: $request_id
+                  request_id: $request_id,
+                  additional_instructions: $additional_instructions
                 }
               }'
           )"
@@ -219,6 +231,7 @@ jobs:
           REVIEW_MODEL: ${{ parameters.model }}
           REVIEW_PROVIDER: ${{ parameters.provider }}
           PUBLISH_MODE: ${{ parameters.publishMode }}
+          ADDITIONAL_REVIEW_INSTRUCTIONS: ${{ parameters.additionalInstructions }}
 
       - bash: |
           set -euo pipefail

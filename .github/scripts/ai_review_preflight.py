@@ -82,6 +82,17 @@ def completion_payload(body: dict[str, object], provider: str = "ollama-cloud") 
         effort = reasoning.get("effort")
         if effort in ("none", "low", "medium", "high", "max"):
             payload["reasoning_effort"] = effort
+    model = payload.get("model")
+    if (provider == "nvidia" and isinstance(model, str)
+            and model.startswith("nvidia/nemotron-3-")
+            and isinstance(reasoning, dict) and reasoning.get("effort") == "none"):
+        # Nemotron 3 enables thinking by default; NIM uses a chat-template
+        # flag rather than the gateway's reasoning object to disable it.
+        template_kwargs = payload.get("chat_template_kwargs")
+        payload["chat_template_kwargs"] = {
+            **(template_kwargs if isinstance(template_kwargs, dict) else {}),
+            "enable_thinking": False,
+        }
     max_tokens = payload.get("max_tokens")
     if provider == "nous" and isinstance(max_tokens, int):
         payload["max_tokens"] = min(max_tokens, NOUS_MAX_OUTPUT_TOKENS)
@@ -181,9 +192,13 @@ def _probe_request(api_key: str, kind: str, provider: str, model: str) -> urllib
                     "required": ["status"],
                 },
             }],
-            "tool_choice": {"type": "tool", "name": "review_model_preflight"},
             "messages": [{"role": "user", "content": "Call review_model_preflight with status ok."}],
         })
+        # Ollama supports function calling on its Messages API, but does not
+        # fully support tool-choice controls. Ask the model to call the tool
+        # and validate the returned tool_use block without forcing the choice.
+        if provider != "ollama-cloud":
+            body["tool_choice"] = {"type": "tool", "name": "review_model_preflight"}
         if kind == "claude":
             body["tools"] = []
             body.pop("tool_choice", None)
