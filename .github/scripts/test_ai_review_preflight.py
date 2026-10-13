@@ -730,6 +730,14 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertEqual(sent.get_header("Authorization"), "Bearer test-key")
         self.assertEqual(json.loads(sent.data)["model"], "moonshotai/kimi-k3")
 
+    def test_ollama_tool_probe_does_not_force_tool_choice(self):
+        request = ai_review_preflight._probe_request(
+            "test-key", "tools", "ollama-cloud", "fixture/model",
+        )
+        payload = json.loads(request.data)
+        self.assertNotIn("tool_choice", payload)
+        self.assertEqual(payload["tools"][0]["name"], "review_model_preflight")
+
     def test_invalid_successful_responses_do_not_pass_preflight(self):
         for kind, response in [
             ("json", {"choices": [{"message": {"content": "not JSON"}}]}),

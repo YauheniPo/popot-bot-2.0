@@ -192,9 +192,13 @@ def _probe_request(api_key: str, kind: str, provider: str, model: str) -> urllib
                     "required": ["status"],
                 },
             }],
-            "tool_choice": {"type": "tool", "name": "review_model_preflight"},
             "messages": [{"role": "user", "content": "Call review_model_preflight with status ok."}],
         })
+        # Ollama supports function calling on its Messages API, but does not
+        # fully support tool-choice controls. Ask the model to call the tool
+        # and validate the returned tool_use block without forcing the choice.
+        if provider != "ollama-cloud":
+            body["tool_choice"] = {"type": "tool", "name": "review_model_preflight"}
         if kind == "claude":
             body["tools"] = []
             body.pop("tool_choice", None)

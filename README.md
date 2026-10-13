@@ -192,10 +192,11 @@ when no validated fallback is available.
 
 For the standard Portal connection, direct review uses Chat Completions. Do not
 assume a Portal catalog entry also works for inference or supports Anthropic
-Messages: on 2026-10-02, the Fin free
-route returned HTTP 404 in CI, while Sante passed tool/JSON checks and completed
-the Claude review. Claude and Observable require an Anthropic-compatible route;
-NVIDIA's direct Chat Completions endpoint does not supply one. Claude runs a short smoke test before starting:
+Messages: on 2026-10-02, the Fin free route returned HTTP 404 in CI. Sante passed
+then, but its Nous tools probe returned HTTP 404 on 2026-10-13, so that old pass
+is not current availability evidence. Claude and Observable require an
+Anthropic-compatible route; NVIDIA's direct Chat Completions endpoint does not
+supply one. Claude runs a short smoke test before starting:
 it checks tool calling and the exact review JSON contract in separate requests.
 The Claude smoke test uses up to two attempts with a 90-second timeout per check, so an
 unavailable or incompatible model is reported before the full Claude run.
@@ -238,12 +239,12 @@ identity variables or credentials are required. Each publishes its own PR
 summary and inline findings. The observable reviewer never resolves or replies
 to other reviewers' threads, avoiding races between the parallel jobs.
 
-The default routes, checked against catalogs and live CI on 2026-10-09–10, are:
+The workflow defaults and current repository Variables are:
 
 | Reviewer | Primary | Fallback |
 | --- | --- | --- |
 | Direct API | `nvidia / nvidia/nemotron-3-super-120b-a12b` | `nous / poolside/laguna-s-2.1:free` |
-| Claude Code | `openrouter / cohere/north-mini-code:free` | `nous / poolside/laguna-s-2.1:free` |
+| Claude Code | `ollama-cloud / deepseek-v4.1-flash:cloud` | `nous / poolside/laguna-s-2.1:free` |
 | Observable | `openrouter / cohere/north-mini-code:free` | `nous / poolside/laguna-s-2.1:free` |
 
 Repository Actions variables override these YAML defaults; update both when
@@ -251,20 +252,18 @@ retiring a route.
 Direct API uses the existing NVIDIA NIM key. A full review of PR #70 at
 `ad4a03b` validated both chunks and all 14 eligible files in 112.9 provider seconds
 in [run 37979872334](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/37979872334).
-Its Nous fallback is the free Laguna Chat Completions route; it completed a full
-review through Nous in [run 37927539259](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/37927539259).
-Claude Code uses North through OpenRouter; it completed and published the SDK
-review in about 94 seconds in
-[run 37931661305, attempt 7](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/37931661305/attempts/7).
-Its fallback is the free Laguna route through
-[Nous Portal](https://portal.nousresearch.com/models). The Direct API uses this
-route only after a successful live preflight; provider availability and free
-quota can still prevent fallback. NVIDIA's hosted
-Chat Completions endpoint does not replace an Anthropic Messages route for Claude.
+Its Nous fallback completed a full review in
+[run 37927539259](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/37927539259).
+Claude Code now uses `deepseek-v4.1-flash:cloud` through Ollama Cloud; CI passed
+tool and JSON preflight and published a complete review in
+[run 38275628147, attempt 4](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/38275628147/attempts/4).
+Ollama lists this model at $0.30 per million input tokens and $1.20 per million
+output tokens at peak rates ([pricing](https://ollama.com/pricing)); the fallback
+remains the free Laguna route through [Nous Portal](https://portal.nousresearch.com/models).
+Observable retains its independent North/OpenRouter route. NVIDIA's hosted Chat
+Completions endpoint does not replace an Anthropic Messages route for Claude.
 OpenRouter routes share its account-level free-model quota; switching only the
-model cannot bypass an exhausted account quota. Claude and Observable share the
-North route; their Nous fallback has a separate provider quota. The NVIDIA Direct API route also has an
-independent provider quota. No paid replacement is selected
+model cannot bypass an exhausted account quota. No paid fallback is selected
 automatically. Catalog presence is not a successful inference check; the CI
 preflight and validated review result remain the operational evidence.
 
