@@ -236,8 +236,8 @@ must be set separately in `OBSERVABLE_REVIEW_BASE_URL`; it never inherits
 `CLAUDE_REVIEW_BASE_URL` with another provider's credentials. Their publication identities are
 fixed in code: `ClaudeCodePlugin` and `ObservableMessagesReview`. No additional
 identity variables or credentials are required. Each publishes its own PR
-summary and inline findings. The observable reviewer never resolves or replies
-to other reviewers' threads, avoiding races between the parallel jobs.
+summary and inline findings. The Observable reviewer never resolves or replies
+to other reviewers' threads, so it cannot mutate their review discussions.
 
 The workflow defaults and current repository Variables are:
 
