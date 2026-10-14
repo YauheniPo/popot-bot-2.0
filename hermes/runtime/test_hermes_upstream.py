@@ -38,6 +38,55 @@ UPSTREAM = os.environ.get("HERMES_UPSTREAM_DIR")
 
 @unittest.skipUnless(UPSTREAM, "HERMES_UPSTREAM_DIR is not configured")
 class HermesUpstreamTests(unittest.TestCase):
+    def test_native_skill_lifecycle_reaches_observer_with_turn_context(self):
+        # Execute native usage persistence and ContextVars in an isolated process;
+        # no AIAgent, provider requests, or installed runtime modifications.
+        script = '''
+import importlib.util, os, sys, tempfile
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+with tempfile.TemporaryDirectory() as directory:
+    os.environ['HERMES_HOME'] = directory
+    sys.path.insert(0, sys.argv[1])
+    from tools import skill_usage, skill_provenance
+    from agent.subagent_lifecycle import bind_subagent_parent
+    from hermes_cli import lifecycle
+    spec = importlib.util.spec_from_file_location('skill_observer', sys.argv[2])
+    plugin = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = plugin
+    spec.loader.exec_module(plugin)
+    database = plugin._db()
+    def invoke(name, **kwargs):
+        assert name == 'on_skill_lifecycle'
+        plugin._on_skill_lifecycle(**kwargs)
+    with mock.patch.object(lifecycle, 'has_hook', return_value=True), \
+         mock.patch.object(lifecycle, 'invoke_hook', side_effect=invoke), \
+         mock.patch.object(plugin.hooks, '_execute', side_effect=database.execute), \
+         mock.patch.object(plugin.hooks, '_audit'):
+        for depth in (0, 1):
+            with bind_subagent_parent(SimpleNamespace(session_id='session-' + str(depth), _delegate_depth=depth)):
+                skill_usage.bump_use('demo', task_id='task')
+        with bind_subagent_parent(SimpleNamespace(session_id='session-0')):
+            token = skill_provenance.set_current_write_origin('background_review')
+            try:
+                skill_usage.bump_patch('demo', task_id='task')
+            finally:
+                skill_provenance.reset_current_write_origin(token)
+        skill_usage.bump_use('demo', task_id='cron-job')  # preload before a turn
+        with mock.patch.object(skill_usage, 'save_usage', return_value=False):
+            skill_usage.bump_patch('demo')
+    rows = database.execute('SELECT action, agent_type, session_id FROM skill_events ORDER BY rowid').fetchall()
+    assert rows == [('loaded', 'main', 'session-0'), ('loaded', 'subagent', 'session-1'),
+                    ('patched', 'self_improvement', 'session-0'), ('loaded', 'unknown', '')], rows
+    database.close()
+'''
+        result = subprocess.run(
+            [sys.executable, '-c', script, str(UPSTREAM),
+             str(ROOT / 'ops/plugin/ops-observability/__init__.py')],
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_chat_switch_syncs_all_cron_only_after_success_and_never_for_once(self):
         source = self.patched_source('gateway/slash_commands_model.py')
         tree = ast.parse(source)

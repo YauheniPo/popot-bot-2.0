@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import contextvars
 import importlib.util
 import json
 import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -120,6 +124,7 @@ class ObservabilityRedactionTests(unittest.TestCase):
                 "pre_approval_request",
                 "post_approval_response",
                 "pre_command",
+                "on_skill_lifecycle",
             },
         )
         self.assertEqual(context.commands, [])
@@ -272,6 +277,96 @@ class ObservabilityReportingTests(unittest.TestCase):
         )
         self.hooks._post_tool_call(tool_name="terminal", duration_ms=20, status="error")
         self.hooks._pre_command(command="status", args_raw="private-input")
+
+    def skill_context(self, agent=None, origin="foreground"):
+        return mock.patch.dict(sys.modules, {
+            "agent.subagent_lifecycle": SimpleNamespace(get_active_subagent_parent=lambda: agent),
+            "tools.skill_provenance": SimpleNamespace(get_current_write_origin=lambda: origin),
+        })
+
+    def test_skill_events_distinguish_main_subagent_and_self_improvement(self):
+        cases = (
+            (SimpleNamespace(session_id="main-session"), "foreground", "main"),
+            (SimpleNamespace(session_id="child-session", _delegate_depth=2), "foreground", "subagent"),
+            (SimpleNamespace(session_id="main-session"), "background_review", "self_improvement"),
+            (None, "foreground", "unknown"),  # cron preload / CLI outside an agent turn
+        )
+        for agent, origin, expected in cases:
+            with self.subTest(actor=expected), self.skill_context(agent, origin):
+                self.hooks._on_skill_lifecycle(
+                    skill_name="engineering/test-skill", action="loaded", provenance="installed",
+                    task_id="task", content="private instructions", goal="private task")
+        rows = self.connection.execute(
+            "SELECT skill_name, action, agent_type, provenance, session_id, task_id FROM skill_events ORDER BY rowid"
+        ).fetchall()
+        self.assertEqual(rows, [
+            ("engineering/test-skill", "loaded", actor, "installed", getattr(agent, "session_id", ""), "task")
+            for agent, _, actor in cases])
+        self.assertNotIn("private", str(self.audit.call_args_list))
+
+    def test_skill_changes_keep_timestamp_and_only_allowlisted_metadata(self):
+        with self.skill_context(), mock.patch.object(self.hooks, "_now", return_value="2026-10-14T10:00:00.000+00:00"):
+            for action in ("created", "patched", "edited", "installed", "archived", "restored", "stale"):
+                self.hooks._on_skill_lifecycle(
+                    skill_name="plugin:task-verification", action=action, provenance="agent_created",
+                    session_id="session", task_id="task", content="secret-content", file_path="/private/file")
+        rows = self.connection.execute("SELECT ts, action, session_id FROM skill_events").fetchall()
+        self.assertEqual(len(rows), 7)
+        self.assertTrue(all(ts == "2026-10-14T10:00:00.000+00:00" and sid == "session" for ts, _, sid in rows))
+        self.assertNotIn("secret-content", str(self.audit.call_args_list))
+        self.assertNotIn("/private/file", str(self.audit.call_args_list))
+
+    def test_skill_observation_does_not_infer_updates_from_tool_attempts(self):
+        self.hooks._post_tool_call(tool_name="skill_manage", status="error", args={"name": "demo", "action": "patch"})
+        self.hooks._post_tool_call(tool_name="skill_manage", status="ok", result={"pending_approval": True})
+        self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM skill_events").fetchone(), (0,))
+
+    def test_skill_event_rejects_untrusted_names_and_unknown_actions(self):
+        for name in ("", None, [], "../private", "/private/skill", "password=secret", "skill\nsecret", "x" * 161):
+            self.hooks._on_skill_lifecycle(skill_name=name, action="loaded")
+        self.hooks._on_skill_lifecycle(skill_name="valid", action="secret-content")
+        self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM skill_events").fetchone(), (0,))
+        self.audit.assert_not_called()
+
+    def test_skill_unknown_runtime_and_provenance_are_not_fabricated(self):
+        with mock.patch.dict(sys.modules, {"agent.subagent_lifecycle": None, "tools.skill_provenance": None}):
+            self.hooks._on_skill_lifecycle(skill_name="demo", action="loaded", provenance="private-url")
+        self.assertEqual(self.connection.execute("SELECT agent_type, provenance FROM skill_events").fetchone(),
+                         ("unknown", "unknown"))
+
+    def test_concurrent_skill_hooks_keep_each_agents_context(self):
+        active = contextvars.ContextVar("skill-test-agent", default=None)
+        origin = contextvars.ContextVar("skill-test-origin", default="foreground")
+        barrier = threading.Barrier(2, timeout=5)
+        recorded = []
+        lock = threading.Lock()
+
+        def collect(sql, params):
+            with lock:
+                recorded.append((sql, params))
+
+        def observe():
+            barrier.wait()
+            self.hooks._on_skill_lifecycle(skill_name="demo", action="patched")
+
+        def submit(pool, session, depth, write_origin):
+            context = contextvars.Context()
+            context.run(active.set, SimpleNamespace(session_id=session, _delegate_depth=depth))
+            context.run(origin.set, write_origin)
+            return pool.submit(context.run, observe)
+
+        with mock.patch.dict(sys.modules, {
+            "agent.subagent_lifecycle": SimpleNamespace(get_active_subagent_parent=active.get),
+            "tools.skill_provenance": SimpleNamespace(get_current_write_origin=origin.get),
+        }), mock.patch.object(self.hooks, "_execute", side_effect=collect), ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [submit(pool, "child", 1, "foreground"), submit(pool, "main", 0, "background_review")]
+            for future in futures:
+                future.result(timeout=10)
+        for sql, params in recorded:
+            self.execute(sql, params)
+        self.assertEqual(self.connection.execute(
+            "SELECT agent_type, session_id FROM skill_events ORDER BY session_id").fetchall(),
+            [("subagent", "child"), ("self_improvement", "main")])
 
     def test_hooks_persist_usage_durations_and_metadata_without_raw_payloads(self) -> None:
         self.seed_activity()

@@ -224,6 +224,35 @@ def activity_metrics(database: Path) -> list[str]:
     return lines
 
 
+def skill_metrics(database: Path) -> list[str]:
+    """Confirmed loads/changes, with counts and last timestamps surviving retention."""
+    tables = existing_tables(database)
+    if "skill_events" not in tables:
+        return []
+    source = with_rollup(
+        tables, "skill_events",
+        "SELECT ts, skill_name, action, agent_type, provenance, 1 AS weight, "
+        "COALESCE(CAST(strftime('%s',ts) AS REAL),0) AS last_seen FROM skill_events",
+        ("skill_name", "action", "agent_type", "provenance", "weight", "last_seen"),
+    )
+    lines = [
+        "# HELP hermes_skill_events_total Confirmed skill lifecycle events by skill, action and actor.",
+        "# TYPE hermes_skill_events_total counter",
+        "# HELP hermes_skill_last_event_timestamp_seconds Last confirmed lifecycle event (Unix seconds).",
+        "# TYPE hermes_skill_last_event_timestamp_seconds gauge",
+    ]
+    for skill, action, actor, provenance, count, last_seen in rows(
+        database,
+        f"WITH c AS ({source}) SELECT metric_label(skill_name), metric_label(action), "
+        "metric_label(agent_type), metric_label(provenance), SUM(weight), MAX(last_seen) "
+        "FROM c GROUP BY 1, 2, 3, 4",
+    ):
+        tags = {"skill": skill, "action": action, "agent_type": actor, "provenance": provenance}
+        lines.append(metric("hermes_skill_events_total", count, tags))
+        lines.append(metric("hermes_skill_last_event_timestamp_seconds", last_seen, tags))
+    return lines
+
+
 def review_metrics(database: Path) -> list[str]:
     """Publish review_run metrics for Grafana dashboards."""
     tables = existing_tables(database)
@@ -610,6 +639,7 @@ def main() -> int:
     ]
     lines.extend(api_metrics(database))
     lines.extend(activity_metrics(database))
+    lines.extend(skill_metrics(database))
     lines.extend(analytics_snapshot(database))
     lines.extend(review_metrics(database))
     audit = root / "logs" / "ops-audit.jsonl"

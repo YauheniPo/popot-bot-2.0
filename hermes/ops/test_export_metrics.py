@@ -145,6 +145,36 @@ class ExportMetricsTests(unittest.TestCase):
         sqlite3.connect(database).close()
         self.assertEqual(metrics.api_metrics(database), [])
 
+    def test_skill_metrics_are_optional_for_legacy_databases(self):
+        self.assertEqual(metrics.skill_metrics(self.root / "missing.db"), [])
+
+    def test_skill_counters_and_last_event_survive_retention_and_repeated_prune(self):
+        load_plugin()._db().close()
+        database = self.root / "ops" / "metrics.db"
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.executemany("INSERT INTO skill_events (ts, skill_name, action, agent_type, provenance) VALUES (?,?,?,?,?)", [
+                (at(0), "demo", "loaded", "main", "local"),
+                (at(20), "demo", "loaded", "main", "local"),
+                (at(30), "demo", "patched", "self_improvement", "local"),
+                (at(40), "demo", "loaded", "subagent", "local"),
+            ])
+        before = samples("\n".join(metrics.skill_metrics(database)))
+        tags = '{action="loaded",agent_type="main",provenance="local",skill="demo"}'
+        self.assertEqual(before['hermes_skill_events_total' + tags], 2)
+        self.assertEqual(before['hermes_skill_last_event_timestamp_seconds' + tags], epoch(20))
+        now = T0 + timedelta(days=100)
+        prune.prune_database(database, 90, now=now)
+        prune.prune_database(database, 90, now=now)
+        self.assertEqual(samples("\n".join(metrics.skill_metrics(database))), before)
+        with closing(sqlite3.connect(database)) as connection, connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM skill_events").fetchone(), (0,))
+            connection.execute("INSERT INTO skill_events (ts, skill_name, action, agent_type, provenance) VALUES (?,?,?,?,?)",
+                               (at(86400), "demo", "loaded", "main", "local"))
+        prune.prune_database(database, 90, now=now)
+        after = samples("\n".join(metrics.skill_metrics(database)))
+        self.assertEqual(after['hermes_skill_events_total' + tags], 3)
+        self.assertEqual(after['hermes_skill_last_event_timestamp_seconds' + tags], epoch(86400))
+
     def test_long_labels_do_not_cut_an_escape_sequence_in_half(self):
         self.assertEqual(metrics.label("a" * 179 + '"tail'), "a" * 179)
         self.assertNotRegex(metrics.label("a" * 179 + "\\tail"), r"(?<!\\)\\$")

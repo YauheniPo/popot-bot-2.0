@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .billing import _price, _usage_values
@@ -17,6 +18,54 @@ _INSERT_API_CALL = (
     f"INSERT INTO api_calls ({', '.join(_API_CALL_COLUMNS)}) "
     f"VALUES ({', '.join('?' for _ in _API_CALL_COLUMNS)})"
 )
+
+_SKILL_ACTIONS = frozenset({"loaded", "created", "patched", "edited", "installed", "archived", "restored", "stale"})
+_SKILL_PROVENANCE = frozenset({"installed", "agent_created", "external", "local"})
+
+
+def _skill_actor() -> tuple[str, str]:
+    """Read the turn's context, never a process-global 'current agent' cache.
+
+    Hermes binds each child to its own turn and propagates ContextVars into
+    tool/hook workers. Self-improvement forks can share their parent's session
+    ID, so session IDs alone cannot identify the actor.
+    """
+    try:
+        from agent.subagent_lifecycle import get_active_subagent_parent
+        from tools.skill_provenance import get_current_write_origin
+        agent = get_active_subagent_parent()
+        origin = get_current_write_origin()
+    except ImportError:
+        return "unknown", ""
+    session_id = _id(getattr(agent, "session_id", ""))
+    if origin == "background_review":
+        return "self_improvement", session_id
+    if agent is None:
+        return "unknown", session_id
+    return ("subagent" if _number(getattr(agent, "_delegate_depth", 0)) > 0 else "main"), session_id
+
+
+def _on_skill_lifecycle(
+    skill_name: str = "", action: str = "", provenance: str = "",
+    task_id: str = "", session_id: str = "", **kwargs: Any,
+) -> None:
+    """Persist only confirmed native lifecycle facts, not tool attempts/content."""
+    if (not isinstance(skill_name, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,159}", skill_name)
+            or any(part in {"", ".", ".."} for part in re.split(r"[/:]", skill_name))
+            or not isinstance(action, str) or action not in _SKILL_ACTIONS):
+        return
+    actor, active_session = _skill_actor()
+    source = provenance if isinstance(provenance, str) and provenance in _SKILL_PROVENANCE else "unknown"
+    timestamp = _now()
+    session = _id(session_id) or active_session
+    task = _id(task_id)
+    _execute(
+        "INSERT INTO skill_events (ts, skill_name, action, agent_type, provenance, session_id, task_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (timestamp, skill_name, action, actor, source, session, task),
+    )
+    _audit("skill.lifecycle", skill=skill_name, action=action, agent_type=actor,
+           provenance=source, session_id=session, task_id=task)
 
 
 def _pre_tool_call(tool_name: str = "", args: Any = None, task_id: str = "", turn_id: str = "", **kwargs: Any) -> None:

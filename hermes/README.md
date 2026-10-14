@@ -589,7 +589,7 @@ Hermes работает как отдельный пользователь `herm
 | `hermes-backup.timer` | Делает daily quick и первый/еженедельный full backup | 1 день |
 | `hermes-observability-prune.timer` | Сворачивает строки локальной SQLite старше 90 дней в rollup-счётчики и удаляет их | 1 день |
 | `hermes-startup-notify.service` | После запуска gateway вне окна deploy отправляет VPS, default model и время в alert target; во время deploy уведомление подавляется, ошибка доставки не влияет на gateway | на каждый старт вне окна deploy |
-| `ops-observability` | Считает вызовы моделей/tools/команд, токены, ошибки, latency и стоимость | по событиям |
+| `ops-observability` | Считает вызовы моделей/tools/команд, загрузки и изменения skills, токены, ошибки, latency и стоимость | по событиям |
 | audit rotation | Ограничивает основной log и 2 ротации размером 5 MiB каждая | при записи и ежедневно |
 
 Health check отправляет сообщения через `hermes send`, без запуска LLM. Поэтому
@@ -672,7 +672,7 @@ health-check timer. `check.sh` прогоняет `promtool check rules`, есл
 дашборда на реальной схеме плагина.
 
 Grafana dashboard **Hermes Overview** разбит на разделы **At a glance**,
-**Usage and tools**, **User profiles**, **Model reliability and routing**,
+**Usage and tools**, **Skills: usage and changes**, **User profiles**, **Model reliability and routing**,
 **VPS resources** и **AI review in CI**. В верхних карточках видны состояние
 gateway, доля неудачных API-запросов, средняя задержка, возраст backup, место
 на диске, оценка стоимости и число токенов. Стоимость и токены относятся к
@@ -686,6 +686,46 @@ success, p95, output tok/s, доли обрезок и пустых ответо
 вызова; ниже — ошибки по классам, p95, finish reasons, fallbacks, ошибки tool
 calls по модели и расхождение requested/served. Метрики измеряют надёжность и
 форму ответа, не правильность содержания.
+
+#### Использование и обновление скиллов
+
+Раздел **Skills: usage and changes** показывает загрузки по имени скилла и типу
+агента, время последней загрузки и историю подтверждённых изменений. Типы:
+`main` — основной агент (в том числе агент cron), `subagent` — делегированный
+агент, `self_improvement` — фоновое самоулучшение. `unknown` означает, что
+событие пришло вне активного контекста агента: например, автоматическая загрузка
+скилла в cron до запуска агента или операция CLI. Это не приписывается основному
+агенту по догадке. Идентификация использует контекст конкретного выполнения,
+поэтому одновременные сессии и субагенты не подменяют друг друга.
+
+Источник — нативный hook `on_skill_lifecycle` закреплённой версии Hermes:
+`loaded`, `created`, `patched`, `edited`, `installed`, `archived`, `restored`,
+`stale`. `edited` включает успешную запись/удаление вспомогательных файлов через
+`skill_manage`. Неудачная правка и запрос, ожидающий approval, не считаются
+обновлением. Загрузка означает, что Hermes загрузил скилл, а не что модель
+правильно выполнила его инструкции. Повторные чтения и reference-файлы могут
+давать несколько событий; список доступных скиллов не считается использованием.
+
+В Prometheus доступны:
+
+- `hermes_skill_events_total{skill,action,agent_type,provenance}` — число событий;
+- `hermes_skill_last_event_timestamp_seconds{skill,action,agent_type,provenance}` —
+  Unix-время последнего события, например `action="patched"` для обновлений.
+
+Пример частоты загрузок: `sum by (skill, agent_type)
+(rate(hermes_skill_events_total{action="loaded"}[1h]))`. Имена ограничены
+безопасными идентификаторами; текст скиллов, задачи, результаты и session/task ID
+не попадают в labels. Локальные SQLite/audit сохраняют только метаданные событий,
+включая session/task ID для диагностики. История `skill_events` хранится по общей
+политике retention; счётчики и последние timestamps сохраняются в rollup после
+очистки. Grafana показывает сохранённую историю выбранного периода, до 500
+последних изменений; refresh — штатный минутный exporter.
+
+Сбор начнётся после deploy и загрузки обновлённого plugin. Прошлая история не
+восстанавливается. Изменения через shell/editor/Ansible и чтение файлов в обход
+Hermes skills API этим hook не отслеживаются. Телеметрия использует существующую
+ограниченную очередь: при перегрузке или ошибке SQLite события могут потеряться,
+не блокируя работу агента.
 
 Для сравнения CI-ревьюеров используется таблица `review_runs`. CI job'ы не
 пишут в SQLite на VPS: Hermes заполняет таблицу из опубликованных GitHub
@@ -2032,7 +2072,7 @@ server и настройка custom provider не требуются.
 `vps_hermes.config.managed_overlay.model` (`provider` и `default`). Deploy
 применяет эту пару к главному агенту, делегированию, cron по умолчанию и
 Swarm-профилям. Compression и fallback сохраняют отдельные маршруты.
-Сейчас основная модель — [`mistral-large-4`](https://ollama.com/library/mistral-large-4)
+Сейчас основная модель — [`deepseek-v4.1-flash`](https://ollama.com/library/deepseek-v4.1-flash)
 через `ollama-cloud`. Для прямого Cloud API используется ID без суффикса `:cloud`;
 этот суффикс нужен для команды Ollama CLI. Доступ и лимиты определяются аккаунтом
 Ollama, наличие модели в каталоге не подтверждает доступность запросов с вашим ключом.

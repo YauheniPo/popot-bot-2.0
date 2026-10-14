@@ -1,6 +1,6 @@
 name: ops-observability
-version: 1.2.0
-description: Privacy-aware audit log and model/tool metrics exported only to Prometheus and Grafana
+version: 1.3.0
+description: Privacy-aware audit log and model/tool/skill metrics exported only to Prometheus and Grafana
 provides_hooks:
   - pre_tool_call
   - post_tool_call
@@ -12,3 +12,4 @@ provides_hooks:
   - pre_approval_request
   - post_approval_response
   - pre_command
+  - on_skill_lifecycle
