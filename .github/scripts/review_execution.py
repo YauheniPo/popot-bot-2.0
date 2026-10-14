@@ -17,6 +17,15 @@ MAX_HISTORY_ROWS = 40
 VALIDATED_OUTCOMES = frozenset({"valid_json", "valid_json_filtered", "valid_json_after_action_failure"})
 EXECUTION_METADATA = re.compile(r"<!-- review-execution -->.*?<!-- /review-execution -->", re.DOTALL)
 
+# Helper for claude_execution_report
+def _determine_result(outcome: str, validation: str) -> str:
+    if outcome == "success":
+        return "valid_json" if validation == "success" else "validation_failed"
+    if outcome == "failure" and validation == "success":
+        return "valid_json_after_action_failure"
+    return "execution_failed"
+
+
 
 def strip_execution_metadata(text: str) -> str:
     """Keep execution diagnostics out of subsequent prompts and finding matching."""
@@ -168,10 +177,12 @@ def observable_execution_report(raw_attempts: list[dict], total_chunks: int) -> 
 
 
 def claude_execution_report(environment: Mapping[str, str]) -> ExecutionReport:
+    """Bounded publication metadata from observed execution, never model prose."""
     primary = environment.get("CLAUDE_REVIEW_PRIMARY_MODEL", environment.get("CLAUDE_REVIEW_MODEL", "unknown"))
     report = ExecutionReport(
         environment.get("CLAUDE_REVIEW_PROVIDER", "unknown"),
-        environment.get("CLAUDE_REVIEW_ENDPOINT", ""), primary, kind="claude",
+        environment.get("CLAUDE_REVIEW_ENDPOINT", ""),
+        primary, kind="claude",
     )
     for stage in ("PRIMARY", "PRIMARY_FINALIZE", "RETRY", "FALLBACK", "FALLBACK_FINALIZE", "FALLBACK_RETRY"):
         outcome = environment.get(f"CLAUDE_REVIEW_{stage}_OUTCOME", "skipped")
@@ -184,10 +195,6 @@ def claude_execution_report(environment: Mapping[str, str]) -> ExecutionReport:
         if stage.endswith("_FINALIZE"):
             route += "_finalize"
         attempt = report.begin({"model": model}, route=route)
-        result = "execution_failed"
-        if outcome == "success":
-            result = "valid_json" if validation == "success" else "validation_failed"
-        elif outcome == "failure" and validation == "success":
-            result = "valid_json_after_action_failure"
+        result = _determine_result(outcome, validation)
         report.finish(attempt, result, None)
     return report
