@@ -110,6 +110,16 @@ class FinalizeTests(unittest.TestCase):
         self.assertEqual(self.prepare(events)['ready'], 'false')
         self.assertFalse(self.proof.exists())
 
+    def test_valid_json_with_partial_diff_requires_reread_not_format_repair(self):
+        events = self.events()
+        events[-1].update(subtype='success', is_error=False, result=json.dumps(REVIEW), num_turns=77)
+        events[2]['message']['content'][0]['content'] = '1→diff --git a/app.py b/app.py'
+        prepared = self.prepare(events)
+        self.assertEqual(prepared['ready'], 'false')
+        self.assertEqual(prepared['reason'], 'diff_not_fully_read')
+        self.assertEqual(json.loads(prepared['read_coverage'])['matched_lines'], 1)
+        self.assertFalse(self.proof.exists())
+
     def test_parseable_json_with_invalid_schema_is_eligible_only_for_format_repair(self):
         events = self.events()
         events[-1].update(subtype='success', is_error=False, result='{"summary":"Reviewed"}')

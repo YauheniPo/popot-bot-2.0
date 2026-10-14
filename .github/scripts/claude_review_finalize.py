@@ -166,11 +166,17 @@ def prepare(execution_file, proof_file):
         events = _root_events(context._claude_execution_events(execution_file))
         session, result = _session(events)
         reason = _completion_reason(result)
-        if not reason:
+        completed = result.get('subtype') == 'success' and result.get('is_error') is False
+        if not reason and not completed:
             return {'ready': 'false', 'reason': 'not_recoverable_result'}
         failure_reason = 'diff_not_fully_read'
         path, raw, lines = _diff()
         coverage = _require_complete_diff(events, path, lines)
+        # Valid JSON with a partial read still needs the bounded reread. With
+        # complete evidence, never rewrite it merely to evade an anchor error.
+        if not reason:
+            return {'ready': 'false', 'reason': 'not_recoverable_result',
+                    'read_coverage': json.dumps(coverage)}
         failure_reason = 'proof_unavailable'
         _write_proof(proof_file, {**_revision_binding(raw), 'session_id': session})
     except IncompleteDiffRead as error:

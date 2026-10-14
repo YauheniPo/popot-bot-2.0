@@ -388,7 +388,16 @@ tool-free format repair solely because a later diff-anchor or file-write check f
 Reports distinguish finalization from the original attempt and show complete
 diff-read counts. These guards use
 the step's original `outcome`, because `continue-on-error` can make a failed
-attempt's `conclusion` show success. After diagnostics, an unconditional
+attempt's `conclusion` show success. A non-cancelled action failure with a saved
+execution log still runs local validation: the pinned action can reject its
+reported turn count after the SDK has already returned a successful result.
+Only a successful terminal SDK record, valid review JSON, complete matching
+diff-read evidence and valid changed anchors authorize publication. The action
+failure remains visible in execution metadata; it does not require another
+model request when that result passes validation. Invalid or unfinished logs
+cannot pass. Valid JSON with incomplete diff evidence uses the existing bounded
+reread, while complete JSON with invalid anchors cannot trigger format repair.
+Turn limits, deadlines and cancellation remain unchanged. After diagnostics, an unconditional
 non-cancelled completion step fails the stable `claude-code-plugin-review` job
 unless the complete result was published and its revision marker verified.
 The aggregate review gate also requires that publication. A provider outage,

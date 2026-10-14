@@ -64,6 +64,31 @@ class ReliabilityTests(unittest.TestCase):
             full.extract(self.execution, self.output)
         self.assertEqual(json.loads(self.output.read_text()), REVIEW)
 
+    def test_completed_sdk_review_remains_valid_when_action_rejects_reported_turn_count(self):
+        # PR #76: the action failed its post-run 48-turn check after the SDK
+        # returned success with num_turns=77. Reuse evidence, not more inference.
+        events = self.events({'result': json.dumps(REVIEW), 'num_turns': 77})
+        self.execution.write_text(json.dumps(events))
+        with mock.patch.object(context, '_changed_paths', return_value=set()):
+            full.extract(self.execution, self.output)
+        self.assertEqual(json.loads(self.output.read_text()), REVIEW)
+
+    def test_action_failure_recovery_cannot_accept_failed_or_unfinished_sdk_output(self):
+        for case in ('error', 'missing_terminal', 'partial_read', 'invalid_json'):
+            events = self.events({'result': json.dumps(REVIEW), 'num_turns': 77})
+            if case == 'error':
+                events[-1].update(subtype='error_max_turns', is_error=True)
+            elif case == 'missing_terminal':
+                events.pop()
+            elif case == 'partial_read':
+                events[2]['message']['content'][0]['content'] = '1→first'
+            else:
+                events[-1]['result'] = 'private provider response'
+            self.execution.write_text(json.dumps(events))
+            with self.subTest(case=case), self.assertRaises(RuntimeError):
+                full.extract(self.execution, self.output)
+            self.assertFalse(self.output.exists())
+
     def test_full_review_preparation_keeps_large_diff_without_chunking(self):
         diff = 'diff --git a/app.py b/app.py\n' + '+changed line\n' * 4000
         with mock.patch.object(full, 'exact_diff', return_value=diff):

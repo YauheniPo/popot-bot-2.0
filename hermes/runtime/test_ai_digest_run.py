@@ -125,6 +125,28 @@ class DigestRunTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "managed skill unavailable"):
                     digest.begin_run({"skill": "ai_digest"}, self.home)
 
+    def test_unavailable_import_spec_never_executes_skill_code(self):
+        job = {"skill": "ai_digest"}
+        for spec in (None, mock.Mock(loader=None)):
+            with self.subTest(spec=spec), mock.patch.object(
+                    digest.importlib.util, "spec_from_file_location", return_value=spec), \
+                    mock.patch.object(digest.importlib.util, "module_from_spec") as load:
+                with self.assertRaisesRegex(ValueError, "managed skill unavailable"):
+                    digest.begin_run(job, self.home)
+                load.assert_not_called()
+
+    def test_directory_artifact_cannot_be_repaired_or_published(self):
+        for path in (self.guard.raw_path, self.guard.draft_path, self.guard.staged_path):
+            self.write_artifacts()
+            path.unlink(missing_ok=True)
+            path.mkdir()
+            repair = mock.Mock()
+            with self.subTest(artifact=path.name):
+                with self.assertRaisesRegex(ValueError, "unsafe artifact type"):
+                    self.guard.finalize_with_repair(repair)
+                repair.assert_not_called()
+            path.rmdir()
+
     def test_analysis_encoding_and_size_errors_are_bounded(self):
         self.write_artifacts()
         for content in (b"\xff", b"x" * 129):
