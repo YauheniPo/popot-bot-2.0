@@ -30,6 +30,20 @@ def load_module(name, path):
 
 
 class FallbackPolicyTests(unittest.TestCase):
+    def test_unclassified_404_falls_back_without_retrying_same_endpoint(self):
+        patcher = load_module('endpoint_patches', ROOT / 'runtime/apply-hermes-patches.py')
+        patch = next(p for p in patcher._PATCHES
+                     if p[1] == '# Local Hermes: terminal endpoint not found')
+        namespace = {'_v': lambda reason, **kwargs: SimpleNamespace(reason=reason, **kwargs),
+                     '_R': SimpleNamespace(unknown='unknown'),
+                     'c': SimpleNamespace(model_slug='fixture', provider_slug='fixture'),
+                     '_model_id_missing_known_prefix': lambda *args: False}
+        exec('def classify():\n' + patch[3], namespace)
+        verdict = namespace['classify']()
+        self.assertFalse(verdict.retryable)
+        self.assertTrue(verdict.should_fallback)
+        self.assertEqual(verdict.reason, 'unknown')
+
     def setUp(self):
         self.enterContext(mock.patch.dict('sys.modules', {
             'hermes_cli.providers': SimpleNamespace(ALIASES={'nim': 'nvidia'})}))

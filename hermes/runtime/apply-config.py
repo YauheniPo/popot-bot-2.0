@@ -31,14 +31,23 @@ def managed_model_values(settings: dict[str, Any]) -> dict[str, Any]:
         for key in ('provider', 'default')
     ):
         raise ValueError('managed model requires non-empty provider and default')
+    for field in ('base_url', 'api_mode'):
+        value = model.get(field)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise ValueError(f'managed model {field} must be null or a non-empty string')
     values = {
         'model.provider': model['provider'], 'model.default': model['default'],
+        # A managed route owns its endpoint too. Clear old UI/provider overrides
+        # even when a previous deploy already changed just the provider name.
+        'model.base_url': model.get('base_url'), 'model.api_mode': model.get('api_mode'),
         'delegation.provider': model['provider'], 'delegation.model': model['default'],
+        'delegation.base_url': model.get('base_url'),
         'cron.model_provider': model['provider'], 'cron.model': model['default'],
     }
     cron = settings.get('vps_hermes', {}).get('config', {}).get('managed_overlay', {}).get('cron', {})
     if cron.get('follow_chat_model') is True:
-        values['cron.shared_model'] = {'provider': model['provider'], 'model': model['default'], 'base_url': None}
+        values['cron.shared_model'] = {'provider': model['provider'], 'model': model['default'],
+                                       'base_url': model.get('base_url')}
     return values
 
 
@@ -60,7 +69,11 @@ def _profile_config_updates(config: dict[str, Any], values: dict[str, Any]) -> b
         if not isinstance(target, dict):
             raise ValueError('Hermes profile model, delegation and cron must be mappings; '
                              'fallback_policy must also be a mapping')
-        if target.get(field) != value:
+        if value is None:
+            if field in target:
+                del target[field]
+                changed = True
+        elif target.get(field) != value:
             target[field] = value
             changed = True
     return changed
@@ -189,7 +202,8 @@ def sync_cron_models(home: Path, settings: dict[str, Any]) -> int:
     if not homes:
         return 0
     jobs = _load_cron_store(home)
-    route = {'provider': values['cron.model_provider'], 'model': values['cron.model'], 'base_url': None}
+    route = {'provider': values['cron.model_provider'], 'model': values['cron.model'],
+             'base_url': values['model.base_url']}
     if 'cron.shared_model' in values:
         # Shared routing is resolved afresh per run; remove obsolete per-job pins.
         route = dict.fromkeys(route)
@@ -536,9 +550,19 @@ def _build_route_operations(settings, current_config, operations):
     # Managed policy wins over UI-owned sections and legacy runtime pins.
     route_values = {**managed_model_values(settings), **managed_exclusion_values(settings)}
     operations = [op for op in operations if op.key not in route_values]
-    operations.extend(Operation('set', key, value) for key, value in route_values.items()
-                      if nested_value(current_config, key) != (True, value))
-    return operations
+    provider_changes = ('model.provider' in route_values and
+                        nested_value(current_config, 'model.provider') != (True, route_values['model.provider']))
+    removals, settings_to_apply = [], []
+    for key, value in route_values.items():
+        exists, current = nested_value(current_config, key)
+        if value is None:
+            if exists:
+                removals.append(Operation('unset', key))
+        elif not exists or current != value or (provider_changes and key in ('model.base_url', 'model.api_mode')):
+            settings_to_apply.append(Operation('set', key, value))
+    # Native config set model.provider may remove endpoint/API-mode overrides.
+    # Unset old values first, then switch, then restore explicit managed values.
+    return operations + removals + settings_to_apply
 
 
 def _build_compression_operations(settings, current_config, operations):

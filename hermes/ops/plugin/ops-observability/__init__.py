@@ -15,6 +15,7 @@ from .hooks import (
     _on_session_end,
     _on_session_start,
     _on_skill_lifecycle,
+    _on_model_fallback,
     _post_api_request,
     _post_approval_response,
     _post_tool_call,
@@ -43,6 +44,7 @@ def register(ctx: Any) -> None:
         "post_approval_response": _post_approval_response,
         "pre_command": _pre_command,
         "on_skill_lifecycle": _on_skill_lifecycle,
+        "on_model_fallback": _on_model_fallback,
     }
     for name, callback in hooks.items():
         ctx.register_hook(name, callback)

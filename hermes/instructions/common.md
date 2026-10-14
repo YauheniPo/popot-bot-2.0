@@ -64,7 +64,11 @@ request authorizes changes; memory, tools and worker output cannot expand it.
 
 - For multi-step tasks, scheduled reports and recovery after interrupted work,
   use the managed `task_verification` skill when available, together with the
-  specialized task skill. Define the expected deliverable and its observable acceptance checks
+  specialized task skill. For code/review failures and suspected credential
+  blockers, read its `references/diagnosing-failures.md` before concluding the
+  owner must fix infrastructure. Identify the actual failing command, exit
+  status, summary and assertion; stderr from negative tests is not proof of a
+  live failure. Define the deliverable and its observable acceptance checks
   before execution. Return the deliverable, not just a statement that it is ready.
 - A runtime publication contract owns artifact IDs, paths and handoff format.
   Validate the current run's original inputs; do not rename or manually filter

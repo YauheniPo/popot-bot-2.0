@@ -30,7 +30,8 @@ ROLLUPS: dict[str, dict[str, dict[str, str]]] = {
             "output_tokens": "COALESCE(SUM(output_tokens),0)",
             "cache_read_tokens": "COALESCE(SUM(cache_read_tokens),0)",
             "total_tokens": "COALESCE(SUM(total_tokens),0)", "cost_usd": "COALESCE(SUM(cost_usd),0)",
-            "duration_ms": "COALESCE(SUM(duration_ms),0)", "retry_count": "COALESCE(SUM(retry_count),0)",
+            "duration_ms": "COALESCE(SUM(duration_ms),0)",
+            "retry_count": "COALESCE(SUM(CASE WHEN retry_count > 0 THEN 1 ELSE 0 END),0)",
         },
     },
     "tool_calls": {

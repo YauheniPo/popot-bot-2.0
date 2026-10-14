@@ -110,17 +110,16 @@ vps_hermes:
         # Repeated providers are allowed; each provider/model pair must be unique.
         # Base catalogs checked 2026-09-29; OpenRouter Super probed 2026-10-04.
         # Selection rationale and limits: hermes/README.md.
-        # Alternate providers first. Billing/upstream quota skips the affected
+        # Prefer routes with recent successful VPS calls (2026-10-14).
+        # Billing/upstream quota skips the affected
         # provider; a model-level 429 can try another free model on that provider.
         default_routes:
-          - provider: openrouter
-            model: google/gemma-4-31b-it:free
-          - provider: nous
-            model: stepfun/step-3.7-flash:free
           - provider: openrouter
             model: nvidia/nemotron-3-super-120b-a12b:free
           - provider: nvidia
             model: nvidia/nemotron-3-super-120b-a12b
+          - provider: nous
+            model: stepfun/step-3.7-flash:free
         # Chat may only choose these existing integrations. No automatic keys,
         # endpoints or paid OpenRouter routes are added by the command.
         allowed_providers: [nvidia, openrouter, nous]
@@ -301,6 +300,10 @@ vps_network:
     default_outgoing: allow
 
 vps_runtime:
+  set_if_missing:
+    # Native prompt loading: available on deploy, without waiting for the model
+    # to discover the verification skill. Preserve explicit user auto-load lists.
+    skills.auto_load: [task_verification]
   set:
     terminal.cwd: "${HERMES_WORKSPACE}"
     # Restarts and other dangerous terminal commands remain available to the

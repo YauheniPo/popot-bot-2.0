@@ -262,6 +262,16 @@ sudo systemctl restart hermes-gateway.service
   тестов; зелёный CI для SHA не проверяет незакоммиченные изменения.
   Изменения применяются через deploy; обновлённые инструкции подхватываются
   в новой сессии.
+  Deploy также задаёт `skills.auto_load: [task_verification]`, если этот ключ
+  отсутствует: навык проверки попадает в контекст без решения модели открыть его.
+  Уже заданный список, включая `[]`, сохраняется. Штатная загрузка действует
+  при доступном skills toolset и включённых context rules; внутренние дочерние
+  агенты с `skip_context_files` её не наследуют — родитель передаёт критерии
+  проверки при делегировании. Навык содержит отдельный порядок диагностики:
+  exit code и failing assertion вместо поиска слова `ERROR`, проверка потребителей
+  перед принятием AI-review и поиск credentials через managed `gh`/DevOps-инструкции
+  без раскрытия значений. Локальный `.env` не копируется этим изменением на VPS.
+  Это guidance для модели, а не доказательство успешной проверки или доступности API.
 - **Infrastructure as Code.** Ansible устанавливает новый VPS или импортирует
   полный Hermes backup вместе с config, auth, memory, sessions, profiles и
   skills.
@@ -652,9 +662,19 @@ snapshot не обновился. Плагин открывает файл на 
 
 Плагин записывает в `api_calls` `requested_model` и `call_index`
 (`api_call_count` Hermes). First-attempt success связывает успех с error-строками
-того же логического вызова по `session_id` + `call_index`; Hermes не передаёт
-`retry_count` в `post_api_request`, без корреляции успех считается первой
-попыткой. Модель для tool calls берётся из последнего `session start` этой сессии.
+того же логического вызова по `session_id` + `call_index`. Начиная с плагина
+1.3.1 длительность каждой попытки измеряется между `pre_api_request` и её
+завершением, без пауз backoff; номер повтора сохраняется и для успешного ответа.
+Параллельные сессии не делят таймеры. `Retries` считает повторные запросы,
+а не сумму их порядковых номеров: попытки 0–5 дают пять повторов, а не 15.
+При переносе старых строк в rollup сохраняется тот же подсчёт; уже созданные
+старой версией rollup и исторические Prometheus samples не переписываются.
+Старые накопительные длительности восстановить в длительности попыток нельзя.
+Для tool calls используется настоящий `session_id`, а `task_id` — только
+резервный идентификатор старого hook-контракта. Модель берётся из последнего
+`session start` этой сессии. Успешное нативное переключение маршрута вызывает
+`on_model_fallback` и записывается в `route_fallbacks`; это подтверждает выбор
+резерва, но не успешность следующего ответа модели.
 
 Счётчики Prometheus монотонны: `hermes-observability-prune` перед удалением
 строк сворачивает их в таблицы `*_rollup` по измерениям экспортёра, а экспортёр
@@ -662,10 +682,23 @@ snapshot не обновился. Плагин открывает файл на 
 reset для `rate()`/`increase()`. SQLite-панели rollup не используют и видят
 только сохранённые строки.
 
+Экспортёр читает состояние последнего запуска из `cron/jobs.json` отдельно от
+LLM-метрик: `hermes_cron_execution_failed`, `hermes_cron_delivery_failed`,
+`hermes_cron_delivery_unverified`, `hermes_cron_last_run_timestamp_seconds`
+(метка `job_id`). `hermes_cron_collection_success=0` означает, что файл нельзя
+прочитать/разобрать; отсутствие состояния не считается успешным выполнением.
+Тексты задач, ошибок и получатели в эти метрики не попадают. Готовый ответ с
+`delivery_failed` вызывает отдельный alert даже при `failure_streak=0`.
+В Grafana группа **Cron execution and delivery** отдельно показывает ошибки
+выполнения, проблемы доставки и доступность самого состояния cron.
+Deploy не сбрасывает историю ошибок и не отправляет отчёты повторно:
+восстановление доставки подтверждается следующим реальным запуском.
+
 Prometheus загружает versioned правила `observability/rules/hermes.rules.yml`:
 recording rules `hermes_route:calls:*` и `hermes_route:availability:*` (1h/24h)
 и алерты `HermesRouteAvailabilityLow`, `HermesRouteNoRecentSuccess`,
-`HermesRouteRateLimitBurst`, `HermesAnalyticsSnapshotStale`. Alertmanager не
+`HermesRouteRateLimitBurst`, `HermesAnalyticsSnapshotStale`,
+`HermesCronExecutionFailed`, `HermesCronDeliveryFailed`. Alertmanager не
 развёрнут: алерты видны в Prometheus и Grafana, доставка в Telegram остаётся за
 health-check timer. `check.sh` прогоняет `promtool check rules`, если promtool
 установлен; тест `observability/test_dashboard_sql.py` исполняет каждый SQL
@@ -1041,11 +1074,11 @@ HERMES_UPSTREAM_DIR=/path/to/hermes-agent python3.11 -m unittest \
 
 ```bash
 # Изменить managed-конфигурацию и инфраструктурные настройки без upstream update
-ansible-playbook -i inventory.yml playbook.yml -e hermes_deploy_mode=config-only
+ansible-playbook -i inventory.ini playbook.yml -e hermes_deploy_mode=config-only
 
 # Применить только Hermes runtime и service configuration; сеть, SearXNG,
 # GitHub tooling и code-server не изменяются
-ansible-playbook -i inventory.yml playbook.yml -e hermes_deploy_mode=runtime-only
+ansible-playbook -i inventory.ini playbook.yml -e hermes_deploy_mode=runtime-only
 ```
 
 Оба быстрых режима откажутся запускаться, если установленный Hermes не совпадает
@@ -1077,6 +1110,11 @@ Production VPS обновляется повторным запуском Ansibl
 изменением config/ops всё равно создаётся такой же обязательный full backup.
 При ошибке backup ранее активный gateway возвращается в работу, а managed
 configuration не меняется.
+После успешной проверки backup ранее активный gateway также запускается:
+он не остаётся остановленным на время дальнейших загрузок и provisioning.
+Этот путь действует только при неизменном upstream commit. Перед финальной
+проверкой службы сначала выполняются уведомлённые restart-handlers, затем
+`state: started`: остановленный gateway не запускается дважды подряд.
 
 Любая ошибка до установки прекращает обновление и возвращает прежний gateway в
 работу. Ошибка после начала установки прекращает дальнейший deploy и оставляет
@@ -2378,6 +2416,19 @@ chat-команда не принимает credentials или произвол�
 `vps_runtime.set.agent.api_max_retries: 6` задаёт общий лимит повторов API и
 перезапусков сообщения при переключении fallback. Он действует и для cron, и
 для обычных запросов; на уже выполняющийся запуск изменение не влияет.
+HTTP 404 от неверного/недоступного endpoint сразу передаётся нативному fallback,
+без повторения того же запроса с backoff. Более точные причины 404 (billing,
+policy, отсутствующая модель) сохраняются. Это не отключает обработку временных
+сетевых ошибок и 429.
+
+При deploy managed-модель задаёт единый маршрут для основного агента, delegation,
+профилей и cron. Старый `model.base_url`/`model.api_mode` и `delegation.base_url`
+удаляются, если они не заданы явно в managed `model`. Это исправляет в том числе
+конфигурацию, где provider уже поменяли, но сохранился URL прежнего провайдера.
+Для собственного endpoint задайте `model.base_url` явно в managed overlay.
+Текущая резервная цепочка сначала пробует Nemotron Super через OpenRouter free,
+затем через NVIDIA, затем Step через Nous. Успех последних наблюдавшихся вызовов
+не гарантирует дальнейшую доступность провайдеров.
 
 Каждый элемент `default_routes` содержит **оба** поля: `provider` и `model`.
 Один provider может встречаться несколько раз с разными моделями; запрещён

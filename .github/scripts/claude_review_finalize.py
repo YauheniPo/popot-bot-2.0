@@ -166,7 +166,8 @@ def prepare(execution_file, proof_file):
         events = _root_events(context._claude_execution_events(execution_file))
         session, result = _session(events)
         reason = _completion_reason(result)
-        if not reason:
+        successful_result = result.get('subtype') == 'success' and result.get('is_error') is False
+        if not reason and not successful_result:
             return {'ready': 'false', 'reason': 'not_recoverable_result'}
         failure_reason = 'diff_not_fully_read'
         path, raw, lines = _diff()
@@ -178,11 +179,14 @@ def prepare(execution_file, proof_file):
         failure_reason = 'proof_unavailable'
         _write_proof(proof_file, {**_revision_binding(raw), 'session_id': session})
     except IncompleteDiffRead as error:
-        return {'ready': 'false', 'reason': 'diff_not_fully_read'}
+        return {'ready': 'false', 'reason': 'diff_not_fully_read',
+                'read_coverage': json.dumps(error.coverage)}
     except (OSError, ValueError, RuntimeError):
         return {'ready': 'false', 'reason': failure_reason}
     return {'ready': 'true', 'reason': reason, 'session_id': session,
             'read_coverage': json.dumps(coverage)}
+
+
 def _load_revision_bound_proof(proof_file):
     proof_path = context._validate_cli_path(proof_file, 'proof file')
     if proof_path.stat().st_size > 4096:

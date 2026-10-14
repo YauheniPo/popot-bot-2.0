@@ -125,6 +125,7 @@ class ObservabilityRedactionTests(unittest.TestCase):
                 "post_approval_response",
                 "pre_command",
                 "on_skill_lifecycle",
+                "on_model_fallback",
             },
         )
         self.assertEqual(context.commands, [])
@@ -257,12 +258,58 @@ class ObservabilityRedactionTests(unittest.TestCase):
 
 
 class ObservabilityReportingTests(unittest.TestCase):
+    def test_attempt_cache_is_bounded_and_legacy_durations_remain_supported(self):
+        with mock.patch.object(self.hooks, '_MAX_ATTEMPTS', 2):
+            for request in ('old', 'new', 'newest'):
+                self.hooks._pre_api_request(api_request_id=request)
+        self.assertEqual(len(self.hooks._ATTEMPTS), 2)
+        self.assertEqual(self.hooks._finish_attempt(
+            dict(api_request_id='old', api_duration_ms=17, retry_count=4)), (17, 4))
+        self.assertEqual(self.hooks._finish_attempt(dict(api_duration=12_000)), (12_000_000, 0))
+
+    def test_parallel_requests_with_shared_ids_keep_session_timing_separate(self):
+        barrier = threading.Barrier(4)
+        def attempt(index):
+            identity = dict(api_request_id='shared', session_id=f'session-{index}')
+            self.hooks._pre_api_request(**identity, retry_count=index)
+            barrier.wait(timeout=5)
+            return self.hooks._finish_attempt(identity)
+        with ThreadPoolExecutor(max_workers=4) as workers:
+            results = list(workers.map(attempt, range(4)))
+        self.assertEqual([retry for _, retry in results], [0, 1, 2, 3])
+        self.assertTrue(all(duration >= 0 for duration, _ in results))
+        self.assertEqual(len(self.hooks._ATTEMPTS), 0)
+
+    def test_tool_identity_prefers_real_session_to_terminal_task(self):
+        self.hooks._post_tool_call(tool_name='terminal', session_id='session', task_id='terminal-task')
+        self.assertEqual(self.connection.execute('SELECT session_id FROM tool_calls').fetchone(), ('session',))
+
+    def test_attempt_duration_and_successful_retry_use_matching_pre_hook(self):
+        identity = dict(api_request_id='request', session_id='session', turn_id='turn',
+                        provider='fixture', model='model', api_call_count=1)
+        with mock.patch.object(self.hooks.time, 'monotonic', side_effect=[10, 11, 20, 22]):
+            self.hooks._pre_api_request(**identity, retry_count=0)
+            self.hooks._api_request_error(**identity, api_duration=1, retry_count=0)
+            self.hooks._pre_api_request(**identity, retry_count=1)
+            self.hooks._post_api_request(**identity, api_duration=12)
+        self.assertEqual(self.connection.execute(
+            'SELECT duration_ms,retry_count FROM api_calls ORDER BY rowid').fetchall(), [(1000, 0), (2000, 1)])
+
+    def test_native_fallback_records_only_route_metadata(self):
+        self.hooks._on_model_fallback(from_provider='a', from_model='first', to_provider='b', to_model='second',
+                                      api_key='not-for-metrics')
+        self.assertEqual(self.connection.execute(
+            'SELECT from_provider,from_model,to_provider,to_model FROM route_fallbacks').fetchall(),
+            [('a', 'first', 'b', 'second')])
+        self.assertNotIn('not-for-metrics', str(self.audit.call_args))
+
     def setUp(self) -> None:
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         self.enterContext(mock.patch.dict(os.environ, {"HERMES_HOME": str(self.root)}))
         self.connection = observability._db()
         self.addCleanup(self.connection.close)
         self.hooks = sys.modules["ops_observability.hooks"]
+        self.hooks._ATTEMPTS.clear()
         self.audit = self.enterContext(mock.patch.object(self.hooks, "_audit"))
         self.enterContext(mock.patch.object(self.hooks, "_execute", side_effect=self.execute))
 

@@ -20,6 +20,29 @@ HEALTH_CHECK = (ANSIBLE.parent / "ops" / "health-check.sh").read_text()
 
 
 class DeployOptimizationTests(unittest.TestCase):
+    def test_config_backup_resumes_previously_active_gateway_after_verification(self):
+        deployment = next(task for task in yaml.safe_load(PLAYBOOK)[0]['tasks']
+                          if task.get('name') == 'Deploy Hermes with bounded maintenance coverage')
+        backup = next(task for task in deployment['block']
+                      if task.get('name') == 'Create and verify the mandatory config-only deployment backup')
+        tasks = backup['block']
+        resume = next(task for task in tasks
+                      if task.get('ansible.builtin.systemd_service', {}).get('state') == 'started')
+        self.assertEqual(resume['when'], 'hermes_config_backup_gateway.rc == 0')
+        verified = next(task for task in tasks
+                        if task.get('name') == 'Verify the config-only deployment backup contents')
+        self.assertLess(tasks.index(verified), tasks.index(resume))
+        self.assertNotIn('failed_when', resume)
+        # A failed backup still restores availability and blocks deployment.
+        self.assertEqual(backup['rescue'][0]['ansible.builtin.systemd_service']['state'], 'started')
+        self.assertIn('ansible.builtin.fail', backup['rescue'][-1])
+
+    def test_handlers_run_before_gateway_start_to_avoid_start_then_restart(self):
+        tasks = yaml.safe_load(SERVICES)
+        start = next(i for i, t in enumerate(tasks) if t.get('name') == 'Ensure the Hermes gateway is enabled and started')
+        flush = next(i for i, t in enumerate(tasks) if t.get('ansible.builtin.meta') == 'flush_handlers')
+        self.assertLess(flush, start)
+
     def test_config_backup_suffix_preserves_random_hex_string(self) -> None:
         deployment = next(task for task in yaml.safe_load(PLAYBOOK)[0]['tasks']
                           if task.get('name') == 'Deploy Hermes with bounded maintenance coverage')

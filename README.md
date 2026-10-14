@@ -345,6 +345,9 @@ when the runner stops it at the step deadline. It is distinct from
 of reading the complete diff. The unavailable-review report includes matched
 and total line counts, Read call counts and failed Read counts. It never includes
 source lines or tool error bodies. Neither condition permits finalization.
+SDK success with valid JSON still receives this coverage check; partial reads
+return `diff_not_fully_read` with numeric `read_coverage`. Execution/budget errors
+remain ineligible for recovery even when their diff reads are incomplete.
 Claude Code runs in one `claude-code-plugin-review` job and one whole-diff
 session per attempt. There is no chunk matrix, artifact collection or aggregate
 publication job. The exact base/head diff is never truncated or shortened to

@@ -196,6 +196,9 @@
     - hermes_enable_ops | bool
     - hermes_gateway_enabled | bool
 
+- name: Apply notified service restarts before starting stopped services
+  ansible.builtin.meta: flush_handlers
+
 - name: Ensure the Hermes gateway is enabled and started
   ansible.builtin.systemd_service:
     name: "{{ item }}"
@@ -203,9 +206,6 @@
     enabled: true
   loop: "{{ vps_services.gateway }}"
   when: hermes_gateway_enabled | bool
-
-- name: Apply notified service restarts before health checks
-  ansible.builtin.meta: flush_handlers
 
 - name: Verify the loopback-only dashboard is active
   ansible.builtin.command:

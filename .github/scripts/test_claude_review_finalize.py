@@ -219,7 +219,14 @@ class FinalizeTests(unittest.TestCase):
             events = self.events()
             events[-1]['subtype'] = subtype
             with self.subTest(subtype=subtype):
-                self.assertEqual(self.prepare(events)['ready'], 'false')
+                for partial in (False, True):
+                    if partial:
+                        events[2]['message']['content'][0]['content'] = '1→diff --git a/app.py b/app.py'
+                    prepared = self.prepare(events)
+                    self.assertEqual(prepared['ready'], 'false')
+                    self.assertEqual(prepared['reason'], 'not_recoverable_result')
+                    self.assertNotIn('read_coverage', prepared)
+                    self.assertFalse(self.proof.exists())
         self.execution.unlink()
         self.assertEqual(finalize.prepare(self.execution, self.proof)['ready'], 'false')
 

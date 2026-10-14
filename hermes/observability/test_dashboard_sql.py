@@ -140,7 +140,7 @@ class DashboardSqlTests(unittest.TestCase):
         self.assertAlmostEqual(route["Truncated"], 1 / 3)
         self.assertAlmostEqual(route["Empty responses"], 1 / 3)
         self.assertAlmostEqual(route["Cost per success"], 0.25)
-        self.assertEqual((route["Successes"], route["Errors"], route["Rate limits"], route["Retries"]), (3, 2, 1, 3))
+        self.assertEqual((route["Successes"], route["Errors"], route["Rate limits"], route["Retries"]), (3, 2, 1, 2))
         self.assertEqual(rows[0][:2], ("provider-a", "model-b"), "sorted by availability")
 
     def test_skill_panels_separate_loads_from_confirmed_changes(self):

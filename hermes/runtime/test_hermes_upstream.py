@@ -20,6 +20,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import textwrap
 import tomllib
 from types import ModuleType, SimpleNamespace
 import unittest
@@ -38,6 +39,83 @@ UPSTREAM = os.environ.get("HERMES_UPSTREAM_DIR")
 
 @unittest.skipUnless(UPSTREAM, "HERMES_UPSTREAM_DIR is not configured")
 class HermesUpstreamTests(unittest.TestCase):
+    def test_managed_verification_skill_loads_through_native_autoload(self):
+        # Use the real pinned skill resolver and external directory, without a
+        # model call. Only the VPS platform is simulated on non-Linux hosts.
+        script = '''
+import os, sys, tempfile
+from pathlib import Path
+from unittest import mock
+import yaml
+root = Path(sys.argv[2])
+settings = yaml.safe_load((root / 'config/vps-defaults.yml').read_text())
+with tempfile.TemporaryDirectory() as directory:
+    os.environ['HERMES_HOME'] = directory
+    config = {'skills': {
+        'auto_load': settings['vps_runtime']['set_if_missing']['skills.auto_load'],
+        'external_dirs': [str(root / 'skills')],
+    }}
+    Path(directory, 'config.yaml').write_text(yaml.safe_dump(config))
+    sys.path.insert(0, sys.argv[1])
+    from agent.skill_commands import build_auto_load_prompt
+    with mock.patch('agent.skill_utils.sys.platform', 'linux'):
+        prompt, loaded, missing = build_auto_load_prompt(
+            user_config=config, home_override=Path(directory))
+        assert 'task_verification' in loaded, (loaded, missing)
+        assert not missing, missing
+        assert 'references/diagnosing-failures.md' in prompt
+        config['skills']['auto_load'] = []
+        assert build_auto_load_prompt(user_config=config, home_override=Path(directory)) == ('', [], [])
+'''
+        result = subprocess.run(
+            [sys.executable, '-c', script, str(UPSTREAM), str(ROOT)],
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_endpoint_404_is_terminal_but_specific_error_reasons_are_preserved(self):
+        classifier = ModuleType('endpoint_classifier_fixture')
+        with mock.patch.dict(sys.modules, {classifier.__name__: classifier}):
+            exec(self.patched_source('agent/error_classifier.py'), classifier.__dict__)
+        for message, code, reason in (
+            ('page not found', '', 'unknown'),
+            ('Not Found', 'insufficient_quota', 'billing'),
+            ('model not found', '', 'model_not_found'),
+        ):
+            with self.subTest(message=message):
+                context = SimpleNamespace(msg=message, code=code, model_slug='fixture', provider_slug='fixture')
+                with mock.patch.object(classifier, '_model_id_missing_known_prefix', return_value=False):
+                    verdict = classifier._status_404(context)
+                self.assertEqual(verdict['reason'].value, reason)
+                self.assertFalse(verdict.get('retryable', False))
+                self.assertTrue(verdict['should_fallback'])
+                self.assertNotIn(verdict['reason'], classifier.RETRYABLE_CLIENT_REASONS)
+        with mock.patch.object(classifier, '_model_id_missing_known_prefix', return_value=True):
+            context = SimpleNamespace(msg='not found', code='', model_slug='fixture', provider_slug='fixture')
+            self.assertEqual(classifier._status_404(context), classifier._V_MODEL_NOT_FOUND)
+
+    def test_fallback_observer_is_best_effort_and_runs_after_route_initialization(self):
+        patch = next(p for p in patches._PATCHES if p[1] == '# Local Hermes: confirmed fallback telemetry')
+        source = 'def activate():\n' + textwrap.indent(textwrap.dedent(patch[3]), '    ')
+        agent = SimpleNamespace(model='new', base_url='endpoint', session_id='session')
+        namespace = dict(agent=agent, fb_provider='new-provider', fb_model='new',
+                         old_provider='old-provider', old_model='old', logger=mock.Mock())
+        resolve = namespace['resolve_native_compaction_capabilities'] = mock.Mock(return_value='capabilities')
+        exec(source, namespace)
+        for available, error in ((False, None), (True, None), (True, RuntimeError('observer unavailable'))):
+            invoke = mock.Mock(side_effect=error)
+            with mock.patch.dict(sys.modules, {'hermes_cli.lifecycle': SimpleNamespace(
+                    has_hook=lambda _: available, invoke_hook=invoke)}):
+                self.assertTrue(namespace['activate']())
+            self.assertEqual(invoke.call_count, int(available))
+            self.assertEqual(agent.runtime_capabilities, 'capabilities')
+        resolve.side_effect = RuntimeError('route initialization failed')
+        with mock.patch.dict(sys.modules, {'hermes_cli.lifecycle': SimpleNamespace(
+                has_hook=lambda _: True, invoke_hook=invoke)}):
+            invoke.reset_mock()
+            with self.assertRaisesRegex(RuntimeError, 'route initialization failed'):
+                namespace['activate']()
+            invoke.assert_not_called()
+
     def test_native_skill_lifecycle_reaches_observer_with_turn_context(self):
         # Execute native usage persistence and ContextVars in an isolated process;
         # no AIAgent, provider requests, or installed runtime modifications.
@@ -927,6 +1005,13 @@ with tempfile.TemporaryDirectory() as directory:
         self.assertTrue(content.startswith("NEWS_CARDS:"))
         self.assertNotIn("Все карточки готовы", content)
         self.assertIn(content, str(ns["save_job_output"].call_args))
+        # Exercise the real delivery marker parser too: a generated marker alone
+        # does not prove the scheduler can find and deliver its current artifact.
+        from hermes.skills.ai_digest.scripts import feedback
+        clean, artifact = feedback.extract_cards_marker(content, fixture.job, digest_fixture.home / 'ops/news')
+        self.assertIsNotNone(artifact)
+        self.assertTrue(artifact.is_file())
+        self.assertNotIn('NEWS_CARDS:', clean)
 
     def test_execution_receipt_does_not_treat_unverified_transport_as_delivered(self):
         tree = ast.parse(self.patched_source("cron/scheduler.py"))

@@ -756,6 +756,15 @@
               loop:
                 - "{{ hermes_config_backup_archive }}"
                 - "{{ hermes_config_backup_snapshot }}"
+
+            - name: Resume the previously active gateway after verified backup
+              # The source is unchanged on this path. Keep the existing runtime
+              # available during later downloads and provisioning; changed config
+              # and patches take effect at the final notified restart.
+              ansible.builtin.systemd_service:
+                name: "{{ hermes_gateway_service }}"
+                state: started
+              when: hermes_config_backup_gateway.rc == 0
           rescue:
             - name: Restart the previously active gateway after backup failure
               ansible.builtin.systemd_service:

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
@@ -13,6 +14,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Iterable
+from datetime import datetime
 
 
 def home() -> Path:
@@ -87,7 +89,7 @@ def api_calls_source(tables: set[str]) -> str:
         "COALESCE(input_tokens,0) AS input_tokens, COALESCE(output_tokens,0) AS output_tokens, "
         "COALESCE(cache_read_tokens,0) AS cache_read_tokens, COALESCE(total_tokens,0) AS total_tokens, "
         "COALESCE(cost_usd,0) AS cost_usd, COALESCE(duration_ms,0) AS duration_ms, "
-        "COALESCE(retry_count,0) AS retry_count FROM api_calls"
+        "CASE WHEN retry_count > 0 THEN 1 ELSE 0 END AS retry_count FROM api_calls"
     )
     return with_rollup(tables, "api_calls", live, API_CALL_COLUMNS)
 
@@ -603,6 +605,49 @@ def metrics_file_mode() -> int:
     return mode if mode in (0o600, 0o640, 0o644) else 0o600
 
 
+def cron_metrics(root: Path) -> list[str]:
+    """Observe the last run and delivery independently; never export job content."""
+    path = root / 'cron/jobs.json'
+    lines = ['# HELP hermes_cron_collection_success Whether cron state could be read.',
+             '# TYPE hermes_cron_collection_success gauge']
+    try:
+        with path.open('rb') as stream:
+            data = stream.read(4 * 1024 * 1024 + 1)
+        if len(data) > 4 * 1024 * 1024:
+            raise ValueError('cron state exceeds collection limit')
+        payload = json.loads(data)
+        jobs = payload.get('jobs') if isinstance(payload, dict) else payload
+        if not isinstance(jobs, list) or any(not isinstance(job, dict) for job in jobs):
+            raise ValueError('invalid cron state')
+    except (OSError, ValueError):
+        return [*lines, metric('hermes_cron_collection_success', 0)]
+    lines.append(metric('hermes_cron_collection_success', 1))
+    for name, help_text in (
+        ('execution_failed', 'Whether the last cron run failed to execute.'),
+        ('delivery_failed', 'Whether the last cron delivery failed.'),
+        ('delivery_unverified', 'Whether the last cron delivery remains unconfirmed.'),
+        ('last_run_timestamp_seconds', 'Unix timestamp of the last cron run, or zero if unknown.'),
+    ):
+        lines.extend([f'# HELP hermes_cron_{name} {help_text}', f'# TYPE hermes_cron_{name} gauge'])
+    for job in jobs:
+        job_id = job.get('id')
+        if not isinstance(job_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', job_id):
+            continue
+        tags = {'job_id': job_id}
+        status = job.get('last_status')
+        lines.extend([
+            metric('hermes_cron_execution_failed', int(status in ('error', 'failed')), tags),
+            metric('hermes_cron_delivery_failed', int(status == 'delivery_failed' or bool(job.get('last_delivery_error'))), tags),
+            metric('hermes_cron_delivery_unverified', int(bool(job.get('last_delivery_unverified'))), tags),
+        ])
+        try:
+            last_run = datetime.fromisoformat(job.get('last_run_at') or '').timestamp()
+        except (ValueError, TypeError):
+            last_run = 0
+        lines.append(metric('hermes_cron_last_run_timestamp_seconds', last_run, tags))
+    return lines
+
+
 def main() -> int:
     root = home()
     database = root / "ops" / "metrics.db"
@@ -640,6 +685,7 @@ def main() -> int:
     lines.extend(api_metrics(database))
     lines.extend(activity_metrics(database))
     lines.extend(skill_metrics(database))
+    lines.extend(cron_metrics(root))
     lines.extend(analytics_snapshot(database))
     lines.extend(review_metrics(database))
     audit = root / "logs" / "ops-audit.jsonl"

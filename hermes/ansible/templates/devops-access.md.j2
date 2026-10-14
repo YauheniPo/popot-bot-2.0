@@ -63,6 +63,10 @@ def integration_token(name):
   data. Summarize relevant errors rather than dumping entire logs.
 - Perform only actions requested by the owner. Pipeline runs and other writes
   require a request for that action; retain the existing deployment approvals.
+  An authorized repository fix includes relevant workflow/config code edits;
+  those do not themselves grant permission to change service secrets or deploy.
+  Do not diagnose missing credentials from error strings inside mocked negative
+  tests. First inspect the failed command's exit status, test summary and assertion.
 
 Useful read-only requests (replace placeholders with the configured values):
 

@@ -1565,6 +1565,45 @@ def _clamp_command_names(
 # disabled_toolsets subtraction still applies after this selection.
 _PATCHES.extend([
     (
+        "agent/error_classifier.py", _PREFIX + " terminal endpoint not found",
+        '    return _V_MODEL_NOT_FOUND if _model_id_missing_known_prefix(c.model_slug, c.provider_slug) else _V_UNKNOWN\n',
+        '''    # Local Hermes: terminal endpoint not found
+    # Billing/policy/model-specific 404 rules above still win. An unmatched 404
+    # is not repaired by replaying the same endpoint; retain the honest reason.
+    if _model_id_missing_known_prefix(c.model_slug, c.provider_slug):
+        return _V_MODEL_NOT_FOUND
+    return _v(_R.unknown, retryable=False, should_fallback=True)
+''',
+    ),
+    (
+        "hermes_cli/plugins.py", _PREFIX + " model fallback observer",
+        '    "on_skill_lifecycle", "subagent_start", "subagent_stop",\n',
+        '''    # Local Hermes: model fallback observer
+    "on_model_fallback",
+    "on_skill_lifecycle", "subagent_start", "subagent_stop",
+''',
+    ),
+    (
+        "agent/chat_completion_helpers.py", _PREFIX + " confirmed fallback telemetry",
+        '''            agent.runtime_capabilities = resolve_native_compaction_capabilities(
+                model=agent.model, base_url=agent.base_url, provider=fb_provider, is_codex_backend=fb_provider == "openai-codex")
+            return True
+''',
+        '''            agent.runtime_capabilities = resolve_native_compaction_capabilities(
+                model=agent.model, base_url=agent.base_url, provider=fb_provider, is_codex_backend=fb_provider == "openai-codex")
+            # Local Hermes: confirmed fallback telemetry
+            try:
+                from hermes_cli.lifecycle import has_hook, invoke_hook
+                if has_hook("on_model_fallback"):
+                    invoke_hook("on_model_fallback", from_provider=old_provider, from_model=old_model,
+                                to_provider=fb_provider, to_model=fb_model,
+                                session_id=agent.session_id or "")
+            except Exception:
+                logger.debug("Fallback observer failed", exc_info=True)
+            return True
+''',
+    ),
+    (
         "toolsets.py", _PREFIX + " cron skill readers",
         '    "skills": _ts(\n',
         '''    # Local Hermes: cron skill readers

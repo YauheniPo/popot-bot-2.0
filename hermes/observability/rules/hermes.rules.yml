@@ -24,6 +24,20 @@ groups:
   # deployed, so Telegram delivery remains the health-check timer's job.
   - name: hermes-route-alerts
     rules:
+      - alert: HermesCronDeliveryFailed
+        expr: hermes_cron_delivery_failed > 0 or hermes_cron_delivery_unverified > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cron {{ $labels.job_id }} has failed or unverified delivery; generation success is not delivery confirmation"
+      - alert: HermesCronExecutionFailed
+        expr: hermes_cron_execution_failed > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cron {{ $labels.job_id }} last execution failed"
       - alert: HermesRouteAvailabilityLow
         expr: hermes_route:availability:ratio1h < 0.9 and hermes_route:calls:increase1h >= 5
         for: 15m
