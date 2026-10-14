@@ -194,7 +194,7 @@ def validate_event(event, watch, coverage, start, end):
     if event.get("follow_up"):
         text(event["follow_up"])
 
-def validate(record, watch, start, end, run_id):
+def _validate_record_identity(record, watch, start, end, run_id):
     for field, expected in (("run_id", run_id), ("watch_slug", watch["watch_slug"]),
                             ("window_start", start), ("window_end", end)):
         actual = record.get(field)
@@ -205,6 +205,9 @@ def validate(record, watch, start, end, run_id):
                 actual = None
         if actual != expected:
             raise ReportIdentityError(f"competitor report: conflicting {field}")
+
+
+def _validate_report_metadata(record, watch):
     coverage = validate_coverage(record.get("coverage"), {c["name"] for c in watch["companies"]})
     complete = record.get("coverage_complete")
     errors = strings(record.get("errors"))
@@ -213,6 +216,10 @@ def validate(record, watch, start, end, run_id):
         raise ValueError("competitor report: inconsistent coverage_complete")
     if record.get("greeting") is not None and len(text(record["greeting"])) > 160:
         raise ValueError("competitor report: greeting too long")
+    return coverage
+
+
+def _validate_record_events(record, watch, coverage, start, end):
     events = record.get("events")
     if not isinstance(events, list):
         raise ValueError("competitor report: missing events list")
@@ -223,6 +230,12 @@ def validate(record, watch, start, end, run_id):
         if seen & keys:
             raise ValueError("competitor report: duplicate event")
         seen.update(keys)
+
+
+def validate(record, watch, start, end, run_id):
+    _validate_record_identity(record, watch, start, end, run_id)
+    coverage = _validate_report_metadata(record, watch)
+    _validate_record_events(record, watch, coverage, start, end)
     return record
 
 

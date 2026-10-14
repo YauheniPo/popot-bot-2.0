@@ -1151,6 +1151,34 @@ class CollectNewsTests(unittest.TestCase):
             run_record = _json.loads(runs_lines[0])
             self.assertEqual(run_record["returned"], 0)
 
+    def test_runtime_run_id_is_used_and_cannot_overwrite_a_previous_collection(self):
+        from collect_news import main
+        import json
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            sources = state / "sources.json"
+            sources.write_text('{"defaults": {}, "sources": []}')
+            run_id = "20261014-090000-abcdef12"
+            args = ["--sources", str(sources), "--state-dir", str(state), "--run-id", run_id]
+            result = {"items": [], "source_issues": [], "generated_at": "2026-10-14T09:00:00Z"}
+            with patch("collect_news.collect", return_value=result):
+                self.assertEqual(main(args), 3)
+                original = (state / f"raw-{run_id}.json").read_bytes()
+                self.assertEqual(main(args), 2)
+            self.assertEqual((state / f"raw-{run_id}.json").read_bytes(), original)
+            self.assertEqual(json.loads(original)["run_id"], run_id)
+
+    def test_invalid_runtime_run_id_is_rejected_before_collection(self):
+        from collect_news import main
+        for run_id in ("../outside", "invalid", "20261014-090000-abcdef12.json"):
+            with self.subTest(run_id=run_id), patch("collect_news.collect") as collect:
+                with self.assertRaises(SystemExit) as error:
+                    main(["--run-id", run_id])
+                self.assertEqual(error.exception.code, 2)
+                collect.assert_not_called()
+
     def test_http_fetch_response_too_large(self):
         """Test http_fetch raises ValueError when response exceeds max_bytes."""
         mock_response = MagicMock()

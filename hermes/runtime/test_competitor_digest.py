@@ -160,6 +160,15 @@ class CompetitorDigestTests(unittest.TestCase):
         self.assertIn("partial", guard.finalize_with_repair(repair))
         repair.assert_not_called()
 
+    def test_identity_validator_rejects_a_report_from_another_run(self):
+        record = {
+            "run_id": "old-run", "watch_slug": "fitness",
+            "window_start": "2026-10-01T00:00:00Z",
+            "window_end": NOW.isoformat(),
+        }
+        with self.assertRaisesRegex(self.module.ReportIdentityError, "conflicting run_id"):
+            self.module._validate_record_identity(record, self.watch, NOW, NOW, "job-1")
+
     def test_invalid_content_gets_one_repair_with_specific_error(self):
         guard = self.begin()
         invalid = self.record(guard)

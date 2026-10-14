@@ -320,6 +320,14 @@ class FinalizeTests(unittest.TestCase):
                 finalize.extract(self.execution, self.proof)
         self.assertFalse(self.output.exists())
 
+    def test_revision_bound_proof_loader_rejects_mismatched_metadata(self):
+        self.proof.write_text(json.dumps({
+            'base_sha': 'c' * 40, 'head_sha': 'b' * 40,
+            'diff_sha256': 'd' * 64, 'session_id': SESSION,
+        }))
+        with self.assertRaisesRegex(RuntimeError, 'finalization_revision_mismatch'):
+            finalize._load_revision_bound_proof(self.proof)
+
     def test_invalid_proof_never_accepts_a_successful_response(self):
         self.execution.write_text(json.dumps(self.completed()))
         for proof in (' ' * 4097, '{}', '[]'):

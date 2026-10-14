@@ -181,61 +181,67 @@ def prepare(execution_file, proof_file):
             'read_coverage': json.dumps(coverage)}
 
 
-def extract(execution_file, proof_file):
-    def _validate_and_load_proof(proof_file):
-        proof_path = context._validate_cli_path(proof_file, 'proof file')
-        if proof_path.stat().st_size > 4096:
-            raise RuntimeError('invalid_finalization_proof')
-        return json.loads(proof_path.read_text())
-
-    def _get_session_result_events(execution_file):
-        raw_events = context._claude_execution_events(execution_file)
-        if any(isinstance(event, dict) and event.get('parent_tool_use_id') for event in raw_events):
-            raise RuntimeError('finalization_used_subagent')
-        events = _root_events(raw_events)
-        session, result = _session(events)
-        return session, result, events
-
-    def _validate_result(result):
-        if result.get('subtype') != 'success' or result.get('is_error') is not False:
-            raise RuntimeError('finalization_failed')
-
-    def _ensure_no_tool_use_except_structured(events, result):
-        for event in events:
-            for block in context._sdk_content(event, 'assistant'):
-                if block.get('type') == 'tool_use':
-                    invalid = (block.get('name') != 'StructuredOutput'
-                               or result.get('structured_output') is None
-                               or block.get('input') != result['structured_output'])
-                    if invalid:
-                        raise RuntimeError('finalization_used_tools')
-
-    def _write_normalized_output(text, binding):
-        normalized = context._normalized_claude_result(text, binding['base_sha'], binding['head_sha'])
-        runner_temp = Path(os.environ.get('RUNNER_TEMP', ''))
-        if not runner_temp.is_absolute() or not runner_temp.is_dir():
-            raise RuntimeError('runner_temp_unavailable')
-        output = runner_temp.resolve() / 'claude-review-result.json'
-        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=output.parent,
-                                         prefix='.claude-review-result-', delete=False) as stream:
-            temporary = Path(stream.name)
-            try:
-                stream.write(normalized + '\n')
-                stream.flush()
-                os.fsync(stream.fileno())
-                os.replace(temporary, output)
-            finally:
-                temporary.unlink(missing_ok=True)
-
-    proof = _validate_and_load_proof(proof_file)
+def _load_revision_bound_proof(proof_file):
+    proof_path = context._validate_cli_path(proof_file, 'proof file')
+    if proof_path.stat().st_size > 4096:
+        raise RuntimeError('invalid_finalization_proof')
+    proof = json.loads(proof_path.read_text())
     _, raw, _ = _diff()
     binding = _revision_binding(raw)
     if not isinstance(proof, dict) or any(proof.get(key) != value for key, value in binding.items()):
         raise RuntimeError('finalization_revision_mismatch')
+    return proof, binding
+
+
+def _get_session_result_events(execution_file):
+    raw_events = context._claude_execution_events(execution_file)
+    if any(isinstance(event, dict) and event.get('parent_tool_use_id') for event in raw_events):
+        raise RuntimeError('finalization_used_subagent')
+    events = _root_events(raw_events)
+    session, result = _session(events)
+    return session, result, events
+
+
+def _validate_finalization_result(result):
+    if result.get('subtype') != 'success' or result.get('is_error') is not False:
+        raise RuntimeError('finalization_failed')
+
+
+def _ensure_no_tool_use_except_structured(events, result):
+    for event in events:
+        for block in context._sdk_content(event, 'assistant'):
+            if block.get('type') == 'tool_use':
+                invalid = (block.get('name') != 'StructuredOutput'
+                           or result.get('structured_output') is None
+                           or block.get('input') != result['structured_output'])
+                if invalid:
+                    raise RuntimeError('finalization_used_tools')
+
+
+def _write_normalized_output(text, binding):
+    normalized = context._normalized_claude_result(text, binding['base_sha'], binding['head_sha'])
+    runner_temp = Path(os.environ.get('RUNNER_TEMP', ''))
+    if not runner_temp.is_absolute() or not runner_temp.is_dir():
+        raise RuntimeError('runner_temp_unavailable')
+    output = runner_temp.resolve() / 'claude-review-result.json'
+    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=output.parent,
+                                     prefix='.claude-review-result-', delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(normalized + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+            os.replace(temporary, output)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def extract(execution_file, proof_file):
+    proof, binding = _load_revision_bound_proof(proof_file)
     session, result, events = _get_session_result_events(execution_file)
     if session != proof.get('session_id'):
         raise RuntimeError('finalization_session_mismatch')
-    _validate_result(result)
+    _validate_finalization_result(result)
     _ensure_no_tool_use_except_structured(events, result)
     text = context._result_event_text(result)
     if not text:

@@ -382,13 +382,13 @@ _PATCHES: list[tuple[str, str, str, str]] = [
             def _repair_competitor_artifact(repair_prompt):
                 nonlocal result
                 if cancel_event is not None and cancel_event.is_set():
-                    raise RuntimeError("Competitor report repair cancelled")
+                    raise RuntimeError("Cron report repair cancelled")
                 if result.get("completed") is False:
-                    raise RuntimeError("Competitor report repair unavailable: agent budget exhausted")
+                    raise RuntimeError("Cron report repair unavailable: agent budget exhausted")
                 history = result.get("messages")
                 if not isinstance(history, list) or not history:
-                    raise RuntimeError("Competitor report repair unavailable: missing research history")
-                logger.info("Job '%s': correcting competitor artifact (one attempt)", job_id)
+                    raise RuntimeError("Cron report repair unavailable: missing research history")
+                logger.info("Job '%s': correcting cron artifact (one attempt)", job_id)
                 result = _run_agent_with_watchdog(
                     agent, repair_prompt, job, job_id, job_name, scope.task_id, cancel_event,
                     worker_state=_worker_state, conversation_history=history)
@@ -407,7 +407,10 @@ _PATCHES: list[tuple[str, str, str, str]] = [
 ''',
         '''        # Local Hermes: competitor run preparation
         from cron.competitor_digest import begin_run as _begin_competitor_run
-        competitor_guard = _begin_competitor_run(job, _get_hermes_home())
+        from cron.ai_digest_run import begin_run as _begin_digest_run
+        # Both report skills use the same bounded validation/repair/delivery lifecycle.
+        competitor_guard = (_begin_digest_run(job, _get_hermes_home())
+                            or _begin_competitor_run(job, _get_hermes_home()))
         if competitor_guard is not None:
             extra_prompt = competitor_guard.instructions(extra_prompt)
         _run_kwargs = {
@@ -933,7 +936,7 @@ def _tool_call_logger() -> logging.Logger:
 ''',
     ),
     (
-        "gateway/slash_commands_model.py",
+        _GATEWAY_SLASH_COMMANDS_MODEL_PATH,
         _PREFIX + " chat model for all cron jobs",
         '''        global_error = await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
         reply = await self._model_switch_confirmation(
@@ -1020,7 +1023,7 @@ def _tool_call_logger() -> logging.Logger:
 ''',
     ),
     (
-        "gateway/slash_commands_model.py",
+        _GATEWAY_SLASH_COMMANDS_MODEL_PATH,
         _PREFIX + " model_global handler",
         '''    async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
 ''',
@@ -1716,7 +1719,7 @@ _PATCHES.extend([
         '    _IDLE_COMMANDS = (\n        # Local Hermes: fallback route\n        "fallback",\n',
     ),
     (
-        "gateway/slash_commands_model.py", _PREFIX + " fallback handler",
+        _GATEWAY_SLASH_COMMANDS_MODEL_PATH, _PREFIX + " fallback handler",
         '    def _save_gateway_config_key(self, key_path: str, value) -> bool:\n',
         '''    # Local Hermes: fallback handler
     async def _handle_fallback_command(self, event: MessageEvent) -> Optional[str]:
@@ -1775,7 +1778,13 @@ _PATCHES.extend([
     # Wrap with header/footer unless cron.wrap_response: false.
 ''',
         '''    # Local Hermes: digest feedback loader
-    digest_marker_seen = "NEWS_CARDS:" in content
+    digest_skills = job.get("skills") or job.get("skill") or []
+    if isinstance(digest_skills, str):
+        digest_skills = [digest_skills]
+    digest_required = not for_failure and not job.get("no_agent") and "ai_digest" in digest_skills
+    digest_marker_seen = not for_failure and "ai_digest" in digest_skills and "NEWS_CARDS:" in content
+    if digest_required and not digest_marker_seen:
+        return "digest cards result missing; summary was not sent"
     digest_feedback = None
     digest_cards_path = None
     if digest_marker_seen:
@@ -1790,9 +1799,8 @@ _PATCHES.extend([
                 spec.loader.exec_module(digest_feedback)
                 state_dir = Path(os.environ.get("AI_DIGEST_STATE_DIR", "~/.hermes/ops/news")).expanduser()
                 content, digest_cards_path = digest_feedback.extract_cards_marker(content, job, state_dir)
-        if digest_feedback is None:
-            content = "\\n".join(line for line in content.splitlines()
-                                if not line.startswith("NEWS_CARDS:"))
+        if digest_cards_path is None:
+            return "digest cards marker is invalid or unavailable; summary was not sent"
 
     from gateway.config import load_gateway_config
 
@@ -1806,12 +1814,10 @@ _PATCHES.extend([
 ''',
         '''    delivery_errors = []
     # Local Hermes: digest card prerequisites
-    if digest_marker_seen and digest_cards_path is None:
-        delivery_errors.append("digest cards marker is invalid or unavailable")
     digest_target_ok = (digest_cards_path is not None and sum(
         target["platform"] == "telegram" for target in targets) == 1)
     if digest_cards_path is not None and not digest_target_ok:
-        delivery_errors.append("digest cards require exactly one Telegram delivery target")
+        return "digest cards require exactly one Telegram delivery target; summary was not sent"
     suppressed_targets = 0  # local: `job` is snapshotted into durable deferred records mid-loop
 ''',
     ),
@@ -1830,18 +1836,9 @@ _PATCHES.extend([
     # Filter-time drops apply to every target; report them once. A run whose every target was
 ''',
         '''        target_errors: list = []
-        errors_before = len(delivery_errors)
-        delivered = t.live_adapter_ready and _deliver_via_live_adapter(
-            t, cleaned_delivery_content, media_files,
-            target_errors=target_errors, delivery_errors=delivery_errors,
-            unverified_targets=unverified_targets,
-        )
-        if not delivered:
-            _deliver_standalone(
-                t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
         # Local Hermes: digest card delivery
         if (digest_target_ok and digest_feedback is not None
-                and target["platform"] == "telegram" and len(delivery_errors) == errors_before):
+                and target["platform"] == "telegram"):
             try:
                 from gateway.platforms._shared import get_scoped_secret
                 origin = job.get("origin") or {}
@@ -1853,6 +1850,16 @@ _PATCHES.extend([
                     digest_cards_path, state_dir, target, str(owner_id), token)
             except Exception as exc:
                 delivery_errors.append(f"digest cards failed for {t.where}: {type(exc).__name__}")
+                continue
+        # Publish the rating summary only after all cards have confirmed receipts.
+        delivered = t.live_adapter_ready and _deliver_via_live_adapter(
+            t, cleaned_delivery_content, media_files,
+            target_errors=target_errors, delivery_errors=delivery_errors,
+            unverified_targets=unverified_targets,
+        )
+        if not delivered:
+            _deliver_standalone(
+                t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
 
     # Filter-time drops apply to every target; report them once. A run whose every target was
 ''',
@@ -2069,6 +2076,54 @@ def _install_cron_helper(source_name: str, target_name: str) -> bool:
     return True
 
 
+def _patches_for_run(backup_only: bool):
+    return [patch for patch in _PATCHES
+            if not backup_only or patch[0] == _BACKUP_PATH]
+
+
+def _migrate_legacy_patches(backup_only: bool) -> int:
+    if backup_only:
+        return 0
+    migrations = (
+        _migrate_installed_model_global,
+        _migrate_installed_gw_restart,
+        _migrate_installed_doctor_handler,
+        _migrate_installed_telegram_usage_ranking,
+        _migrate_installed_portal_info,
+    )
+    return sum(migrate() for migrate in migrations)
+
+
+def _apply_patch_set(backup_only: bool, allow_unmatched_backup: bool, patch_state):
+    applied = 0
+    failures: list[str] = []
+    state_changed = False
+    for relative_path, marker, old, new in _patches_for_run(backup_only):
+        delta, failure, changed = _apply_one_patch(
+            relative_path, marker, old, new, patch_state,
+            warn_unmatched=backup_only and allow_unmatched_backup)
+        applied += delta
+        state_changed = state_changed or changed
+        if failure is not None:
+            failures.append(failure)
+    return applied, failures, state_changed
+
+
+def _install_cron_helpers(backup_only: bool, failures: list[str]):
+    if backup_only or failures:
+        return False, failures
+    helper_changed = False
+    for source_name, target_name in (("competitor_digest.py", "competitor_digest.py"),
+                                     ("cron_shared_model.py", "shared_model.py"),
+                                     ("ai_digest_run.py", "ai_digest_run.py")):
+        try:
+            helper_changed = _install_cron_helper(source_name, target_name) or helper_changed
+        except (OSError, PatchMigrationError) as exc:
+            print(f"[hermes-patch] ERROR: cannot install cron helper: {exc}", file=sys.stderr)
+            failures.append(f"cron/{target_name}")
+    return helper_changed, failures
+
+
 def main(*, backup_only: bool = False, allow_unmatched_backup: bool = False) -> int:
     if not HERMES_AGENT_DIR.is_dir():
         print(
@@ -2078,39 +2133,13 @@ def main(*, backup_only: bool = False, allow_unmatched_backup: bool = False) -> 
         return 1
     try:
         # Before the mandatory backup, do not mutate unrelated gateway code.
-        migrated = 0 if backup_only else (
-            _migrate_installed_model_global()
-            + _migrate_installed_gw_restart()
-            + _migrate_installed_doctor_handler()
-            + _migrate_installed_telegram_usage_ranking()
-            + _migrate_installed_portal_info()
-        )
+        migrated = _migrate_legacy_patches(backup_only)
     except PatchMigrationError as exc:
         print(f"[hermes-patch] ERROR: {exc}", file=sys.stderr)
         return 1
-    applied = 0
-    failures: list[str] = []
     patch_state = _load_patch_state()
-    state_changed = False
-    for relative_path, marker, old, new in _PATCHES:
-        if backup_only and relative_path != _BACKUP_PATH:
-            continue
-        delta, failure, changed = _apply_one_patch(
-            relative_path, marker, old, new, patch_state,
-            warn_unmatched=backup_only and allow_unmatched_backup)
-        applied += delta
-        state_changed = state_changed or changed
-        if failure is not None:
-            failures.append(failure)
-    helper_changed = False
-    if not backup_only and not failures:
-        for source_name, target_name in (("competitor_digest.py", "competitor_digest.py"),
-                                         ("cron_shared_model.py", "shared_model.py")):
-            try:
-                helper_changed = _install_cron_helper(source_name, target_name) or helper_changed
-            except (OSError, PatchMigrationError) as exc:
-                print(f"[hermes-patch] ERROR: cannot install cron helper: {exc}", file=sys.stderr)
-                failures.append(f"cron/{target_name}")
+    applied, failures, state_changed = _apply_patch_set(backup_only, allow_unmatched_backup, patch_state)
+    helper_changed, failures = _install_cron_helpers(backup_only, failures)
     if applied or migrated or helper_changed:
         print("[hermes-patch] changed")
     if state_changed:

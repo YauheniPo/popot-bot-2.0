@@ -250,6 +250,17 @@ Sources: https://example.org/tool
         self.assertIsNone(path)
         self.assertNotIn("NEWS_CARDS:", clean)
 
+    def test_uncertain_card_send_cannot_be_reported_as_success_on_retry(self):
+        raw = self.state / f"raw-{self.RUN_ID}.json"
+        raw.write_text(json.dumps({"run_id": self.RUN_ID, "items": [self.item]}))
+        send = Mock(side_effect=TimeoutError("unknown delivery"))
+        with self.assertRaises(TimeoutError):
+            deliver_cards(raw, self.state, {"chat_id": "1"}, "9", send)
+        retry_send = Mock()
+        with self.assertRaisesRegex(RuntimeError, "unconfirmed"):
+            deliver_cards(raw, self.state, {"chat_id": "1"}, "9", retry_send)
+        retry_send.assert_not_called()
+
     def test_marker_uses_raw_item_count_instead_of_agent_estimate(self):
         raw = self.state / f"raw-{self.RUN_ID}.json"
         raw.write_text(json.dumps({"run_id": self.RUN_ID, "items": [self.item] * 5}))

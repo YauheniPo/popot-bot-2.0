@@ -639,7 +639,8 @@ with tempfile.TemporaryDirectory() as directory:
                     result = patches.main()
                 self.assertEqual(result, 0, output.getvalue())
                 for source_name, target_name in (("competitor_digest.py", "competitor_digest.py"),
-                                                 ("cron_shared_model.py", "shared_model.py")):
+                                                 ("cron_shared_model.py", "shared_model.py"),
+                                                 ("ai_digest_run.py", "ai_digest_run.py")):
                     helper = destination / "cron" / target_name
                     self.assertEqual(helper.read_bytes(), (ROOT / "runtime" / source_name).read_bytes())
                     paths.add("cron/" + target_name)
@@ -725,7 +726,9 @@ with tempfile.TemporaryDirectory() as directory:
         secrets = SimpleNamespace(build_profile_secret_scope=mock.Mock(), set_secret_scope=mock.Mock(),
                                   reset_secret_scope=mock.Mock())
         terminal = SimpleNamespace(install_profile_terminal_scope=mock.Mock(), reset_terminal_scope=mock.Mock())
+        from hermes.runtime.test_ai_digest_run import digest
         modules = mock.patch.dict(sys.modules, {"cron.competitor_digest": fixture.module,
+                                  "cron.ai_digest_run": digest,
                                   "agent.secret_scope": secrets, "tools.terminal_scope": terminal})
         modules.start()
         self.addCleanup(modules.stop)
@@ -850,6 +853,31 @@ with tempfile.TemporaryDirectory() as directory:
                 expected = {"conversation_history": history} if history is not None else {}
                 agent.run_conversation.assert_called_once_with("prompt", task_id="task", **expected)
                 self.assertTrue(result["completed"])
+
+    def test_digest_scheduler_uses_current_artifacts_instead_of_model_summary(self):
+        from hermes.runtime.test_ai_digest_run import DigestRunTests, SKILL_DIR
+        digest_fixture = DigestRunTests()
+        digest_fixture.setUp()
+        self.addCleanup(digest_fixture.doCleanups)
+        fixture, ns, _, _ = self.competitor_scheduler()
+        fixture.job["skill"] = "ai_digest"
+        fixture.job["skills"] = ["ai_digest"]
+
+        def run(job, **kwargs):
+            guard = kwargs["competitor_guard"]
+            self.assertIn(f"--run-id {guard.run_id}", kwargs["extra_prompt"])
+            guard.state.mkdir(parents=True, exist_ok=True)
+            guard.raw_path.write_text(json.dumps({**digest_fixture.raw, "run_id": guard.run_id}))
+            guard.draft_path.write_text(digest_fixture.draft)
+            return True, "old misleading output", "Все карточки готовы", None
+
+        ns["run_job"].side_effect = run
+        with mock.patch.dict(os.environ, {"AI_DIGEST_SKILL_DIR": str(SKILL_DIR)}):
+            self.assertTrue(ns["_run_one_job_body"](fixture.job))
+        content = ns["_deliver_result"].call_args.args[1]
+        self.assertTrue(content.startswith("NEWS_CARDS:"))
+        self.assertNotIn("Все карточки готовы", content)
+        self.assertIn(content, str(ns["save_job_output"].call_args))
 
     def test_execution_receipt_does_not_treat_unverified_transport_as_delivered(self):
         tree = ast.parse(self.patched_source("cron/scheduler.py"))

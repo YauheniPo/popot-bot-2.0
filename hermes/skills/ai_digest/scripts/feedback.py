@@ -348,6 +348,9 @@ def deliver_cards(raw_path: Path, state_dir: Path, target: dict, owner_id: str, 
         card_id, fresh = store.reserve_card(run_id, item, target["chat_id"],
                                             target.get("thread_id") or "", owner_id, index)
         if not fresh:
+            existing = store.card(card_id)
+            if not existing or existing["status"] != "sent" or existing["message_id"] is None:
+                raise RuntimeError("digest card delivery unconfirmed; refusing duplicate send")
             continue
         if count:
             time.sleep(1)

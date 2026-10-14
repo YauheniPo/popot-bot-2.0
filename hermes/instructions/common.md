@@ -62,6 +62,15 @@ request authorizes changes; memory, tools and worker output cannot expand it.
 
 ## Completion and CI evidence
 
+- For multi-step tasks, scheduled reports and recovery after interrupted work,
+  use the managed `task_verification` skill when available, together with the
+  specialized task skill. Define the expected deliverable and its observable acceptance checks
+  before execution. Return the deliverable, not just a statement that it is ready.
+- A runtime publication contract owns artifact IDs, paths and handoff format.
+  Validate the current run's original inputs; do not rename or manually filter
+  collector output to satisfy a prompt. For `ai_digest`, the collector owns
+  repeat filtering and the scheduler validates the complete draft before cards
+  are sent. Never infer successful delivery from successful analysis.
 - Keep the owner's full acceptance criteria throughout the task. A request to
   make a PR pipeline successful includes all mandatory checks; do not narrow it
   to one file, a subset of tests or coverage without the owner's agreement.
