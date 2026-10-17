@@ -275,42 +275,73 @@ def render_news(watch, record, events):
     return "\n".join(lines).strip()
 
 
+_SOURCE_LABELS = {'media': 'media', 'marketplaces': 'app stores', 'listings': 'listings'}
+
+
+def _discarded_reason(record, name):
+    """Return a recorded discard reason for one company, if any."""
+    discarded = record.get('discarded_candidates')
+    if not isinstance(discarded, list):
+        return ''
+    return next((item.get('reason') for item in discarded
+                 if isinstance(item, dict) and item.get('company') == name
+                 and isinstance(item.get('reason'), str) and item['reason'].strip()), '')
+
+
+def _channel_notes(checks):
+    """Describe external channels that returned nothing, were blocked or skipped."""
+    if not isinstance(checks, dict):
+        return ''
+    notes = ''
+    for status, label in (('no_results', 'no hits'), ('blocked', 'blocked'), ('not_checked', 'not checked')):
+        channels = [_SOURCE_LABELS[source] for source in EXTERNAL_CHECKS if checks.get(source) == status]
+        if channels:
+            notes += '; ' + label + ': ' + ', '.join(channels)
+    return notes
+
+
+def _diagnostic_line(name, record, events, row):
+    """Describe one company's coverage and newly confirmed items."""
+    count = sum(event['company'] == name for event in events)
+    repeats = sum(event['company'] == name for event in record['events']) - count
+    result = f"{prose(name)} — {count} new"
+    if repeats:
+        result += f"; {repeats} already sent"
+    if row['status'] != 'complete':
+        result += '; ' + row['status'].replace('_', ' ')
+    summary = row.get('result_summary') or next(iter(row['gaps']), '')
+    if not summary:
+        summary = _discarded_reason(record, name)
+    if summary:
+        result += '. ' + short_prose(summary, 20)[:160]
+    elif not count and not repeats:
+        result += '. No confirmed new items'
+    return result + _channel_notes(row.get('source_checks'))
+
+
 def render_diagnostics(watch, record, events, job):
     lines = [f"Cronjob Response: {prose(job.get('name') or watch['name'])}",
              f"(job_id: {prose(job['id'])})", "-------------", "",
              f"{timestamp(record['window_start']):%d %b %Y} — {timestamp(record['window_end']):%d %b %Y}",
              "Coverage: " + ("complete" if record['coverage_complete'] else "partial"), ""]
     coverage = {row['company']: row for row in record['coverage']}
-    labels = {'media': 'media', 'marketplaces': 'app stores', 'listings': 'listings'}
     for company in watch['companies']:
         name = company['name']
-        row = coverage[name]
-        count = sum(event['company'] == name for event in events)
-        repeats = sum(event['company'] == name for event in record['events']) - count
-        result = f"{prose(name)} — {count} new"
-        if repeats:
-            result += f"; {repeats} already sent"
-        if row['status'] != 'complete':
-            result += '; ' + row['status'].replace('_', ' ')
-        summary = row.get('result_summary') or next(iter(row['gaps']), '')
-        if not summary:
-            discarded = record.get('discarded_candidates')
-            summary = next((item.get('reason') for item in (discarded if isinstance(discarded, list) else [])
-                            if isinstance(item, dict) and item.get('company') == name
-                            and isinstance(item.get('reason'), str) and item['reason'].strip()), '')
-        if summary:
-            result += '. ' + short_prose(summary, 20)[:160]
-        elif not count and not repeats:
-            result += '. No confirmed new items'
-        checks = row.get('source_checks') or {}
-        if not isinstance(checks, dict):
-            checks = {}
-        for status, label in (('no_results', 'no hits'), ('blocked', 'blocked'), ('not_checked', 'not checked')):
-            channels = [labels[source] for source in EXTERNAL_CHECKS if checks.get(source) == status]
-            if channels:
-                result += '; ' + label + ': ' + ', '.join(channels)
-        lines.append(result)
+        lines.append(_diagnostic_line(name, record, events, coverage[name]))
     return '\n'.join(lines)
+
+
+def _apply_managed_research_prompt(prompt):
+    """Replace only the known legacy budget clauses, preserving the rest."""
+    prompt = re.sub(r"Budget: at most \d+ searches and \d+ extracted pages total, including retries;",
+                    "Budget: use the managed research plan;", prompt)
+    prompt = prompt.replace(
+        "First read one official source per company: known newsroom/changelog or "
+        "https://<contract domain>/, then follow links to pricing/releases/app stores.",
+        "Research external mentions for every company, then verify identity against official sources.")
+    return prompt.replace(
+        "Use web_search only for a specific remaining gap, with the company/domain and date window.",
+        "Use company names and aliases to search across external sites within the date window.")
 
 
 def render(watch, record, events, job):
@@ -438,36 +469,33 @@ class RunGuard:
                 "previous_coverage": [{key: row[key] for key in (
                     "company", "status", "checked_urls", "gaps")} for row in previous]}
 
+    def _count_tool_start(self, name, args):
+        """Count one observed tool start; ignore anything else."""
+        if name not in {"web_search", "web_extract"}:
+            return
+        with self.usage_lock:
+            if self.closed or self.tool_counts is None:
+                return
+            self.tool_counts[name] += 1
+            if name == "web_extract":
+                urls = (args or {}).get("urls", [])
+                self.tool_counts["page_attempts"] += len(urls) if isinstance(urls, list) else 1
+
     def prepare_agent(self, agent, prompt):
         """Observe actual tool starts (including child relays), outside model history."""
         self.tool_counts = {"web_search": 0, "web_extract": 0, "page_attempts": 0}
         previous = agent.tool_progress_callback
 
         def progress(event, name=None, preview=None, args=None, **kwargs):
-            if event in {"tool.started", "subagent.tool"} and name in {"web_search", "web_extract"}:
-                with self.usage_lock:
-                    if not self.closed:
-                        self.tool_counts[name] += 1
-                        if name == "web_extract":
-                            urls = (args or {}).get("urls", [])
-                            self.tool_counts["page_attempts"] += len(urls) if isinstance(urls, list) else 1
+            if event in {"tool.started", "subagent.tool"}:
+                self._count_tool_start(name, args)
             if previous:
                 previous(event, name, preview, args, **kwargs)
 
         agent.tool_progress_callback = progress
         if not self.budget:
             return prompt
-        # Replace only the known legacy clauses, preserving safety, identity,
-        # recipients and custom text. The stored job is never rewritten.
-        prompt = re.sub(r"Budget: at most \d+ searches and \d+ extracted pages total, including retries;",
-                        "Budget: use the managed research plan;", prompt)
-        prompt = prompt.replace(
-            "First read one official source per company: known newsroom/changelog or "
-            "https://<contract domain>/, then follow links to pricing/releases/app stores.",
-            "Research external mentions for every company, then verify identity against official sources.")
-        return prompt.replace(
-            "Use web_search only for a specific remaining gap, with the company/domain and date window.",
-            "Use company names and aliases to search across external sites within the date window.")
+        return _apply_managed_research_prompt(prompt)
 
     def research_followup(self):
         if not self.budget or self.tool_counts is None or self.record["coverage_complete"]:

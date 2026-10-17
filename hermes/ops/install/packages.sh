@@ -59,6 +59,7 @@ install_observability_dependencies() {
                 grafana) mark_ops_change grafana-server.service;;
                 prometheus) mark_ops_change hermes-prometheus.service;;
                 prometheus-node-exporter) mark_ops_change hermes-node-exporter.service;;
+                *) ;;
             esac
         fi
     done
@@ -101,7 +102,10 @@ install_observability_dependencies() {
 }
 
 package_installed() {
-    [[ "$(dpkg-query -W -f='${Status}' "$1" 2>/dev/null)" == 'install ok installed' ]]
+    local package="$1"
+    [[ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null)" == 'install ok installed' ]]
+
+    return
 }
 
 install_grafana_sqlite_plugin() {

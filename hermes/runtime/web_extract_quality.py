@@ -20,7 +20,7 @@ def _safe_extract_metadata(metadata):
         value = metadata.get(key)
         if not isinstance(value, str) or len(value) > 64:
             continue
-        if not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[Tt ][0-9:.+Zz-]+)?', value):
+        if not re.fullmatch(r'\d{4}-\d{2}-\d{2}(?:[Tt ][\d:.+Zz-]+)?', value):
             continue
         try:
             datetime.fromisoformat(value.replace('Z', '+00:00'))

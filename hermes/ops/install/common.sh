@@ -25,6 +25,8 @@ install_managed_file() {
             chmod "$mode" "$target"
         fi
     fi
+
+    return
 }
 
 report_ops_changes() {
@@ -39,6 +41,8 @@ report_ops_changes() {
         fi
     done <<< "$units"
     printf 'ops-changed=%s\n' "$OPS_CHANGED"
+
+    return
 }
 
 acknowledge_ops_restarts() {
@@ -51,6 +55,8 @@ acknowledge_ops_restarts() {
     while IFS= read -r unit; do
         rm -f -- "$OPS_RESTART_DIR/$unit"
     done <<< "$units"
+
+    return
 }
 
 render() {

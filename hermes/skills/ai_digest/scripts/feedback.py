@@ -305,25 +305,34 @@ def telegram_send(token: str, method: str, payload: dict, *, timeout: int = 15) 
             break
         except HTTPError as exc:
             if exc.code == 429 and attempt == 0:
-                try:
-                    wait = int(exc.headers.get("Retry-After", "1"))
-                except (ValueError, TypeError):
-                    wait = 1
-                time.sleep(max(1, min(wait, 10)))
+                time.sleep(_telegram_retry_delay(exc))
                 continue
-            # HTTPError URLs include the bot token. Never propagate the original.
-            try:
-                reason = _telegram_error_reason(json.loads(exc.read(4096)))
-            except (OSError, ValueError):
-                reason = ""
-            finally:
-                exc.close()
-            raise DeliveryError(f"Telegram {method} failed (HTTP {exc.code}){reason}") from None
+            _raise_telegram_http_error(exc, method)
         except (URLError, TimeoutError) as exc:
             raise DeliveryError(f"Telegram {method} failed ({type(exc).__name__})") from None
     if not result.get("ok"):
         raise DeliveryError(f"Telegram {method} returned an error{_telegram_error_reason(result)}")
     return result["result"]
+
+
+def _telegram_retry_delay(error) -> int:
+    """Return the bounded Retry-After delay of a 429 response."""
+    try:
+        wait = int(error.headers.get("Retry-After", "1"))
+    except (ValueError, TypeError):
+        wait = 1
+    return max(1, min(wait, 10))
+
+
+def _raise_telegram_http_error(error, method):
+    """Raise the sanitized failure; an HTTPError URL contains the bot token."""
+    try:
+        reason = _telegram_error_reason(json.loads(error.read(4096)))
+    except (OSError, ValueError):
+        reason = ""
+    finally:
+        error.close()
+    raise DeliveryError(f"Telegram {method} failed (HTTP {error.code}){reason}") from None
 
 
 def _stage_cards(finalizer, raw: dict, items: list[dict], state_dir: Path,

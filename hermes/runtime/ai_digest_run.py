@@ -99,7 +99,10 @@ class DigestRun:
         return f"NEWS_CARDS:{self.raw_path}"
 
     def finalize_with_repair(self, repair, *, allow_research=True):
-        # Shared scheduler contract; AI digest corrections never collect new sources.
+        """Retry artifact correction once; the digest guard collects no new sources."""
+        # Shared scheduler contract: research stays disabled for the digest, so the
+        # flag is read and deliberately ignored here.
+        _ = allow_research
         try:
             return self.finalize()
         except AnalysisError as error:

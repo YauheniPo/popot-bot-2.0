@@ -26,7 +26,8 @@ from typing import Any
 
 GITHUB_REPO = "YauheniPo/popot-bot-2.0"
 EXTRACTOR = "/usr/local/lib/hermes-ops/extract-review-metrics.py"
-DB_PATH = Path(os.environ.get("HERMES_OPS_DB", str(Path.home() / ".hermes" / "ops" / "metrics.db")))
+_DEFAULT_HERMES_DIR = ".hermes"
+DB_PATH = Path(os.environ.get("HERMES_OPS_DB", str(Path.home() / _DEFAULT_HERMES_DIR / "ops" / "metrics.db")))
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 MAX_PRIS = 5
 
@@ -37,7 +38,7 @@ def managed_github_token() -> str:
     if not loader.is_file():
         loader = Path(__file__).resolve().parents[1] / "runtime/github-cli-wrapper.py"
     github_environment = runpy.run_path(str(loader))["github_environment"]
-    home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+    home = Path(os.environ.get("HERMES_HOME") or Path.home() / _DEFAULT_HERMES_DIR)
     return github_environment(dict(os.environ), home).get("GH_TOKEN", "")
 
 
@@ -123,7 +124,7 @@ def _run_list_mode() -> int:
 def main(args: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pr", type=int, help="Import a single PR (overrides list mode)")
-    home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+    home = Path(os.environ.get("HERMES_HOME") or Path.home() / _DEFAULT_HERMES_DIR)
     parser.add_argument("--db", type=Path, default=Path(os.environ.get("HERMES_OPS_DB") or home / "ops/metrics.db"), help="Path to metrics DB")
     parsed = parser.parse_args(args)
     if parsed.pr is not None and parsed.pr <= 0:

@@ -18,6 +18,8 @@ install_review_metrics_sync() {
     if [[ "$result" == *review-metrics-job-changed=true* ]]; then
         mark_ops_change
     fi
+
+    return
 }
 
 install_operations_assets() {
@@ -98,6 +100,8 @@ install_operations_assets() {
         case "$unit" in
             *.timer|hermes-dashboard.service|hermes-node-exporter.service|hermes-prometheus.service)
                 restart_unit="$unit";;
+            *)
+                restart_unit="";;
         esac
         render "${SCRIPT_DIR}/systemd/${unit}" "/etc/systemd/system/${unit}" 0644 root "$restart_unit"
     done

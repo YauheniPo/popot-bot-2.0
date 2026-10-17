@@ -19,6 +19,8 @@ from hermes_config_io import load_config as load_private_config, validated_confi
 from hermes_fallback_exclusions import fallback_excluded_pairs
 
 _BUSY_INPUT_MODE_KEY = "display.busy_input_mode"
+_MODEL_PROVIDER_KEY = 'model.provider'
+_MODEL_BASE_URL_KEY = 'model.base_url'
 
 
 def managed_model_values(settings: dict[str, Any]) -> dict[str, Any]:
@@ -36,10 +38,10 @@ def managed_model_values(settings: dict[str, Any]) -> dict[str, Any]:
         if value is not None and (not isinstance(value, str) or not value.strip()):
             raise ValueError(f'managed model {field} must be null or a non-empty string')
     values = {
-        'model.provider': model['provider'], 'model.default': model['default'],
+        _MODEL_PROVIDER_KEY: model['provider'], 'model.default': model['default'],
         # A managed route owns its endpoint too. Clear old UI/provider overrides
         # even when a previous deploy already changed just the provider name.
-        'model.base_url': model.get('base_url'), 'model.api_mode': model.get('api_mode'),
+        _MODEL_BASE_URL_KEY: model.get('base_url'), 'model.api_mode': model.get('api_mode'),
         'delegation.provider': model['provider'], 'delegation.model': model['default'],
         'delegation.base_url': model.get('base_url'),
         'cron.model_provider': model['provider'], 'cron.model': model['default'],
@@ -203,7 +205,7 @@ def sync_cron_models(home: Path, settings: dict[str, Any]) -> int:
         return 0
     jobs = _load_cron_store(home)
     route = {'provider': values['cron.model_provider'], 'model': values['cron.model'],
-             'base_url': values['model.base_url']}
+             'base_url': values[_MODEL_BASE_URL_KEY]}
     if 'cron.shared_model' in values:
         # Shared routing is resolved afresh per run; remove obsolete per-job pins.
         route = dict.fromkeys(route)
@@ -574,15 +576,15 @@ def _build_route_operations(settings, current_config, operations):
     # Managed policy wins over UI-owned sections and legacy runtime pins.
     route_values = {**managed_model_values(settings), **managed_exclusion_values(settings)}
     operations = [op for op in operations if op.key not in route_values]
-    provider_changes = ('model.provider' in route_values and
-                        nested_value(current_config, 'model.provider') != (True, route_values['model.provider']))
+    provider_changes = (_MODEL_PROVIDER_KEY in route_values and
+                        nested_value(current_config, _MODEL_PROVIDER_KEY) != (True, route_values[_MODEL_PROVIDER_KEY]))
     removals, settings_to_apply = [], []
     for key, value in route_values.items():
         exists, current = nested_value(current_config, key)
         if value is None:
             if exists:
                 removals.append(Operation('unset', key))
-        elif not exists or current != value or (provider_changes and key in ('model.base_url', 'model.api_mode')):
+        elif not exists or current != value or (provider_changes and key in (_MODEL_BASE_URL_KEY, 'model.api_mode')):
             settings_to_apply.append(Operation('set', key, value))
     # Native config set model.provider may remove endpoint/API-mode overrides.
     # Unset old values first, then switch, then restore explicit managed values.

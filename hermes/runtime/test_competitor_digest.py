@@ -438,8 +438,7 @@ class CompetitorDigestTests(unittest.TestCase):
                     "cron": {"competitor_research": policy}}))
                 try:
                     with self.assertRaisesRegex(ValueError, "competitor research"):
-                        guard = self.begin()
-                        guard.instructions()
+                        self.begin()
                 finally:
                     for guard in self.guards:
                         guard.close()

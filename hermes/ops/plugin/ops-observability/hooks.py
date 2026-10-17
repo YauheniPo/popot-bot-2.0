@@ -85,7 +85,7 @@ def _on_skill_lifecycle(
     task_id: str = "", session_id: str = "", **kwargs: Any,
 ) -> None:
     """Persist only confirmed native lifecycle facts, not tool attempts/content."""
-    if (not isinstance(skill_name, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,159}", skill_name)
+    if (not isinstance(skill_name, str) or not re.fullmatch(r"\w[\w.:/-]{0,159}", skill_name)
             or any(part in {"", ".", ".."} for part in re.split(r"[/:]", skill_name))
             or not isinstance(action, str) or action not in _SKILL_ACTIONS):
         return

@@ -74,6 +74,10 @@ _STATE_FILE = ".local-hermes-patches.json"
 
 _TOOL_GUARDRAILS_PATH = "agent/tool_guardrails.py"
 _GATEWAY_SLASH_COMMANDS_MODEL_PATH = "gateway/slash_commands_model.py"
+_CHAT_COMPLETION_HELPERS_PATH = "agent/chat_completion_helpers.py"
+_CRON_PAGE_PATH = "web/src/pages/CronPage.tsx"
+_WEB_TOOLS_EXTRACT_PATH = "tools/web_tools_extract.py"
+_WEB_RESULT_CACHE_PATH = "tools/web_result_cache.py"
 
 class PatchMigrationError(RuntimeError):
     """Raised when an installed local patch has an unknown legacy shape."""
@@ -1603,7 +1607,7 @@ _PATCHES.extend([
 ''',
     ),
     (
-        "agent/chat_completion_helpers.py", _PREFIX + " confirmed fallback telemetry",
+        _CHAT_COMPLETION_HELPERS_PATH, _PREFIX + " confirmed fallback telemetry",
         '''            agent.runtime_capabilities = resolve_native_compaction_capabilities(
                 model=agent.model, base_url=agent.base_url, provider=fb_provider, is_codex_backend=fb_provider == "openai-codex")
             return True
@@ -1766,20 +1770,20 @@ _PATCHES.extend([
   id: string;''',
     ),
     (
-        "web/src/pages/CronPage.tsx", _PREFIX + " cron activity badge",
+        _CRON_PAGE_PATH, _PREFIX + " cron activity badge",
         '''                    {lastResult && lastResult.status !== "ok" && (''',
         '''                    {/* # Local Hermes: cron activity badge */}
                     {job.is_running && <Badge tone="warning">Running</Badge>}
                     {lastResult && lastResult.status !== "ok" && (''',
     ),
     (
-        "web/src/pages/CronPage.tsx", _PREFIX + " cron cancellable refresh",
+        _CRON_PAGE_PATH, _PREFIX + " cron cancellable refresh",
         '''  const loadJobs = useCallback((profile: string) => {''',
         '''  // # Local Hermes: cron cancellable refresh
   const loadJobs = useCallback((profile: string, signal?: AbortSignal) => {''',
     ),
     (
-        "web/src/pages/CronPage.tsx", _PREFIX + " cron awaited refresh",
+        _CRON_PAGE_PATH, _PREFIX + " cron awaited refresh",
         '''    api
       .getCronJobs(profile)''',
         '''    // # Local Hermes: cron awaited refresh
@@ -1787,7 +1791,7 @@ _PATCHES.extend([
       .getCronJobs(profile, signal)''',
     ),
     (
-        "web/src/pages/CronPage.tsx", _PREFIX + " cron activity polling",
+        _CRON_PAGE_PATH, _PREFIX + " cron activity polling",
         '''    jobsActiveRef.current = true;
     selectedProfileRef.current = selectedProfile;
     loadJobs(selectedProfile);
@@ -1815,7 +1819,7 @@ _PATCHES.extend([
     };''',
     ),
     (
-        "web/src/pages/CronPage.tsx", _PREFIX + " cron activity button",
+        _CRON_PAGE_PATH, _PREFIX + " cron activity button",
         '''                    disabled={triggeringJobKeys.has(jobKey)}
                     title={t.cron.triggerNow}
                     aria-label={t.cron.triggerNow}
@@ -1838,13 +1842,13 @@ _PATCHES.extend([
 _WEB_EXTRACT_QUALITY = Path(__file__).with_name("web_extract_quality.py").read_text(encoding="utf-8")
 _PATCHES.extend([
     (
-        "tools/web_tools_extract.py", _PREFIX + " extraction quality checks",
+        _WEB_TOOLS_EXTRACT_PATH, _PREFIX + " extraction quality checks",
         '\ndef _web_extract_url(value: Any) -> Optional[str]:\n',
         '\n# Local Hermes: extraction quality checks\n' + _WEB_EXTRACT_QUALITY
         + '\n\ndef _web_extract_url(value: Any) -> Optional[str]:\n',
     ),
     (
-        "tools/web_tools_extract.py", _PREFIX + " partial extraction rescue",
+        _WEB_TOOLS_EXTRACT_PATH, _PREFIX + " partial extraction rescue",
         '''    if results and all(r.get("error") for r in results) and _rescue_eligible(provider):
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
 ''',
@@ -1868,7 +1872,7 @@ _PATCHES.extend([
 ''',
     ),
     (
-        "tools/web_tools_extract.py", _PREFIX + " extraction cache quality",
+        _WEB_TOOLS_EXTRACT_PATH, _PREFIX + " extraction cache quality",
         '''    for fetched in results:
         meta = fetched.get("metadata")''',
         '''    # Local Hermes: extraction cache quality
@@ -1878,14 +1882,14 @@ _PATCHES.extend([
         meta = fetched.get("metadata")''',
     ),
     (
-        "tools/web_tools_extract.py", _PREFIX + " extraction cache dates",
+        _WEB_TOOLS_EXTRACT_PATH, _PREFIX + " extraction cache dates",
         '''            extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)''',
         '''            # Local Hermes: extraction cache dates
             extract_cache_put(url, _content, fetched.get("title", ""), format=format,
                               provider=provider.name, metadata=_safe_extract_metadata(meta))''',
     ),
     (
-        "tools/web_tools_extract.py", _PREFIX + " reject cached consent shells",
+        _WEB_TOOLS_EXTRACT_PATH, _PREFIX + " reject cached consent shells",
         '''        if hit is not None:
             cached_results[position] = hit''',
         '''        # Local Hermes: reject cached consent shells
@@ -1893,7 +1897,7 @@ _PATCHES.extend([
             cached_results[position] = hit''',
     ),
     (
-        "tools/web_tools_extract.py", _PREFIX + " check rescued page quality",
+        _WEB_TOOLS_EXTRACT_PATH, _PREFIX + " check rescued page quality",
         '''    results = await _dispatch_extract(provider, fetch_urls, format)''',
         '''    # Local Hermes: check rescued page quality
     results = _mark_incomplete_extractions(await _dispatch_extract(provider, fetch_urls, format))''',
@@ -1913,7 +1917,7 @@ _PATCHES.extend([
             **({"metadata": dates} if (dates := _safe_extract_metadata(r.get("metadata"))) else {}),''',
     ),
     (
-        "tools/web_result_cache.py", _PREFIX + " cached extraction dates",
+        _WEB_RESULT_CACHE_PATH, _PREFIX + " cached extraction dates",
         '''    return {"url": url, "title": entry.get("title", ""), "content": content, "error": None, "cached": True}''',
         '''    # Local Hermes: cached extraction dates
     from tools.web_tools_extract import _safe_extract_metadata
@@ -1922,7 +1926,7 @@ _PATCHES.extend([
             **({"metadata": dates} if dates else {})}''',
     ),
     (
-        "tools/web_result_cache.py", _PREFIX + " extraction cache metadata argument",
+        _WEB_RESULT_CACHE_PATH, _PREFIX + " extraction cache metadata argument",
         '''    url: str, content: str, title: str = "", format: Optional[str] = None, provider: str = ""
 ) -> None:''',
         '''    # Local Hermes: extraction cache metadata argument
@@ -1930,7 +1934,7 @@ _PATCHES.extend([
 ) -> None:''',
     ),
     (
-        "tools/web_result_cache.py", _PREFIX + " stored extraction dates",
+        _WEB_RESULT_CACHE_PATH, _PREFIX + " stored extraction dates",
         '''            index[_url_digest(url, format, provider)] = {
                 "url": url, "file": str(file_path), "title": title or "", "fetched_at": time.time(),
             }''',
@@ -2004,7 +2008,7 @@ _PATCHES.extend([
 ''',
     ),
     (
-        "agent/chat_completion_helpers.py", _PREFIX + " fallback quota scope",
+        _CHAT_COMPLETION_HELPERS_PATH, _PREFIX + " fallback quota scope",
         '    cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)\n',
         '''    cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
     # Local Hermes: fallback quota scope
@@ -2013,7 +2017,7 @@ _PATCHES.extend([
 ''',
     ),
     (
-        "agent/chat_completion_helpers.py", _PREFIX + " fallback quota candidate",
+        _CHAT_COMPLETION_HELPERS_PATH, _PREFIX + " fallback quota candidate",
         '        fb_key = _fallback_entry_key(fb)\n',
         '''        # Local Hermes: fallback quota candidate
         if not allow_fallback_candidate(agent, fb):

@@ -17,12 +17,19 @@ def run_ufw(args):
                           timeout=30, env={**os.environ, 'LC_ALL': 'C'}).stdout
 
 
+def ufw_rule_row(line):
+    """Return the normalized text of a numbered ufw rule line, if any."""
+    number, bracket, rest = line.partition(']')
+    if bracket != ']' or not number.startswith('[') or not number[1:].strip().isdigit():
+        return None
+    return ' '.join(rest.split())
+
+
 def private_rules_current(status, interface, port, ipv6):
     families = {False: [], True: []}
     for line in status.splitlines():
-        match = re.match(r'^\[\s*\d+\]\s*(.*)$', line)
-        if match:
-            row = ' '.join(match[1].split())
+        row = ufw_rule_row(line)
+        if row is not None:
             families['(v6)' in row].append(row)
     for version in (False, True) if ipv6 else (False,):
         suffix = ' (v6)' if version else ''
