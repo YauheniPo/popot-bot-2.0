@@ -29,6 +29,10 @@ test('cron adapter rejects incompatible upstream source', () => {
   for (const file of files) assert.throws(() => workspaceCronUi().transform('changed', file), /Unsupported Workspace cron/);
 });
 
+test('unknown files are left to the pinned Workspace', () => {
+  assert.equal(workspaceCronUi().transform('changed', '/src/other.ts'), null);
+});
+
 test('job activity comes from the authenticated backend and keeps profiles separate', enabled, async () => {
   const jobs = [{ id: 'default:same', jobId: 'same', profile: 'default' },
     { id: 'other:same', jobId: 'same', profile: 'other' }];

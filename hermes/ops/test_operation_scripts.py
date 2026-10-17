@@ -423,6 +423,17 @@ class SyncAiReviewMetricsTests(unittest.TestCase):
         finally:
             self.mod.import_pr_reviews = original_import
 
+    def test_main_rejects_non_positive_pr_arguments(self):
+        """--pr must be a positive integer; zero or negative values exit with usage."""
+        import io
+        for args in (["--pr", "0"], ["--pr=-3"]):
+            with self.subTest(args=args):
+                errors = io.StringIO()
+                with unittest.mock.patch("sys.stderr", errors), self.assertRaises(SystemExit) as exit_info:
+                    self.mod.main(args)
+                self.assertEqual(exit_info.exception.code, 2)
+                self.assertIn("must be a positive integer", errors.getvalue())
+
     def test_main_list_mode_no_token(self):
         """No token is needed for successful empty public discovery."""
         original_token = self.mod.GITHUB_TOKEN

@@ -106,6 +106,39 @@ class CompetitorDigestTests(unittest.TestCase):
         self.assertIn('BetterMe — 0 new; 1 already sent', report)
         self.assertIn('no hits: media', report)
 
+    def test_diagnostics_explain_discarded_candidates_and_unreported_channels(self):
+        watch = {"name": "Fitness", "companies": [{"name": "BetterMe"}, {"name": "Simple"}]}
+        job = {"id": "job-1", "name": "Fitness Competitor Monitor"}
+        base = {
+            "window_start": "2026-09-01T00:00:00Z", "window_end": "2026-10-01T00:00:00Z",
+            "coverage_complete": False, "events": [],
+            "coverage": [
+                {"company": "BetterMe", "status": "partial", "checked_urls": [], "gaps": [],
+                 "source_checks": "unexpected"},
+                {"company": "Simple", "status": "partial", "checked_urls": [], "gaps": []},
+            ],
+        }
+        # No result_summary, no gaps and no discard ledger: the reason and channel
+        # notes must fall back to empty strings instead of leaking "None" or raising.
+        report = self.module.render_diagnostics(watch, base, [], job)
+        self.assertIn("BetterMe — 0 new; partial. No confirmed new items", report)
+        self.assertIn("Simple — 0 new; partial. No confirmed new items", report)
+        # A recorded discard reason is surfaced for its own company only; a blank
+        # reason, an unwatched company and a non-mapping entry are all ignored.
+        discarded = dict(base, discarded_candidates=[
+            {"company": "BetterMe", "reason": "Announcement predates the window"},
+            {"company": "Simple", "reason": "   "},
+            {"company": "Unwatched", "reason": "Should never be printed"},
+            "not-a-mapping",
+        ])
+        report = self.module.render_diagnostics(watch, discarded, [], job)
+        self.assertIn("BetterMe — 0 new; partial. Announcement predates the window", report)
+        self.assertNotIn("Should never be printed", report)
+        self.assertIn("Simple — 0 new; partial. No confirmed new items", report)
+        # A non-list discard ledger is ignored rather than treated as a failure.
+        report = self.module.render_diagnostics(watch, dict(base, discarded_candidates="broken"), [], job)
+        self.assertIn("BetterMe — 0 new; partial. No confirmed new items", report)
+
     def test_secure_path_rejects_parent_traversal(self):
         with self.assertRaisesRegex(ValueError, "path outside watch directory"):
             self.module.secure_path(self.home, self.home / ".." / "outside.json")
@@ -225,6 +258,18 @@ class CompetitorDigestTests(unittest.TestCase):
         self.assertEqual(guard.record["tool_counts"],
                          {"web_search": 2, "web_extract": 2, "page_attempts": 3})
         self.assertEqual(previous.call_count, 5)
+
+    def test_unrelated_tool_starts_are_ignored_by_the_native_counter(self):
+        guard = self.begin()
+        previous = mock.Mock()
+        agent = SimpleNamespace(tool_progress_callback=previous)
+        guard.prepare_agent(agent, "research")
+        for event, name in (("tool.started", "read_file"), ("subagent.tool", "terminal"),
+                            ("tool.started", "web_search")):
+            agent.tool_progress_callback(event, name, None, {})
+        self.assertEqual(guard.tool_counts, {"web_search": 1, "web_extract": 0, "page_attempts": 0})
+        # Every observed event is still relayed to the previous callback.
+        self.assertEqual(previous.call_count, 3)
 
     def test_partial_research_gets_one_followup_with_remaining_budget_and_stays_partial(self):
         self.research_policy()

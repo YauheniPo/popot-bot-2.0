@@ -220,5 +220,142 @@ class WebExtractQualityTests(unittest.TestCase):
         self.rescue.assert_not_called()
 
 
+QUALITY_SPEC = importlib.util.spec_from_file_location(
+    'web_extract_quality', RUNTIME / 'web_extract_quality.py')
+QUALITY = importlib.util.module_from_spec(QUALITY_SPEC)
+QUALITY_SPEC.loader.exec_module(QUALITY)
+
+
+class SafeExtractMetadataTests(unittest.TestCase):
+    """Only bounded, real ISO dates may survive the metadata scrub."""
+
+    def test_non_dict_metadata_yields_nothing(self):
+        for value in (None, [], 'datePublished=2026-10-17', 20261017):
+            with self.subTest(value=value):
+                self.assertEqual(QUALITY._safe_extract_metadata(value), {})
+
+    def test_keeps_valid_dates_and_drops_everything_else(self):
+        metadata = {
+            'datePublished': '2026-10-17',                 # date only -> kept
+            'dateModified': '2026-10-17T05:30:00Z',        # trailing Z -> kept
+            'publishedTime': '2026-10-17T05:30:00+00:00',  # explicit offset -> kept
+            'article:published_time': 'not-a-date',        # regex mismatch -> dropped
+            'modifiedTime': '2026-02-30',                  # calendar-impossible -> dropped
+            'publishedDate': 20261017,                     # not a string -> dropped
+            'modifiedDate': 'x' * 65,                      # longer than 64 chars -> dropped
+            'published_date': '2026-10-17\nprivate',       # trailing payload -> dropped
+            'unknownField': '2026-10-17',                  # not a tracked field -> ignored
+        }
+        self.assertEqual(QUALITY._safe_extract_metadata(metadata), {
+            'datePublished': '2026-10-17',
+            'dateModified': '2026-10-17T05:30:00Z',
+            'publishedTime': '2026-10-17T05:30:00+00:00',
+        })
+
+    def test_value_longer_than_the_limit_is_dropped(self):
+        metadata = {'datePublished': '2026-10-17T05:30:00' + '0' * 60}
+        self.assertEqual(QUALITY._safe_extract_metadata(metadata), {})
+
+
+class ConsentDominanceTests(unittest.TestCase):
+    """Consent detection needs page size, every marker and the vendor attribution."""
+
+    def test_short_markerless_or_unattributed_pages_are_not_consent_shells(self):
+        for result in ({'raw_content': 'We value your privacy'},
+                       {'raw_content': 'We value your privacy\n' + 'x' * 1100},
+                       {'raw_content': 'We value your privacy consent preferences accept all reject all\n' + 'x' * 1100},
+                       {}):
+            with self.subTest(result=str(result)[:40]):
+                self.assertFalse(QUALITY._consent_dominated_extract(result))
+
+    def test_consent_shell_is_detected_from_raw_or_trimmed_content(self):
+        self.assertTrue(QUALITY._consent_dominated_extract({'raw_content': CONSENT}))
+        self.assertTrue(QUALITY._consent_dominated_extract({'content': CONSENT}))
+        self.assertTrue(QUALITY._consent_dominated_extract({'raw_content': CONSENT + LANDING}))
+        # Trailing markdown links and images are stripped before residue is measured.
+        self.assertTrue(QUALITY._consent_dominated_extract(
+            {'raw_content': CONSENT + '\n![icon](https://example.com/icon.svg)[Read more](https://example.com/more)\n'}))
+
+    def test_real_article_beside_a_consent_banner_is_not_consent_dominated(self):
+        for text in (CONSENT + ARTICLE, ARTICLE + CONSENT):
+            with self.subTest(text=text[:40]):
+                self.assertFalse(QUALITY._consent_dominated_extract({'raw_content': text}))
+
+
+class MarkIncompleteExtractionsTests(unittest.TestCase):
+    def test_failed_results_are_left_alone_and_consent_shells_are_flagged(self):
+        failed = {'url': 'https://example.com/failed', 'content': CONSENT,
+                  'raw_content': CONSENT, 'error': 'HTTP 500'}
+        article = {'url': 'https://example.com/article', 'content': 'Ordinary coverage.'}
+        consent = {'url': 'https://example.com/consent', 'content': CONSENT, 'raw_content': CONSENT}
+        results = QUALITY._mark_incomplete_extractions([failed, article, consent])
+        self.assertIs(results[0], failed)
+        self.assertEqual((failed['content'], failed['raw_content'], failed['error']),
+                         (CONSENT, CONSENT, 'HTTP 500'))
+        self.assertEqual((article['content'], article.get('error')), ('Ordinary coverage.', None))
+        self.assertEqual((consent['content'], consent['raw_content']), ('', ''))
+        self.assertIn('consent', consent['error'])
+        self.assertIn('browser_navigate', consent['error'])
+
+
+class RequestedExtractUrlTests(unittest.TestCase):
+    def setUp(self):
+        self.requested = ['https://example.com/article', 'https://example.com/limited']
+
+    def test_result_url_that_was_requested_is_returned(self):
+        self.assertEqual(
+            QUALITY._requested_extract_url({'url': self.requested[0]}, self.requested), self.requested[0])
+
+    def test_source_url_metadata_is_accepted(self):
+        result = {'url': 'https://redirect.example/', 'metadata': {'sourceURL': self.requested[1]}}
+        self.assertEqual(QUALITY._requested_extract_url(result, self.requested), self.requested[1])
+
+    def test_unknown_urls_and_non_dict_metadata_yield_none(self):
+        self.assertIsNone(QUALITY._requested_extract_url(
+            {'url': 'https://unknown.example/', 'metadata': {'sourceURL': 'https://also.example/'}}, self.requested))
+        self.assertIsNone(QUALITY._requested_extract_url(
+            {'url': 'https://unknown.example/', 'metadata': 'not-a-dict'}, self.requested))
+        self.assertEqual(QUALITY._requested_extract_url(
+            {'url': 'https://unknown.example/', 'metadata': 'not-a-dict', 'nested': None}, self.requested), None)
+
+
+class RateLimitedExtractIndicesTests(unittest.TestCase):
+    ARTICLE_URL = 'https://example.com/article'
+    LIMITED_URL = 'https://example.com/limited'
+
+    def rate_limited_indices(self, results, requested, is_rate_limitish=lambda message: '429' in message):
+        fake = ModuleType('plugins.web.keyless_mcp')
+        fake._is_rate_limitish = mock.Mock(side_effect=is_rate_limitish)
+        with mock.patch.dict(sys.modules, {'plugins.web.keyless_mcp': fake}):
+            indices = QUALITY._rate_limited_extract_indices(results, requested)
+        return indices, fake._is_rate_limitish
+
+    def test_unique_requested_rate_limit_failure_is_rescued(self):
+        results = [{'url': self.ARTICLE_URL, 'content': 'ok'},
+                   {'url': self.LIMITED_URL, 'error': 'HTTP 429: rate limit'}]
+        indices, called = self.rate_limited_indices(results, [self.ARTICLE_URL, self.LIMITED_URL])
+        self.assertEqual(indices, [1])
+        called.assert_called_once_with('HTTP 429: rate limit')
+
+    def test_duplicate_requested_urls_are_ambiguous_and_left_alone(self):
+        results = [{'url': self.LIMITED_URL, 'error': 'HTTP 429'},
+                   {'url': self.LIMITED_URL, 'error': 'HTTP 429'}]
+        indices, _ = self.rate_limited_indices(results, [self.LIMITED_URL, self.LIMITED_URL])
+        self.assertEqual(indices, [])
+
+    def test_policy_blocks_and_unknown_urls_are_never_rescued(self):
+        results = [{'url': self.LIMITED_URL, 'error': 'HTTP 429', 'blocked_by_policy': True},
+                   {'url': self.ARTICLE_URL, 'error': 'Blocked by website policy: HTTP 429'},
+                   {'url': 'https://unknown.example/', 'error': 'HTTP 429'}]
+        indices, _ = self.rate_limited_indices(results, [self.ARTICLE_URL, self.LIMITED_URL])
+        self.assertEqual(indices, [])
+
+    def test_non_rate_limit_failures_are_left_alone(self):
+        results = [{'url': self.LIMITED_URL, 'error': 'HTTP 404'}]
+        indices, called = self.rate_limited_indices(results, [self.LIMITED_URL])
+        self.assertEqual(indices, [])
+        called.assert_called_once_with('HTTP 404')
+
+
 if __name__ == '__main__':
     unittest.main()

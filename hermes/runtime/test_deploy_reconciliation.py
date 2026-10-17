@@ -1,7 +1,10 @@
 """Behavioral checks for deploy-time service and firewall reconciliation."""
 import importlib.util
+import io
 from pathlib import Path
+import runpy
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -87,6 +90,78 @@ class FirewallReconciliationTests(unittest.TestCase):
         with mock.patch.object(self.module, 'run_ufw', return_value='Status: inactive\n'):
             with self.assertRaisesRegex(RuntimeError, 'verification'):
                 self.module.reconcile('tailscale0', 22, 'deny', 'allow', True)
+
+    def test_run_ufw_invokes_ufw_with_a_pinned_locale_and_returns_stdout(self):
+        completed = subprocess.CompletedProcess(['ufw'], 0, stdout='Status: active\n', stderr='')
+        with mock.patch('subprocess.run', return_value=completed) as run:
+            output = self.module.run_ufw(['status', 'verbose'])
+        self.assertEqual(output, 'Status: active\n')
+        command, = run.call_args.args
+        self.assertEqual(command, ['ufw', 'status', 'verbose'])
+        kwargs = run.call_args.kwargs
+        self.assertEqual((kwargs['check'], kwargs['capture_output'], kwargs['text']), (True, True, True))
+        self.assertEqual(kwargs['timeout'], 30)
+        self.assertEqual(kwargs['env']['LC_ALL'], 'C')
+
+    def test_active_status_without_default_policies_is_an_error(self):
+        with self.assertRaisesRegex(RuntimeError, 'default policies'):
+            self.module.current_policies('Status: active\n')
+
+    def test_invalid_interface_or_port_is_rejected_before_any_command(self):
+        with mock.patch.object(self.module, 'run_ufw') as run:
+            for interface, port in (('bad interface', 22), ('a' * 16, 22), ('tailscale0', 0), ('tailscale0', 65536)):
+                with self.subTest(interface=interface, port=port):
+                    with self.assertRaisesRegex(ValueError, 'Invalid private SSH'):
+                        self.module.reconcile(interface, port, 'deny', 'allow', True)
+            run.assert_not_called()
+
+    def test_unsupported_policies_are_rejected_before_any_command(self):
+        with mock.patch.object(self.module, 'run_ufw') as run:
+            for incoming, outgoing in (('allow', 'allow'), ('deny', 'accept')):
+                with self.subTest(incoming=incoming, outgoing=outgoing):
+                    with self.assertRaisesRegex(ValueError, 'Unsupported private SSH'):
+                        self.module.reconcile('tailscale0', 22, incoming, outgoing, True)
+            run.assert_not_called()
+
+    def test_main_reads_ipv6_policy_and_reports_the_result(self):
+        argv = ['reconcile-firewall', '--interface', 'tailscale0', '--port', '22',
+                '--incoming', 'deny', '--outgoing', 'allow']
+        for text, ipv6 in (('IPV6=yes\n', True), ('IPV6=no\n', False)):
+            with self.subTest(text=text), \
+                    mock.patch.object(sys, 'argv', argv), \
+                    mock.patch.object(Path, 'read_text', return_value=text), \
+                    mock.patch.object(self.module, 'reconcile', return_value=True) as reconcile, \
+                    mock.patch('sys.stdout', new_callable=io.StringIO) as out:
+                self.module.main()
+            reconcile.assert_called_once_with('tailscale0', 22, 'deny', 'allow', ipv6)
+            self.assertEqual(out.getvalue().strip(), 'firewall-changed=true')
+
+    def test_main_exits_nonzero_when_it_cannot_reconcile(self):
+        argv = ['reconcile-firewall', '--interface', 'tailscale0', '--port', '22',
+                '--incoming', 'deny', '--outgoing', 'allow']
+        failures = (mock.patch.object(Path, 'read_text', side_effect=OSError('unreadable')),
+                    mock.patch.object(Path, 'read_text', return_value='IPV6=maybe\n'),
+                    mock.patch.object(Path, 'read_text', return_value='IPV6=yes\n'))
+        for index, read_patch in enumerate(failures):
+            with self.subTest(case=index), mock.patch.object(sys, 'argv', argv), read_patch, \
+                    mock.patch.object(self.module, 'reconcile', side_effect=RuntimeError('boom')), \
+                    mock.patch('sys.stderr', new_callable=io.StringIO) as err:
+                with self.assertRaises(SystemExit) as exit_error:
+                    self.module.main()
+            self.assertEqual(exit_error.exception.code, 1)
+            self.assertIn('reconciliation failed', err.getvalue())
+
+    def test_running_the_script_as_main_invokes_main(self):
+        argv = ['reconcile-firewall', '--interface', 'tailscale0', '--port', '22',
+                '--incoming', 'deny', '--outgoing', 'allow']
+        script = Path(__file__).with_name('reconcile-firewall.py')
+        with mock.patch.object(sys, 'argv', argv), \
+                mock.patch.object(Path, 'read_text', return_value='IPV6=maybe\n'), \
+                mock.patch('sys.stderr', new_callable=io.StringIO) as err:
+            with self.assertRaises(SystemExit) as exit_error:
+                runpy.run_path(str(script), run_name='__main__')
+        self.assertEqual(exit_error.exception.code, 1)
+        self.assertIn('Cannot determine UFW IPv6 policy', err.getvalue())
 
 
 class GatewayReconciliationTests(unittest.TestCase):

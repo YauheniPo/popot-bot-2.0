@@ -1374,6 +1374,16 @@ class ApplyConfigTests(unittest.TestCase):
         run_operation.assert_called_once()
         self.assertNotIn("warning:", errors.getvalue())
 
+    def test_review_metrics_sync_job_rejects_a_non_string_job_id(self) -> None:
+        # A configured job id that is not a string is a settings error, never a
+        # silent skip of the metrics job migration.
+        for job_id in (123, True, ["a"], None):
+            with self.subTest(job_id=job_id):
+                with self.assertRaisesRegex(ValueError, "review_metrics_sync_job_id must be a string"):
+                    apply_config.sync_review_metrics_job(
+                        Path("/unused"), {"vps_ops": {"review_metrics_sync_job_id": job_id}}
+                    )
+
     def test_managed_model_values_reject_incomplete_routes(self) -> None:
         for model in (
             {"provider": "", "default": "fixture-model"},

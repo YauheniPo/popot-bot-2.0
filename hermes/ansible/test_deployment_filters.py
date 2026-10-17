@@ -32,6 +32,16 @@ class DeploymentFilterTests(unittest.TestCase):
                 self.assertFalse(self.module.serve_matches(state, 'host.example.ts.net', self.services))
         self.assertFalse(self.module.serve_matches(self.state, 'new.example.ts.net', self.services))
 
+    def test_duplicate_serve_ports_and_non_mapping_funnel_fail_closed(self):
+        duplicate = [{'protocol': 'https', 'port': 443, 'target': 'http://127.0.0.1:9119'},
+                     {'protocol': 'http', 'port': 443, 'target': 'http://127.0.0.1:8080'}]
+        with self.assertRaisesRegex(ValueError, 'Duplicate Tailscale Serve port'):
+            self.module.serve_matches(self.state, 'host.example.ts.net', duplicate)
+        # A truthy but non-mapping AllowFunnel cannot be silently ignored.
+        with self.assertRaisesRegex(ValueError, 'AllowFunnel must be a mapping'):
+            self.module.serve_matches({**self.state, 'AllowFunnel': ['host.example.ts.net:443']},
+                                      'host.example.ts.net', self.services)
+
     def test_bad_state_or_missing_dns_must_not_authorize_a_reset(self):
         for state, dns in (([], 'host.example.ts.net'), (self.state, '')):
             with self.subTest(state=state, dns=dns):
@@ -48,4 +58,19 @@ class DeploymentFilterTests(unittest.TestCase):
         self.assertEqual(self.module.preserve_runtime_capabilities(candidate, existing, runtime, []), candidate)
         missing = self.module.preserve_runtime_capabilities(candidate, {}, runtime, ['search'])
         self.assertNotIn('search_backend', missing['web'])
+
+    def test_preserve_runtime_capabilities_tolerates_scalar_levels(self):
+        runtime = {'capabilities': {'search': {'set': {'web.search_backend': 'searxng'}}}}
+        # A scalar (non-mapping) intermediate node gives nowhere to preserve into,
+        # so the candidate subtree is returned untouched.
+        scalar_candidate = {'web': 'not-a-mapping', 'personal': True}
+        result = self.module.preserve_runtime_capabilities(scalar_candidate, {'web': {}}, runtime, ['search'])
+        self.assertEqual(result, {'web': 'not-a-mapping', 'personal': True})
+        self.assertEqual(scalar_candidate['web'], 'not-a-mapping')
+        # A scalar value in the existing config is treated as empty: the stale
+        # managed key is dropped instead of carrying over the old scalar.
+        candidate = {'web': {'search_backend': 'auto', 'extract_backend': 'auto'}}
+        result = self.module.preserve_runtime_capabilities(candidate, {'web': 'old'}, runtime, ['search'])
+        self.assertEqual(result, {'web': {'extract_backend': 'auto'}})
+        self.assertEqual(candidate['web']['search_backend'], 'auto')
 
