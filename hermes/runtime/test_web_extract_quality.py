@@ -315,8 +315,8 @@ class RequestedExtractUrlTests(unittest.TestCase):
             {'url': 'https://unknown.example/', 'metadata': {'sourceURL': 'https://also.example/'}}, self.requested))
         self.assertIsNone(QUALITY._requested_extract_url(
             {'url': 'https://unknown.example/', 'metadata': 'not-a-dict'}, self.requested))
-        self.assertEqual(QUALITY._requested_extract_url(
-            {'url': 'https://unknown.example/', 'metadata': 'not-a-dict', 'nested': None}, self.requested), None)
+        self.assertIsNone(QUALITY._requested_extract_url(
+            {'url': 'https://unknown.example/', 'metadata': 'not-a-dict', 'nested': None}, self.requested))
 
 
 class RateLimitedExtractIndicesTests(unittest.TestCase):
