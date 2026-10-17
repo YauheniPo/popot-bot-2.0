@@ -240,9 +240,26 @@
     fail_msg: Managed fallback routes must contain unique non-empty provider/model pairs; providers may repeat.
   when: hermes_managed_config | length > 0
 
+- name: Resolve available runtime capabilities once for both configuration stages
+  ansible.builtin.set_fact:
+    hermes_runtime_capabilities: >-
+      {{
+        (['searxng_search']
+         if ((hermes_searxng_url | default('', true) | string | length) > 0)
+         else (['brave_search']
+               if (hermes_manage_secret_env | bool) and
+                  ((hermes_secret_env.BRAVE_SEARCH_API_KEY | default('', true) | string | length) > 0)
+               else [])) +
+        (['firecrawl_extract']
+         if (hermes_manage_secret_env | bool) and
+            ((hermes_secret_env.FIRECRAWL_API_KEY | default('', true) | string | length) > 0)
+         else [])
+      }}
+  no_log: true
+
 - name: Apply the managed Hermes model and voice configuration
-  ansible.builtin.copy:
-    content: >-
+  vars:
+    hermes_rendered_config: >-
       {{ hermes_existing_config |
          combine(
            hermes_managed_config |
@@ -294,12 +311,24 @@
              }
            }, recursive=true
          ) |
-         to_nice_yaml(indent=2, sort_keys=false) }}
+         hermes_preserve_runtime_capabilities(
+           hermes_existing_config, vps_runtime, hermes_runtime_capabilities
+         ) | to_nice_yaml(indent=2, sort_keys=false) }}
+  ansible.builtin.copy:
+    content: "{{ hermes_rendered_config }}"
     dest: "{{ hermes_home }}/config.yaml"
     owner: "{{ hermes_user }}"
     group: "{{ hermes_user }}"
     mode: "0600"
-  when: hermes_managed_config | length > 0
+  when:
+    - hermes_managed_config | length > 0
+    - >-
+      not hermes_config_file.stat.exists or
+      ((hermes_config_contents.content | b64decode | from_yaml) | default({}, true)) !=
+      (hermes_rendered_config | from_yaml) or
+      hermes_config_file.stat.mode != '0600' or
+      hermes_config_file.stat.pw_name != hermes_user or
+      hermes_config_file.stat.gr_name != hermes_user
   no_log: true
   diff: false
   notify: restart Hermes gateway
@@ -316,23 +345,7 @@
           '--hermes-home', hermes_home,
           '--hermes-bin', hermes_bin,
           '--workspace', hermes_workspace
-        ] +
-        (
-          ['--capability', 'searxng_search']
-          if ((hermes_searxng_url | default('', true) | string | length) > 0)
-          else (
-            ['--capability', 'brave_search']
-            if (hermes_manage_secret_env | bool) and
-               ((hermes_secret_env.BRAVE_SEARCH_API_KEY | default('', true) | string | length) > 0)
-            else []
-          )
-        ) +
-        (
-          ['--capability', 'firecrawl_extract']
-          if (hermes_manage_secret_env | bool) and
-             ((hermes_secret_env.FIRECRAWL_API_KEY | default('', true) | string | length) > 0)
-          else []
-        )
+        ] + (hermes_runtime_capabilities | map('regex_replace', '^', '--capability=') | list)
       }}
   become_user: "{{ hermes_user }}"
   environment:

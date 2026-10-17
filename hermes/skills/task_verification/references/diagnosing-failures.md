@@ -49,6 +49,10 @@ integration sections and approved credential names first.
   then a read-only request for the exact repository. The wrapper already handles
   `GH_TOKEN`, `GITHUB_TOKEN` and `GITHUB_PERSONAL_ACCESS_TOKEN`, including the
   managed Hermes environment. Do not infer failure from `echo $GITHUB_TOKEN`.
+  Resolve the installed wrapper path and active user/profile from the managed
+  GitHub instructions; a different shell, system `gh` binary or subagent can
+  use a different credential source. Existing process credentials override the
+  managed file, so check stale overrides before asking for a Vault replacement.
 - Sonar/Azure: use `integration_token` from the managed DevOps instructions
   inside the request process. It checks the process environment, then the active
   Hermes home's `.env` with interpolation disabled. Build the authorization
@@ -62,6 +66,12 @@ integration sections and approved credential names first.
   and rate limits are different observations. A 403 alone does not prove which
   permission is missing; inspect the service's safe diagnostic and target.
   Never disable TLS, bypass a sandbox, expose secrets or broaden token scopes.
+- Successful identity/repository reads prove only those operations. Reading
+  Actions logs and rerunning a workflow require different permissions; neither
+  requires access to edit Actions secrets. Use the managed permission guidance
+  and API diagnostics for the failing operation, never a speculative write probe.
+  GitHub Actions' automatic `GITHUB_TOKEN` is not a missing manually created
+  repository secret, and changing the VPS PAT does not change that job token.
 - If Sonar access is unavailable, the managed instructions describe checking
   GitHub annotations for the requested revision. This can supply issue details;
   it does not establish successful direct Sonar access.

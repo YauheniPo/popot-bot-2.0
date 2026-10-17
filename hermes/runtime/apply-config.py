@@ -220,6 +220,30 @@ def sync_cron_models(home: Path, settings: dict[str, Any]) -> int:
     return changed
 
 
+def sync_review_metrics_job(home: Path, settings: dict[str, Any]) -> int:
+    """Replace only the configured legacy metrics job's execution payload."""
+    job_id = settings.get('vps_ops', {}).get('review_metrics_sync_job_id', '')
+    if not isinstance(job_id, str):
+        raise ValueError('review_metrics_sync_job_id must be a string')
+    if not job_id or not _validate_and_collect_cron_stores([home]):
+        return 0
+    jobs = _load_cron_store(home)
+    with jobs.use_cron_store(home), jobs._jobs_lock():
+        # Native get_job also accepts prefixes; migration requires an exact ID.
+        job = next((job for job in jobs.load_jobs() if job['id'] == job_id), None)
+        if job is None:
+            return 0
+        script = home / 'scripts/hermes-ai-review-metrics-sync.py'
+        if script.parent.is_symlink() or script.is_symlink() or not script.is_file():
+            raise ValueError('managed review metrics launcher must be an installed regular file')
+        updates = {'script': str(script), 'no_agent': True, 'prompt': ''}
+        if all(job.get(key) == value for key, value in updates.items()):
+            return 0
+        if jobs.update_job(job_id, updates) is None:
+            raise RuntimeError('cron job disappeared during metrics sync migration')
+        return 1
+
+
 class Operation(NamedTuple):
     action: str
     key: str
@@ -1004,6 +1028,10 @@ def parser() -> argparse.ArgumentParser:
     apply_parser.add_argument("--workspace", required=True)
     apply_parser.add_argument("--capability", action="append", default=[])
 
+    metrics_parser = subparsers.add_parser("review-metrics-job", help="Migrate the configured metrics cron job")
+    metrics_parser.add_argument("--settings", required=True, type=Path)
+    metrics_parser.add_argument("--hermes-home", required=True, type=Path)
+
     services_parser = subparsers.add_parser("services", help="Print managed service names")
     services_parser.add_argument("--settings", required=True, type=Path)
     services_parser.add_argument("groups", nargs="+")
@@ -1029,6 +1057,10 @@ def main() -> int:
     args = parser().parse_args()
     try:
         settings = load_settings(args.settings)
+        if args.command == "review-metrics-job":
+            changed = sync_review_metrics_job(args.hermes_home, settings)
+            print(f"review-metrics-job-changed={str(bool(changed)).lower()}")
+            return 0
         if args.command == "services":
             for service in service_names(settings, args.groups):
                 print(service)

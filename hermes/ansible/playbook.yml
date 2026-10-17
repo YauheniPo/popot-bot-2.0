@@ -75,8 +75,8 @@
     - name: Validate supported operating system
       ansible.builtin.assert:
         that:
-          - ansible_system == "Linux"
-          - ansible_distribution in ["Debian", "Ubuntu"]
+          - ansible_facts['system'] == "Linux"
+          - ansible_facts['distribution'] in ["Debian", "Ubuntu"]
           - hermes_user != "root"
           - hermes_user_home.startswith("/")
           - hermes_home.startswith(hermes_user_home + "/")
@@ -310,8 +310,14 @@
       ansible.builtin.systemd_service:
         name: "{{ item }}"
         state: restarted
-      loop: "{{ vps_services.observability }}"
-      when: hermes_enable_ops | bool
+      loop: "{{ vps_services.observability | reject('equalto', 'grafana-server.service') | list }}"
+      when:
+        - hermes_enable_ops | bool
+        - >-
+          ('ops-restart=' ~ item) in (hermes_ops_install.stdout_lines | default([])) or
+          (item == 'hermes-dashboard.service' and
+           ((hermes_source_update_required | default(false) | bool) or
+            (hermes_local_patches.changed | default(false) | bool)))
 
     - name: restart monitoring timers
       ansible.builtin.systemd_service:
@@ -321,6 +327,7 @@
       when:
         - hermes_enable_ops | bool
         - hermes_gateway_enabled | bool
+        - "('ops-restart=' ~ item) in (hermes_ops_install.stdout_lines | default([]))"
 
   tasks:
     - name: Inspect installed Workspace companion service
@@ -357,6 +364,8 @@
         dest: "{{ hermes_bundle_dir }}/deploy/"
         archive: true
         checksum: true
+        owner: false
+        group: false
 
     - name: Synchronize the versioned operations layer without controller secrets
       ansible.posix.synchronize:
@@ -364,7 +373,8 @@
         dest: "{{ hermes_bundle_dir }}/ops/"
         archive: true
         checksum: true
-      notify: restart managed observability services
+        owner: false
+        group: false
 
     - name: Install the one-command Tailscale access bootstrap
       ansible.builtin.copy:
@@ -380,7 +390,8 @@
         dest: "{{ hermes_bundle_dir }}/observability/"
         archive: true
         checksum: true
-      notify: restart managed observability services
+        owner: false
+        group: false
 
     - name: Synchronize shared VPS runtime configuration
       ansible.posix.synchronize:
@@ -388,6 +399,8 @@
         dest: "{{ hermes_bundle_dir }}/config/"
         archive: true
         checksum: true
+        owner: false
+        group: false
 
     - name: Synchronize shared VPS runtime helpers
       ansible.posix.synchronize:
@@ -395,6 +408,8 @@
         dest: "{{ hermes_bundle_dir }}/runtime/"
         archive: true
         checksum: true
+        owner: false
+        group: false
 
     - name: Synchronize repository-owned Hermes skills
       ansible.posix.synchronize:
@@ -402,6 +417,8 @@
         dest: "{{ hermes_bundle_dir }}/skills/"
         archive: true
         checksum: true
+        owner: false
+        group: false
         rsync_opts:
           - --exclude=__pycache__
           - --exclude=*.pyc
@@ -453,6 +470,8 @@
         dest: "{{ hermes_bundle_dir }}/vscode-server/"
         archive: true
         checksum: true
+        owner: false
+        group: false
 
     - name: Normalize synchronized bundle ownership
       ansible.builtin.file:
@@ -538,20 +557,6 @@
         follow: true
       register: hermes_venv_python
 
-    # The bundled installer recreates this venv on every update. If any file
-    # under it ended up owned by a different UID (e.g. a prior run before
-    # become_user was consistently hermes), `rm` during recreation fails with
-    # Permission denied and aborts the whole install. This is metadata-only
-    # (owner/group), never deletes anything, so it is safe to run every time.
-    - name: Ensure the Hermes virtual environment directory exists
-      ansible.builtin.file:
-        path: "{{ hermes_home }}/hermes-agent/venv"
-        state: directory
-        owner: "{{ hermes_user }}"
-        group: "{{ hermes_user }}"
-        recurse: true
-      when: hermes_binary.stat.exists
-
     - name: Read the last completed Hermes installation commit
       ansible.builtin.command:
         argv:
@@ -570,6 +575,23 @@
              (hermes_installed_commit.stdout | default('') != hermes_commit) or
              (not hermes_venv_python.stat.exists) or
              (hermes_completed_install.stdout | default('') != hermes_commit) }}
+
+    # The bundled installer recreates this venv on every update. If any file
+    # under it ended up owned by a different UID (e.g. a prior run before
+    # become_user was consistently hermes), `rm` during recreation fails with
+    # Permission denied and aborts the whole install. This is metadata-only
+    # (owner/group), never deletes anything. Skip the full venv walk when the
+    # installed source and completion marker already match the pinned commit.
+    - name: Ensure the Hermes virtual environment directory exists
+      ansible.builtin.file:
+        path: "{{ hermes_home }}/hermes-agent/venv"
+        state: directory
+        owner: "{{ hermes_user }}"
+        group: "{{ hermes_user }}"
+        recurse: true
+      when:
+        - hermes_binary.stat.exists
+        - hermes_source_update_required | bool
 
     - name: Require a current Hermes source for a fast deployment mode
       ansible.builtin.assert:
@@ -630,9 +652,9 @@
         - name: Define the mandatory config-only deployment backup paths
           ansible.builtin.set_fact:
             hermes_config_backup_archive: >-
-              {{ hermes_backup_dir }}/pre-config-deploy-{{ ansible_date_time.iso8601_basic_short }}-{{ hermes_config_backup_suffix }}.zip
+              {{ hermes_backup_dir }}/pre-config-deploy-{{ ansible_facts['date_time']['iso8601_basic_short'] }}-{{ hermes_config_backup_suffix }}.zip
             hermes_config_backup_snapshot: >-
-              {{ hermes_backup_dir }}/pre-config-deploy-{{ ansible_date_time.iso8601_basic_short }}-{{ hermes_config_backup_suffix }}-state.json
+              {{ hermes_backup_dir }}/pre-config-deploy-{{ ansible_facts['date_time']['iso8601_basic_short'] }}-{{ hermes_config_backup_suffix }}-state.json
           when:
             - hermes_binary.stat.exists
             - not (hermes_source_update_required | bool)
@@ -823,6 +845,7 @@
           when:
             - hermes_source_update_required | bool
             - hermes_deploy_mode == 'full'
+          notify: restart managed observability services
 
         - name: Configure private networking and firewall
           ansible.builtin.import_tasks: tasks/network.yml

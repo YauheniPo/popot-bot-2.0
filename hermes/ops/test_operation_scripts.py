@@ -305,6 +305,9 @@ class SyncAiReviewMetricsTests(unittest.TestCase):
         sys.modules["sync_ai_review_metrics"] = self.mod
         spec.loader.exec_module(self.mod)
         self.original_subprocess_run = self.mod.subprocess.run
+        token_loader = unittest.mock.patch.object(self.mod, "managed_github_token", return_value="")
+        self.token_loader = token_loader.start()
+        self.addCleanup(token_loader.stop)
 
     def tearDown(self):
         import sys
@@ -327,10 +330,10 @@ class SyncAiReviewMetricsTests(unittest.TestCase):
         try:
             result = self.mod.import_pr_reviews(42)
             self.assertTrue(result)
-            # Verify extractor was called with correct args (second call after gh auth)
-            extractor_calls = [c for c in calls if c[0][0] == "python3"]
+            extractor_calls = [c for c in calls if c[0][0] == sys.executable]
             self.assertEqual(len(extractor_calls), 1)
-            self.assertEqual(extractor_calls[0][0], ["python3", self.mod.EXTRACTOR, "--pr", "42"])
+            self.assertEqual(extractor_calls[0][0], [sys.executable, self.mod.EXTRACTOR, "--pr", "42",
+                "--repository", self.mod.GITHUB_REPO, "--database", str(self.mod.DB_PATH)])
             self.assertEqual(extractor_calls[0][1].get("timeout"), 120)
             self.assertIn("GITHUB_TOKEN", extractor_calls[0][1].get("env", {}))
         finally:
@@ -365,13 +368,17 @@ class SyncAiReviewMetricsTests(unittest.TestCase):
         finally:
             self.mod.subprocess.run = self.original_subprocess_run
 
-    def test_get_last_5_prs_requires_token(self):
-        """get_last_5_prs returns empty list without token."""
+    def test_get_last_5_prs_supports_anonymous_access(self):
+        """Public discovery does not require token shell substitution."""
         original_token = self.mod.GITHUB_TOKEN
         self.mod.GITHUB_TOKEN = ""
         try:
-            prs = self.mod.get_last_5_prs()
-            self.assertEqual(prs, [])
+            response = unittest.mock.MagicMock()
+            response.__enter__.return_value = response
+            response.read.return_value = b'[{"number": 1}]'
+            with unittest.mock.patch.object(self.mod.urllib.request, "urlopen", return_value=response) as request:
+                self.assertEqual(self.mod.get_last_5_prs(), [{"number": 1}])
+            self.assertNotIn("Authorization", request.call_args.args[0].headers)
         finally:
             self.mod.GITHUB_TOKEN = original_token
 
@@ -417,7 +424,7 @@ class SyncAiReviewMetricsTests(unittest.TestCase):
             self.mod.import_pr_reviews = original_import
 
     def test_main_list_mode_no_token(self):
-        """main list mode returns 1 when no token available."""
+        """No token is needed for successful empty public discovery."""
         original_token = self.mod.GITHUB_TOKEN
         original_gh = self.mod.subprocess.run
 
@@ -433,16 +440,18 @@ class SyncAiReviewMetricsTests(unittest.TestCase):
             original_argv = sys.argv
             sys.argv = ["sync-ai-review-metrics.py"]
             try:
-                exit_code = self.mod.main()
-                self.assertEqual(exit_code, 1)
+                with unittest.mock.patch.object(self.mod, "get_last_5_prs", return_value=[]):
+                    exit_code = self.mod.main()
+                self.assertEqual(exit_code, 0)
             finally:
                 sys.argv = original_argv
         finally:
             self.mod.GITHUB_TOKEN = original_token
             self.mod.subprocess.run = original_gh
 
-    def test_main_uses_gh_cli_for_token(self):
-        """main falls back to gh auth token."""
+    def test_main_uses_managed_token_loader(self):
+        """main loads credentials in process without spawning gh."""
+        self.token_loader.return_value = "managed-token-123"
         original_token = self.mod.GITHUB_TOKEN
         original_gh = self.mod.subprocess.run
         calls = []
@@ -464,9 +473,9 @@ class SyncAiReviewMetricsTests(unittest.TestCase):
         try:
             exit_code = self.mod.main(["--pr", "1"])
             self.assertEqual(exit_code, 0)
-            self.assertEqual(self.mod.GITHUB_TOKEN, "gh-token-123")
-            # Verify gh auth token was called first
-            self.assertEqual(calls[0], ["gh", "auth", "token"])
+            self.assertEqual(self.mod.GITHUB_TOKEN, "managed-token-123")
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0][1], self.mod.EXTRACTOR)
         finally:
             self.mod.GITHUB_TOKEN = original_token
             self.mod.subprocess.run = original_gh
@@ -502,20 +511,20 @@ class SyncAiReviewMetricsTests(unittest.TestCase):
             urllib.request.urlopen = original_open
 
     def test_get_last_5_prs_exception(self):
-        """get_last_5_prs returns empty list on exception."""
+        """Discovery failure is distinguishable from an empty repository."""
         import urllib.request
         original_open = urllib.request.urlopen
 
         def mock_open(req, timeout):
-            raise Exception("network error")
+            raise OSError("network error")
 
         urllib.request.urlopen = mock_open
         try:
             original_token = self.mod.GITHUB_TOKEN
             self.mod.GITHUB_TOKEN = "test-token"
             try:
-                prs = self.mod.get_last_5_prs()
-                self.assertEqual(prs, [])
+                with self.assertRaises(OSError):
+                    self.mod.get_last_5_prs()
             finally:
                 self.mod.GITHUB_TOKEN = original_token
         finally:
@@ -613,7 +622,7 @@ class SyncAiReviewMetricsTests(unittest.TestCase):
             self.mod.import_pr_reviews = original_import
 
     def test_main_list_mode_no_prs(self):
-        """main list mode returns 1 when no PRs found."""
+        """An empty repository is a successful no-op."""
         original_token = self.mod.GITHUB_TOKEN
         original_gh = self.mod.subprocess.run
         original_get = self.mod.get_last_5_prs
@@ -623,14 +632,15 @@ class SyncAiReviewMetricsTests(unittest.TestCase):
 
         try:
             exit_code = self.mod.main([])
-            self.assertEqual(exit_code, 1)
+            self.assertEqual(exit_code, 0)
         finally:
             self.mod.GITHUB_TOKEN = original_token
             self.mod.subprocess.run = original_gh
             self.mod.get_last_5_prs = original_get
 
-    def test_main_list_mode_gh_fallback_success(self):
-        """main list mode uses gh CLI for token when env var not set."""
+    def test_main_list_mode_managed_token_success(self):
+        """List mode uses the same managed credential loader as single-PR mode."""
+        self.token_loader.return_value = "managed-token-456"
         original_token = self.mod.GITHUB_TOKEN
         original_gh = self.mod.subprocess.run
         original_get = self.mod.get_last_5_prs
@@ -644,7 +654,7 @@ class SyncAiReviewMetricsTests(unittest.TestCase):
                 mock.returncode = 0
                 mock.stdout = "gh-token-456"
                 return mock
-            return original_run(cmd, **kwargs)
+            raise AssertionError("No subprocess is expected with mocked imports")
 
         def mock_get_last_5_prs():
             return [{"number": 1, "title": "PR 1"}]
@@ -659,15 +669,15 @@ class SyncAiReviewMetricsTests(unittest.TestCase):
         try:
             exit_code = self.mod.main([])
             self.assertEqual(exit_code, 0)
-            self.assertEqual(self.mod.GITHUB_TOKEN, "gh-token-456")
+            self.assertEqual(self.mod.GITHUB_TOKEN, "managed-token-456")
         finally:
             self.mod.GITHUB_TOKEN = original_token
             self.mod.subprocess.run = original_gh
             self.mod.get_last_5_prs = original_get
             self.mod.import_pr_reviews = original_import
 
-    def test_main_gh_cli_fails_returns_error(self):
-        """main returns 1 when gh CLI fails and no token."""
+    def test_main_discovery_failure_returns_error(self):
+        """main returns failure on an unreachable GitHub API."""
         original_token = self.mod.GITHUB_TOKEN
         original_gh = self.mod.subprocess.run
 
@@ -679,19 +689,21 @@ class SyncAiReviewMetricsTests(unittest.TestCase):
                 mock.returncode = 1
                 mock.stdout = ""
                 return mock
-            return original_run(cmd, **kwargs)
+            raise AssertionError("No subprocess is expected before discovery")
 
         self.mod.subprocess.run = mock_run
 
         try:
-            exit_code = self.mod.main([])
+            with unittest.mock.patch.object(self.mod, "get_last_5_prs", side_effect=OSError("network unavailable")):
+                exit_code = self.mod.main([])
             self.assertEqual(exit_code, 1)
         finally:
             self.mod.GITHUB_TOKEN = original_token
             self.mod.subprocess.run = original_gh
 
-    def test_main_gh_cli_raises_exception(self):
-        """main handles exception from gh CLI gracefully."""
+    def test_main_missing_managed_loader_returns_error(self):
+        """A broken installation cannot silently become an anonymous success."""
+        self.token_loader.side_effect = FileNotFoundError("managed loader missing")
         original_token = self.mod.GITHUB_TOKEN
         original_gh = self.mod.subprocess.run
 
@@ -700,7 +712,7 @@ class SyncAiReviewMetricsTests(unittest.TestCase):
         def mock_run(cmd, **kwargs):
             if cmd[0] == "gh":
                 raise FileNotFoundError("gh not found")
-            return original_run(cmd, **kwargs)
+            raise AssertionError("No subprocess is expected before credentials load")
 
         self.mod.subprocess.run = mock_run
 

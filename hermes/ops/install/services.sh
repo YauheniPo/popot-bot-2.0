@@ -12,31 +12,44 @@ reconcile_observability_services() {
     observability_output="$(managed_services observability)"
     timers_output="$(managed_services timers)"
     gateway_service="$(managed_services gateway)"
-    mapfile -t observability_services <<<"${observability_output}"
-    mapfile -t timer_services <<<"${timers_output}"
+    local service
+    while IFS= read -r service; do observability_services+=("$service"); done <<< "$observability_output"
+    while IFS= read -r service; do timer_services+=("$service"); done <<< "$timers_output"
 
     systemctl daemon-reload
     systemctl enable hermes-startup-notify.service
     log "enabling the loopback-only Prometheus and Grafana services"
     systemctl enable --now "${observability_services[@]}"
     if [[ "${START_TIMERS}" == "true" ]]; then
-        log "creating and verifying the initial scheduled backup"
-        systemctl start hermes-backup.service
+        if ! systemctl is-enabled --quiet hermes-backup.timer; then
+            log "creating and verifying the initial scheduled backup"
+            systemctl start hermes-backup.service
+        fi
         systemctl enable --now "${timer_services[@]}"
     else
         log "timers installed but deferred"
     fi
 
     if [[ "${RESTART_SERVICES}" == true ]]; then
-        log "restarting managed observability services"
-        systemctl restart "${observability_services[@]}"
+        for service in "${observability_services[@]}"; do
+            if [[ -f "$OPS_RESTART_DIR/$service" ]]; then
+                systemctl restart "$service"
+                rm -f -- "$OPS_RESTART_DIR/$service"
+            fi
+        done
         if [[ "${START_TIMERS}" == "true" ]]; then
-            systemctl restart "${timer_services[@]}"
+            for service in "${timer_services[@]}"; do
+                if [[ -f "$OPS_RESTART_DIR/$service" ]]; then
+                    systemctl restart "$service"
+                    rm -f -- "$OPS_RESTART_DIR/$service"
+                fi
+            done
         fi
-        if [[ "${PLUGIN_CONTENT_CHANGED}" == true || "${PLUGIN_CONFIGURATION_CHANGED}" == true ]] && \
+        if [[ -f "$OPS_RESTART_DIR/$gateway_service" ]] && \
             systemctl is-active --quiet "${gateway_service}"; then
             log "restarting the gateway so it loads the changed observability plugin"
             systemctl restart "${gateway_service}"
+            rm -f -- "$OPS_RESTART_DIR/$gateway_service"
         fi
     fi
 

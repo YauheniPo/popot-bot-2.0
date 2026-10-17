@@ -7,8 +7,9 @@ import { workspaceMemoryUi } from {{ (hermes_bundle_dir ~ '/runtime/workspace-me
 import { workspaceProfileUi } from {{ (hermes_bundle_dir ~ '/runtime/workspace-profile-ui.mjs') | to_json }};
 import { workspaceVoiceUi } from {{ (hermes_bundle_dir ~ '/runtime/workspace-voice-ui.mjs') | to_json }};
 import { workspaceBackgroundRuns } from {{ (hermes_bundle_dir ~ '/runtime/workspace-background-runs.mjs') | to_json }};
+import { workspaceCronUi } from {{ (hermes_bundle_dir ~ '/runtime/workspace-cron-ui.mjs') | to_json }};
 
 export default async function (environment) {
   const config = await (typeof upstream === 'function' ? upstream(environment) : upstream);
-  return { ...config, plugins: [workspaceMcpUi(), workspaceModelPolicy(), workspaceSwarmRuntime(), workspaceMemoryUi(), workspaceProfileUi(), workspaceVoiceUi(), workspaceBackgroundRuns(), ...(config.plugins || [])] };
+  return { ...config, plugins: [workspaceMcpUi(), workspaceModelPolicy(), workspaceSwarmRuntime(), workspaceMemoryUi(), workspaceProfileUi(), workspaceVoiceUi(), workspaceBackgroundRuns(), workspaceCronUi(), ...(config.plugins || [])] };
 }

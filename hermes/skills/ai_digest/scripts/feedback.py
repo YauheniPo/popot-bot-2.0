@@ -26,6 +26,29 @@ _WORDS = re.compile(r"[\w]{3,}", re.UNICODE)
 _RUN_ID = re.compile(r"\d{8}-\d{6}-[0-9a-f]{8}")
 
 
+class DeliveryError(RuntimeError):
+    """Delivery failure with a safe, locally constructed diagnostic."""
+
+
+def delivery_error_detail(error: Exception) -> str:
+    return str(error) if isinstance(error, DeliveryError) else type(error).__name__
+
+
+def _telegram_error_reason(result) -> str:
+    description = result.get("description") if isinstance(result, dict) else None
+    if not isinstance(description, str):
+        return ""
+    reason = description.lower().removeprefix("bad request: ").removeprefix("forbidden: ")
+    # API bodies and exception URLs may contain credentials or request data.
+    # Only these fixed diagnostics may reach cron status or the UI.
+    if reason in {"message thread not found", "chat not found", "topic_closed",
+                  "bot was blocked by the user", "user is deactivated",
+                  "bot can't initiate conversation with a user", "message is too long",
+                  "not enough rights to send text messages to the chat"}:
+        return f": {reason}"
+    return ""
+
+
 def _finalizer():
     spec = importlib.util.spec_from_file_location(
         "ai_digest_finalizer", Path(__file__).with_name("finalize_digest.py"))
@@ -289,11 +312,17 @@ def telegram_send(token: str, method: str, payload: dict, *, timeout: int = 15) 
                 time.sleep(max(1, min(wait, 10)))
                 continue
             # HTTPError URLs include the bot token. Never propagate the original.
-            raise RuntimeError(f"Telegram {method} failed (HTTP {exc.code})") from None
+            try:
+                reason = _telegram_error_reason(json.loads(exc.read(4096)))
+            except (OSError, ValueError):
+                reason = ""
+            finally:
+                exc.close()
+            raise DeliveryError(f"Telegram {method} failed (HTTP {exc.code}){reason}") from None
         except (URLError, TimeoutError) as exc:
-            raise RuntimeError(f"Telegram {method} failed ({type(exc).__name__})") from None
+            raise DeliveryError(f"Telegram {method} failed ({type(exc).__name__})") from None
     if not result.get("ok"):
-        raise RuntimeError(f"Telegram {method} returned an error")
+        raise DeliveryError(f"Telegram {method} returned an error{_telegram_error_reason(result)}")
     return result["result"]
 
 
@@ -350,7 +379,7 @@ def deliver_cards(raw_path: Path, state_dir: Path, target: dict, owner_id: str, 
         if not fresh:
             existing = store.card(card_id)
             if not existing or existing["status"] != "sent" or existing["message_id"] is None:
-                raise RuntimeError("digest card delivery unconfirmed; refusing duplicate send")
+                raise DeliveryError("digest card delivery unconfirmed; refusing duplicate send")
             continue
         if count:
             time.sleep(1)
@@ -364,7 +393,7 @@ def deliver_cards(raw_path: Path, state_dir: Path, target: dict, owner_id: str, 
 def deliver_cards_to_telegram(raw_path: Path, state_dir: Path, target: dict,
                               owner_id: str, token: str) -> int:
     if not token:
-        raise RuntimeError("Telegram bot token unavailable")
+        raise DeliveryError("Telegram bot token unavailable")
 
     def send(chat_id, thread_id, text, keyboard):
         payload = {"chat_id": chat_id, "text": text, "reply_markup": keyboard,

@@ -984,6 +984,7 @@ class ApplyConfigTests(unittest.TestCase):
         identity['workspace'] = '/srv/agent/projects'
         template = (hermes_dir / 'ops/systemd/hermes-dashboard.service').read_text()
         rendered = apply_config.render_asset(template, self._asset_values(settings))
+        self.assertIn('Environment=NPM_CONFIG_CACHE=/srv/agent/state/cache/npm', rendered.splitlines())
         writable = [line.partition('=')[2] for line in rendered.splitlines()
                     if line.startswith('ReadWritePaths=')]
         self.assertEqual(writable, [f"{identity['hermes_home']} {identity['workspace']}"])

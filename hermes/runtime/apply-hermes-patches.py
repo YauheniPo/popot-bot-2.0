@@ -336,6 +336,20 @@ def _migrate_installed_telegram_usage_ranking() -> int:
 _PATCHES: list[tuple[str, str, str, str]] = [
     (
         _CRON_SCHEDULER_PATH,
+        _PREFIX + " competitor research tool observation",
+        '''        _audit = _FireAudit(job, job_id, model)
+
+        result = _run_agent_with_watchdog(''',
+        '''        _audit = _FireAudit(job, job_id, model)
+        # Local Hermes: competitor research tool observation
+        prepare_research = getattr(competitor_guard, "prepare_agent", None)
+        if prepare_research is not None:
+            prompt = prepare_research(agent, prompt)
+
+        result = _run_agent_with_watchdog(''',
+    ),
+    (
+        _CRON_SCHEDULER_PATH,
         _PREFIX + " competitor agent guard parameter",
         '''    cancel_event: Optional[_CancelEventLike] = None, execution_id: Optional[str] = None,
 ) -> tuple[bool, str, str, Optional[str]]:
@@ -388,7 +402,7 @@ _PATCHES: list[tuple[str, str, str, str]] = [
                 history = result.get("messages")
                 if not isinstance(history, list) or not history:
                     raise RuntimeError("Cron report repair unavailable: missing research history")
-                logger.info("Job '%s': correcting cron artifact (one attempt)", job_id)
+                logger.info("Job '%s': completing cron report (one additional attempt)", job_id)
                 result = _run_agent_with_watchdog(
                     agent, repair_prompt, job, job_id, job_name, scope.task_id, cancel_event,
                     worker_state=_worker_state, conversation_history=history)
@@ -396,7 +410,10 @@ _PATCHES: list[tuple[str, str, str, str]] = [
                 repair_error = _cron_failure_marker_error(repair_response)
                 if repair_error is not None:
                     raise RuntimeError(repair_error)
-            final_response = competitor_guard.finalize_with_repair(_repair_competitor_artifact)
+            remaining = getattr(getattr(agent, "iteration_budget", None), "remaining", None)
+            final_response = competitor_guard.finalize_with_repair(
+                _repair_competitor_artifact, allow_research=(result.get("completed") is not False
+                and (not isinstance(remaining, int) or remaining > 0)))
         if (setup.fallback_notice''',
     ),
     (
@@ -457,6 +474,7 @@ _PATCHES: list[tuple[str, str, str, str]] = [
             if competitor_guard is not None and d.success:
                 final_response = competitor_guard.finalize()
                 output = final_response
+                job["_competitor_split_report"] = bool(getattr(competitor_guard, "split_delivery", False))
             _save_compose_deliver(
                 d, fence, final_response, output, adapters=adapters, loop=loop, verbose=verbose,
                 execution_token=execution_token, competitor_guard=competitor_guard)
@@ -1712,6 +1730,219 @@ _PATCHES.extend([
     ),
 ])
 
+_PATCHES.extend([
+    (
+        "hermes_cli/web_server_cron.py", _PREFIX + " shared cron activity",
+        '''    return {
+        **job,
+        "profile": profile,''',
+        '''    # Local Hermes: shared cron activity
+    from datetime import datetime, timezone
+    from cron.jobs import _claim_is_live, FIRE_CLAIM_TTL_SECONDS
+    return {
+        **job,
+        "is_running": _claim_is_live(job.get("fire_claim"), datetime.now(timezone.utc), FIRE_CLAIM_TTL_SECONDS),
+        "profile": profile,''',
+    ),
+    (
+        "web/src/lib/api.ts", _PREFIX + " cron request deadline",
+        '''  getCronJobs: (profile = "all") =>
+    fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),''',
+        '''  // # Local Hermes: cron request deadline
+  getCronJobs: (profile = "all", signal?: AbortSignal) =>
+    fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
+      cache: "no-store",
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
+    }),''',
+    ),
+    (
+        "web/src/lib/api.ts", _PREFIX + " cron activity type",
+        '''export interface CronJob {
+  id: string;''',
+        '''export interface CronJob {
+  // # Local Hermes: cron activity type
+  is_running?: boolean;
+  id: string;''',
+    ),
+    (
+        "web/src/pages/CronPage.tsx", _PREFIX + " cron activity badge",
+        '''                    {lastResult && lastResult.status !== "ok" && (''',
+        '''                    {/* # Local Hermes: cron activity badge */}
+                    {job.is_running && <Badge tone="warning">Running</Badge>}
+                    {lastResult && lastResult.status !== "ok" && (''',
+    ),
+    (
+        "web/src/pages/CronPage.tsx", _PREFIX + " cron cancellable refresh",
+        '''  const loadJobs = useCallback((profile: string) => {''',
+        '''  // # Local Hermes: cron cancellable refresh
+  const loadJobs = useCallback((profile: string, signal?: AbortSignal) => {''',
+    ),
+    (
+        "web/src/pages/CronPage.tsx", _PREFIX + " cron awaited refresh",
+        '''    api
+      .getCronJobs(profile)''',
+        '''    // # Local Hermes: cron awaited refresh
+    return api
+      .getCronJobs(profile, signal)''',
+    ),
+    (
+        "web/src/pages/CronPage.tsx", _PREFIX + " cron activity polling",
+        '''    jobsActiveRef.current = true;
+    selectedProfileRef.current = selectedProfile;
+    loadJobs(selectedProfile);
+
+    return () => {
+      jobsActiveRef.current = false;
+      jobsRequestGenerationRef.current += 1;
+    };''',
+        '''    // # Local Hermes: cron activity polling
+    jobsActiveRef.current = true;
+    selectedProfileRef.current = selectedProfile;
+    const controller = new AbortController();
+    let timer: number | undefined;
+    const poll = async () => {
+      await loadJobs(selectedProfile, controller.signal);
+      if (!controller.signal.aborted) timer = window.setTimeout(() => void poll(), 5_000);
+    };
+    void poll();
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+      jobsActiveRef.current = false;
+      jobsRequestGenerationRef.current += 1;
+    };''',
+    ),
+    (
+        "web/src/pages/CronPage.tsx", _PREFIX + " cron activity button",
+        '''                    disabled={triggeringJobKeys.has(jobKey)}
+                    title={t.cron.triggerNow}
+                    aria-label={t.cron.triggerNow}
+                    onClick={() => handleTrigger(job)}
+                  >
+                    {triggeringJobKeys.has(jobKey) ? <Spinner /> : <Zap />}''',
+        '''                    disabled={/* # Local Hermes: cron activity button */
+                      triggeringJobKeys.has(jobKey) || job.is_running !== false || !!jobsLoadError}
+                    title={job.is_running ? "Running" : jobsLoadError || job.is_running === undefined ? "Status unavailable" : t.cron.triggerNow}
+                    aria-label={t.cron.triggerNow}
+                    aria-busy={job.is_running || triggeringJobKeys.has(jobKey)}
+                    onClick={() => handleTrigger(job)}
+                  >
+                    {job.is_running || triggeringJobKeys.has(jobKey) ? <Spinner /> : <Zap />}''',
+    ),
+])
+
+# Keep web quality checks testable without importing provider SDKs. The source
+# lives inside the existing extraction module after the fingerprinted patch.
+_WEB_EXTRACT_QUALITY = Path(__file__).with_name("web_extract_quality.py").read_text(encoding="utf-8")
+_PATCHES.extend([
+    (
+        "tools/web_tools_extract.py", _PREFIX + " extraction quality checks",
+        '\ndef _web_extract_url(value: Any) -> Optional[str]:\n',
+        '\n# Local Hermes: extraction quality checks\n' + _WEB_EXTRACT_QUALITY
+        + '\n\ndef _web_extract_url(value: Any) -> Optional[str]:\n',
+    ),
+    (
+        "tools/web_tools_extract.py", _PREFIX + " partial extraction rescue",
+        '''    if results and all(r.get("error") for r in results) and _rescue_eligible(provider):
+        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
+''',
+        '''    # Local Hermes: partial extraction rescue
+    rescued_indices = set()
+    if results and any(r.get("error") for r in results) and _rescue_eligible(provider):
+        if all(r.get("error") for r in results):
+            return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
+        indices = _rate_limited_extract_indices(results, fetch_urls)
+        if indices:
+            urls = [_requested_extract_url(results[i], fetch_urls) for i in indices]
+            rescued = await asyncio.to_thread(
+                _rescue_extract, provider.name, urls, [results[i] for i in indices])
+            # Match by URL, never position: a rescue may omit or reorder entries.
+            for i, url in zip(indices, urls):
+                matches = [r for r in rescued if _requested_extract_url(r, urls) == url]
+                if len(matches) == 1 and not matches[0].get("error"):
+                    results[i] = matches[0]
+                    rescued_indices.add(i)
+    _mark_incomplete_extractions(results)
+''',
+    ),
+    (
+        "tools/web_tools_extract.py", _PREFIX + " extraction cache quality",
+        '''    for fetched in results:
+        meta = fetched.get("metadata")''',
+        '''    # Local Hermes: extraction cache quality
+    for index, fetched in enumerate(results):
+        if index in rescued_indices:
+            continue  # a one-shot free-tier rescue must not become sticky
+        meta = fetched.get("metadata")''',
+    ),
+    (
+        "tools/web_tools_extract.py", _PREFIX + " extraction cache dates",
+        '''            extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)''',
+        '''            # Local Hermes: extraction cache dates
+            extract_cache_put(url, _content, fetched.get("title", ""), format=format,
+                              provider=provider.name, metadata=_safe_extract_metadata(meta))''',
+    ),
+    (
+        "tools/web_tools_extract.py", _PREFIX + " reject cached consent shells",
+        '''        if hit is not None:
+            cached_results[position] = hit''',
+        '''        # Local Hermes: reject cached consent shells
+        if hit is not None and not _consent_dominated_extract(hit):
+            cached_results[position] = hit''',
+    ),
+    (
+        "tools/web_tools_extract.py", _PREFIX + " check rescued page quality",
+        '''    results = await _dispatch_extract(provider, fetch_urls, format)''',
+        '''    # Local Hermes: check rescued page quality
+    results = _mark_incomplete_extractions(await _dispatch_extract(provider, fetch_urls, format))''',
+    ),
+    (
+        "tools/web_tools_truncate.py", _PREFIX + " safe extraction dates",
+        '''    return [
+        {
+            "url": r.get("url", ""), "title": r.get("title", ""), "content": r.get("content", ""),
+            "error": r.get("error"),''',
+        '''    # Local Hermes: safe extraction dates
+    from tools.web_tools_extract import _safe_extract_metadata
+    return [
+        {
+            "url": r.get("url", ""), "title": r.get("title", ""), "content": r.get("content", ""),
+            "error": r.get("error"),
+            **({"metadata": dates} if (dates := _safe_extract_metadata(r.get("metadata"))) else {}),''',
+    ),
+    (
+        "tools/web_result_cache.py", _PREFIX + " cached extraction dates",
+        '''    return {"url": url, "title": entry.get("title", ""), "content": content, "error": None, "cached": True}''',
+        '''    # Local Hermes: cached extraction dates
+    from tools.web_tools_extract import _safe_extract_metadata
+    dates = _safe_extract_metadata(entry.get("metadata"))
+    return {"url": url, "title": entry.get("title", ""), "content": content, "error": None, "cached": True,
+            **({"metadata": dates} if dates else {})}''',
+    ),
+    (
+        "tools/web_result_cache.py", _PREFIX + " extraction cache metadata argument",
+        '''    url: str, content: str, title: str = "", format: Optional[str] = None, provider: str = ""
+) -> None:''',
+        '''    # Local Hermes: extraction cache metadata argument
+    url: str, content: str, title: str = "", format: Optional[str] = None, provider: str = "", metadata=None
+) -> None:''',
+    ),
+    (
+        "tools/web_result_cache.py", _PREFIX + " stored extraction dates",
+        '''            index[_url_digest(url, format, provider)] = {
+                "url": url, "file": str(file_path), "title": title or "", "fetched_at": time.time(),
+            }''',
+        '''            # Local Hermes: stored extraction dates
+            from tools.web_tools_extract import _safe_extract_metadata
+            dates = _safe_extract_metadata(metadata)
+            index[_url_digest(url, format, provider)] = {
+                "url": url, "file": str(file_path), "title": title or "", "fetched_at": time.time(),
+                **({"metadata": dates} if dates else {}),
+            }''',
+    ),
+])
+
 # Keep the implementation testable as ordinary Python; install it through the
 # same fingerprinted source-patch mechanism, not a sys.path/bootstrap hook.
 _FALLBACK_POLICY = Path(__file__).with_name("fallback-policy.py").read_text(encoding="utf-8")
@@ -1888,17 +2119,29 @@ _PATCHES.extend([
                 digest_feedback.deliver_cards_to_telegram(
                     digest_cards_path, state_dir, target, str(owner_id), token)
             except Exception as exc:
-                delivery_errors.append(f"digest cards failed for {t.where}: {type(exc).__name__}")
+                detail = digest_feedback.delivery_error_detail(exc)
+                delivery_errors.append(f"digest cards failed for {t.where}: {detail}")
                 continue
         # Publish the rating summary only after all cards have confirmed receipts.
-        delivered = t.live_adapter_ready and _deliver_via_live_adapter(
-            t, cleaned_delivery_content, media_files,
-            target_errors=target_errors, delivery_errors=delivery_errors,
-            unverified_targets=unverified_targets,
-        )
-        if not delivered:
-            _deliver_standalone(
-                t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
+        # Local Hermes: competitor message separation
+        # Split only the runtime-rendered report, after the shared redaction gate.
+        # A detached worker queues the whole report once, preserving its native idempotency key.
+        parts = [cleaned_delivery_content]
+        if job.get("_competitor_split_report") and not for_failure:
+            news, separator, details = cleaned_delivery_content.partition("\\n\\nCronjob Response: ")
+            if separator:
+                parts = [news, "Cronjob Response: " + details]
+        for part in parts:
+            if job.get("_competitor_split_report") and not for_failure:
+                t.mirror_text = part
+            delivered = t.live_adapter_ready and _deliver_via_live_adapter(
+                t, part, media_files,
+                target_errors=target_errors, delivery_errors=delivery_errors,
+                unverified_targets=unverified_targets,
+            )
+            if not delivered:
+                _deliver_standalone(
+                    t, part, media_files, target_errors, delivery_errors)
 
     # Filter-time drops apply to every target; report them once. A run whose every target was
 ''',
@@ -2034,6 +2277,20 @@ def _classify_patch(
     if not previous_source or previous_source not in source:
         return "locally-changed"
     return "upgrade"
+
+
+_PATCHES.extend([
+    (
+        _CRON_SCHEDULER_DELIVERY_PATH, _PREFIX + " competitor wrapper separation",
+        '''    if wrap_response:
+        task_name = job.get("name", job["id"])''',
+        '''    # Local Hermes: competitor wrapper separation
+    if job.get("_competitor_split_report") and not for_failure:
+        wrap_response = False
+    if wrap_response:
+        task_name = job.get("name", job["id"])''',
+    ),
+])
 
 
 def _apply_one_patch(

@@ -325,7 +325,9 @@ class FallbackPolicyTests(unittest.TestCase):
         task = next(t for t in tasks if t['name'] == 'Apply the managed Hermes model and voice configuration')
         env = Environment()
         env.filters.update(FilterModule().filters())
-        template = env.from_string(task['ansible.builtin.copy']['content'])
+        filters = load_module('deployment_state', ROOT / 'ansible/filter_plugins/deployment_state.py')
+        env.filters.update(filters.FilterModule().filters())
+        template = env.from_string(task['vars']['hermes_rendered_config'])
         settings = yaml.safe_load((ROOT / 'config/vps-defaults.yml').read_text())
         managed = settings['vps_hermes']['config']['managed_overlay']
         defaults = [{'provider': 'nous', 'model': 'a'}, {'provider': 'nous', 'model': 'b'}]
@@ -335,6 +337,7 @@ class FallbackPolicyTests(unittest.TestCase):
             for selected in ([], [{'provider': 'nous', 'model': 'chosen'}]):
                 values = dict(hermes_existing_config={'fallback_providers': selected},
                     hermes_managed_config=managed, hermes_external_skill_dirs=[],
+                    vps_runtime={}, hermes_runtime_capabilities=[],
                     vps_hermes=settings['vps_hermes'], vps_deploy={'features': {'workspace_ui': workspace}})
                 result = yaml.safe_load(template.render(**values))
                 self.assertEqual(result['fallback_providers'], defaults)

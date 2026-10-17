@@ -98,7 +98,8 @@ class DigestRun:
             raise AnalysisError(f"AI digest: {error}") from None
         return f"NEWS_CARDS:{self.raw_path}"
 
-    def finalize_with_repair(self, repair):
+    def finalize_with_repair(self, repair, *, allow_research=True):
+        # Shared scheduler contract; AI digest corrections never collect new sources.
         try:
             return self.finalize()
         except AnalysisError as error:

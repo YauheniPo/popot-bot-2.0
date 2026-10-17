@@ -150,6 +150,27 @@ class FileMutationStopGateTests(unittest.TestCase):
 
 
 class ApplyHermesPatchesTests(unittest.TestCase):
+    def test_cron_activity_uses_the_shared_fire_claim_instead_of_process_local_state(self):
+        patch = next(p for p in apply_hermes_patches._PATCHES
+                     if p[1] == "# Local Hermes: shared cron activity")
+        source = 'def annotate(job, profile, home, heartbeat_age=None):\n' + patch[2] + '\n    }\n'
+        namespace = {}
+        exec(source.replace(patch[2], patch[3], 1), namespace)
+        claim_check = mock.Mock(return_value=True)
+        native = SimpleNamespace(_claim_is_live=claim_check, FIRE_CLAIM_TTL_SECONDS=123)
+        with mock.patch.dict(sys.modules, {"cron.jobs": native}):
+            result = namespace["annotate"]({"id": "same-id", "fire_claim": {"by": "cli"}},
+                                           "default", Path("/home/default"))
+            self.assertTrue(result["is_running"])
+            self.assertEqual(result["profile"], "default")
+            self.assertEqual(claim_check.call_args.args[0], {"by": "cli"})
+            self.assertIsNotNone(claim_check.call_args.args[1].tzinfo)
+            self.assertEqual(claim_check.call_args.args[2], 123)
+            claim_check.return_value = False
+            other = namespace["annotate"]({"id": "same-id"}, "other", Path("/home/other"))
+            self.assertFalse(other["is_running"])
+            self.assertIsNone(claim_check.call_args.args[0])
+
     def test_backup_only_patch_selection_contains_only_the_mandatory_backup(self):
         patches = [
             ("gateway/run.py", "gateway", "old", "new"),
@@ -160,6 +181,8 @@ class ApplyHermesPatchesTests(unittest.TestCase):
         self.assertEqual([patch[0] for patch in selected], [apply_hermes_patches._BACKUP_PATH])
 
     def test_digest_cards_are_confirmed_before_summary_and_failure_stops_summary(self):
+        from hermes.skills.ai_digest.scripts import feedback
+
         patch = next(p for p in apply_hermes_patches._PATCHES
                      if p[1] == "# Local Hermes: digest card delivery")
         for failure in (False, True):
@@ -172,7 +195,9 @@ class ApplyHermesPatchesTests(unittest.TestCase):
                         raise RuntimeError("failed")
 
                 ns = {"digest_target_ok": True,
-                      "digest_feedback": SimpleNamespace(deliver_cards_to_telegram=send_cards),
+                      "digest_feedback": SimpleNamespace(
+                          deliver_cards_to_telegram=send_cards,
+                          delivery_error_detail=feedback.delivery_error_detail),
                       "digest_cards_path": Path("raw.json"), "state_dir": Path("."),
                       "job": {"origin": {"user_id": "owner"}},
                       "targets": [{"platform": "telegram"}],
@@ -188,6 +213,40 @@ class ApplyHermesPatchesTests(unittest.TestCase):
                 self.assertEqual(events, ["cards"] if failure else ["cards", "summary"])
                 self.assertEqual(bool(ns["delivery_errors"]), failure)
                 ns["_deliver_standalone"].assert_not_called()
+
+    def test_digest_card_failure_retains_safe_reason_in_cron_delivery_status(self):
+        from hermes.skills.ai_digest.scripts import feedback
+        from urllib.error import HTTPError
+
+        patch = next(p for p in apply_hermes_patches._PATCHES
+                     if p[1] == "# Local Hermes: digest card delivery")
+        body = io.BytesIO(b'{"ok":false,"description":"Bad Request: message thread not found"}')
+        error = HTTPError("https://api.telegram.org/botsecret/sendMessage", 400,
+                          "Bad Request", {}, body)
+        with mock.patch.object(feedback, "urlopen", side_effect=error):
+            try:
+                feedback.telegram_send("secret", "sendMessage", {"chat_id": 1})
+            except RuntimeError as caught:
+                failure = caught
+        namespace = {"digest_target_ok": True, "digest_feedback": feedback,
+                     "digest_cards_path": Path("raw.json"), "state_dir": Path("."),
+                     "job": {"origin": {"user_id": "owner"}},
+                     "targets": [{"platform": "telegram"}],
+                     "t": SimpleNamespace(where="telegram", live_adapter_ready=True),
+                     "cleaned_delivery_content": "summary", "media_files": [],
+                     "delivery_errors": [], "unverified_targets": [],
+                     "_deliver_standalone": mock.Mock(),
+                     "_deliver_via_live_adapter": mock.Mock()}
+        with mock.patch.object(feedback, "deliver_cards_to_telegram", side_effect=failure), \
+                mock.patch.dict(sys.modules, {"gateway.platforms._shared": SimpleNamespace(
+                    get_scoped_secret=lambda name: "secret")}):
+            exec("for target in targets:\n" + patch[3], namespace)
+        detail = namespace["delivery_errors"][0]
+        self.assertIn("HTTP 400", detail)
+        self.assertIn("message thread not found", detail)
+        self.assertNotIn("secret", detail)
+        namespace["_deliver_via_live_adapter"].assert_not_called()
+        namespace["_deliver_standalone"].assert_not_called()
 
     def test_digest_summary_without_artifacts_cannot_reach_transport(self):
         patch = next(p for p in apply_hermes_patches._PATCHES

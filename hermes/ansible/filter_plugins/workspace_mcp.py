@@ -1,6 +1,15 @@
 """Narrow, opt-in repair of the pinned Workspace's two broken MCP presets."""
-from copy import deepcopy
 from pathlib import PurePosixPath
+
+
+def _copy_config(value):
+    # Ansible 2.21 supplies lazy containers whose deepcopy also clones the
+    # templar/plugin loaders. Materialize YAML containers, retaining scalar tags.
+    if isinstance(value, dict):
+        return {key: _copy_config(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_copy_config(item) for item in value]
+    return value
 
 
 def _stdio_launcher(server):
@@ -39,7 +48,7 @@ def stdio_runtime(config, hermes_home):
     home = PurePosixPath(hermes_home)
     if not home.is_absolute() or home == PurePosixPath('/') or '..' in home.parts:
         raise ValueError('Hermes home must be an absolute non-root path without traversal')
-    result = deepcopy(config)
+    result = _copy_config(config)
     servers = result.get('mcp_servers', {})
     if not isinstance(servers, dict):
         raise ValueError('mcp_servers must be a mapping')
@@ -76,7 +85,7 @@ def _repair_preset(server, name, vault):
 
 
 def repair(config, vault):
-    result = deepcopy(config)
+    result = _copy_config(config)
     servers = result.get('mcp_servers', {})
     if not isinstance(servers, dict):
         raise ValueError('mcp_servers must be a mapping')

@@ -329,6 +329,57 @@ Other planning.
                 telegram_send(token, "sendMessage", {"chat_id": 1, "text": "hello"})
         self.assertNotIn(token, str(caught.exception))
 
+    def test_delivery_error_detail_keeps_safe_api_reason_and_hides_unknown_errors(self):
+        import feedback
+
+        token = "123456:private"
+        for description, expected in (
+            ("Bad Request: message thread not found", "message thread not found"),
+            ("Forbidden: bot was blocked by the user", "bot was blocked by the user"),
+            (f"Bad Request: private response {token}", None),
+        ):
+            with self.subTest(description=description):
+                body = io.BytesIO(json.dumps({"ok": False, "description": description}).encode())
+                error = HTTPError(f"https://api.telegram.org/bot{token}/sendMessage", 400,
+                                  "Bad Request", {}, body)
+                with patch("feedback.urlopen", side_effect=error):
+                    with self.assertRaises(RuntimeError) as caught:
+                        telegram_send(token, "sendMessage", {"chat_id": 1})
+                detail = feedback.delivery_error_detail(caught.exception)
+                self.assertIn("HTTP 400", detail)
+                if expected:
+                    self.assertIn(expected, detail)
+                self.assertNotIn(token, detail)
+                self.assertNotIn("private response", detail)
+        self.assertEqual(feedback.delivery_error_detail(RuntimeError(token)), "RuntimeError")
+        self.assertEqual(feedback.delivery_error_detail(ValueError(token)), "ValueError")
+
+    def test_telegram_invalid_error_body_still_reports_safe_http_status(self):
+        import feedback
+
+        for body in (b"not json: secret", b"[]", b'{"description":123}', b"x" * 10000):
+            with self.subTest(body=body[:30]):
+                error = HTTPError("https://api.telegram.org/botsecret/sendMessage", 502,
+                                  "secret", {}, io.BytesIO(body))
+                with patch("feedback.urlopen", side_effect=error):
+                    with self.assertRaises(RuntimeError) as caught:
+                        telegram_send("secret", "sendMessage", {"chat_id": 1})
+                detail = feedback.delivery_error_detail(caught.exception)
+                self.assertIn("HTTP 502", detail)
+                self.assertNotIn("secret", detail)
+
+    def test_telegram_json_error_retains_known_reason_without_raw_response(self):
+        import feedback
+
+        response = {"ok": False, "description": "Bad Request: chat not found",
+                    "error_code": 400, "private": "secret"}
+        with patch("feedback.urlopen", return_value=io.BytesIO(json.dumps(response).encode())):
+            with self.assertRaises(RuntimeError) as caught:
+                telegram_send("secret", "sendMessage", {"chat_id": 1})
+        detail = feedback.delivery_error_detail(caught.exception)
+        self.assertIn("chat not found", detail)
+        self.assertNotIn("secret", detail)
+
     def test_marker_rejects_multiple_and_external_paths_but_keeps_private_delivery(self):
         raw = self.state / f"raw-{self.RUN_ID}.json"
         raw.write_text(json.dumps({"run_id": self.RUN_ID, "items": [self.item]}))

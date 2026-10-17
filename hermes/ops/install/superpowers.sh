@@ -22,19 +22,25 @@ install_superpowers_plugin() {
     # register() resolves. The full repo cannot go through `hermes plugins
     # install` because its documentation mentions CLAUDE.md/AGENTS.md, which
     # the security scanner flags as critical persistence false positives.
-    install -o "${HERMES_USER}" -g "${HERMES_GROUP}" -m 0600 \
-        "${tmp}/repo/.hermes-plugin/plugin.yaml" \
-        "${tmp}/repo/.hermes-plugin/__init__.py" \
-        "${HERMES_HOME}/plugins/superpowers/"
-    local skills_stage
-    skills_stage="$(mktemp -d "${HERMES_HOME}/plugins/superpowers/.skills-stage.XXXXXX")"
-    cp -r "${tmp}/repo/skills" "${skills_stage}/skills"
-    rm -rf -- "${HERMES_HOME}/plugins/superpowers/skills"
-    mv "${skills_stage}/skills" "${HERMES_HOME}/plugins/superpowers/skills"
+    local manifest gateway_service
+    gateway_service="$(managed_services gateway)"
+    for manifest in plugin.yaml __init__.py; do
+        install_managed_file "${tmp}/repo/.hermes-plugin/${manifest}" \
+            "${HERMES_HOME}/plugins/superpowers/${manifest}" 0600 \
+            "${HERMES_USER}" "${HERMES_GROUP}" "$gateway_service"
+    done
+    if ! diff -qr "${tmp}/repo/skills" "${HERMES_HOME}/plugins/superpowers/skills" >/dev/null 2>&1; then
+        mark_ops_change "$gateway_service"
+        local skills_stage
+        skills_stage="$(mktemp -d "${HERMES_HOME}/plugins/superpowers/.skills-stage.XXXXXX")"
+        cp -r "${tmp}/repo/skills" "${skills_stage}/skills"
+        rm -rf -- "${HERMES_HOME}/plugins/superpowers/skills"
+        mv "${skills_stage}/skills" "${HERMES_HOME}/plugins/superpowers/skills"
+        rm -rf -- "${skills_stage}"
+    fi
     chown -R "${HERMES_USER}:${HERMES_GROUP}" \
         "${HERMES_HOME}/plugins/superpowers/skills"
     chmod -R go-rwx "${HERMES_HOME}/plugins/superpowers/skills"
-    rm -rf -- "${skills_stage}"
     rm -rf -- "${tmp}"
 
     if [[ -x "${HERMES_BIN}" ]]; then
