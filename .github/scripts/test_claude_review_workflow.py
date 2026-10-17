@@ -1,6 +1,7 @@
 """Whole-diff Claude workflow, publication and tooling trust contracts."""
 import os
 from pathlib import Path
+import re
 import subprocess
 import unittest
 
@@ -78,6 +79,37 @@ class WorkflowTests(unittest.TestCase):
                 condition = step['if']
                 self.assertIn(f"steps.{prepare_id}.outputs.reason == 'diff_not_fully_read'", condition)
                 self.assertNotIn(f"steps.{action_id}.outcome == 'success'", condition)
+
+    def test_saved_execution_is_validated_after_action_failure_but_not_cancellation(self):
+        steps = {step.get('id'): step for step in self.jobs['claude-code-plugin-review']['steps']}
+        for route in ('primary', 'primary_retry', 'primary_finalize',
+                      'fallback', 'fallback_retry', 'fallback_finalize'):
+            action = 'claude_review_' + route
+            condition = steps['extract_' + action]['if']
+            for outcome, execution, cancelled, expected in (
+                ('success', '/tmp/execution.json', False, True),
+                ('failure', '/tmp/execution.json', False, True),
+                ('skipped', '/tmp/execution.json', False, False),
+                ('cancelled', '/tmp/execution.json', False, False),
+                ('failure', '/tmp/execution.json', True, False),
+                ('failure', '', False, False),
+            ):
+                values = {f'steps.{action}.outcome': outcome,
+                          f'steps.{action}.outputs.execution_file': execution}
+                terms = []
+                for term in condition.split('&&'):
+                    term = term.strip()
+                    if term == 'always()':
+                        terms.append(True)
+                    elif term == '!cancelled()':
+                        terms.append(not cancelled)
+                    else:
+                        match = re.fullmatch(r"(steps\.[\w.]+)\s*(==|!=)\s*'([^']*)'", term)
+                        self.assertIsNotNone(match, term)
+                        key, operator, literal = match.groups()
+                        terms.append((values[key] == literal) == (operator == '=='))
+                with self.subTest(route=route, outcome=outcome, execution=execution, cancelled=cancelled):
+                    self.assertEqual(all(terms), expected)
 
     def test_owner_tooling_rule_resolves_all_untrusted_cases_to_main(self):
         owner = 'owner'

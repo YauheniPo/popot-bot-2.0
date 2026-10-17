@@ -24,6 +24,83 @@ SPEC.loader.exec_module(apply_config)
 
 
 class ApplyConfigTests(unittest.TestCase):
+    def test_verification_skill_is_seeded_without_replacing_user_autoload(self):
+        settings = apply_config.load_settings(
+            MODULE_PATH.parent.parent / 'config' / 'vps-defaults.yml')
+        variables = {'HERMES_WORKSPACE': '/srv/workspace'}
+        operations = apply_config.build_operations(settings, {}, variables, set())
+        autoload = [op for op in operations if op.key == 'skills.auto_load']
+        self.assertEqual(len(autoload), 1)
+        self.assertIn('task_verification', autoload[0].value)
+        # A second deploy is a no-op for this setting; explicit choices,
+        # including disabling auto-load, remain owned by the user.
+        for names in (autoload[0].value, ['custom-workflow'], []):
+            with self.subTest(names=names):
+                current = {'skills': {'auto_load': names}}
+                repeated = apply_config.build_operations(settings, current, variables, set())
+                self.assertNotIn('skills.auto_load', [op.key for op in repeated])
+                self.assertEqual(current['skills']['auto_load'], names)
+
+    def test_managed_route_removes_stale_endpoint_even_after_provider_already_changed(self):
+        settings = {'vps_hermes': {'config': {'managed_overlay': {
+            'model': {'provider': 'fixture-cloud', 'default': 'fixture-model'}}}}}
+        for previous in ('old-provider', 'fixture-cloud'):
+            current = {'model': {'provider': previous, 'default': 'fixture-model',
+                                'base_url': 'https://previous.invalid/v1', 'api_mode': 'responses',
+                                'max_tokens': 123},
+                       'delegation': {'base_url': 'https://previous.invalid/v1'}}
+            with self.subTest(previous=previous):
+                operations = apply_config.build_operations(settings, current, {}, set())
+                for key in ('model.base_url', 'model.api_mode', 'delegation.base_url'):
+                    self.assertIn(apply_config.Operation('unset', key), operations)
+                self.assertNotIn('model.max_tokens', [op.key for op in operations])
+                values = apply_config.managed_model_values(settings)
+                self.assertTrue(apply_config._profile_config_updates(current, values))
+                self.assertNotIn('base_url', current['model'])
+                self.assertNotIn('api_mode', current['model'])
+                self.assertNotIn('base_url', current['delegation'])
+                self.assertEqual(current['model']['max_tokens'], 123)
+                self.assertEqual(apply_config.build_operations(settings, current, {}, set()), [])
+                self.assertFalse(apply_config._profile_config_updates(current, values))
+
+    def test_managed_route_uses_explicit_endpoint_and_preserves_unmanaged_routes(self):
+        current = {'model': {'base_url': 'https://private.invalid/v1'}}
+        self.assertEqual(apply_config.build_operations({}, current, {}, set()), [])
+        route = {'provider': 'fixture-cloud', 'default': 'fixture-model',
+                 'base_url': 'https://proxy.invalid/v1', 'api_mode': 'chat_completions'}
+        settings = {'vps_hermes': {'config': {'managed_overlay': {'model': route}}}}
+        operations = apply_config.build_operations(settings, current, {}, set())
+        self.assertIn(apply_config.Operation('set', 'model.base_url', route['base_url']), operations)
+        self.assertIn(apply_config.Operation('set', 'delegation.base_url', route['base_url']), operations)
+        self.assertIn(apply_config.Operation('set', 'model.api_mode', 'chat_completions'), operations)
+
+    def test_managed_route_accounts_for_native_provider_switch_side_effects(self):
+        route = {'provider': 'new', 'default': 'fixture'}
+        settings = {'vps_hermes': {'config': {'managed_overlay': {'model': route}}}}
+        current = {'model': {'provider': 'old', 'default': 'fixture',
+                             'base_url': 'https://endpoint.invalid/v1', 'api_mode': 'responses'}}
+        operations = apply_config.build_operations(settings, current, {}, set())
+        switch = apply_config.Operation('set', 'model.provider', 'new')
+        for key in ('model.base_url', 'model.api_mode'):
+            self.assertLess(operations.index(apply_config.Operation('unset', key)), operations.index(switch))
+        # Native config set model.provider can remove both overrides. Reapply
+        # explicit managed values even if they matched the pre-switch config.
+        route.update(base_url=current['model']['base_url'], api_mode='responses')
+        operations = apply_config.build_operations(settings, current, {}, set())
+        for field in ('base_url', 'api_mode'):
+            setting = apply_config.Operation('set', f'model.{field}', route[field])
+            self.assertIn(setting, operations)
+            self.assertGreater(operations.index(setting), operations.index(switch))
+
+    def test_managed_route_rejects_invalid_endpoint_overrides(self):
+        for field in ('base_url', 'api_mode'):
+            for value in ('', '  ', 42, [], {}):
+                with self.subTest(field=field, value=value):
+                    settings = {'vps_hermes': {'config': {'managed_overlay': {'model': {
+                        'provider': 'fixture', 'default': 'fixture', field: value}}}}}
+                    with self.assertRaisesRegex(ValueError, field):
+                        apply_config.build_operations(settings, {}, {}, set())
+
     def test_deploy_syncs_existing_cron_pins_and_profiles_idempotently(self):
         settings = {'vps_hermes': {'config': {'manage_cron_job_models': True,
             'managed_overlay': {'model': {'provider': 'fixture-cloud', 'default': 'fixture-model'}}}}}
@@ -907,6 +984,7 @@ class ApplyConfigTests(unittest.TestCase):
         identity['workspace'] = '/srv/agent/projects'
         template = (hermes_dir / 'ops/systemd/hermes-dashboard.service').read_text()
         rendered = apply_config.render_asset(template, self._asset_values(settings))
+        self.assertIn('Environment=NPM_CONFIG_CACHE=/srv/agent/state/cache/npm', rendered.splitlines())
         writable = [line.partition('=')[2] for line in rendered.splitlines()
                     if line.startswith('ReadWritePaths=')]
         self.assertEqual(writable, [f"{identity['hermes_home']} {identity['workspace']}"])
@@ -1295,6 +1373,16 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         run_operation.assert_called_once()
         self.assertNotIn("warning:", errors.getvalue())
+
+    def test_review_metrics_sync_job_rejects_a_non_string_job_id(self) -> None:
+        # A configured job id that is not a string is a settings error, never a
+        # silent skip of the metrics job migration.
+        for job_id in (123, True, ["a"], None):
+            with self.subTest(job_id=job_id):
+                with self.assertRaisesRegex(ValueError, "review_metrics_sync_job_id must be a string"):
+                    apply_config.sync_review_metrics_job(
+                        Path("/unused"), {"vps_ops": {"review_metrics_sync_job_id": job_id}}
+                    )
 
     def test_managed_model_values_reject_incomplete_routes(self) -> None:
         for model in (

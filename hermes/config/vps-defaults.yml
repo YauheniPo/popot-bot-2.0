@@ -79,7 +79,7 @@ vps_hermes:
         deadline_seconds: 1800
       model:
         # Single source: deploy also applies this route to existing profiles.
-        default: mistral-large-4
+        default: deepseek-v4.1-flash
         provider: ollama-cloud
       # Deploy applies this ordered list to active fallback_providers on every run.
       # /fallback edits last until the next deploy. Credentials stay in Vault.
@@ -110,17 +110,16 @@ vps_hermes:
         # Repeated providers are allowed; each provider/model pair must be unique.
         # Base catalogs checked 2026-09-29; OpenRouter Super probed 2026-10-04.
         # Selection rationale and limits: hermes/README.md.
-        # Alternate providers first. Billing/upstream quota skips the affected
+        # Prefer routes with recent successful VPS calls (2026-10-14).
+        # Billing/upstream quota skips the affected
         # provider; a model-level 429 can try another free model on that provider.
         default_routes:
-          - provider: openrouter
-            model: google/gemma-4-31b-it:free
-          - provider: nous
-            model: stepfun/step-3.7-flash:free
           - provider: openrouter
             model: nvidia/nemotron-3-super-120b-a12b:free
           - provider: nvidia
             model: nvidia/nemotron-3-super-120b-a12b
+          - provider: nous
+            model: stepfun/step-3.7-flash:free
         # Chat may only choose these existing integrations. No automatic keys,
         # endpoints or paid OpenRouter routes are added by the command.
         allowed_providers: [nvidia, openrouter, nous]
@@ -145,6 +144,12 @@ vps_hermes:
         # Last permanent /model pick applies to all agent cron jobs and profiles.
         # The shared route is derived from model above at deploy, never duplicated.
         follow_chat_model: true
+        # Per-company research allocation, including failed reads/retries.
+        # The research plan reserves evidence pages until every company gets a pass.
+        competitor_research:
+          pages_per_company: 6
+          evidence_pages_per_company: 2
+          searches_per_company: 2
       # Let Hermes select only providers whose credentials/capabilities are
       # available. Managed Vault keys still enable Brave and Firecrawl through
       # the capability overlay without breaking manual .env or Nous fallback.
@@ -301,6 +306,10 @@ vps_network:
     default_outgoing: allow
 
 vps_runtime:
+  set_if_missing:
+    # Native prompt loading: available on deploy, without waiting for the model
+    # to discover the verification skill. Preserve explicit user auto-load lists.
+    skills.auto_load: [task_verification]
   set:
     terminal.cwd: "${HERMES_WORKSPACE}"
     # Restarts and other dangerous terminal commands remain available to the
@@ -311,7 +320,7 @@ vps_runtime:
     # host-wide worker count. Instructions prohibit overlapping batches.
     delegation.max_concurrent_children: 2
     delegation.max_spawn_depth: 1
-    delegation.max_iterations: 50
+    delegation.max_iterations: 150
     delegation.child_timeout_seconds: 900
     delegation.subagent_auto_approve: false
     checkpoints.enabled: true
@@ -321,7 +330,7 @@ vps_runtime:
     # Force verification closure on Telegram too; auto disables it on messaging surfaces.
     agent.verify_on_stop: true
     # Also bounds rebuilt-message restarts while walking the fallback chain.
-    agent.api_max_retries: 6
+    agent.api_max_retries: 3
     browser.backend: "off"
     tool_loop_guardrails.hard_stop_enabled: true
     # Validation/tool-contract failures may need a few corrected attempts after
@@ -332,7 +341,7 @@ vps_runtime:
     tool_loop_guardrails.hard_stop_after.exact_failure: 4
     tool_loop_guardrails.hard_stop_after.same_tool_failure: 6
     tool_loop_guardrails.hard_stop_after.idempotent_no_progress: 6
-    tool_loop_guardrails.loop_caps.max_web_searches: 20
+    tool_loop_guardrails.loop_caps.max_web_searches: 40
     tool_loop_guardrails.loop_caps.max_subagents: 10
     # Tool progress: off = no tool messages; new = tool changes only;
     # all = every call; verbose = full details; log = audit file only.
@@ -430,6 +439,9 @@ vps_integrations:
 vps_ops:
   alert_target: telegram
   service_restart_sec: 5s
+  # Migrate this existing root-profile cron job to the managed script runner.
+  # Empty disables migration; absent jobs are never created automatically.
+  review_metrics_sync_job_id: "3ab617ef1e65"
   # Default parameters for the CLI retry helper. The script reads these
   # values from the root-owned /etc/hermes-ops.conf rendered at deployment.
   api_retry:

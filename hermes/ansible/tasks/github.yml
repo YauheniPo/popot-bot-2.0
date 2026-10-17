@@ -259,10 +259,33 @@
         repositories, pull requests, review threads, issues, Actions, releases,
         and API queries. Do not install or use a duplicate GitHub MCP while
         `gh` works.
-      - At the start of an authenticated GitHub task, run `gh auth status`,
-        resolve the exact `owner/repository`, and inspect it with
-        `gh repo view`. The managed `gh` wrapper supplies authentication; never
-        read `.env`, credential files, or token values yourself.
+      - Use the managed wrapper `{{ hermes_user_home }}/.local/bin/gh` in the
+        current Hermes user/profile context; check `command -v gh` before
+        assuming a bare `gh` uses it. Run `gh auth status` without `--show-token`,
+        then `gh api user --jq .login` and `gh repo view OWNER/REPOSITORY` for
+        the requested target through that wrapper. An auth-status error for
+        another account/host does not replace the target operation's result.
+      - The wrapper tries process credentials first, then the active Hermes
+        home's `.env`; in each source the order is `GH_TOKEN`, `GITHUB_TOKEN`,
+        `GITHUB_PERSONAL_ACCESS_TOKEN`. Empty shell variables or absent keys in
+        a service's startup environment do not prove access is unavailable.
+        Do not print `.env`, tokens or full environments, or source `.env` as
+        shell code. Use the wrapper, not a second credential store. A stale
+        process credential can override a rotated file credential; diagnose
+        that in a single child process before requesting another Vault change.
+      - Check the exact operation, with bounded timeouts: reading the repository
+        does not establish Actions or write access. For requested CI diagnosis,
+        use `gh api 'repos/OWNER/REPOSITORY/actions/runs?per_page=1'` through the
+        wrapper. Actions logs require `Actions: read`; authorized reruns require
+        `Actions: write`, not permission to edit repository secrets. Do not
+        perform a write merely to test permissions. The API response header
+        `X-Accepted-GitHub-Permissions` describes required permissions, not the
+        permissions held by this token. Request only a proven missing capability.
+      - A VPS PAT in Vault is separate from GitHub Actions' automatically issued
+        `GITHUB_TOKEN` (`secrets.GITHUB_TOKEN` / `github.token`) and `SONAR_TOKEN`.
+        Do not ask the owner to create the automatic token manually. Inspect
+        the failed workflow step and its actual credential usage first: error
+        text from a passing negative test is not an authentication failure.
       - Keep clones under the repository workspace as `OWNER/REPOSITORY`.
         Reuse an existing clean clone; preserve dirty worktrees and user
         changes. Fetch before comparing remote branches or reviewing a PR. If

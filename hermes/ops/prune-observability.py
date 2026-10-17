@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-TABLES = ("api_calls", "tool_calls", "sessions", "approvals", "commands", "route_fallbacks")
+TABLES = ("api_calls", "tool_calls", "skill_events", "sessions", "approvals", "commands", "route_fallbacks")
 ROW_COUNT_SQL = "COUNT(*)"
 
 # Pre-aggregated counters that survive row deletion. Prometheus counters are
@@ -30,12 +30,21 @@ ROLLUPS: dict[str, dict[str, dict[str, str]]] = {
             "output_tokens": "COALESCE(SUM(output_tokens),0)",
             "cache_read_tokens": "COALESCE(SUM(cache_read_tokens),0)",
             "total_tokens": "COALESCE(SUM(total_tokens),0)", "cost_usd": "COALESCE(SUM(cost_usd),0)",
-            "duration_ms": "COALESCE(SUM(duration_ms),0)", "retry_count": "COALESCE(SUM(retry_count),0)",
+            "duration_ms": "COALESCE(SUM(duration_ms),0)",
+            "retry_count": "COALESCE(SUM(CASE WHEN retry_count > 0 THEN 1 ELSE 0 END),0)",
         },
     },
     "tool_calls": {
         "keys": {"tool_name": "COALESCE(tool_name,'')", "status": "COALESCE(status,'')"},
         "sums": {"weight": ROW_COUNT_SQL, "duration_ms": "COALESCE(SUM(duration_ms),0)"},
+    },
+    "skill_events": {
+        "keys": {
+            "skill_name": "COALESCE(skill_name,'')", "action": "COALESCE(action,'')",
+            "agent_type": "COALESCE(agent_type,'')", "provenance": "COALESCE(provenance,'')",
+        },
+        "sums": {"weight": ROW_COUNT_SQL},
+        "maxima": {"last_seen": "MAX(COALESCE(CAST(strftime('%s',ts) AS REAL),0))"},
     },
     "sessions": {
         "keys": {
@@ -63,16 +72,21 @@ def rollup_table(table: str) -> str:
 def rollup_create_sql(table: str) -> str:
     spec = ROLLUPS[table]
     keys = ", ".join(spec["keys"])
-    columns = ", ".join([*spec["keys"], *(f"{name} REAL NOT NULL DEFAULT 0" for name in spec["sums"])])
+    aggregates = [*spec["sums"], *spec.get("maxima", {})]
+    columns = ", ".join([*spec["keys"], *(f"{name} REAL NOT NULL DEFAULT 0" for name in aggregates)])
     return f"CREATE TABLE IF NOT EXISTS {rollup_table(table)} ({columns}, UNIQUE({keys}))"
 
 
 def rollup_upsert_sql(table: str) -> str:
     spec = ROLLUPS[table]
-    selected = ", ".join(f"{sql} AS {name}" for name, sql in [*spec["keys"].items(), *spec["sums"].items()])
-    columns = ", ".join([*spec["keys"], *spec["sums"]])
+    maxima = spec.get("maxima", {})
+    selected = ", ".join(f"{sql} AS {name}" for name, sql in [*spec["keys"].items(), *spec["sums"].items(), *maxima.items()])
+    columns = ", ".join([*spec["keys"], *spec["sums"], *maxima])
     keys = ", ".join(spec["keys"])
-    updates = ", ".join(f"{name}={name}+excluded.{name}" for name in spec["sums"])
+    updates = ", ".join([
+        *(f"{name}={name}+excluded.{name}" for name in spec["sums"]),
+        *(f"{name}=MAX({name},excluded.{name})" for name in maxima),
+    ])
     return (
         f"INSERT INTO {rollup_table(table)} ({columns}) SELECT {selected} FROM {table} "
         f"WHERE ts < ? GROUP BY {keys} ON CONFLICT({keys}) DO UPDATE SET {updates}"

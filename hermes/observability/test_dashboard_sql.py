@@ -76,6 +76,13 @@ class DashboardSqlTests(unittest.TestCase):
                 (at(1), "s1", "", "terminal", "ok", 10), (at(3), "s3", "", "browser", "error", 5), (at(4), "s9", "", "browser", "ok", 1)])
             connection.execute("INSERT INTO route_fallbacks VALUES (?,?,?,?,?)",
                                (at(80), "provider-a", "model-a", "provider-b", "model-n"))
+            connection.executemany("INSERT INTO skill_events VALUES (?,?,?,?,?,?,?)", [
+                (at(1), "demo", "loaded", "main", "local", "main-session", "task"),
+                (at(2), "demo", "loaded", "main", "local", "main-session", "task"),
+                (at(3), "demo", "loaded", "subagent", "local", "child-session", "task"),
+                (at(4), "demo", "patched", "self_improvement", "local", "main-session", "task"),
+                (at(-7200), "old-skill", "edited", "main", "local", "main-session", "task"),
+            ])
             connection.execute("""CREATE TABLE IF NOT EXISTS review_runs (
                 source_id TEXT PRIMARY KEY, pr_number INTEGER NOT NULL,
                 reviewer TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
@@ -133,8 +140,18 @@ class DashboardSqlTests(unittest.TestCase):
         self.assertAlmostEqual(route["Truncated"], 1 / 3)
         self.assertAlmostEqual(route["Empty responses"], 1 / 3)
         self.assertAlmostEqual(route["Cost per success"], 0.25)
-        self.assertEqual((route["Successes"], route["Errors"], route["Rate limits"], route["Retries"]), (3, 2, 1, 3))
+        self.assertEqual((route["Successes"], route["Errors"], route["Rate limits"], route["Retries"]), (3, 2, 1, 2))
         self.assertEqual(rows[0][:2], ("provider-a", "model-b"), "sorted by availability")
+
+    def test_skill_panels_separate_loads_from_confirmed_changes(self):
+        targets = dict(sqlite_targets())
+        _, usage = self.run_query(targets["Skill usage — selected range"])
+        self.assertEqual(usage, [
+            ("demo", "main", "local", 2, at(2)),
+            ("demo", "subagent", "local", 1, at(3)),
+        ])
+        _, changes = self.run_query(targets["Skill changes — selected range"])
+        self.assertEqual(changes, [(at(4), "demo", "patched", "self_improvement", "local")])
 
     def test_review_panels_do_not_treat_unmeasured_claude_time_as_zero(self) -> None:
         targets = dict(sqlite_targets())

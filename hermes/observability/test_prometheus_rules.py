@@ -24,6 +24,14 @@ def exported_metric_names() -> set[str]:
 
 
 class PrometheusRulesTests(unittest.TestCase):
+    def test_cron_panels_show_current_delivery_and_keep_missing_data_unknown(self):
+        panels = {panel['title']: panel for panel in json.loads(DASHBOARD.read_text())['panels']}
+        for name in ('Cron execution failures', 'Cron delivery problems', 'Cron state collection'):
+            target = panels[name]['targets'][0]
+            self.assertTrue(target['instant'])
+            self.assertNotIn('or vector(0)', target['expr'])
+        self.assertIn('hermes_cron_delivery_unverified', panels['Cron delivery problems']['targets'][0]['expr'])
+
     def setUp(self) -> None:
         self.groups = yaml.safe_load(RULES.read_text(encoding="utf-8"))["groups"]
         self.rules = [rule for group in self.groups for rule in group["rules"]]

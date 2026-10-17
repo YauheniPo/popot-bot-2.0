@@ -112,6 +112,58 @@ def samples(text: str) -> dict[str, float]:
 
 
 class ExportMetricsTests(unittest.TestCase):
+    def test_cron_metrics_separate_delivery_failure_from_generation_and_do_not_expose_payload(self):
+        path = self.root / 'cron/jobs.json'
+        path.parent.mkdir()
+        path.write_text(json.dumps({'jobs': [
+            {'id': 'digest', 'last_status': 'delivery_failed', 'failure_streak': 0,
+             'last_delivery_error': 'private diagnostic', 'prompt': 'private prompt',
+             'origin': {'chat_id': 'private-chat'}, 'last_run_at': at(0)},
+            {'id': 'research', 'last_status': 'error'},
+            {'id': 'queued', 'last_status': 'ok', 'last_delivery_unverified': ['telegram']},
+            {'id': 'healthy', 'last_status': 'ok'},
+        ]}))
+        text = '\n'.join(metrics.cron_metrics(self.root))
+        values = samples(text)
+        self.assertEqual(values['hermes_cron_delivery_failed{job_id="digest"}'], 1)
+        self.assertEqual(values['hermes_cron_execution_failed{job_id="digest"}'], 0)
+        self.assertEqual(values['hermes_cron_execution_failed{job_id="research"}'], 1)
+        self.assertEqual(values['hermes_cron_delivery_unverified{job_id="queued"}'], 1)
+        self.assertEqual(values['hermes_cron_delivery_failed{job_id="healthy"}'], 0)
+        self.assertNotIn('private', text)
+        path.write_text('{broken')
+        self.assertEqual(samples('\n'.join(metrics.cron_metrics(self.root)))['hermes_cron_collection_success'], 0)
+
+    def test_retries_count_attempts_not_their_ordinals_and_survive_prune(self):
+        load_plugin()._db().close()
+        database = self.root / 'ops/metrics.db'
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.executemany(
+                'INSERT INTO api_calls (ts,provider,model,status,retry_count) VALUES (?,?,?,?,?)',
+                [('2020-01-01T00:00:00+00:00', 'fixture', 'model', 'error', ordinal)
+                 for ordinal in range(6)])
+        expected = 'hermes_api_retries_total{model="model",provider="fixture"}'
+        self.assertEqual(samples('\n'.join(metrics.api_metrics(database)))[expected], 5)
+        prune.prune_database(database, 1)
+        self.assertEqual(samples('\n'.join(metrics.api_metrics(database)))[expected], 5)
+
+    def test_cron_collection_distinguishes_missing_invalid_and_empty_state(self):
+        path = self.root / 'cron/jobs.json'
+        path.parent.mkdir()
+        self.assertEqual(samples('\n'.join(metrics.cron_metrics(self.root)))['hermes_cron_collection_success'], 0)
+        for payload in ({}, {'jobs': [None]}, 'not a job list', 'x' * (4 * 1024 * 1024)):
+            with self.subTest(kind=type(payload).__name__):
+                path.write_text(json.dumps(payload))
+                self.assertEqual(samples('\n'.join(metrics.cron_metrics(self.root)))['hermes_cron_collection_success'], 0)
+        path.write_text(json.dumps([{'id': 'invalid/id'}, {'id': 1},
+                                    {'id': 'valid', 'last_run_at': 42}]))
+        values = samples('\n'.join(metrics.cron_metrics(self.root)))
+        self.assertEqual(values['hermes_cron_collection_success'], 1)
+        self.assertEqual(values['hermes_cron_last_run_timestamp_seconds{job_id="valid"}'], 0)
+        self.assertFalse(any('invalid' in key for key in values))
+        path.write_text('[]')
+        self.assertEqual(samples('\n'.join(metrics.cron_metrics(self.root))), {'hermes_cron_collection_success': 1})
+
     def setUp(self) -> None:
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         self.backups = self.root / "backups"
@@ -144,6 +196,36 @@ class ExportMetricsTests(unittest.TestCase):
         database.parent.mkdir()
         sqlite3.connect(database).close()
         self.assertEqual(metrics.api_metrics(database), [])
+
+    def test_skill_metrics_are_optional_for_legacy_databases(self):
+        self.assertEqual(metrics.skill_metrics(self.root / "missing.db"), [])
+
+    def test_skill_counters_and_last_event_survive_retention_and_repeated_prune(self):
+        load_plugin()._db().close()
+        database = self.root / "ops" / "metrics.db"
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.executemany("INSERT INTO skill_events (ts, skill_name, action, agent_type, provenance) VALUES (?,?,?,?,?)", [
+                (at(0), "demo", "loaded", "main", "local"),
+                (at(20), "demo", "loaded", "main", "local"),
+                (at(30), "demo", "patched", "self_improvement", "local"),
+                (at(40), "demo", "loaded", "subagent", "local"),
+            ])
+        before = samples("\n".join(metrics.skill_metrics(database)))
+        tags = '{action="loaded",agent_type="main",provenance="local",skill="demo"}'
+        self.assertEqual(before['hermes_skill_events_total' + tags], 2)
+        self.assertEqual(before['hermes_skill_last_event_timestamp_seconds' + tags], epoch(20))
+        now = T0 + timedelta(days=100)
+        prune.prune_database(database, 90, now=now)
+        prune.prune_database(database, 90, now=now)
+        self.assertEqual(samples("\n".join(metrics.skill_metrics(database))), before)
+        with closing(sqlite3.connect(database)) as connection, connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM skill_events").fetchone(), (0,))
+            connection.execute("INSERT INTO skill_events (ts, skill_name, action, agent_type, provenance) VALUES (?,?,?,?,?)",
+                               (at(86400), "demo", "loaded", "main", "local"))
+        prune.prune_database(database, 90, now=now)
+        after = samples("\n".join(metrics.skill_metrics(database)))
+        self.assertEqual(after['hermes_skill_events_total' + tags], 3)
+        self.assertEqual(after['hermes_skill_last_event_timestamp_seconds' + tags], epoch(86400))
 
     def test_long_labels_do_not_cut_an_escape_sequence_in_half(self):
         self.assertEqual(metrics.label("a" * 179 + '"tail'), "a" * 179)
@@ -300,7 +382,7 @@ class ExportMetricsTests(unittest.TestCase):
             f'hermes_api_last_rate_limit_timestamp_seconds{{{route}}}': epoch(10),
             f'hermes_api_success_total{{{route}}}': 3,
                                     f'hermes_api_errors_total{{{route}}}': 3,
-            f'hermes_api_retries_total{{{route}}}': 3,
+            f'hermes_api_retries_total{{{route}}}': 2,
             f'hermes_api_last_success_timestamp_seconds{{{route}}}': epoch(50),
             f'hermes_api_last_error_timestamp_seconds{{{route}}}': epoch(40),
                                                                                                                                     'hermes_tool_calls_total{status="ok",tool="terminal"}': 2,

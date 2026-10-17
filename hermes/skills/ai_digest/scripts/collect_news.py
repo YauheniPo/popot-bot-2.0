@@ -1184,9 +1184,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--topic", default="")
     parser.add_argument("--mode", choices=("daily", "weekly"), default="daily")
+    parser.add_argument("--run-id", help="Execution ID assigned by the managed cron scheduler")
     args = parser.parse_args(argv)
+    if args.run_id is not None and not re.fullmatch(r"\d{8}-\d{6}-[0-9a-f]{8}", args.run_id):
+        parser.error("invalid run ID")
     started = time.monotonic()
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
+    run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
     try:
         config = json.loads(args.sources.read_text())
         from feedback import FeedbackStore, owner_for_digest_jobs

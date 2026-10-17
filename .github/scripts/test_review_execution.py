@@ -112,6 +112,32 @@ class ExecutionReportTest(unittest.TestCase):
         self.assertEqual(len(report.attempts), 1)
         self.assertIn("Retries: 0", report.summary())
 
+    def test_validated_recovery_counts_once_and_preserves_action_failure(self):
+        for stage in ('PRIMARY', 'PRIMARY_FINALIZE', 'RETRY',
+                      'FALLBACK', 'FALLBACK_FINALIZE', 'FALLBACK_RETRY'):
+            with self.subTest(stage=stage):
+                report = claude_execution_report({
+                    'CLAUDE_REVIEW_PRIMARY_MODEL': 'primary',
+                    'CLAUDE_REVIEW_FALLBACK_MODEL': 'backup',
+                    f'CLAUDE_REVIEW_{stage}_OUTCOME': 'failure',
+                    f'CLAUDE_REVIEW_{stage}_VALIDATION': 'success',
+                })
+                self.assertIn('Attempts: 1 · Validated: 1 · Retries: 0', report.summary())
+                self.assertIn('valid_json_after_action_failure', report.details())
+                self.assertIn('CI attempt #1', report.footer('review'))
+                model = 'backup' if stage.startswith('FALLBACK') else 'primary'
+                self.assertIn(f'Successful models: `{model}`', report.summary())
+
+    def test_cancelled_or_skipped_attempt_cannot_count_as_validated_recovery(self):
+        for outcome in ('skipped', 'cancelled'):
+            report = claude_execution_report({
+                'CLAUDE_REVIEW_PRIMARY_OUTCOME': outcome,
+                'CLAUDE_REVIEW_PRIMARY_VALIDATION': 'success',
+            })
+            with self.subTest(outcome=outcome):
+                self.assertIn('Validated: 0', report.summary())
+                self.assertEqual(report.footer('review'), '')
+
     def test_claude_finalization_is_reported_as_a_separate_validated_attempt(self):
         for route in ('PRIMARY', 'FALLBACK'):
             with self.subTest(route=route):

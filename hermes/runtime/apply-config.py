@@ -19,6 +19,8 @@ from hermes_config_io import load_config as load_private_config, validated_confi
 from hermes_fallback_exclusions import fallback_excluded_pairs
 
 _BUSY_INPUT_MODE_KEY = "display.busy_input_mode"
+_MODEL_PROVIDER_KEY = 'model.provider'
+_MODEL_BASE_URL_KEY = 'model.base_url'
 
 
 def managed_model_values(settings: dict[str, Any]) -> dict[str, Any]:
@@ -31,14 +33,23 @@ def managed_model_values(settings: dict[str, Any]) -> dict[str, Any]:
         for key in ('provider', 'default')
     ):
         raise ValueError('managed model requires non-empty provider and default')
+    for field in ('base_url', 'api_mode'):
+        value = model.get(field)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise ValueError(f'managed model {field} must be null or a non-empty string')
     values = {
-        'model.provider': model['provider'], 'model.default': model['default'],
+        _MODEL_PROVIDER_KEY: model['provider'], 'model.default': model['default'],
+        # A managed route owns its endpoint too. Clear old UI/provider overrides
+        # even when a previous deploy already changed just the provider name.
+        _MODEL_BASE_URL_KEY: model.get('base_url'), 'model.api_mode': model.get('api_mode'),
         'delegation.provider': model['provider'], 'delegation.model': model['default'],
+        'delegation.base_url': model.get('base_url'),
         'cron.model_provider': model['provider'], 'cron.model': model['default'],
     }
     cron = settings.get('vps_hermes', {}).get('config', {}).get('managed_overlay', {}).get('cron', {})
     if cron.get('follow_chat_model') is True:
-        values['cron.shared_model'] = {'provider': model['provider'], 'model': model['default'], 'base_url': None}
+        values['cron.shared_model'] = {'provider': model['provider'], 'model': model['default'],
+                                       'base_url': model.get('base_url')}
     return values
 
 
@@ -60,7 +71,11 @@ def _profile_config_updates(config: dict[str, Any], values: dict[str, Any]) -> b
         if not isinstance(target, dict):
             raise ValueError('Hermes profile model, delegation and cron must be mappings; '
                              'fallback_policy must also be a mapping')
-        if target.get(field) != value:
+        if value is None:
+            if field in target:
+                del target[field]
+                changed = True
+        elif target.get(field) != value:
             target[field] = value
             changed = True
     return changed
@@ -189,7 +204,8 @@ def sync_cron_models(home: Path, settings: dict[str, Any]) -> int:
     if not homes:
         return 0
     jobs = _load_cron_store(home)
-    route = {'provider': values['cron.model_provider'], 'model': values['cron.model'], 'base_url': None}
+    route = {'provider': values['cron.model_provider'], 'model': values['cron.model'],
+             'base_url': values[_MODEL_BASE_URL_KEY]}
     if 'cron.shared_model' in values:
         # Shared routing is resolved afresh per run; remove obsolete per-job pins.
         route = dict.fromkeys(route)
@@ -204,6 +220,30 @@ def sync_cron_models(home: Path, settings: dict[str, Any]) -> int:
                     raise RuntimeError('cron job disappeared during managed model update')
                 changed += 1
     return changed
+
+
+def sync_review_metrics_job(home: Path, settings: dict[str, Any]) -> int:
+    """Replace only the configured legacy metrics job's execution payload."""
+    job_id = settings.get('vps_ops', {}).get('review_metrics_sync_job_id', '')
+    if not isinstance(job_id, str):
+        raise ValueError('review_metrics_sync_job_id must be a string')
+    if not job_id or not _validate_and_collect_cron_stores([home]):
+        return 0
+    jobs = _load_cron_store(home)
+    with jobs.use_cron_store(home), jobs._jobs_lock():
+        # Native get_job also accepts prefixes; migration requires an exact ID.
+        job = next((job for job in jobs.load_jobs() if job['id'] == job_id), None)
+        if job is None:
+            return 0
+        script = home / 'scripts/hermes-ai-review-metrics-sync.py'
+        if script.parent.is_symlink() or script.is_symlink() or not script.is_file():
+            raise ValueError('managed review metrics launcher must be an installed regular file')
+        updates = {'script': str(script), 'no_agent': True, 'prompt': ''}
+        if all(job.get(key) == value for key, value in updates.items()):
+            return 0
+        if jobs.update_job(job_id, updates) is None:
+            raise RuntimeError('cron job disappeared during metrics sync migration')
+        return 1
 
 
 class Operation(NamedTuple):
@@ -536,9 +576,19 @@ def _build_route_operations(settings, current_config, operations):
     # Managed policy wins over UI-owned sections and legacy runtime pins.
     route_values = {**managed_model_values(settings), **managed_exclusion_values(settings)}
     operations = [op for op in operations if op.key not in route_values]
-    operations.extend(Operation('set', key, value) for key, value in route_values.items()
-                      if nested_value(current_config, key) != (True, value))
-    return operations
+    provider_changes = (_MODEL_PROVIDER_KEY in route_values and
+                        nested_value(current_config, _MODEL_PROVIDER_KEY) != (True, route_values[_MODEL_PROVIDER_KEY]))
+    removals, settings_to_apply = [], []
+    for key, value in route_values.items():
+        exists, current = nested_value(current_config, key)
+        if value is None:
+            if exists:
+                removals.append(Operation('unset', key))
+        elif not exists or current != value or (provider_changes and key in (_MODEL_BASE_URL_KEY, 'model.api_mode')):
+            settings_to_apply.append(Operation('set', key, value))
+    # Native config set model.provider may remove endpoint/API-mode overrides.
+    # Unset old values first, then switch, then restore explicit managed values.
+    return operations + removals + settings_to_apply
 
 
 def _build_compression_operations(settings, current_config, operations):
@@ -980,6 +1030,10 @@ def parser() -> argparse.ArgumentParser:
     apply_parser.add_argument("--workspace", required=True)
     apply_parser.add_argument("--capability", action="append", default=[])
 
+    metrics_parser = subparsers.add_parser("review-metrics-job", help="Migrate the configured metrics cron job")
+    metrics_parser.add_argument("--settings", required=True, type=Path)
+    metrics_parser.add_argument("--hermes-home", required=True, type=Path)
+
     services_parser = subparsers.add_parser("services", help="Print managed service names")
     services_parser.add_argument("--settings", required=True, type=Path)
     services_parser.add_argument("groups", nargs="+")
@@ -1005,6 +1059,10 @@ def main() -> int:
     args = parser().parse_args()
     try:
         settings = load_settings(args.settings)
+        if args.command == "review-metrics-job":
+            changed = sync_review_metrics_job(args.hermes_home, settings)
+            print(f"review-metrics-job-changed={str(bool(changed)).lower()}")
+            return 0
         if args.command == "services":
             for service in service_names(settings, args.groups):
                 print(service)

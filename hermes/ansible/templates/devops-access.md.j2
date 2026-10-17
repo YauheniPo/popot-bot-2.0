@@ -43,11 +43,17 @@ def integration_token(name):
   into model context. Report missing, unreadable, network and HTTP failures
   separately. Ask for a Vault update/deploy only after both sources were checked;
   never ask for a token value in chat. Presence does not prove validity or access.
+  Verify access to the requested project and operation with a read-only request;
+  a successful identity request does not establish project or write permissions.
+  If an environment credential is stale, it takes precedence over the file in
+  the loader above; diagnose the selected source without printing either value.
 - Azure PAT authentication: set the HTTP `Authorization` header to `"Basic " +
   base64.b64encode((":" + integration_token("AZURE_DEVOPS_EXT_PAT")).encode()).decode()`.
 - Sonar authentication: set `Authorization` to
   `"Bearer " + integration_token("SONAR_TOKEN")`. The Sonar token stored in GitHub
   Actions is separate from the Vault-delivered token available on this VPS.
+  A working GitHub PAT does not establish Sonar access. For GitHub operations,
+  use the managed `gh` wrapper described in the GitHub workflow instructions.
 - Use HTTPS with certificate verification, a finite timeout (e.g. 30 seconds),
   URL-encode path segments, and build query strings with `urllib.parse.urlencode`.
   Send each credential only to its configured service; do not forward the
@@ -63,6 +69,10 @@ def integration_token(name):
   data. Summarize relevant errors rather than dumping entire logs.
 - Perform only actions requested by the owner. Pipeline runs and other writes
   require a request for that action; retain the existing deployment approvals.
+  An authorized repository fix includes relevant workflow/config code edits;
+  those do not themselves grant permission to change service secrets or deploy.
+  Do not diagnose missing credentials from error strings inside mocked negative
+  tests. First inspect the failed command's exit status, test summary and assertion.
 
 Useful read-only requests (replace placeholders with the configured values):
 

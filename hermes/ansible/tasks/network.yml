@@ -1,7 +1,7 @@
 ---
 - name: Install the official Tailscale repository key
   ansible.builtin.get_url:
-    url: "https://pkgs.tailscale.com/{{ vps_network.tailscale.package_channel }}/{{ ansible_distribution | lower }}/{{ ansible_distribution_release }}.noarmor.gpg"
+    url: "https://pkgs.tailscale.com/{{ vps_network.tailscale.package_channel }}/{{ ansible_facts['distribution'] | lower }}/{{ ansible_facts['distribution_release'] }}.noarmor.gpg"
     dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
     owner: root
     group: root
@@ -10,7 +10,7 @@
 
 - name: Install the official Tailscale apt source
   ansible.builtin.get_url:
-    url: "https://pkgs.tailscale.com/{{ vps_network.tailscale.package_channel }}/{{ ansible_distribution | lower }}/{{ ansible_distribution_release }}.tailscale-keyring.list"
+    url: "https://pkgs.tailscale.com/{{ vps_network.tailscale.package_channel }}/{{ ansible_facts['distribution'] | lower }}/{{ ansible_facts['distribution_release'] }}.tailscale-keyring.list"
     dest: /etc/apt/sources.list.d/tailscale.list
     owner: root
     group: root
@@ -90,38 +90,19 @@
     state: present
   when: hermes_lock_public_ssh | bool
 
-- name: Put private-only SSH rules before existing public SSH allows
-  ansible.builtin.shell:
-    cmd: |
-      set -euo pipefail
-      while IFS= read -r rule_number; do
-        ufw --force delete "$rule_number"
-      done < <(
-        ufw status numbered |
-          sed -n '/Hermes private SSH\|Hermes deny public SSH/s/^\[[[:space:]]*\([0-9][0-9]*\)\].*/\1/p' |
-          sort -rn
-      )
-      if ufw status numbered | grep -q '^\['; then
-        ufw insert 1 allow in on {{ vps_network.tailscale.interface }} to any port {{ vps_network.ssh_port }} proto tcp comment 'Hermes private SSH'
-      else
-        ufw allow in on {{ vps_network.tailscale.interface }} to any port {{ vps_network.ssh_port }} proto tcp comment 'Hermes private SSH'
-      fi
-      ufw insert 2 deny in to any port {{ vps_network.ssh_port }} proto tcp comment 'Hermes deny public SSH'
-    executable: /bin/bash
-  when: hermes_lock_public_ssh | bool
-  changed_when: true
-
-- name: Set default firewall policies
+- name: Reconcile private-only SSH rules and firewall policies
   ansible.builtin.command:
-    argv: "{{ ['ufw', 'default', item.policy, item.direction] }}"
-  loop:
-    - {policy: "{{ vps_network.firewall.default_incoming }}", direction: incoming}
-    - {policy: "{{ vps_network.firewall.default_outgoing }}", direction: outgoing}
+    argv:
+      - python3
+      - "{{ hermes_bundle_dir }}/runtime/reconcile-firewall.py"
+      - --interface
+      - "{{ vps_network.tailscale.interface }}"
+      - --port
+      - "{{ vps_network.ssh_port | string }}"
+      - --incoming
+      - "{{ vps_network.firewall.default_incoming }}"
+      - --outgoing
+      - "{{ vps_network.firewall.default_outgoing }}"
+  register: hermes_firewall_configuration
   when: hermes_lock_public_ssh | bool
-  changed_when: true
-
-- name: Enable the host firewall
-  ansible.builtin.command:
-    argv: [ufw, --force, enable]
-  when: hermes_lock_public_ssh | bool
-  changed_when: true
+  changed_when: "'firewall-changed=true' in hermes_firewall_configuration.stdout_lines"
