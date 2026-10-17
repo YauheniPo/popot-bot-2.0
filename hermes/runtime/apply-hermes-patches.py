@@ -426,8 +426,9 @@ _PATCHES: list[tuple[str, str, str, str]] = [
         from cron.competitor_digest import begin_run as _begin_competitor_run
         from cron.ai_digest_run import begin_run as _begin_digest_run
         # Both report skills use the same bounded validation/repair/delivery lifecycle.
-        competitor_guard = (_begin_digest_run(job, _get_hermes_home())
-                            or _begin_competitor_run(job, _get_hermes_home()))
+        competitor_guard = _begin_digest_run(job, _get_hermes_home())
+        if competitor_guard is None:
+            competitor_guard = _begin_competitor_run(job, _get_hermes_home())
         if competitor_guard is not None:
             extra_prompt = competitor_guard.instructions(extra_prompt)
         _run_kwargs = {

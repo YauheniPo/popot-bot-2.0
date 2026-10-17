@@ -175,7 +175,8 @@ def prepare(execution_file, proof_file):
         # Valid JSON with a partial read still needs the bounded reread. With
         # complete evidence, never rewrite it merely to evade an anchor error.
         if not reason:
-            return {'ready': 'false', 'reason': 'not_recoverable_result'}
+            return {'ready': 'false', 'reason': 'not_recoverable_result',
+                    'read_coverage': json.dumps(coverage)}
         failure_reason = 'proof_unavailable'
         _write_proof(proof_file, {**_revision_binding(raw), 'session_id': session})
     except IncompleteDiffRead as error:
