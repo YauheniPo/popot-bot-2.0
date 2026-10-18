@@ -36,7 +36,11 @@ VPS or container. They do not dismiss or suppress scanner alerts.
 | #15: Docker root user | Root is used by the pinned image's initialization. The local administration profile also intentionally permits passwordless sudo. This is a real privilege trade-off, not proof that the agent is isolated from container root. Removing it requires changing the profile and testing initialization and the supported administration workflow. |
 
 The local Compose topology does not grant `privileged` access or mount the Docker
-socket into the agent container. This does not make container root harmless.
+socket into the agent container. It drops `MKNOD` and `NET_RAW` from the Hermes
+container's capability bounding set, preventing device-node creation and RAW/PACKET
+sockets even through sudo. Package installation and root initialization remain
+supported; tools requiring those two capabilities are unavailable. This does not
+remove passwordless sudo or make container root harmless.
 No claim about the effective runtime UID, host firewall, or tunnel configuration
 can be established by reviewing these source files alone.
 

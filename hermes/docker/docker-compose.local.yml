@@ -32,6 +32,10 @@ services:
       - "127.0.0.1:9119:9119"
     # Hermes may use passwordless sudo inside this container to install tools.
     # Keep Docker socket, host mounts, devices and privileged mode absent.
+    # Root initialization and sudo do not require raw sockets or device nodes.
+    cap_drop:
+      - MKNOD
+      - NET_RAW
     pids_limit: 256
     mem_limit: 4g
     cpus: "2.0"

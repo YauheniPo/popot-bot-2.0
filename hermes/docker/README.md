@@ -220,7 +220,13 @@ volume только read-only и записывает только агреги�
 
 Для Hermes root filesystem намеренно writable, а `sudo` действует только в его
 container: это нужно для установки tools по запросу и изменения пропадают при
-пересоздании. Остальные sidecars остаются read-only, capabilities сброшены и
+пересоздании. Compose исключает capabilities `MKNOD` и `NET_RAW`: даже через
+`sudo` нельзя создавать файлы устройств или RAW/PACKET sockets. Обычные TCP/UDP
+соединения и установка пакетов остаются доступны; инструменты, которым нужны
+эти две capabilities, работать не будут. Изменение применяется при пересоздании
+container, одного restart недостаточно. Это не устраняет принятый риск
+неограниченного `sudo` внутри container.
+Остальные sidecars остаются read-only, capabilities сброшены и
 для них включён `no-new-privileges`; всем сервисам заданы PID/CPU/RAM limits.
 Сетевой egress оставлен для LLM, Telegram и GitHub API; он не даёт доступа к
 файлам, процессам или Docker daemon хоста. Не передавайте в `local.env`
