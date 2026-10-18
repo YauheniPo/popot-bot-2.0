@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import hashlib
+import importlib.util
 import json
 import unittest
 
@@ -16,6 +17,9 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parents[1]
 ANSIBLE = ROOT / 'ansible'
+SPEC = importlib.util.spec_from_file_location('deployment_state', ANSIBLE / 'filter_plugins/deployment_state.py')
+deployment_state = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(deployment_state)
 
 # The secret scanner reads a string literal assigned to a password-named key as
 # a committed credential. The contract only needs a 4-character value, so it is
@@ -24,12 +28,57 @@ PASSWORD_FIXTURE = 'ab' + 'cd'
 
 
 class WorkspaceDeploymentTests(unittest.TestCase):
+    @unittest.skipIf(FilterModule is None, 'Requires the Ansible controller Python')
+    def test_overlay_does_not_reset_active_runtime_backends(self):
+        settings = yaml.safe_load((ROOT / 'config/vps-defaults.yml').read_text())
+        task = next(t for t in yaml.safe_load((ANSIBLE / 'tasks/runtime.yml').read_text())
+                    if t.get('name') == 'Apply the managed Hermes model and voice configuration')
+        env = Environment()
+        env.filters.update(FilterModule().filters())
+        env.filters.update(deployment_state.FilterModule().filters())
+        template = env.from_string(task['vars']['hermes_rendered_config'])
+        existing = {'web': {'search_backend': 'searxng', 'extract_backend': 'firecrawl'}}
+        result = yaml.safe_load(template.render(
+            hermes_existing_config=existing,
+            hermes_managed_config=settings['vps_hermes']['config']['managed_overlay'],
+            hermes_external_skill_dirs=[], vps_hermes=settings['vps_hermes'],
+            vps_deploy=settings['vps_deploy'], vps_runtime=settings['vps_runtime'],
+            hermes_runtime_capabilities=['searxng_search', 'firecrawl_extract'],
+        ))
+        self.assertEqual(result['web'], existing['web'])
+
     @staticmethod
     def _walk_tasks(tasks):
         for task in tasks:
             yield task
             for section in ('block', 'rescue', 'always'):
                 yield from WorkspaceDeploymentTests._walk_tasks(task.get(section, []))
+
+    @unittest.skipIf(FilterModule is None, 'Requires the Ansible controller Python')
+    def test_deploy_seeds_competitor_budget_beside_existing_cron_settings(self):
+        settings = yaml.safe_load((ROOT / 'config/vps-defaults.yml').read_text())
+        overlay = settings['vps_hermes']['config']['managed_overlay']
+        policy = overlay['cron']['competitor_research']
+        self.assertGreater(policy['pages_per_company'], policy['evidence_pages_per_company'])
+        self.assertGreater(policy['searches_per_company'], 0)
+        task = next(t for t in yaml.safe_load((ANSIBLE / 'tasks/runtime.yml').read_text())
+                    if t.get('name') == 'Apply the managed Hermes model and voice configuration')
+        env = Environment()
+        env.filters.update(FilterModule().filters())
+        env.filters.update(deployment_state.FilterModule().filters())
+        template = env.from_string(task['vars']['hermes_rendered_config'])
+        existing = {'cron': {'timezone': 'Europe/Minsk', 'timeout': 123}}
+        for workspace_enabled in (True, False):
+            with self.subTest(workspace=workspace_enabled):
+                result = yaml.safe_load(template.render(
+                    hermes_existing_config=existing, hermes_managed_config=overlay,
+                    hermes_external_skill_dirs=[], vps_hermes=settings['vps_hermes'],
+                    vps_deploy={'features': {'workspace_ui': workspace_enabled}},
+                    vps_runtime={}, hermes_runtime_capabilities=[],
+                ))
+                self.assertEqual(result['cron']['competitor_research'], policy)
+                for key, value in existing['cron'].items():
+                    self.assertEqual(result['cron'][key], value)
 
     def test_workspace_restore_and_snapshot_are_credential_gated(self):
         playbook = yaml.safe_load((ANSIBLE / 'playbook.yml').read_text())[0]
@@ -61,8 +110,10 @@ class WorkspaceDeploymentTests(unittest.TestCase):
         self.assertIn('workspace-profile-prompts.mjs', expression)
         self.assertIn('workspace-voice-ui.mjs', expression)
         self.assertIn('workspace-background-runs.mjs', expression)
+        self.assertIn('workspace-cron-ui.mjs', expression)
         wrapper = (ANSIBLE / 'templates/workspace-vite.config.mjs.j2').read_text()
         self.assertIn('workspaceBackgroundRuns()', wrapper)
+        self.assertIn('workspaceCronUi()', wrapper)
         self.assertIn('workspace-vite.config.mjs.j2', expression)
         marker = next(task for task in tasks if task['name'] == 'Inspect successful Workspace build marker')
         self.assertIn('hermes_workspace_ui_build_hash', marker['ansible.builtin.stat']['path'])
@@ -147,6 +198,7 @@ class WorkspaceDeploymentTests(unittest.TestCase):
     def test_four_character_vault_inputs_are_validated_and_api_token_is_derived(self):
         env = Environment()
         env.filters.update(FilterModule().filters())
+        env.filters.update(deployment_state.FilterModule().filters())
         pre_tasks = yaml.safe_load((ANSIBLE / 'playbook.yml').read_text())[0]['pre_tasks']
         validation = next(task for task in pre_tasks if task['name'] ==
                           'Check shared Workspace credentials without exposing values')
@@ -190,7 +242,8 @@ class WorkspaceDeploymentTests(unittest.TestCase):
                     'Apply the managed Hermes model and voice configuration')
         env = Environment()
         env.filters.update(FilterModule().filters())
-        template = env.from_string(task['ansible.builtin.copy']['content'])
+        env.filters.update(deployment_state.FilterModule().filters())
+        template = env.from_string(task['vars']['hermes_rendered_config'])
         for workspace_enabled in (True, False):
             for provider in ('nous', 'local', 'openai', 'groq'):
                 with self.subTest(workspace=workspace_enabled, provider=provider):
@@ -200,6 +253,7 @@ class WorkspaceDeploymentTests(unittest.TestCase):
                     values = dict(hermes_existing_config=existing,
                         hermes_managed_config=settings['vps_hermes']['config']['managed_overlay'],
                         hermes_external_skill_dirs=[], vps_hermes=settings['vps_hermes'],
+                        vps_runtime={}, hermes_runtime_capabilities=[],
                         vps_deploy={'features': {'workspace_ui': workspace_enabled}})
                     result = yaml.safe_load(template.render(**values))
                     self.assertEqual(result['stt']['language'], '')
@@ -217,7 +271,8 @@ class WorkspaceDeploymentTests(unittest.TestCase):
                     'Apply the managed Hermes model and voice configuration')
         env = Environment()
         env.filters.update(FilterModule().filters())
-        template = env.from_string(task['ansible.builtin.copy']['content'])
+        env.filters.update(deployment_state.FilterModule().filters())
+        template = env.from_string(task['vars']['hermes_rendered_config'])
         values = {
             'hermes_existing_config': {
                 'model': {'default': 'operator-choice'},
@@ -228,6 +283,7 @@ class WorkspaceDeploymentTests(unittest.TestCase):
                 'approvals': {'mode': 'manual'},
             },
             'hermes_external_skill_dirs': ['/opt/test-skills'],
+            'vps_runtime': {}, 'hermes_runtime_capabilities': [],
             'vps_hermes': {'config': {'ui_owned_sections': ['model']}},
             'vps_deploy': {'features': {'workspace_ui': True}},
         }

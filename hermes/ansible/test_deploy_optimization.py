@@ -4,11 +4,13 @@ from pathlib import Path
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
 import yaml
 from jinja2 import Environment, StrictUndefined
+from jinja2.nativetypes import NativeEnvironment
 
 
 ANSIBLE = Path(__file__).parent
@@ -19,7 +21,153 @@ STARTUP_NOTIFY = (ANSIBLE.parent / "ops" / "startup-notify.sh").read_text()
 HEALTH_CHECK = (ANSIBLE.parent / "ops" / "health-check.sh").read_text()
 
 
+def recording_restart_handlers():
+    """Keep production handler conditions, recording units instead of restarting them."""
+    handlers = []
+    for handler in yaml.safe_load(PLAYBOOK)[0]['handlers']:
+        if handler['name'] == 'restart Hermes Workspace':
+            continue
+        unit = handler.pop('ansible.builtin.systemd_service')['name']
+        expression = unit[2:-2].strip() if unit.startswith('{{') else repr(unit)
+        handler['ansible.builtin.set_fact'] = {
+            'restarted_units': '{{ restarted_units + [' + expression + '] }}',
+        }
+        handlers.append(handler)
+    return handlers
+
+
 class DeployOptimizationTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("ansible-playbook"), "Ansible is required")
+    def test_ops_notifications_use_completed_install_result(self):
+        gateway = 'custom-hermes-gateway.service'
+        all_units = [gateway, 'grafana-server.service', 'hermes-node-exporter.service',
+                     'hermes-prometheus.service', 'hermes-dashboard.service',
+                     'hermes-backup.timer', 'hermes-metrics.timer']
+        cases = [
+            ('changed', True, True, all_units, True, 0, all_units),
+            ('pending-restart', True, True, ['hermes-prometheus.service'], True, 0,
+             ['hermes-prometheus.service']),
+            ('unchanged', True, True, [], False, 0, []),
+            ('ops-disabled', False, True, all_units, True, 0, []),
+            ('gateway-disabled', True, False, all_units, True, 0, all_units[1:5]),
+            ('install-failed', True, True, all_units, True, 1, []),
+        ]
+        for name, enabled, gateway_enabled, units, changed, rc, expected in cases:
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as directory:
+                tasks = yaml.safe_load(SERVICES)
+                start = next(i for i, t in enumerate(tasks) if t.get('register') == 'hermes_ops_install')
+                end = next(i for i, t in enumerate(tasks)
+                           if t.get('name') == 'Validate the final managed Hermes configuration')
+                tasks = tasks[start:end]
+                output = [f'ops-restart={unit}' for unit in units] + [f'ops-changed={str(changed).lower()}']
+                tasks[0]['ansible.builtin.command'] = {'argv': [
+                    sys.executable, '-c', 'import sys; print(sys.argv[1]); sys.exit(int(sys.argv[2]))',
+                    '\n'.join(output), str(rc),
+                ]}
+                tasks += [
+                    {'ansible.builtin.meta': 'flush_handlers'},
+                    {'ansible.builtin.assert': {'that': ['restarted_units | sort == expected_units | sort']}},
+                ]
+                play = [{'hosts': 'localhost', 'gather_facts': False, 'tasks': tasks,
+                         'handlers': recording_restart_handlers(),
+                         'vars': {'ansible_python_interpreter': sys.executable,
+                                  'hermes_enable_ops': enabled, 'hermes_gateway_enabled': gateway_enabled,
+                                  'hermes_gateway_service': gateway, 'restarted_units': [],
+                                  'expected_units': expected,
+                                  'vps_services': {'observability': all_units[1:5], 'timers': all_units[5:]}}}]
+                path = Path(directory) / 'check.yml'
+                path.write_text(yaml.safe_dump(play))
+                result = subprocess.run(['ansible-playbook', '-i', 'localhost,', '-c', 'local', str(path)],
+                                        capture_output=True, text=True, timeout=30,
+                                        env={**os.environ, 'ANSIBLE_CONFIG': str(ANSIBLE / 'ansible.cfg')})
+                log = result.stdout + result.stderr
+                if rc:
+                    self.assertNotEqual(result.returncode, 0, log)
+                    self.assertIn('non-zero return code', log)
+                    self.assertNotIn('RUNNING HANDLER', log)
+                else:
+                    self.assertEqual(result.returncode, 0, log)
+
+    def test_venv_ownership_walk_is_only_needed_before_source_installation(self):
+        tasks = yaml.safe_load(PLAYBOOK)[0]['tasks']
+        repair = next(t for t in tasks if t.get('name') == 'Ensure the Hermes virtual environment directory exists')
+        decision = next(t for t in tasks if t.get('name') == 'Decide whether the pinned Hermes source needs installation')
+        self.assertLess(tasks.index(decision), tasks.index(repair))
+        self.assertIn('hermes_source_update_required | bool', repair['when'])
+
+    def test_staging_sync_does_not_restore_controller_ownership_or_restart_services(self):
+        tasks = yaml.safe_load(PLAYBOOK)[0]['tasks']
+        syncs = [t for t in tasks if 'ansible.posix.synchronize' in t]
+        self.assertTrue(syncs)
+        for task in syncs:
+            with self.subTest(task=task['name']):
+                options = task['ansible.posix.synchronize']
+                self.assertIs(options.get('owner'), False)
+                self.assertIs(options.get('group'), False)
+                self.assertNotIn('notify', task)
+
+    def test_ops_restarts_use_live_changes_and_ack_only_after_readiness(self):
+        tasks = yaml.safe_load(SERVICES)
+        install = next(t for t in tasks if t.get('name') == 'Install audit, metrics, reporting, and health checks')
+        expression = Environment().compile_expression(install['changed_when'])
+        for changed in (False, True):
+            output = {'stdout_lines': [f'ops-changed={str(changed).lower()}']}
+            self.assertEqual(expression(hermes_ops_install=output), changed)
+        ack = next(i for i, t in enumerate(tasks) if t.get('name') == 'Acknowledge verified operations restarts')
+        for name in ('Verify the gateway is active', 'Verify the loopback-only observability services are active'):
+            index = next(i for i, t in enumerate(tasks) if t.get('name') == name)
+            self.assertLess(index, ack)
+        self.assertNotIn('ignore_errors', tasks[ack])
+
+    def test_ops_notifications_and_handlers_select_only_affected_services(self):
+        environment = NativeEnvironment(undefined=StrictUndefined)
+        environment.filters['bool'] = bool
+        tasks = yaml.safe_load(SERVICES)
+        notification = next(t for t in tasks if t.get('name') == 'Queue service restarts from the completed operations installation')
+        handlers = {t['name']: t for t in yaml.safe_load(PLAYBOOK)[0]['handlers']}
+        for unit, expected in (('grafana-server.service', 'restart Grafana'),
+                               ('hermes-gateway.service', 'restart Hermes gateway'),
+                               ('hermes-prometheus.service', 'restart managed observability services'),
+                               ('hermes-metrics.timer', 'restart monitoring timers')):
+            with self.subTest(unit=unit):
+                values = dict(hermes_ops_install={'stdout_lines': [f'ops-restart={unit}']},
+                              hermes_gateway_service='hermes-gateway.service',
+                              hermes_source_update_required=False, hermes_local_patches={'changed': False})
+                notified = environment.from_string(notification['notify']).render(**values)
+                self.assertIn(expected, notified)
+                for dedicated in ('restart Grafana', 'restart Hermes gateway'):
+                    self.assertEqual(dedicated in notified, dedicated == expected)
+                for handler, candidates in (
+                    ('restart managed observability services', ['hermes-prometheus.service', 'hermes-dashboard.service']),
+                    ('restart monitoring timers', ['hermes-metrics.timer', 'hermes-backup.timer']),
+                ):
+                    condition = environment.compile_expression(handlers[handler]['when'][-1])
+                    for candidate in candidates:
+                        self.assertEqual(condition(item=candidate, **values), candidate == unit)
+
+    def test_config_backup_resumes_previously_active_gateway_after_verification(self):
+        deployment = next(task for task in yaml.safe_load(PLAYBOOK)[0]['tasks']
+                          if task.get('name') == 'Deploy Hermes with bounded maintenance coverage')
+        backup = next(task for task in deployment['block']
+                      if task.get('name') == 'Create and verify the mandatory config-only deployment backup')
+        tasks = backup['block']
+        resume = next(task for task in tasks
+                      if task.get('ansible.builtin.systemd_service', {}).get('state') == 'started')
+        self.assertEqual(resume['when'], 'hermes_config_backup_gateway.rc == 0')
+        verified = next(task for task in tasks
+                        if task.get('name') == 'Verify the config-only deployment backup contents')
+        self.assertLess(tasks.index(verified), tasks.index(resume))
+        self.assertNotIn('failed_when', resume)
+        # A failed backup still restores availability and blocks deployment.
+        self.assertEqual(backup['rescue'][0]['ansible.builtin.systemd_service']['state'], 'started')
+        self.assertIn('ansible.builtin.fail', backup['rescue'][-1])
+
+    def test_handlers_run_before_gateway_start_to_avoid_start_then_restart(self):
+        tasks = yaml.safe_load(SERVICES)
+        start = next(i for i, t in enumerate(tasks) if t.get('name') == 'Ensure the Hermes gateway is enabled and started')
+        flush = next(i for i, t in enumerate(tasks) if t.get('ansible.builtin.meta') == 'flush_handlers')
+        self.assertLess(flush, start)
+
     def test_config_backup_suffix_preserves_random_hex_string(self) -> None:
         deployment = next(task for task in yaml.safe_load(PLAYBOOK)[0]['tasks']
                           if task.get('name') == 'Deploy Hermes with bounded maintenance coverage')

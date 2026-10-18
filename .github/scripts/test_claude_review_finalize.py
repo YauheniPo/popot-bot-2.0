@@ -110,6 +110,16 @@ class FinalizeTests(unittest.TestCase):
         self.assertEqual(self.prepare(events)['ready'], 'false')
         self.assertFalse(self.proof.exists())
 
+    def test_valid_json_with_partial_diff_requires_reread_not_format_repair(self):
+        events = self.events()
+        events[-1].update(subtype='success', is_error=False, result=json.dumps(REVIEW), num_turns=77)
+        events[2]['message']['content'][0]['content'] = '1→diff --git a/app.py b/app.py'
+        prepared = self.prepare(events)
+        self.assertEqual(prepared['ready'], 'false')
+        self.assertEqual(prepared['reason'], 'diff_not_fully_read')
+        self.assertEqual(json.loads(prepared['read_coverage'])['matched_lines'], 1)
+        self.assertFalse(self.proof.exists())
+
     def test_parseable_json_with_invalid_schema_is_eligible_only_for_format_repair(self):
         events = self.events()
         events[-1].update(subtype='success', is_error=False, result='{"summary":"Reviewed"}')
@@ -209,7 +219,14 @@ class FinalizeTests(unittest.TestCase):
             events = self.events()
             events[-1]['subtype'] = subtype
             with self.subTest(subtype=subtype):
-                self.assertEqual(self.prepare(events)['ready'], 'false')
+                for partial in (False, True):
+                    if partial:
+                        events[2]['message']['content'][0]['content'] = '1→diff --git a/app.py b/app.py'
+                    prepared = self.prepare(events)
+                    self.assertEqual(prepared['ready'], 'false')
+                    self.assertEqual(prepared['reason'], 'not_recoverable_result')
+                    self.assertNotIn('read_coverage', prepared)
+                    self.assertFalse(self.proof.exists())
         self.execution.unlink()
         self.assertEqual(finalize.prepare(self.execution, self.proof)['ready'], 'false')
 
@@ -319,6 +336,14 @@ class FinalizeTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(RuntimeError):
                 finalize.extract(self.execution, self.proof)
         self.assertFalse(self.output.exists())
+
+    def test_revision_bound_proof_loader_rejects_mismatched_metadata(self):
+        self.proof.write_text(json.dumps({
+            'base_sha': 'c' * 40, 'head_sha': 'b' * 40,
+            'diff_sha256': 'd' * 64, 'session_id': SESSION,
+        }))
+        with self.assertRaisesRegex(RuntimeError, 'finalization_revision_mismatch'):
+            finalize._load_revision_bound_proof(self.proof)
 
     def test_invalid_proof_never_accepts_a_successful_response(self):
         self.execution.write_text(json.dumps(self.completed()))

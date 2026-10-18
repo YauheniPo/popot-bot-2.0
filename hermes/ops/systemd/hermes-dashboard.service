@@ -10,6 +10,7 @@ Group=@HERMES_GROUP@
 WorkingDirectory=@HERMES_HOME@
 Environment=HOME=@USER_HOME@
 Environment=HERMES_HOME=@HERMES_HOME@
+Environment=NPM_CONFIG_CACHE=@HERMES_HOME@/cache/npm
 Environment=PATH=@USER_HOME@/.local/bin:@HERMES_HOME@/node/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=@HERMES_BIN@ dashboard --host @DASHBOARD_BIND_ADDRESS@ --port @DASHBOARD_PORT@ --no-open
 Restart=on-failure

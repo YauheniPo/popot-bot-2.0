@@ -150,6 +150,124 @@ class FileMutationStopGateTests(unittest.TestCase):
 
 
 class ApplyHermesPatchesTests(unittest.TestCase):
+    def test_cron_activity_uses_the_shared_fire_claim_instead_of_process_local_state(self):
+        patch = next(p for p in apply_hermes_patches._PATCHES
+                     if p[1] == "# Local Hermes: shared cron activity")
+        source = 'def annotate(job, profile, home, heartbeat_age=None):\n' + patch[2] + '\n    }\n'
+        namespace = {}
+        exec(source.replace(patch[2], patch[3], 1), namespace)
+        claim_check = mock.Mock(return_value=True)
+        native = SimpleNamespace(_claim_is_live=claim_check, FIRE_CLAIM_TTL_SECONDS=123)
+        with mock.patch.dict(sys.modules, {"cron.jobs": native}):
+            result = namespace["annotate"]({"id": "same-id", "fire_claim": {"by": "cli"}},
+                                           "default", Path("/home/default"))
+            self.assertTrue(result["is_running"])
+            self.assertEqual(result["profile"], "default")
+            self.assertEqual(claim_check.call_args.args[0], {"by": "cli"})
+            self.assertIsNotNone(claim_check.call_args.args[1].tzinfo)
+            self.assertEqual(claim_check.call_args.args[2], 123)
+            claim_check.return_value = False
+            other = namespace["annotate"]({"id": "same-id"}, "other", Path("/home/other"))
+            self.assertFalse(other["is_running"])
+            self.assertIsNone(claim_check.call_args.args[0])
+
+    def test_backup_only_patch_selection_contains_only_the_mandatory_backup(self):
+        patches = [
+            ("gateway/run.py", "gateway", "old", "new"),
+            (apply_hermes_patches._BACKUP_PATH, "backup", "old", "new"),
+        ]
+        with mock.patch.object(apply_hermes_patches, "_PATCHES", patches):
+            selected = apply_hermes_patches._patches_for_run(backup_only=True)
+        self.assertEqual([patch[0] for patch in selected], [apply_hermes_patches._BACKUP_PATH])
+
+    def test_digest_cards_are_confirmed_before_summary_and_failure_stops_summary(self):
+        from hermes.skills.ai_digest.scripts import feedback
+
+        patch = next(p for p in apply_hermes_patches._PATCHES
+                     if p[1] == "# Local Hermes: digest card delivery")
+        for failure in (False, True):
+            with self.subTest(failure=failure):
+                events = []
+
+                def send_cards(*args):
+                    events.append("cards")
+                    if failure:
+                        raise RuntimeError("failed")
+
+                ns = {"digest_target_ok": True,
+                      "digest_feedback": SimpleNamespace(
+                          deliver_cards_to_telegram=send_cards,
+                          delivery_error_detail=feedback.delivery_error_detail),
+                      "digest_cards_path": Path("raw.json"), "state_dir": Path("."),
+                      "job": {"origin": {"user_id": "owner"}},
+                      "targets": [{"platform": "telegram"}],
+                      "t": SimpleNamespace(where="telegram", live_adapter_ready=True),
+                      "cleaned_delivery_content": "summary", "media_files": [],
+                      "delivery_errors": [], "unverified_targets": [],
+                      "_deliver_standalone": mock.Mock(),
+                      "_deliver_via_live_adapter": lambda *a, **kw: events.append("summary") or True}
+                code = "for target in targets:\n" + patch[3]
+                with mock.patch.dict(sys.modules, {"gateway.platforms._shared": SimpleNamespace(
+                        get_scoped_secret=lambda name: "test-token")}):
+                    exec(code, ns)
+                self.assertEqual(events, ["cards"] if failure else ["cards", "summary"])
+                self.assertEqual(bool(ns["delivery_errors"]), failure)
+                ns["_deliver_standalone"].assert_not_called()
+
+    def test_digest_card_failure_retains_safe_reason_in_cron_delivery_status(self):
+        from hermes.skills.ai_digest.scripts import feedback
+        from urllib.error import HTTPError
+
+        patch = next(p for p in apply_hermes_patches._PATCHES
+                     if p[1] == "# Local Hermes: digest card delivery")
+        body = io.BytesIO(b'{"ok":false,"description":"Bad Request: message thread not found"}')
+        error = HTTPError("https://api.telegram.org/botsecret/sendMessage", 400,
+                          "Bad Request", {}, body)
+        with mock.patch.object(feedback, "urlopen", side_effect=error):
+            try:
+                feedback.telegram_send("secret", "sendMessage", {"chat_id": 1})
+            except RuntimeError as caught:
+                failure = caught
+        namespace = {"digest_target_ok": True, "digest_feedback": feedback,
+                     "digest_cards_path": Path("raw.json"), "state_dir": Path("."),
+                     "job": {"origin": {"user_id": "owner"}},
+                     "targets": [{"platform": "telegram"}],
+                     "t": SimpleNamespace(where="telegram", live_adapter_ready=True),
+                     "cleaned_delivery_content": "summary", "media_files": [],
+                     "delivery_errors": [], "unverified_targets": [],
+                     "_deliver_standalone": mock.Mock(),
+                     "_deliver_via_live_adapter": mock.Mock()}
+        with mock.patch.object(feedback, "deliver_cards_to_telegram", side_effect=failure), \
+                mock.patch.dict(sys.modules, {"gateway.platforms._shared": SimpleNamespace(
+                    get_scoped_secret=lambda name: "secret")}):
+            exec("for target in targets:\n" + patch[3], namespace)
+        detail = namespace["delivery_errors"][0]
+        self.assertIn("HTTP 400", detail)
+        self.assertIn("message thread not found", detail)
+        self.assertNotIn("secret", detail)
+        namespace["_deliver_via_live_adapter"].assert_not_called()
+        namespace["_deliver_standalone"].assert_not_called()
+
+    def test_digest_summary_without_artifacts_cannot_reach_transport(self):
+        patch = next(p for p in apply_hermes_patches._PATCHES
+                     if p[1] == "# Local Hermes: digest feedback loader")
+        loader = patch[3].split("    from gateway.config import load_gateway_config")[0]
+        namespace = {"os": os}
+        exec("def prepare(job, content, for_failure=False):\n" + loader
+             + "\n    return 'transport reached'\n", namespace)
+        with mock.patch.dict(os.environ, {"AI_DIGEST_SKILL_DIR": ""}):
+            error = namespace["prepare"]({"skill": "ai_digest"}, "Все карточки готовы")
+        self.assertNotEqual(error, "transport reached")
+        self.assertIn("digest", error)
+        self.assertEqual(namespace["prepare"]({"skill": "ai_digest"}, "failed", True),
+                         "transport reached")
+        self.assertEqual(namespace["prepare"]({"skill": "ai_digest"}, "failed: NEWS_CARDS:", True),
+                         "transport reached")
+        self.assertEqual(namespace["prepare"]({"skill": "other"}, "normal result"),
+                         "transport reached")
+        self.assertEqual(namespace["prepare"]({"skill": "other"}, "Documented marker: NEWS_CARDS:"),
+                         "transport reached")
+
     def test_digest_feedback_is_wired_into_cron_delivery_and_telegram_callbacks(self):
         patches = {marker: (path, old, new)
                    for path, marker, old, new in apply_hermes_patches._PATCHES}
@@ -161,6 +279,24 @@ class ApplyHermesPatchesTests(unittest.TestCase):
                          "cron/scheduler_delivery.py")
         self.assertEqual(patches["# Local Hermes: digest feedback callback"][0],
                          "plugins/platforms/telegram/adapter.py")
+
+    def test_filtered_marker_cannot_publish_a_misleading_summary(self):
+        patch = next(p for p in apply_hermes_patches._PATCHES
+                     if p[1] == "# Local Hermes: digest feedback loader")
+        loader = patch[3].split("    from gateway.config import load_gateway_config")[0]
+        namespace = {"os": os}
+        exec("def prepare(job, content, for_failure=False):\n" + loader
+             + "\n    return 'transport reached'\n", namespace)
+        with tempfile.TemporaryDirectory() as directory:
+            filtered = Path(directory) / "filtered-20261014-070202-e7d3e121.json"
+            filtered.write_text("{}")
+            env = {"AI_DIGEST_STATE_DIR": directory,
+                   "AI_DIGEST_SKILL_DIR": str(MODULE_PATH.parents[1] / "skills/ai_digest")}
+            with mock.patch.dict(os.environ, env):
+                result = namespace["prepare"]({"skills": ["ai_digest"]},
+                                              f"Все карточки готовы\nNEWS_CARDS:{filtered}")
+            self.assertIn("invalid or unavailable", result)
+            self.assertNotEqual(result, "transport reached")
 
     def test_cron_helper_install_is_idempotent_and_rejects_symlink_targets(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -195,7 +331,14 @@ class ApplyHermesPatchesTests(unittest.TestCase):
                              "_migrate_installed_doctor_handler", "_migrate_installed_telegram_usage_ranking",
                              "_migrate_installed_portal_info")
             }
-            install = mock.Mock(side_effect=[False, OSError("disk full")])
+            install = mock.Mock()
+
+            def install_with_one_failure(*_arguments):
+                if install.call_count == 2:
+                    raise OSError("disk full")
+                return False
+
+            install.side_effect = install_with_one_failure
             output, errors = io.StringIO(), io.StringIO()
             with mock.patch.multiple(
                 apply_hermes_patches,

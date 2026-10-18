@@ -102,6 +102,11 @@ def _db() -> sqlite3.Connection:
         );
         CREATE INDEX IF NOT EXISTS idx_tool_calls_ts ON tool_calls(ts);
         CREATE INDEX IF NOT EXISTS idx_tool_calls_name ON tool_calls(tool_name);
+        CREATE TABLE IF NOT EXISTS skill_events (
+          ts TEXT NOT NULL, skill_name TEXT, action TEXT, agent_type TEXT,
+          provenance TEXT, session_id TEXT, task_id TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_skill_events_ts ON skill_events(ts);
         CREATE TABLE IF NOT EXISTS sessions (
           ts TEXT NOT NULL, session_id TEXT, model TEXT, platform TEXT,
           event TEXT, completed INTEGER DEFAULT 0, failed INTEGER DEFAULT 0,

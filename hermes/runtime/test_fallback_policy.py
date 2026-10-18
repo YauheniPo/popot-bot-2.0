@@ -30,6 +30,20 @@ def load_module(name, path):
 
 
 class FallbackPolicyTests(unittest.TestCase):
+    def test_unclassified_404_falls_back_without_retrying_same_endpoint(self):
+        patcher = load_module('endpoint_patches', ROOT / 'runtime/apply-hermes-patches.py')
+        patch = next(p for p in patcher._PATCHES
+                     if p[1] == '# Local Hermes: terminal endpoint not found')
+        namespace = {'_v': lambda reason, **kwargs: SimpleNamespace(reason=reason, **kwargs),
+                     '_R': SimpleNamespace(unknown='unknown'),
+                     'c': SimpleNamespace(model_slug='fixture', provider_slug='fixture'),
+                     '_model_id_missing_known_prefix': lambda *args: False}
+        exec('def classify():\n' + patch[3], namespace)
+        verdict = namespace['classify']()
+        self.assertFalse(verdict.retryable)
+        self.assertTrue(verdict.should_fallback)
+        self.assertEqual(verdict.reason, 'unknown')
+
     def setUp(self):
         self.enterContext(mock.patch.dict('sys.modules', {
             'hermes_cli.providers': SimpleNamespace(ALIASES={'nim': 'nvidia'})}))
@@ -311,7 +325,9 @@ class FallbackPolicyTests(unittest.TestCase):
         task = next(t for t in tasks if t['name'] == 'Apply the managed Hermes model and voice configuration')
         env = Environment()
         env.filters.update(FilterModule().filters())
-        template = env.from_string(task['ansible.builtin.copy']['content'])
+        filters = load_module('deployment_state', ROOT / 'ansible/filter_plugins/deployment_state.py')
+        env.filters.update(filters.FilterModule().filters())
+        template = env.from_string(task['vars']['hermes_rendered_config'])
         settings = yaml.safe_load((ROOT / 'config/vps-defaults.yml').read_text())
         managed = settings['vps_hermes']['config']['managed_overlay']
         defaults = [{'provider': 'nous', 'model': 'a'}, {'provider': 'nous', 'model': 'b'}]
@@ -321,6 +337,7 @@ class FallbackPolicyTests(unittest.TestCase):
             for selected in ([], [{'provider': 'nous', 'model': 'chosen'}]):
                 values = dict(hermes_existing_config={'fallback_providers': selected},
                     hermes_managed_config=managed, hermes_external_skill_dirs=[],
+                    vps_runtime={}, hermes_runtime_capabilities=[],
                     vps_hermes=settings['vps_hermes'], vps_deploy={'features': {'workspace_ui': workspace}})
                 result = yaml.safe_load(template.render(**values))
                 self.assertEqual(result['fallback_providers'], defaults)

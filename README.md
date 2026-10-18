@@ -345,6 +345,9 @@ when the runner stops it at the step deadline. It is distinct from
 of reading the complete diff. The unavailable-review report includes matched
 and total line counts, Read call counts and failed Read counts. It never includes
 source lines or tool error bodies. Neither condition permits finalization.
+SDK success with valid JSON still receives this coverage check; partial reads
+return `diff_not_fully_read` with numeric `read_coverage`. Execution/budget errors
+remain ineligible for recovery even when their diff reads are incomplete.
 Claude Code runs in one `claude-code-plugin-review` job and one whole-diff
 session per attempt. There is no chunk matrix, artifact collection or aggregate
 publication job. The exact base/head diff is never truncated or shortened to
@@ -388,7 +391,16 @@ tool-free format repair solely because a later diff-anchor or file-write check f
 Reports distinguish finalization from the original attempt and show complete
 diff-read counts. These guards use
 the step's original `outcome`, because `continue-on-error` can make a failed
-attempt's `conclusion` show success. After diagnostics, an unconditional
+attempt's `conclusion` show success. A non-cancelled action failure with a saved
+execution log still runs local validation: the pinned action can reject its
+reported turn count after the SDK has already returned a successful result.
+Only a successful terminal SDK record, valid review JSON, complete matching
+diff-read evidence and valid changed anchors authorize publication. The action
+failure remains visible in execution metadata; it does not require another
+model request when that result passes validation. Invalid or unfinished logs
+cannot pass. Valid JSON with incomplete diff evidence uses the existing bounded
+reread, while complete JSON with invalid anchors cannot trigger format repair.
+Turn limits, deadlines and cancellation remain unchanged. After diagnostics, an unconditional
 non-cancelled completion step fails the stable `claude-code-plugin-review` job
 unless the complete result was published and its revision marker verified.
 The aggregate review gate also requires that publication. A provider outage,

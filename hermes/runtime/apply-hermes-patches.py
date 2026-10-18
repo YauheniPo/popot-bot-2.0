@@ -74,6 +74,10 @@ _STATE_FILE = ".local-hermes-patches.json"
 
 _TOOL_GUARDRAILS_PATH = "agent/tool_guardrails.py"
 _GATEWAY_SLASH_COMMANDS_MODEL_PATH = "gateway/slash_commands_model.py"
+_CHAT_COMPLETION_HELPERS_PATH = "agent/chat_completion_helpers.py"
+_CRON_PAGE_PATH = "web/src/pages/CronPage.tsx"
+_WEB_TOOLS_EXTRACT_PATH = "tools/web_tools_extract.py"
+_WEB_RESULT_CACHE_PATH = "tools/web_result_cache.py"
 
 class PatchMigrationError(RuntimeError):
     """Raised when an installed local patch has an unknown legacy shape."""
@@ -336,6 +340,20 @@ def _migrate_installed_telegram_usage_ranking() -> int:
 _PATCHES: list[tuple[str, str, str, str]] = [
     (
         _CRON_SCHEDULER_PATH,
+        _PREFIX + " competitor research tool observation",
+        '''        _audit = _FireAudit(job, job_id, model)
+
+        result = _run_agent_with_watchdog(''',
+        '''        _audit = _FireAudit(job, job_id, model)
+        # Local Hermes: competitor research tool observation
+        prepare_research = getattr(competitor_guard, "prepare_agent", None)
+        if prepare_research is not None:
+            prompt = prepare_research(agent, prompt)
+
+        result = _run_agent_with_watchdog(''',
+    ),
+    (
+        _CRON_SCHEDULER_PATH,
         _PREFIX + " competitor agent guard parameter",
         '''    cancel_event: Optional[_CancelEventLike] = None, execution_id: Optional[str] = None,
 ) -> tuple[bool, str, str, Optional[str]]:
@@ -382,13 +400,13 @@ _PATCHES: list[tuple[str, str, str, str]] = [
             def _repair_competitor_artifact(repair_prompt):
                 nonlocal result
                 if cancel_event is not None and cancel_event.is_set():
-                    raise RuntimeError("Competitor report repair cancelled")
+                    raise RuntimeError("Cron report repair cancelled")
                 if result.get("completed") is False:
-                    raise RuntimeError("Competitor report repair unavailable: agent budget exhausted")
+                    raise RuntimeError("Cron report repair unavailable: agent budget exhausted")
                 history = result.get("messages")
                 if not isinstance(history, list) or not history:
-                    raise RuntimeError("Competitor report repair unavailable: missing research history")
-                logger.info("Job '%s': correcting competitor artifact (one attempt)", job_id)
+                    raise RuntimeError("Cron report repair unavailable: missing research history")
+                logger.info("Job '%s': completing cron report (one additional attempt)", job_id)
                 result = _run_agent_with_watchdog(
                     agent, repair_prompt, job, job_id, job_name, scope.task_id, cancel_event,
                     worker_state=_worker_state, conversation_history=history)
@@ -396,7 +414,10 @@ _PATCHES: list[tuple[str, str, str, str]] = [
                 repair_error = _cron_failure_marker_error(repair_response)
                 if repair_error is not None:
                     raise RuntimeError(repair_error)
-            final_response = competitor_guard.finalize_with_repair(_repair_competitor_artifact)
+            remaining = getattr(getattr(agent, "iteration_budget", None), "remaining", None)
+            final_response = competitor_guard.finalize_with_repair(
+                _repair_competitor_artifact, allow_research=(result.get("completed") is not False
+                and (not isinstance(remaining, int) or remaining > 0)))
         if (setup.fallback_notice''',
     ),
     (
@@ -407,7 +428,11 @@ _PATCHES: list[tuple[str, str, str, str]] = [
 ''',
         '''        # Local Hermes: competitor run preparation
         from cron.competitor_digest import begin_run as _begin_competitor_run
-        competitor_guard = _begin_competitor_run(job, _get_hermes_home())
+        from cron.ai_digest_run import begin_run as _begin_digest_run
+        # Both report skills use the same bounded validation/repair/delivery lifecycle.
+        competitor_guard = _begin_digest_run(job, _get_hermes_home())
+        if competitor_guard is None:
+            competitor_guard = _begin_competitor_run(job, _get_hermes_home())
         if competitor_guard is not None:
             extra_prompt = competitor_guard.instructions(extra_prompt)
         _run_kwargs = {
@@ -454,6 +479,7 @@ _PATCHES: list[tuple[str, str, str, str]] = [
             if competitor_guard is not None and d.success:
                 final_response = competitor_guard.finalize()
                 output = final_response
+                job["_competitor_split_report"] = bool(getattr(competitor_guard, "split_delivery", False))
             _save_compose_deliver(
                 d, fence, final_response, output, adapters=adapters, loop=loop, verbose=verbose,
                 execution_token=execution_token, competitor_guard=competitor_guard)
@@ -933,7 +959,7 @@ def _tool_call_logger() -> logging.Logger:
 ''',
     ),
     (
-        "gateway/slash_commands_model.py",
+        _GATEWAY_SLASH_COMMANDS_MODEL_PATH,
         _PREFIX + " chat model for all cron jobs",
         '''        global_error = await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
         reply = await self._model_switch_confirmation(
@@ -1020,7 +1046,7 @@ def _tool_call_logger() -> logging.Logger:
 ''',
     ),
     (
-        "gateway/slash_commands_model.py",
+        _GATEWAY_SLASH_COMMANDS_MODEL_PATH,
         _PREFIX + " model_global handler",
         '''    async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
 ''',
@@ -1562,6 +1588,45 @@ def _clamp_command_names(
 # disabled_toolsets subtraction still applies after this selection.
 _PATCHES.extend([
     (
+        "agent/error_classifier.py", _PREFIX + " terminal endpoint not found",
+        '    return _V_MODEL_NOT_FOUND if _model_id_missing_known_prefix(c.model_slug, c.provider_slug) else _V_UNKNOWN\n',
+        '''    # Local Hermes: terminal endpoint not found
+    # Billing/policy/model-specific 404 rules above still win. An unmatched 404
+    # is not repaired by replaying the same endpoint; retain the honest reason.
+    if _model_id_missing_known_prefix(c.model_slug, c.provider_slug):
+        return _V_MODEL_NOT_FOUND
+    return _v(_R.unknown, retryable=False, should_fallback=True)
+''',
+    ),
+    (
+        "hermes_cli/plugins.py", _PREFIX + " model fallback observer",
+        '    "on_skill_lifecycle", "subagent_start", "subagent_stop",\n',
+        '''    # Local Hermes: model fallback observer
+    "on_model_fallback",
+    "on_skill_lifecycle", "subagent_start", "subagent_stop",
+''',
+    ),
+    (
+        _CHAT_COMPLETION_HELPERS_PATH, _PREFIX + " confirmed fallback telemetry",
+        '''            agent.runtime_capabilities = resolve_native_compaction_capabilities(
+                model=agent.model, base_url=agent.base_url, provider=fb_provider, is_codex_backend=fb_provider == "openai-codex")
+            return True
+''',
+        '''            agent.runtime_capabilities = resolve_native_compaction_capabilities(
+                model=agent.model, base_url=agent.base_url, provider=fb_provider, is_codex_backend=fb_provider == "openai-codex")
+            # Local Hermes: confirmed fallback telemetry
+            try:
+                from hermes_cli.lifecycle import has_hook, invoke_hook
+                if has_hook("on_model_fallback"):
+                    invoke_hook("on_model_fallback", from_provider=old_provider, from_model=old_model,
+                                to_provider=fb_provider, to_model=fb_model,
+                                session_id=agent.session_id or "")
+            except Exception:
+                logger.debug("Fallback observer failed", exc_info=True)
+            return True
+''',
+    ),
+    (
         "toolsets.py", _PREFIX + " cron skill readers",
         '    "skills": _ts(\n',
         '''    # Local Hermes: cron skill readers
@@ -1670,6 +1735,219 @@ _PATCHES.extend([
     ),
 ])
 
+_PATCHES.extend([
+    (
+        "hermes_cli/web_server_cron.py", _PREFIX + " shared cron activity",
+        '''    return {
+        **job,
+        "profile": profile,''',
+        '''    # Local Hermes: shared cron activity
+    from datetime import datetime, timezone
+    from cron.jobs import _claim_is_live, FIRE_CLAIM_TTL_SECONDS
+    return {
+        **job,
+        "is_running": _claim_is_live(job.get("fire_claim"), datetime.now(timezone.utc), FIRE_CLAIM_TTL_SECONDS),
+        "profile": profile,''',
+    ),
+    (
+        "web/src/lib/api.ts", _PREFIX + " cron request deadline",
+        '''  getCronJobs: (profile = "all") =>
+    fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),''',
+        '''  // # Local Hermes: cron request deadline
+  getCronJobs: (profile = "all", signal?: AbortSignal) =>
+    fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
+      cache: "no-store",
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
+    }),''',
+    ),
+    (
+        "web/src/lib/api.ts", _PREFIX + " cron activity type",
+        '''export interface CronJob {
+  id: string;''',
+        '''export interface CronJob {
+  // # Local Hermes: cron activity type
+  is_running?: boolean;
+  id: string;''',
+    ),
+    (
+        _CRON_PAGE_PATH, _PREFIX + " cron activity badge",
+        '''                    {lastResult && lastResult.status !== "ok" && (''',
+        '''                    {/* # Local Hermes: cron activity badge */}
+                    {job.is_running && <Badge tone="warning">Running</Badge>}
+                    {lastResult && lastResult.status !== "ok" && (''',
+    ),
+    (
+        _CRON_PAGE_PATH, _PREFIX + " cron cancellable refresh",
+        '''  const loadJobs = useCallback((profile: string) => {''',
+        '''  // # Local Hermes: cron cancellable refresh
+  const loadJobs = useCallback((profile: string, signal?: AbortSignal) => {''',
+    ),
+    (
+        _CRON_PAGE_PATH, _PREFIX + " cron awaited refresh",
+        '''    api
+      .getCronJobs(profile)''',
+        '''    // # Local Hermes: cron awaited refresh
+    return api
+      .getCronJobs(profile, signal)''',
+    ),
+    (
+        _CRON_PAGE_PATH, _PREFIX + " cron activity polling",
+        '''    jobsActiveRef.current = true;
+    selectedProfileRef.current = selectedProfile;
+    loadJobs(selectedProfile);
+
+    return () => {
+      jobsActiveRef.current = false;
+      jobsRequestGenerationRef.current += 1;
+    };''',
+        '''    // # Local Hermes: cron activity polling
+    jobsActiveRef.current = true;
+    selectedProfileRef.current = selectedProfile;
+    const controller = new AbortController();
+    let timer: number | undefined;
+    const poll = async () => {
+      await loadJobs(selectedProfile, controller.signal);
+      if (!controller.signal.aborted) timer = window.setTimeout(() => void poll(), 5_000);
+    };
+    void poll();
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+      jobsActiveRef.current = false;
+      jobsRequestGenerationRef.current += 1;
+    };''',
+    ),
+    (
+        _CRON_PAGE_PATH, _PREFIX + " cron activity button",
+        '''                    disabled={triggeringJobKeys.has(jobKey)}
+                    title={t.cron.triggerNow}
+                    aria-label={t.cron.triggerNow}
+                    onClick={() => handleTrigger(job)}
+                  >
+                    {triggeringJobKeys.has(jobKey) ? <Spinner /> : <Zap />}''',
+        '''                    disabled={/* # Local Hermes: cron activity button */
+                      triggeringJobKeys.has(jobKey) || job.is_running !== false || !!jobsLoadError}
+                    title={job.is_running ? "Running" : jobsLoadError || job.is_running === undefined ? "Status unavailable" : t.cron.triggerNow}
+                    aria-label={t.cron.triggerNow}
+                    aria-busy={job.is_running || triggeringJobKeys.has(jobKey)}
+                    onClick={() => handleTrigger(job)}
+                  >
+                    {job.is_running || triggeringJobKeys.has(jobKey) ? <Spinner /> : <Zap />}''',
+    ),
+])
+
+# Keep web quality checks testable without importing provider SDKs. The source
+# lives inside the existing extraction module after the fingerprinted patch.
+_WEB_EXTRACT_QUALITY = Path(__file__).with_name("web_extract_quality.py").read_text(encoding="utf-8")
+_PATCHES.extend([
+    (
+        _WEB_TOOLS_EXTRACT_PATH, _PREFIX + " extraction quality checks",
+        '\ndef _web_extract_url(value: Any) -> Optional[str]:\n',
+        '\n# Local Hermes: extraction quality checks\n' + _WEB_EXTRACT_QUALITY
+        + '\n\ndef _web_extract_url(value: Any) -> Optional[str]:\n',
+    ),
+    (
+        _WEB_TOOLS_EXTRACT_PATH, _PREFIX + " partial extraction rescue",
+        '''    if results and all(r.get("error") for r in results) and _rescue_eligible(provider):
+        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
+''',
+        '''    # Local Hermes: partial extraction rescue
+    rescued_indices = set()
+    if results and any(r.get("error") for r in results) and _rescue_eligible(provider):
+        if all(r.get("error") for r in results):
+            return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
+        indices = _rate_limited_extract_indices(results, fetch_urls)
+        if indices:
+            urls = [_requested_extract_url(results[i], fetch_urls) for i in indices]
+            rescued = await asyncio.to_thread(
+                _rescue_extract, provider.name, urls, [results[i] for i in indices])
+            # Match by URL, never position: a rescue may omit or reorder entries.
+            for i, url in zip(indices, urls):
+                matches = [r for r in rescued if _requested_extract_url(r, urls) == url]
+                if len(matches) == 1 and not matches[0].get("error"):
+                    results[i] = matches[0]
+                    rescued_indices.add(i)
+    _mark_incomplete_extractions(results)
+''',
+    ),
+    (
+        _WEB_TOOLS_EXTRACT_PATH, _PREFIX + " extraction cache quality",
+        '''    for fetched in results:
+        meta = fetched.get("metadata")''',
+        '''    # Local Hermes: extraction cache quality
+    for index, fetched in enumerate(results):
+        if index in rescued_indices:
+            continue  # a one-shot free-tier rescue must not become sticky
+        meta = fetched.get("metadata")''',
+    ),
+    (
+        _WEB_TOOLS_EXTRACT_PATH, _PREFIX + " extraction cache dates",
+        '''            extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)''',
+        '''            # Local Hermes: extraction cache dates
+            extract_cache_put(url, _content, fetched.get("title", ""), format=format,
+                              provider=provider.name, metadata=_safe_extract_metadata(meta))''',
+    ),
+    (
+        _WEB_TOOLS_EXTRACT_PATH, _PREFIX + " reject cached consent shells",
+        '''        if hit is not None:
+            cached_results[position] = hit''',
+        '''        # Local Hermes: reject cached consent shells
+        if hit is not None and not _consent_dominated_extract(hit):
+            cached_results[position] = hit''',
+    ),
+    (
+        _WEB_TOOLS_EXTRACT_PATH, _PREFIX + " check rescued page quality",
+        '''    results = await _dispatch_extract(provider, fetch_urls, format)''',
+        '''    # Local Hermes: check rescued page quality
+    results = _mark_incomplete_extractions(await _dispatch_extract(provider, fetch_urls, format))''',
+    ),
+    (
+        "tools/web_tools_truncate.py", _PREFIX + " safe extraction dates",
+        '''    return [
+        {
+            "url": r.get("url", ""), "title": r.get("title", ""), "content": r.get("content", ""),
+            "error": r.get("error"),''',
+        '''    # Local Hermes: safe extraction dates
+    from tools.web_tools_extract import _safe_extract_metadata
+    return [
+        {
+            "url": r.get("url", ""), "title": r.get("title", ""), "content": r.get("content", ""),
+            "error": r.get("error"),
+            **({"metadata": dates} if (dates := _safe_extract_metadata(r.get("metadata"))) else {}),''',
+    ),
+    (
+        _WEB_RESULT_CACHE_PATH, _PREFIX + " cached extraction dates",
+        '''    return {"url": url, "title": entry.get("title", ""), "content": content, "error": None, "cached": True}''',
+        '''    # Local Hermes: cached extraction dates
+    from tools.web_tools_extract import _safe_extract_metadata
+    dates = _safe_extract_metadata(entry.get("metadata"))
+    return {"url": url, "title": entry.get("title", ""), "content": content, "error": None, "cached": True,
+            **({"metadata": dates} if dates else {})}''',
+    ),
+    (
+        _WEB_RESULT_CACHE_PATH, _PREFIX + " extraction cache metadata argument",
+        '''    url: str, content: str, title: str = "", format: Optional[str] = None, provider: str = ""
+) -> None:''',
+        '''    # Local Hermes: extraction cache metadata argument
+    url: str, content: str, title: str = "", format: Optional[str] = None, provider: str = "", metadata=None
+) -> None:''',
+    ),
+    (
+        _WEB_RESULT_CACHE_PATH, _PREFIX + " stored extraction dates",
+        '''            index[_url_digest(url, format, provider)] = {
+                "url": url, "file": str(file_path), "title": title or "", "fetched_at": time.time(),
+            }''',
+        '''            # Local Hermes: stored extraction dates
+            from tools.web_tools_extract import _safe_extract_metadata
+            dates = _safe_extract_metadata(metadata)
+            index[_url_digest(url, format, provider)] = {
+                "url": url, "file": str(file_path), "title": title or "", "fetched_at": time.time(),
+                **({"metadata": dates} if dates else {}),
+            }''',
+    ),
+])
+
 # Keep the implementation testable as ordinary Python; install it through the
 # same fingerprinted source-patch mechanism, not a sys.path/bootstrap hook.
 _FALLBACK_POLICY = Path(__file__).with_name("fallback-policy.py").read_text(encoding="utf-8")
@@ -1716,7 +1994,7 @@ _PATCHES.extend([
         '    _IDLE_COMMANDS = (\n        # Local Hermes: fallback route\n        "fallback",\n',
     ),
     (
-        "gateway/slash_commands_model.py", _PREFIX + " fallback handler",
+        _GATEWAY_SLASH_COMMANDS_MODEL_PATH, _PREFIX + " fallback handler",
         '    def _save_gateway_config_key(self, key_path: str, value) -> bool:\n',
         '''    # Local Hermes: fallback handler
     async def _handle_fallback_command(self, event: MessageEvent) -> Optional[str]:
@@ -1730,7 +2008,7 @@ _PATCHES.extend([
 ''',
     ),
     (
-        "agent/chat_completion_helpers.py", _PREFIX + " fallback quota scope",
+        _CHAT_COMPLETION_HELPERS_PATH, _PREFIX + " fallback quota scope",
         '    cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)\n',
         '''    cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
     # Local Hermes: fallback quota scope
@@ -1739,7 +2017,7 @@ _PATCHES.extend([
 ''',
     ),
     (
-        "agent/chat_completion_helpers.py", _PREFIX + " fallback quota candidate",
+        _CHAT_COMPLETION_HELPERS_PATH, _PREFIX + " fallback quota candidate",
         '        fb_key = _fallback_entry_key(fb)\n',
         '''        # Local Hermes: fallback quota candidate
         if not allow_fallback_candidate(agent, fb):
@@ -1775,7 +2053,13 @@ _PATCHES.extend([
     # Wrap with header/footer unless cron.wrap_response: false.
 ''',
         '''    # Local Hermes: digest feedback loader
-    digest_marker_seen = "NEWS_CARDS:" in content
+    digest_skills = job.get("skills") or job.get("skill") or []
+    if isinstance(digest_skills, str):
+        digest_skills = [digest_skills]
+    digest_required = not for_failure and not job.get("no_agent") and "ai_digest" in digest_skills
+    digest_marker_seen = not for_failure and "ai_digest" in digest_skills and "NEWS_CARDS:" in content
+    if digest_required and not digest_marker_seen:
+        return "digest cards result missing; summary was not sent"
     digest_feedback = None
     digest_cards_path = None
     if digest_marker_seen:
@@ -1790,9 +2074,8 @@ _PATCHES.extend([
                 spec.loader.exec_module(digest_feedback)
                 state_dir = Path(os.environ.get("AI_DIGEST_STATE_DIR", "~/.hermes/ops/news")).expanduser()
                 content, digest_cards_path = digest_feedback.extract_cards_marker(content, job, state_dir)
-        if digest_feedback is None:
-            content = "\\n".join(line for line in content.splitlines()
-                                if not line.startswith("NEWS_CARDS:"))
+        if digest_cards_path is None:
+            return "digest cards marker is invalid or unavailable; summary was not sent"
 
     from gateway.config import load_gateway_config
 
@@ -1806,12 +2089,10 @@ _PATCHES.extend([
 ''',
         '''    delivery_errors = []
     # Local Hermes: digest card prerequisites
-    if digest_marker_seen and digest_cards_path is None:
-        delivery_errors.append("digest cards marker is invalid or unavailable")
     digest_target_ok = (digest_cards_path is not None and sum(
         target["platform"] == "telegram" for target in targets) == 1)
     if digest_cards_path is not None and not digest_target_ok:
-        delivery_errors.append("digest cards require exactly one Telegram delivery target")
+        return "digest cards require exactly one Telegram delivery target; summary was not sent"
     suppressed_targets = 0  # local: `job` is snapshotted into durable deferred records mid-loop
 ''',
     ),
@@ -1830,18 +2111,9 @@ _PATCHES.extend([
     # Filter-time drops apply to every target; report them once. A run whose every target was
 ''',
         '''        target_errors: list = []
-        errors_before = len(delivery_errors)
-        delivered = t.live_adapter_ready and _deliver_via_live_adapter(
-            t, cleaned_delivery_content, media_files,
-            target_errors=target_errors, delivery_errors=delivery_errors,
-            unverified_targets=unverified_targets,
-        )
-        if not delivered:
-            _deliver_standalone(
-                t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
         # Local Hermes: digest card delivery
         if (digest_target_ok and digest_feedback is not None
-                and target["platform"] == "telegram" and len(delivery_errors) == errors_before):
+                and target["platform"] == "telegram"):
             try:
                 from gateway.platforms._shared import get_scoped_secret
                 origin = job.get("origin") or {}
@@ -1852,7 +2124,29 @@ _PATCHES.extend([
                 digest_feedback.deliver_cards_to_telegram(
                     digest_cards_path, state_dir, target, str(owner_id), token)
             except Exception as exc:
-                delivery_errors.append(f"digest cards failed for {t.where}: {type(exc).__name__}")
+                detail = digest_feedback.delivery_error_detail(exc)
+                delivery_errors.append(f"digest cards failed for {t.where}: {detail}")
+                continue
+        # Publish the rating summary only after all cards have confirmed receipts.
+        # Local Hermes: competitor message separation
+        # Split only the runtime-rendered report, after the shared redaction gate.
+        # A detached worker queues the whole report once, preserving its native idempotency key.
+        parts = [cleaned_delivery_content]
+        if job.get("_competitor_split_report") and not for_failure:
+            news, separator, details = cleaned_delivery_content.partition("\\n\\nCronjob Response: ")
+            if separator:
+                parts = [news, "Cronjob Response: " + details]
+        for part in parts:
+            if job.get("_competitor_split_report") and not for_failure:
+                t.mirror_text = part
+            delivered = t.live_adapter_ready and _deliver_via_live_adapter(
+                t, part, media_files,
+                target_errors=target_errors, delivery_errors=delivery_errors,
+                unverified_targets=unverified_targets,
+            )
+            if not delivered:
+                _deliver_standalone(
+                    t, part, media_files, target_errors, delivery_errors)
 
     # Filter-time drops apply to every target; report them once. A run whose every target was
 ''',
@@ -1990,6 +2284,20 @@ def _classify_patch(
     return "upgrade"
 
 
+_PATCHES.extend([
+    (
+        _CRON_SCHEDULER_DELIVERY_PATH, _PREFIX + " competitor wrapper separation",
+        '''    if wrap_response:
+        task_name = job.get("name", job["id"])''',
+        '''    # Local Hermes: competitor wrapper separation
+    if job.get("_competitor_split_report") and not for_failure:
+        wrap_response = False
+    if wrap_response:
+        task_name = job.get("name", job["id"])''',
+    ),
+])
+
+
 def _apply_one_patch(
     relative_path: str,
     marker: str,
@@ -2069,6 +2377,54 @@ def _install_cron_helper(source_name: str, target_name: str) -> bool:
     return True
 
 
+def _patches_for_run(backup_only: bool):
+    return [patch for patch in _PATCHES
+            if not backup_only or patch[0] == _BACKUP_PATH]
+
+
+def _migrate_legacy_patches(backup_only: bool) -> int:
+    if backup_only:
+        return 0
+    migrations = (
+        _migrate_installed_model_global,
+        _migrate_installed_gw_restart,
+        _migrate_installed_doctor_handler,
+        _migrate_installed_telegram_usage_ranking,
+        _migrate_installed_portal_info,
+    )
+    return sum(migrate() for migrate in migrations)
+
+
+def _apply_patch_set(backup_only: bool, allow_unmatched_backup: bool, patch_state):
+    applied = 0
+    failures: list[str] = []
+    state_changed = False
+    for relative_path, marker, old, new in _patches_for_run(backup_only):
+        delta, failure, changed = _apply_one_patch(
+            relative_path, marker, old, new, patch_state,
+            warn_unmatched=backup_only and allow_unmatched_backup)
+        applied += delta
+        state_changed = state_changed or changed
+        if failure is not None:
+            failures.append(failure)
+    return applied, failures, state_changed
+
+
+def _install_cron_helpers(backup_only: bool, failures: list[str]):
+    if backup_only or failures:
+        return False, failures
+    helper_changed = False
+    for source_name, target_name in (("competitor_digest.py", "competitor_digest.py"),
+                                     ("cron_shared_model.py", "shared_model.py"),
+                                     ("ai_digest_run.py", "ai_digest_run.py")):
+        try:
+            helper_changed = _install_cron_helper(source_name, target_name) or helper_changed
+        except (OSError, PatchMigrationError) as exc:
+            print(f"[hermes-patch] ERROR: cannot install cron helper: {exc}", file=sys.stderr)
+            failures.append(f"cron/{target_name}")
+    return helper_changed, failures
+
+
 def main(*, backup_only: bool = False, allow_unmatched_backup: bool = False) -> int:
     if not HERMES_AGENT_DIR.is_dir():
         print(
@@ -2078,39 +2434,13 @@ def main(*, backup_only: bool = False, allow_unmatched_backup: bool = False) -> 
         return 1
     try:
         # Before the mandatory backup, do not mutate unrelated gateway code.
-        migrated = 0 if backup_only else (
-            _migrate_installed_model_global()
-            + _migrate_installed_gw_restart()
-            + _migrate_installed_doctor_handler()
-            + _migrate_installed_telegram_usage_ranking()
-            + _migrate_installed_portal_info()
-        )
+        migrated = _migrate_legacy_patches(backup_only)
     except PatchMigrationError as exc:
         print(f"[hermes-patch] ERROR: {exc}", file=sys.stderr)
         return 1
-    applied = 0
-    failures: list[str] = []
     patch_state = _load_patch_state()
-    state_changed = False
-    for relative_path, marker, old, new in _PATCHES:
-        if backup_only and relative_path != _BACKUP_PATH:
-            continue
-        delta, failure, changed = _apply_one_patch(
-            relative_path, marker, old, new, patch_state,
-            warn_unmatched=backup_only and allow_unmatched_backup)
-        applied += delta
-        state_changed = state_changed or changed
-        if failure is not None:
-            failures.append(failure)
-    helper_changed = False
-    if not backup_only and not failures:
-        for source_name, target_name in (("competitor_digest.py", "competitor_digest.py"),
-                                         ("cron_shared_model.py", "shared_model.py")):
-            try:
-                helper_changed = _install_cron_helper(source_name, target_name) or helper_changed
-            except (OSError, PatchMigrationError) as exc:
-                print(f"[hermes-patch] ERROR: cannot install cron helper: {exc}", file=sys.stderr)
-                failures.append(f"cron/{target_name}")
+    applied, failures, state_changed = _apply_patch_set(backup_only, allow_unmatched_backup, patch_state)
+    helper_changed, failures = _install_cron_helpers(backup_only, failures)
     if applied or migrated or helper_changed:
         print("[hermes-patch] changed")
     if state_changed:

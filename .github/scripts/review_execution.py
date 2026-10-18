@@ -14,7 +14,17 @@ PUBLIC_ENDPOINTS = frozenset({
     "https://inference-api.nousresearch.com", "https://inference-api.nousresearch.com/v1/chat/completions",
 })
 MAX_HISTORY_ROWS = 40
+VALIDATED_OUTCOMES = frozenset({"valid_json", "valid_json_filtered", "valid_json_after_action_failure"})
 EXECUTION_METADATA = re.compile(r"<!-- review-execution -->.*?<!-- /review-execution -->", re.DOTALL)
+
+# Helper for claude_execution_report
+def _determine_result(outcome: str, validation: str) -> str:
+    if outcome == "success":
+        return "valid_json" if validation == "success" else "validation_failed"
+    if outcome == "failure" and validation == "success":
+        return "valid_json_after_action_failure"
+    return "execution_failed"
+
 
 
 def strip_execution_metadata(text: str) -> str:
@@ -85,7 +95,7 @@ class ExecutionReport:
         return f"> Connection: `{safe_label(self.provider)}` · API: `{endpoint}`"
 
     def summary(self) -> str:
-        successes = [a for a in self.attempts if a.outcome in {"valid_json", "valid_json_filtered"}]
+        successes = [a for a in self.attempts if a.outcome in VALIDATED_OUTCOMES]
         models = sorted({a.model for a in successes})
         # Each unit (chunk or triage) has one initial request. Attempt.number is
         # global report order, so counting number == 1 would mislabel new chunks.
@@ -102,7 +112,7 @@ class ExecutionReport:
 
     def footer(self, unit: str) -> str:
         attempts = [a for a in self.attempts if a.unit == unit]
-        successes = [a for a in attempts if a.outcome in {"valid_json", "valid_json_filtered"}]
+        successes = [a for a in attempts if a.outcome in VALIDATED_OUTCOMES]
         if not successes:
             return ""
         success = successes[-1]
@@ -167,10 +177,12 @@ def observable_execution_report(raw_attempts: list[dict], total_chunks: int) -> 
 
 
 def claude_execution_report(environment: Mapping[str, str]) -> ExecutionReport:
+    """Bounded publication metadata from observed execution, never model prose."""
     primary = environment.get("CLAUDE_REVIEW_PRIMARY_MODEL", environment.get("CLAUDE_REVIEW_MODEL", "unknown"))
     report = ExecutionReport(
         environment.get("CLAUDE_REVIEW_PROVIDER", "unknown"),
-        environment.get("CLAUDE_REVIEW_ENDPOINT", ""), primary, kind="claude",
+        environment.get("CLAUDE_REVIEW_ENDPOINT", ""),
+        primary, kind="claude",
     )
     for stage in ("PRIMARY", "PRIMARY_FINALIZE", "RETRY", "FALLBACK", "FALLBACK_FINALIZE", "FALLBACK_RETRY"):
         outcome = environment.get(f"CLAUDE_REVIEW_{stage}_OUTCOME", "skipped")
@@ -183,8 +195,6 @@ def claude_execution_report(environment: Mapping[str, str]) -> ExecutionReport:
         if stage.endswith("_FINALIZE"):
             route += "_finalize"
         attempt = report.begin({"model": model}, route=route)
-        result = "execution_failed"
-        if outcome == "success":
-            result = "valid_json" if validation == "success" else "validation_failed"
+        result = _determine_result(outcome, validation)
         report.finish(attempt, result, None)
     return report

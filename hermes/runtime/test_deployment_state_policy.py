@@ -39,7 +39,7 @@ class DeploymentStatePolicyTests(unittest.TestCase):
             artifacts = []
             for index in range(3):
                 variables = {"hermes_backup_dir": directory,
-                             "ansible_date_time": {"iso8601_basic_short": "20261003T120000"}}
+                             "ansible_facts": {"date_time": {"iso8601_basic_short": "20261003T120000"}}}
                 for fact in facts:
                     variables.update({key: template.from_string(value).render(variables)
                                       for key, value in fact.items()})
@@ -267,7 +267,7 @@ class DeploymentStatePolicyTests(unittest.TestCase):
 
         tasks = yaml.safe_load((HERMES_ROOT / "ansible/tasks/services.yml").read_text())
         task = next(item for item in tasks if item.get("register") == "hermes_local_patches")
-        self.assertEqual(task.get("notify"), "restart Hermes gateway")
+        self.assertEqual(task.get("notify"), ["restart Hermes gateway", "restart managed observability services"])
         expression = Environment().compile_expression(task["changed_when"])
         for output, expected in (("[hermes-patch] changed\n", True),
                                  ("[hermes-patch] done: 0 patch(es) applied\n", False)):

@@ -71,29 +71,19 @@ install_observability_plugin() {
     install -o "${HERMES_USER}" -g "${HERMES_GROUP}" -m 0600 /dev/null \
         "${HERMES_HOME}/.backup.lock"
 
+    local plugin_file gateway_service
+    gateway_service="$(managed_services gateway)"
     for plugin_file in \
         plugin.yaml \
         __init__.py \
         billing.py \
-        commands.py \
         hooks.py \
-        metrics.py \
         privacy.py \
         storage.py; do
-        if [[ ! -f "${HERMES_HOME}/plugins/ops-observability/${plugin_file}" ]] || \
-            ! cmp -s "${SCRIPT_DIR}/plugin/ops-observability/${plugin_file}" "${HERMES_HOME}/plugins/ops-observability/${plugin_file}"; then
-            PLUGIN_CONTENT_CHANGED=true
-            break
-        fi
+        install_managed_file "${SCRIPT_DIR}/plugin/ops-observability/${plugin_file}" \
+            "${HERMES_HOME}/plugins/ops-observability/${plugin_file}" 0600 \
+            "${HERMES_USER}" "${HERMES_GROUP}" "$gateway_service"
     done
-    install -o "${HERMES_USER}" -g "${HERMES_GROUP}" -m 0600 \
-        "${SCRIPT_DIR}/plugin/ops-observability/plugin.yaml" \
-        "${SCRIPT_DIR}/plugin/ops-observability/__init__.py" \
-        "${SCRIPT_DIR}/plugin/ops-observability/billing.py" \
-        "${SCRIPT_DIR}/plugin/ops-observability/hooks.py" \
-        "${SCRIPT_DIR}/plugin/ops-observability/privacy.py" \
-        "${SCRIPT_DIR}/plugin/ops-observability/storage.py" \
-        "${HERMES_HOME}/plugins/ops-observability/"
     rm -rf -- "${HERMES_HOME}/plugins/ops-observability/dashboard"
 
     if [[ ! -e "${HERMES_HOME}/ops/model-prices.json" ]]; then

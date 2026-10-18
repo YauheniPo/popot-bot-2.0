@@ -10,8 +10,10 @@ WORKSPACE_DIR="/home/hermes/workspace"
 BACKUP_DIR="/home/hermes/hermes-backups"
 START_TIMERS=true
 RESTART_SERVICES=true
-PLUGIN_CONTENT_CHANGED=false
 PLUGIN_CONFIGURATION_CHANGED=false
+OPS_CHANGED=false
+OPS_RESTART_DIR=/var/lib/hermes-ops/restart-required
+ACK_RESTARTS=false
 VSCODE_ENABLED=false
 VSCODE_COMPOSE_FILE=""
 VSCODE_ENV_FILE="/etc/code-server.env"
@@ -46,6 +48,7 @@ Options:
                        Managed Docker Compose project name
   --defer-timers       Install but do not start the monitoring timers yet
   --no-restart         Let the parent deploy restart managed runtime services
+  --ack-restarts       Clear pending restarts after the parent verified services
   -h, --help           Show this help
 EOF
 }
@@ -109,6 +112,10 @@ while (($#)); do
             RESTART_SERVICES=false
             shift
             ;;
+        --ack-restarts)
+            ACK_RESTARTS=true
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -164,8 +171,17 @@ source "$SCRIPT_DIR/install/assets.sh"
 # shellcheck source=install/services.sh
 source "$SCRIPT_DIR/install/services.sh"
 
+if [[ "$ACK_RESTARTS" == true ]]; then
+    acknowledge_ops_restarts
+    exit 0
+fi
+
 install_observability_dependencies
 install_observability_plugin
 install_superpowers_plugin
 install_operations_assets
+if [[ "$PLUGIN_CONFIGURATION_CHANGED" == true ]]; then
+    mark_ops_change "$(managed_services gateway)"
+fi
 reconcile_observability_services
+report_ops_changes

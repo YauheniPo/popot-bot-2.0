@@ -20,6 +20,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import textwrap
 import tomllib
 from types import ModuleType, SimpleNamespace
 import unittest
@@ -38,6 +39,132 @@ UPSTREAM = os.environ.get("HERMES_UPSTREAM_DIR")
 
 @unittest.skipUnless(UPSTREAM, "HERMES_UPSTREAM_DIR is not configured")
 class HermesUpstreamTests(unittest.TestCase):
+    def test_managed_verification_skill_loads_through_native_autoload(self):
+        # Use the real pinned skill resolver and external directory, without a
+        # model call. Only the VPS platform is simulated on non-Linux hosts.
+        script = '''
+import os, sys, tempfile
+from pathlib import Path
+from unittest import mock
+import yaml
+root = Path(sys.argv[2])
+settings = yaml.safe_load((root / 'config/vps-defaults.yml').read_text())
+with tempfile.TemporaryDirectory() as directory:
+    os.environ['HERMES_HOME'] = directory
+    config = {'skills': {
+        'auto_load': settings['vps_runtime']['set_if_missing']['skills.auto_load'],
+        'external_dirs': [str(root / 'skills')],
+    }}
+    Path(directory, 'config.yaml').write_text(yaml.safe_dump(config))
+    sys.path.insert(0, sys.argv[1])
+    from agent.skill_commands import build_auto_load_prompt
+    with mock.patch('agent.skill_utils.sys.platform', 'linux'):
+        prompt, loaded, missing = build_auto_load_prompt(
+            user_config=config, home_override=Path(directory))
+        assert 'task_verification' in loaded, (loaded, missing)
+        assert not missing, missing
+        assert 'references/diagnosing-failures.md' in prompt
+        config['skills']['auto_load'] = []
+        assert build_auto_load_prompt(user_config=config, home_override=Path(directory)) == ('', [], [])
+'''
+        result = subprocess.run(
+            [sys.executable, '-c', script, str(UPSTREAM), str(ROOT)],
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_endpoint_404_is_terminal_but_specific_error_reasons_are_preserved(self):
+        classifier = ModuleType('endpoint_classifier_fixture')
+        with mock.patch.dict(sys.modules, {classifier.__name__: classifier}):
+            exec(self.patched_source('agent/error_classifier.py'), classifier.__dict__)
+        for message, code, reason in (
+            ('page not found', '', 'unknown'),
+            ('Not Found', 'insufficient_quota', 'billing'),
+            ('model not found', '', 'model_not_found'),
+        ):
+            with self.subTest(message=message):
+                context = SimpleNamespace(msg=message, code=code, model_slug='fixture', provider_slug='fixture')
+                with mock.patch.object(classifier, '_model_id_missing_known_prefix', return_value=False):
+                    verdict = classifier._status_404(context)
+                self.assertEqual(verdict['reason'].value, reason)
+                self.assertFalse(verdict.get('retryable', False))
+                self.assertTrue(verdict['should_fallback'])
+                self.assertNotIn(verdict['reason'], classifier.RETRYABLE_CLIENT_REASONS)
+        with mock.patch.object(classifier, '_model_id_missing_known_prefix', return_value=True):
+            context = SimpleNamespace(msg='not found', code='', model_slug='fixture', provider_slug='fixture')
+            self.assertEqual(classifier._status_404(context), classifier._V_MODEL_NOT_FOUND)
+
+    def test_fallback_observer_is_best_effort_and_runs_after_route_initialization(self):
+        patch = next(p for p in patches._PATCHES if p[1] == '# Local Hermes: confirmed fallback telemetry')
+        source = 'def activate():\n' + textwrap.indent(textwrap.dedent(patch[3]), '    ')
+        agent = SimpleNamespace(model='new', base_url='endpoint', session_id='session')
+        namespace = dict(agent=agent, fb_provider='new-provider', fb_model='new',
+                         old_provider='old-provider', old_model='old', logger=mock.Mock())
+        resolve = namespace['resolve_native_compaction_capabilities'] = mock.Mock(return_value='capabilities')
+        exec(source, namespace)
+        for available, error in ((False, None), (True, None), (True, RuntimeError('observer unavailable'))):
+            invoke = mock.Mock(side_effect=error)
+            with mock.patch.dict(sys.modules, {'hermes_cli.lifecycle': SimpleNamespace(
+                    has_hook=lambda _: available, invoke_hook=invoke)}):
+                self.assertTrue(namespace['activate']())
+            self.assertEqual(invoke.call_count, int(available))
+            self.assertEqual(agent.runtime_capabilities, 'capabilities')
+        resolve.side_effect = RuntimeError('route initialization failed')
+        with mock.patch.dict(sys.modules, {'hermes_cli.lifecycle': SimpleNamespace(
+                has_hook=lambda _: True, invoke_hook=invoke)}):
+            invoke.reset_mock()
+            with self.assertRaisesRegex(RuntimeError, 'route initialization failed'):
+                namespace['activate']()
+            invoke.assert_not_called()
+
+    def test_native_skill_lifecycle_reaches_observer_with_turn_context(self):
+        # Execute native usage persistence and ContextVars in an isolated process;
+        # no AIAgent, provider requests, or installed runtime modifications.
+        script = '''
+import importlib.util, os, sys, tempfile
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+with tempfile.TemporaryDirectory() as directory:
+    os.environ['HERMES_HOME'] = directory
+    sys.path.insert(0, sys.argv[1])
+    from tools import skill_usage, skill_provenance
+    from agent.subagent_lifecycle import bind_subagent_parent
+    from hermes_cli import lifecycle
+    spec = importlib.util.spec_from_file_location('skill_observer', sys.argv[2])
+    plugin = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = plugin
+    spec.loader.exec_module(plugin)
+    database = plugin._db()
+    def invoke(name, **kwargs):
+        assert name == 'on_skill_lifecycle'
+        plugin._on_skill_lifecycle(**kwargs)
+    with mock.patch.object(lifecycle, 'has_hook', return_value=True), \
+         mock.patch.object(lifecycle, 'invoke_hook', side_effect=invoke), \
+         mock.patch.object(plugin.hooks, '_execute', side_effect=database.execute), \
+         mock.patch.object(plugin.hooks, '_audit'):
+        for depth in (0, 1):
+            with bind_subagent_parent(SimpleNamespace(session_id='session-' + str(depth), _delegate_depth=depth)):
+                skill_usage.bump_use('demo', task_id='task')
+        with bind_subagent_parent(SimpleNamespace(session_id='session-0')):
+            token = skill_provenance.set_current_write_origin('background_review')
+            try:
+                skill_usage.bump_patch('demo', task_id='task')
+            finally:
+                skill_provenance.reset_current_write_origin(token)
+        skill_usage.bump_use('demo', task_id='cron-job')  # preload before a turn
+        with mock.patch.object(skill_usage, 'save_usage', return_value=False):
+            skill_usage.bump_patch('demo')
+    rows = database.execute('SELECT action, agent_type, session_id FROM skill_events ORDER BY rowid').fetchall()
+    assert rows == [('loaded', 'main', 'session-0'), ('loaded', 'subagent', 'session-1'),
+                    ('patched', 'self_improvement', 'session-0'), ('loaded', 'unknown', '')], rows
+    database.close()
+'''
+        result = subprocess.run(
+            [sys.executable, '-c', script, str(UPSTREAM),
+             str(ROOT / 'ops/plugin/ops-observability/__init__.py')],
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_chat_switch_syncs_all_cron_only_after_success_and_never_for_once(self):
         source = self.patched_source('gateway/slash_commands_model.py')
         tree = ast.parse(source)
@@ -639,13 +766,17 @@ with tempfile.TemporaryDirectory() as directory:
                     result = patches.main()
                 self.assertEqual(result, 0, output.getvalue())
                 for source_name, target_name in (("competitor_digest.py", "competitor_digest.py"),
-                                                 ("cron_shared_model.py", "shared_model.py")):
+                                                 ("cron_shared_model.py", "shared_model.py"),
+                                                 ("ai_digest_run.py", "ai_digest_run.py")):
                     helper = destination / "cron" / target_name
                     self.assertEqual(helper.read_bytes(), (ROOT / "runtime" / source_name).read_bytes())
                     paths.add("cron/" + target_name)
                 first = {path: (destination / path).read_text() for path in paths}
                 for path, source in first.items():
-                    compile(source, path, "exec")
+                    if path.endswith('.py'):
+                        compile(source, path, "exec")
+                    # TS/TSX compilation and UI behavior are checked by
+                    # test-dashboard-cron-ui.mjs against this same patch set.
                 with contextlib.redirect_stdout(io.StringIO()):
                     self.assertEqual(patches.main(), 0)
                 self.assertEqual(first, {path: (destination / path).read_text() for path in paths})
@@ -725,17 +856,22 @@ with tempfile.TemporaryDirectory() as directory:
         secrets = SimpleNamespace(build_profile_secret_scope=mock.Mock(), set_secret_scope=mock.Mock(),
                                   reset_secret_scope=mock.Mock())
         terminal = SimpleNamespace(install_profile_terminal_scope=mock.Mock(), reset_terminal_scope=mock.Mock())
+        from hermes.runtime.test_ai_digest_run import digest
         modules = mock.patch.dict(sys.modules, {"cron.competitor_digest": fixture.module,
+                                  "cron.ai_digest_run": digest,
                                   "agent.secret_scope": secrets, "tools.terminal_scope": terminal})
         modules.start()
         self.addCleanup(modules.stop)
         return fixture, ns, secrets, terminal
 
-    def competitor_agent_run(self, outcome="repaired", shared_route=None):
+    def competitor_agent_run(self, outcome="repaired", shared_route=None, research=False):
         fixture, _, _, _ = self.competitor_scheduler()
+        if research:
+            fixture.research_policy()
         guard = fixture.begin()
-        fixture.save(guard, {"events": []})
+        fixture.save(guard, fixture.record(guard) if research else {"events": []})
         agent = mock.Mock()
+        agent.iteration_budget.remaining = 0 if outcome == "no_iterations" else 20
         scope = mock.Mock(workdir=None, task_id="task-1")
         history = [{"role": "assistant", "content": "Evidence collected"}]
         cancellation = mock.Mock()
@@ -745,14 +881,21 @@ with tempfile.TemporaryDirectory() as directory:
             responses[0].pop("messages")
         if outcome == "exhausted":
             responses[0]["completed"] = False
+            responses[0]["error"] = "agent budget exhausted"
+        if outcome == "iteration_summary":
+            responses[0].update(completed=False, turn_exit_reason="max_iterations_reached(20)")
 
         def run_model(*args, **kwargs):
             if outcome == "provider_unreachable":
                 raise RuntimeError("provider unavailable")
+            agent.tool_progress_callback("tool.started", "web_search", None, {"query": "BetterMe mentions"})
             if kwargs.get("conversation_history") is not None:
                 self.assertIs(args[0], agent)
                 self.assertEqual(kwargs["conversation_history"], history)
                 self.assertIs(args[6], cancellation)
+                if research:
+                    self.assertIn("ONE COVERAGE FOLLOW-UP", args[1])
+                    self.assertIn('"remaining_search_calls": 3', args[1])
                 if outcome == "timeout":
                     raise TimeoutError("repair timed out")
                 if outcome == "repaired":
@@ -768,16 +911,18 @@ with tempfile.TemporaryDirectory() as directory:
                          blocked=None, model="test-model", fallback_notice=None)),
                      "_construct_cron_agent": mock.Mock(return_value=agent),
                      "_run_agent_with_watchdog": mock.Mock(side_effect=run_model),
-                     "_final_response_from_result": lambda r, *a: r["final_response"],
                      "_cron_failure_marker_error": lambda *a: None,
                      "_is_cron_silence_response": lambda s: s == "[SILENT]",
                      "_run_doc_header": lambda *a: "# Run\n", "_open_cron_session_db": lambda *a: None,
                      **{name: mock.Mock() for name in (
                          "_reload_dotenv_and_publish_delivery_target", "_FireAudit", "_teardown_cron_agent")}}
         tree = ast.parse(self.patched_source("cron/scheduler.py"))
-        selected = [node for node in tree.body if getattr(node, "name", "") == "run_job"]
+        selected = [node for node in tree.body if getattr(node, "name", "") in {
+            "run_job", "_final_response_from_result"}]
         exec("from __future__ import annotations\n" + ast.unparse(ast.Module(body=selected, type_ignores=[])), namespace)
         modules = {"run_agent": SimpleNamespace(AIAgent=mock.Mock()),
+                   "gateway.media_repair": SimpleNamespace(
+                       repair_explicit_computer_use_media_paths=lambda text, messages: text),
                    "cron.shared_model": SimpleNamespace(
                        routed_job=lambda job: {**job, **shared_route} if shared_route else job),
                    "cron.unreachable_retry": SimpleNamespace(is_model_unreachable_failure=lambda *a: True),
@@ -791,6 +936,7 @@ with tempfile.TemporaryDirectory() as directory:
         namespace["_teardown_cron_agent"].assert_called_once_with(agent, fixture.job["id"])
         self.assertFalse(guard.state_path.exists())
         namespace["fixture_job"] = fixture.job
+        namespace["research_record"] = guard.record
         return namespace, success, output, response, error
 
     def test_shared_cron_route_reaches_native_setup_without_losing_run_bookkeeping(self):
@@ -818,6 +964,26 @@ with tempfile.TemporaryDirectory() as directory:
         self.assertIn(response, output)
         self.assertEqual(namespace["_run_agent_with_watchdog"].call_count, 2)
 
+    def test_competitor_followup_reuses_agent_history_and_observed_counts(self):
+        ns, success, _output, response, error = self.competitor_agent_run(research=True)
+        self.assertTrue(success, error)
+        self.assertIn("Launched a team challenge", response)
+        self.assertEqual(ns["_run_agent_with_watchdog"].call_count, 2)
+        self.assertEqual(ns["research_record"]["tool_counts"]["web_search"], 2)
+
+    def test_competitor_followup_is_bounded_by_cancellation_history_and_iterations(self):
+        for outcome, calls, success in (("timeout", 2, False), ("cancelled", 1, False),
+                                        ("no_history", 1, False), ("no_iterations", 1, True),
+                                        ("exhausted", 1, False), ("iteration_summary", 1, True),
+                                        ("invalid", 2, True)):
+            with self.subTest(outcome=outcome):
+                ns, actual, _output, response, _error = self.competitor_agent_run(outcome, research=True)
+                self.assertEqual(actual, success)
+                self.assertEqual(ns["_run_agent_with_watchdog"].call_count, calls)
+                if success:
+                    self.assertIn("Coverage: partial", response)
+                    self.assertFalse(ns["research_record"]["coverage_complete"])
+
     def test_competitor_run_repair_failure_never_returns_success_or_retries_again(self):
         for outcome, calls, diagnostic in (("invalid", 2, "missing company coverage"),
                                            ("timeout", 2, "repair timed out"),
@@ -830,6 +996,50 @@ with tempfile.TemporaryDirectory() as directory:
                 self.assertEqual(response, "")
                 self.assertIn(diagnostic, error)
                 self.assertEqual(ns["_run_agent_with_watchdog"].call_count, calls)
+
+    def test_cron_notification_reaches_telegram_important_mode(self):
+        # Execute the pinned scheduler/adapter methods without sending a message.
+        delivery = ast.parse((Path(UPSTREAM) / "cron/scheduler_delivery.py").read_text())
+        selected = [n for n in delivery.body if getattr(n, "name", "") in {
+            "_cron_delivery_notify_enabled", "_live_route_metadata"}]
+        adapter = ast.parse((Path(UPSTREAM) / "plugins/platforms/telegram/adapter.py").read_text())
+        selected += [n for cls in adapter.body if isinstance(cls, ast.ClassDef)
+                     for n in cls.body if getattr(n, "name", "") == "_notification_kwargs"]
+        ns = {"_is_channel_dm_topic": lambda *a: False}
+        exec("from __future__ import annotations\n" + ast.unparse(ast.Module(body=selected, type_ignores=[])), ns)
+        with mock.patch.dict(sys.modules, {
+            "gateway.config": SimpleNamespace(Platform=SimpleNamespace(TELEGRAM="telegram")),
+            "gateway.delivery": SimpleNamespace(_looks_like_int=lambda v: v.isdigit(),
+                looks_like_telegram_private_chat_id=lambda v: v.isdigit()),
+        }):
+            for config, disabled in (({}, False), ({"cron": {"delivery": {"notify": False}}}, True)):
+                for thread in (None, "123"):
+                    target = SimpleNamespace(job={"id": "job"}, platform="telegram", thread_id=thread,
+                        chat_id="42", runtime_adapter=None, loop=None, origin_target=False,
+                        notify_delivery=ns["_cron_delivery_notify_enabled"](config))
+                    _, metadata, media = ns["_live_route_metadata"](target)
+                    for routed in (metadata, media):
+                        kwargs = ns["_notification_kwargs"](SimpleNamespace(_notifications_mode="important"), routed)
+                        self.assertEqual(kwargs.get("disable_notification", False), disabled)
+
+    def test_competitor_patch_upgrades_existing_installation_and_is_idempotent(self):
+        patch = next(p for p in patches._PATCHES if p[1] == "# Local Hermes: competitor bounded artifact repair")
+        old_source = patch[3].replace(
+            'completing cron report (one additional attempt)', 'correcting cron artifact (one attempt)')
+        old_source = re.sub(
+            r'            remaining = getattr\(getattr\(agent, "iteration_budget".*?remaining > 0\)\)\)',
+            '            final_response = competitor_guard.finalize_with_repair(_repair_competitor_artifact)',
+            old_source, flags=re.DOTALL)
+        self.assertNotEqual(old_source, patch[3])
+        state = {patch[1]: {"source": old_source, "digest": patches._patch_digest(old_source)}}
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / patch[0]
+            target.parent.mkdir()
+            target.write_text(old_source)
+            with mock.patch.object(patches, "HERMES_AGENT_DIR", Path(directory)), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(patches._apply_one_patch(*patch, state), (1, None, True))
+                self.assertEqual(target.read_text(), patch[3])
+                self.assertEqual(patches._apply_one_patch(*patch, state), (0, None, False))
 
     def test_watchdog_forwards_history_only_when_repair_supplies_it(self):
         import concurrent.futures
@@ -850,6 +1060,38 @@ with tempfile.TemporaryDirectory() as directory:
                 expected = {"conversation_history": history} if history is not None else {}
                 agent.run_conversation.assert_called_once_with("prompt", task_id="task", **expected)
                 self.assertTrue(result["completed"])
+
+    def test_digest_scheduler_uses_current_artifacts_instead_of_model_summary(self):
+        from hermes.runtime.test_ai_digest_run import DigestRunTests, SKILL_DIR
+        digest_fixture = DigestRunTests()
+        digest_fixture.setUp()
+        self.addCleanup(digest_fixture.doCleanups)
+        fixture, ns, _, _ = self.competitor_scheduler()
+        fixture.job["skill"] = "ai_digest"
+        fixture.job["skills"] = ["ai_digest"]
+
+        def run(job, **kwargs):
+            guard = kwargs["competitor_guard"]
+            self.assertIn(f"--run-id {guard.run_id}", kwargs["extra_prompt"])
+            guard.state.mkdir(parents=True, exist_ok=True)
+            guard.raw_path.write_text(json.dumps({**digest_fixture.raw, "run_id": guard.run_id}))
+            guard.draft_path.write_text(digest_fixture.draft)
+            return True, "old misleading output", "Все карточки готовы", None
+
+        ns["run_job"].side_effect = run
+        with mock.patch.dict(os.environ, {"AI_DIGEST_SKILL_DIR": str(SKILL_DIR)}):
+            self.assertTrue(ns["_run_one_job_body"](fixture.job))
+        content = ns["_deliver_result"].call_args.args[1]
+        self.assertTrue(content.startswith("NEWS_CARDS:"))
+        self.assertNotIn("Все карточки готовы", content)
+        self.assertIn(content, str(ns["save_job_output"].call_args))
+        # Exercise the real delivery marker parser too: a generated marker alone
+        # does not prove the scheduler can find and deliver its current artifact.
+        from hermes.skills.ai_digest.scripts import feedback
+        clean, artifact = feedback.extract_cards_marker(content, fixture.job, digest_fixture.home / 'ops/news')
+        self.assertIsNotNone(artifact)
+        self.assertTrue(artifact.is_file())
+        self.assertNotIn('NEWS_CARDS:', clean)
 
     def test_execution_receipt_does_not_treat_unverified_transport_as_delivered(self):
         tree = ast.parse(self.patched_source("cron/scheduler.py"))
@@ -922,6 +1164,7 @@ with tempfile.TemporaryDirectory() as directory:
         self.assertTrue(ns["_run_one_job_body"](fixture.job))
         body = ns["_deliver_result"].call_args.args[1]
         self.assertIn("Launched a team challenge", body)
+        self.assertTrue(fixture.job['_competitor_split_report'])
         self.assertNotIn("[SILENT]", body)
         self.assertIn(body, ns["save_job_output"].call_args.args[1])
         self.assertEqual(json.loads(fixture.watch_path.read_text())["last_run_status"], "ok")
@@ -929,6 +1172,16 @@ with tempfile.TemporaryDirectory() as directory:
         secrets.reset_secret_scope.assert_called_once()
         terminal.reset_terminal_scope.assert_called_once()
         fixture.begin()  # Lock was released after the scheduler finished.
+
+    def test_competitor_scheduler_supplies_deployed_research_budget_to_agent(self):
+        fixture, ns, _secrets, _terminal = self.competitor_scheduler()
+        policy = fixture.research_policy()
+        self.assertTrue(ns["_run_one_job_body"](fixture.job))
+        prompt = ns["run_job"].call_args.kwargs["extra_prompt"]
+        plan = json.loads(prompt.split("Plan JSON:\n", 1)[1])
+        self.assertEqual(plan["max_page_attempts"], len(fixture.watch["companies"]) * policy["pages_per_company"])
+        self.assertEqual(plan["company_order"], [c["name"] for c in fixture.watch["companies"]])
+        self.assertIn("overrides earlier research budgets", prompt)
 
     def test_competitor_scheduler_failure_paths_never_checkpoint_or_leak_lock(self):
         for outcome in ("invalid", "failed", "queued", "no_target", "suppressed", "unverified",
@@ -948,11 +1201,58 @@ with tempfile.TemporaryDirectory() as directory:
                 terminal.reset_terminal_scope.assert_called_once()
                 fixture.begin()
 
-    def test_competitor_scheduler_silent_complete_report_commits_without_send(self):
+    def test_competitor_scheduler_zero_news_delivers_checklist_before_commit(self):
         fixture, ns, _secrets, _terminal = self.competitor_scheduler("silent")
         self.assertTrue(ns["_run_one_job_body"](fixture.job))
-        ns["_deliver_result"].assert_not_called()
+        ns["_deliver_result"].assert_called_once()
+        self.assertTrue(ns["_deliver_result"].call_args.args[1].startswith("Cronjob Response: "))
         self.assertEqual(json.loads(fixture.watch_path.read_text())["last_run_status"], "ok")
+
+    def test_competitor_delivery_sends_news_and_checklist_without_generic_wrapper(self):
+        tree = ast.parse(self.patched_source('cron/scheduler_delivery.py'))
+        selected = [n for n in tree.body if getattr(n, 'name', '') == '_deliver_result']
+        live = mock.Mock(return_value=True)
+        target = SimpleNamespace(live_adapter_ready=True, mirror_text='whole report')
+        mirrors = []
+        live.side_effect = lambda t, *args, **kwargs: mirrors.append(t.mirror_text) or True
+        ns = dict(os=os, contextlib=contextlib, logger=logging.getLogger('test'), BOT_CHAT_PLATFORM='bot-chat',
+                  _resolve_delivery_targets=lambda *a, **kw: [{'platform': 'telegram', 'chat_id': '123', 'thread_id': '615640'}],
+                  _record_delivery_verification=mock.Mock(), _sched=SimpleNamespace(load_config=lambda: {}),
+                  _cron_delivery_notify_enabled=lambda cfg: True, _cron_mirror_delivery_enabled=lambda *a: False,
+                  _redact_cron_payload=lambda text, label: text.replace('sensitive-canary', '[redacted]'),
+                  _prepare_target_delivery=mock.Mock(return_value=target), _deliver_via_live_adapter=live,
+                  _deliver_standalone=mock.Mock())
+        exec('from __future__ import annotations\n' + ast.unparse(ast.Module(body=selected, type_ignores=[])), ns)
+        modules = {
+            'gateway.config': SimpleNamespace(load_gateway_config=lambda: object()),
+            'gateway.platforms.base': SimpleNamespace(BasePlatformAdapter=SimpleNamespace(
+                extract_media=lambda text: ([], text), filter_media_delivery_paths=lambda paths: paths)),
+            'gateway.media_policy': SimpleNamespace(apply_media_policy_env=lambda cfg: None),
+            'gateway.warning_notifications': SimpleNamespace(warning_notifications_enabled=lambda *a: True),
+        }
+        job = {'id': 'job', 'name': 'Fitness', '_competitor_split_report': True}
+        news = 'Noom — short description sensitive-canary\nhttps://example.com/news'
+        details = 'Cronjob Response: Fitness\nNoom — 1 new. sensitive-canary'
+        with mock.patch.dict(sys.modules, modules), mock.patch.dict(os.environ, {'_HERMES_CRON_EXTERNAL_WORKER': ''}):
+            self.assertIsNone(ns['_deliver_result'](job, news + '\n\n' + details))
+            sent = [call.args[1] for call in live.call_args_list]
+            self.assertEqual(sent, [news.replace('sensitive-canary', '[redacted]'), details.replace('sensitive-canary', '[redacted]')])
+            self.assertEqual(mirrors, sent)
+            self.assertFalse(any('stop reminder' in text for text in sent))
+            live.reset_mock()
+            self.assertIsNone(ns['_deliver_result'](job, details))
+            self.assertEqual(live.call_count, 1)
+            live.reset_mock()
+            self.assertIsNone(ns['_deliver_result']({'id': 'other', 'name': 'Other'}, 'ordinary report'))
+            self.assertIn('To stop or manage', live.call_args.args[1])
+            live.reset_mock()
+            self.assertIsNone(ns['_deliver_result'](job, 'Failure notice', for_failure=True))
+            self.assertIn('To stop or manage', live.call_args.args[1])
+            live.reset_mock()
+            live.side_effect = [True, False]
+            ns['_deliver_standalone'].side_effect = lambda *args: args[-1].append('Checklist delivery failed')
+            self.assertEqual(ns['_deliver_result'](job, news + '\n\n' + details), 'Checklist delivery failed')
+            self.assertEqual(live.call_count, 2)
 
     def test_detached_delivery_preserves_unverified_receipt_for_publication_gate(self):
         tree = ast.parse(self.patched_source("cron/scheduler_delivery.py"))
@@ -960,14 +1260,19 @@ with tempfile.TemporaryDirectory() as directory:
         ns = {"os": os, "BOT_CHAT_PLATFORM": "bot-chat", "_record_delivery_verification": mock.Mock(),
               "_resolve_delivery_targets": lambda *a, **kw: [{"platform": "telegram"}]}
         exec("from __future__ import annotations\n" + ast.unparse(ast.Module(body=selected, type_ignores=[])), ns)
-        job = {"id": "job", "execution_id": "exec"}
+        job = {"id": "job", "execution_id": "exec", "_competitor_split_report": True}
         receipts = ["telegram:synthetic"]
+        enqueue = mock.Mock(return_value=None)
+        report = 'News\n\nCronjob Response: Fitness\nCompany checklist'
         with mock.patch.dict(os.environ, {"_HERMES_CRON_EXTERNAL_WORKER": "exec"}), mock.patch.dict(
             sys.modules, {"cron.delivery_queue": SimpleNamespace(
-                enqueue_and_wait=lambda *a, **kw: None, get_status=lambda *a: {"status": "delivered"}),
+                enqueue_and_wait=enqueue, get_status=lambda *a: {"status": "delivered"}),
                 "cron.jobs": SimpleNamespace(get_job=lambda *a: {"last_delivery_unverified": receipts})}
         ):
-            self.assertIsNone(ns["_deliver_result"](job, "report"))
+            self.assertIsNone(ns["_deliver_result"](job, report))
+        enqueue.assert_called_once()
+        self.assertEqual(enqueue.call_args.args[2], report)
+        self.assertTrue(enqueue.call_args.args[1]['_competitor_split_report'])
         self.assertEqual(job.get("last_delivery_unverified"), receipts)
 
 

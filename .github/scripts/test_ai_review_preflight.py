@@ -1290,7 +1290,7 @@ class OllamaReviewTest(unittest.TestCase):
         self.assertIn("steps.claude_models.outputs.fallback_ready == 'true'", claude_steps["claude_review_fallback_retry"]["if"])
         self.assertIn("steps.extract_claude_review_fallback.outcome != 'success'", claude_steps["claude_review_fallback_retry"]["if"])
         self.assertIn(
-            "steps.claude_review_fallback_retry.outcome == 'success'",
+            "steps.claude_review_fallback_retry.outputs.execution_file != ''",
             claude_steps["extract_claude_review_fallback_retry"]["if"],
         )
         unavailable = next(step for step in claude_steps.values() if step.get("id") == "report_claude_review_unavailable")

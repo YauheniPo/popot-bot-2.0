@@ -54,7 +54,9 @@
   register: hermes_local_patches
   changed_when: "'[hermes-patch] changed' in hermes_local_patches.stdout"
   failed_when: hermes_local_patches.rc != 0
-  notify: restart Hermes gateway
+  notify:
+    - restart Hermes gateway
+    - restart managed observability services
 
 - name: Remove the legacy unmanaged response-language rule from SOUL
   ansible.builtin.lineinfile:
@@ -126,10 +128,22 @@
         )
       }}
   when: hermes_enable_ops | bool
+  register: hermes_ops_install
+  changed_when: "'ops-changed=true' in hermes_ops_install.stdout_lines"
+
+# Ansible templates notify before executing a task, so it cannot use that
+# task's own registered result. Select handlers only after installation.
+- name: Queue service restarts from the completed operations installation
+  ansible.builtin.debug:
+    msg: Operations installation changed; applying recorded restart requirements.
+  when:
+    - hermes_enable_ops | bool
+    - hermes_ops_install.changed
   changed_when: true
-  notify:
-    - restart managed observability services
-    - restart monitoring timers
+  notify: >-
+    {{ ['restart managed observability services', 'restart monitoring timers'] +
+       (['restart Hermes gateway'] if ('ops-restart=' ~ hermes_gateway_service) in hermes_ops_install.stdout_lines else []) +
+       (['restart Grafana'] if 'ops-restart=grafana-server.service' in hermes_ops_install.stdout_lines else []) }}
 
 - name: Validate the final managed Hermes configuration
   ansible.builtin.command:
@@ -158,20 +172,18 @@
 - name: Install the Hermes system gateway unit
   ansible.builtin.command:
     argv:
-      - "{{ hermes_bin }}"
-      - gateway
-      - install
-      - --system
-      - --run-as-user
+      - "{{ hermes_home }}/hermes-agent/venv/bin/python"
+      - "{{ hermes_bundle_dir }}/runtime/ensure-gateway-unit.py"
+      - --user
       - "{{ hermes_user }}"
-      - --force
-      - --start-on-login
   environment:
     HOME: "{{ hermes_user_home }}"
     HERMES_HOME: "{{ hermes_home }}"
     PATH: "{{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   when: hermes_gateway_enabled | bool
-  changed_when: true
+  register: hermes_gateway_unit
+  changed_when: "'gateway-unit-changed=true' in hermes_gateway_unit.stdout_lines"
+  notify: restart Hermes gateway
 
 - name: Reload systemd after installing managed Hermes units
   ansible.builtin.systemd_service:
@@ -196,6 +208,9 @@
     - hermes_enable_ops | bool
     - hermes_gateway_enabled | bool
 
+- name: Apply notified service restarts before starting stopped services
+  ansible.builtin.meta: flush_handlers
+
 - name: Ensure the Hermes gateway is enabled and started
   ansible.builtin.systemd_service:
     name: "{{ item }}"
@@ -203,9 +218,6 @@
     enabled: true
   loop: "{{ vps_services.gateway }}"
   when: hermes_gateway_enabled | bool
-
-- name: Apply notified service restarts before health checks
-  ansible.builtin.meta: flush_handlers
 
 - name: Verify the loopback-only dashboard is active
   ansible.builtin.command:
@@ -255,6 +267,14 @@
   when:
     - hermes_binary.stat.exists
     - not (hermes_source_update_required | bool)
+
+- name: Acknowledge verified operations restarts
+  ansible.builtin.command:
+    argv: "{{ hermes_ops_install.cmd + ['--ack-restarts'] }}"
+  changed_when: false
+  when:
+    - hermes_enable_ops | bool
+    - hermes_ops_install.stdout_lines | select('match', '^ops-restart=') | list | length > 0
 
 - name: Read Hermes deploy completion time
   ansible.builtin.command:
