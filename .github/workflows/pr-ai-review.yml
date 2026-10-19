@@ -245,7 +245,7 @@ jobs:
         if: steps.claude_models.outputs.primary_ready == 'true'
         continue-on-error: true
         timeout-minutes: 10
-        uses: anthropics/claude-code-action@2dca132ff0e0c4094ce6048b422c6915a071210b # v1
+        uses: anthropics/claude-code-action@374f254f5efaf968abfe15d399fd90972e8138b9 # v1
         with:
           # Route through ANTHROPIC_BASE_URL with the selected provider's key.
           anthropic_api_key: &claude_api_key ${{ (steps.claude_models.outputs.provider == 'nous' && secrets.NOUS_API_KEY) || (steps.claude_models.outputs.provider == 'nvidia' && secrets.NVIDIA_API_KEY) || (steps.claude_models.outputs.provider == 'openrouter' && secrets.OPENROUTER_API_KEY) || (steps.claude_models.outputs.provider == 'ollama-cloud' && secrets.OLLAMA_API_KEY) || '' }}
@@ -455,7 +455,7 @@ jobs:
         if: always() && !cancelled() && steps.prepare_claude_primary_finalize.outputs.ready == 'true'
         continue-on-error: true
         timeout-minutes: 2
-        uses: anthropics/claude-code-action@2dca132ff0e0c4094ce6048b422c6915a071210b # v1
+        uses: anthropics/claude-code-action@374f254f5efaf968abfe15d399fd90972e8138b9 # v1
         with:
           anthropic_api_key: *claude_api_key
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -539,7 +539,7 @@ jobs:
           steps.prepare_claude_primary_finalize.outputs.reason == 'diff_not_fully_read'
         continue-on-error: true
         timeout-minutes: 10
-        uses: anthropics/claude-code-action@2dca132ff0e0c4094ce6048b422c6915a071210b # v1
+        uses: anthropics/claude-code-action@374f254f5efaf968abfe15d399fd90972e8138b9 # v1
         with:
           anthropic_api_key: *claude_api_key
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -612,7 +612,7 @@ jobs:
           steps.clear_claude_fallback_execution.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 10
-        uses: anthropics/claude-code-action@2dca132ff0e0c4094ce6048b422c6915a071210b # v1
+        uses: anthropics/claude-code-action@374f254f5efaf968abfe15d399fd90972e8138b9 # v1
         with:
           anthropic_api_key: &claude_fallback_api_key ${{ (steps.claude_models.outputs.fallback_provider == 'nous' && secrets.NOUS_API_KEY) || (steps.claude_models.outputs.fallback_provider == 'nvidia' && secrets.NVIDIA_API_KEY) || (steps.claude_models.outputs.fallback_provider == 'openrouter' && secrets.OPENROUTER_API_KEY) || (steps.claude_models.outputs.fallback_provider == 'ollama-cloud' && secrets.OLLAMA_API_KEY) || '' }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -680,7 +680,7 @@ jobs:
         if: always() && !cancelled() && steps.prepare_claude_fallback_finalize.outputs.ready == 'true'
         continue-on-error: true
         timeout-minutes: 2
-        uses: anthropics/claude-code-action@2dca132ff0e0c4094ce6048b422c6915a071210b # v1
+        uses: anthropics/claude-code-action@374f254f5efaf968abfe15d399fd90972e8138b9 # v1
         with:
           anthropic_api_key: *claude_fallback_api_key
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -752,7 +752,7 @@ jobs:
           steps.prepare_claude_fallback_finalize.outputs.reason == 'diff_not_fully_read'
         continue-on-error: true
         timeout-minutes: 10
-        uses: anthropics/claude-code-action@2dca132ff0e0c4094ce6048b422c6915a071210b # v1
+        uses: anthropics/claude-code-action@374f254f5efaf968abfe15d399fd90972e8138b9 # v1
         with:
           anthropic_api_key: *claude_fallback_api_key
           github_token: ${{ secrets.GITHUB_TOKEN }}
