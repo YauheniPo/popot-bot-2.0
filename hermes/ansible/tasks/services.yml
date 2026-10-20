@@ -17,29 +17,39 @@
   when: vps_deploy.features.browser_automation | bool
 
 - name: Locate the installed Hermes Edge TTS implementation
+  ansible.builtin.stat:
+    path: "{{ hermes_home }}/hermes-agent/tools/tts_tool.py"
+    get_checksum: false
+    get_mime: false
+  register: hermes_tts_tool
+
+- name: Find legacy Edge TTS only outside caches and unrelated Hermes state
   ansible.builtin.find:
     paths:
-      - "{{ hermes_user_home }}/.local"
-      - "{{ hermes_home }}"
+      - "{{ hermes_home }}/tools"
+      - "{{ hermes_user_home }}/.local/lib"
     patterns: tts_tool.py
     file_type: file
     recurse: true
   register: hermes_tts_tool_files
   changed_when: false
+  when: not hermes_tts_tool.stat.exists
 
 - name: Install transient Edge TTS retry when the upstream tool is found
   ansible.builtin.command:
     argv:
       - python3
       - "{{ hermes_bundle_dir }}/ops/apply-edge-tts-retry.py"
-      - "{{ (hermes_tts_tool_files.files | map(attribute='path') | list | first) }}"
+      - >-
+        {{ hermes_tts_tool.stat.path if hermes_tts_tool.stat.exists else
+           (hermes_tts_tool_files.files | map(attribute='path') | list | first) }}
   become_user: "{{ hermes_user }}"
   environment:
     HERMES_HOME: "{{ hermes_home }}"
     HOME: "{{ hermes_user_home }}"
   register: hermes_tts_retry
   changed_when: "'installed Edge TTS transient retry' in hermes_tts_retry.stdout"
-  when: hermes_tts_tool_files.matched | int > 0
+  when: hermes_tts_tool.stat.exists or (hermes_tts_tool_files.matched | default(0) | int > 0)
 
 - name: Apply local Hermes gateway command patches
   ansible.builtin.command:
@@ -84,7 +94,7 @@
     msg: >-
       Edge TTS retry was skipped because no installed tts_tool.py was found.
       Hermes itself remains installed; check its upstream layout before a retry is added.
-  when: hermes_tts_tool_files.matched | int == 0
+  when: not hermes_tts_tool.stat.exists and (hermes_tts_tool_files.matched | default(0) | int == 0)
 
 - name: Materialize Grafana administrator credentials from Vault
   ansible.builtin.template:

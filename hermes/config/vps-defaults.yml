@@ -27,6 +27,9 @@ vps_deploy:
   # part of the upstream Hermes Agent checkout.
   bundle:
     dir: /opt/hermes-bootstrap
+  notifications:
+    timeout_seconds: 15
+    max_parallel: 3
   features:
     browser_automation: true
     development_clis: true
