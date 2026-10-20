@@ -759,6 +759,11 @@ reports and waits up to 300 seconds for the gate result. A failed gate or timeou
 fails the scan job. Dependabot PRs still run tests but skip the authenticated scan
 because the Sonar token is unavailable to them.
 
+Before Hermes coverage tests, the workflow installs Ansible collections from
+`hermes/ansible/requirements.yml`, including `ansible.posix` for the real
+synchronization tests. Installation gets up to three attempts; failure stops
+the job before tests and scanning.
+
 Sonar checks only new-code conditions in pull requests; both new-code and overall
 conditions apply on `main`. Thus the 75% overall threshold is not a pre-merge PR
 check. On PRs, new code means changes against the target branch; on `main`, it
