@@ -43,10 +43,24 @@ for required_command in git python3 rg; do
   }
 done
 
+# File lists come from git, so an untracked leftover in a developer's working
+# copy (a scratch test, a debug script, a .bak copy) cannot fail a check that is
+# meant to validate the committed tree. Outside a git work tree the filesystem
+# listing is used instead.
+repository_files() {
+  local pattern="$1"
+  shift
+  if git -C "$REPOSITORY_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git -C "$REPOSITORY_ROOT" ls-files -- "$@" | grep -E "$pattern" || true
+  else
+    (cd "$REPOSITORY_ROOT" && rg --files "$@") | grep -E "$pattern" || true
+  fi
+}
+
 log "checking Bash syntax"
 while IFS= read -r script; do
   bash -n "$REPOSITORY_ROOT/$script"
-done < <(cd "$REPOSITORY_ROOT" && rg --files hermes -g '*.sh' | sort)
+done < <(repository_files '\.sh$' hermes | sort)
 
 if optional_tool shellcheck; then
   log "running shellcheck"
@@ -69,24 +83,36 @@ log "compiling Python sources"
 python_sources=()
 while IFS= read -r source; do
   python_sources+=("$REPOSITORY_ROOT/$source")
-done < <(cd "$REPOSITORY_ROOT" && rg --files hermes .github/scripts -g '*.py' | sort)
+done < <(repository_files '\.py$' hermes .github/scripts | sort)
 PYTHONPYCACHEPREFIX="$CHECK_TEMP/pycache" python3 -m py_compile "${python_sources[@]}"
 
 log "running Python tests"
 python_tests=()
 while IFS= read -r test_file; do
   python_tests+=("$REPOSITORY_ROOT/$test_file")
-done < <(cd "$REPOSITORY_ROOT" && rg --files hermes -g 'test_*.py' | sort)
+done < <(repository_files '(^|/)test_[^/]*\.py$' hermes | sort)
 PYTHONPYCACHEPREFIX="$CHECK_TEMP/pycache" python3 -m unittest "${python_tests[@]}"
+
+# Discovery keeps the repository root as the working directory: these tests read
+# paths such as `.github/REVIEWER.md` relative to it, and a tracked-only file
+# list cannot be passed to discovery, so the directory is scanned as before.
 PYTHONPYCACHEPREFIX="$CHECK_TEMP/pycache" python3 -m unittest discover \
   -s "$REPOSITORY_ROOT/.github/scripts" \
   -p 'test_*.py'
 
-if optional_tool pytest; then
+if python3 -c 'import pytest' >/dev/null 2>&1; then
   log "running pytest suite"
   PYTHONPYCACHEPREFIX="$CHECK_TEMP/pycache" python3 -m pytest -q \
     --no-header --disable-warnings \
     "$REPOSITORY_ROOT/hermes" "$REPOSITORY_ROOT/.github/scripts"
+elif [[ "$REQUIRE_TOOLS" == true ]]; then
+  printf '[hermes-check] ERROR: required Python module is missing: pytest\n' >&2
+  exit 1
+else
+  # A `pytest` executable in PATH can belong to a different interpreter than the
+  # `python3` used here, so the module is probed in this interpreter instead of
+  # letting `-m pytest` fail and look like a failing test suite.
+  log "skipping pytest suite: pytest is not installed for $(python3 -c 'import sys; print(sys.executable)')"
 fi
 
 if optional_tool promtool; then
