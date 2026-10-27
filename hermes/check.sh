@@ -43,18 +43,21 @@ for required_command in git python3 rg; do
   }
 done
 
-# File lists come from git, so an untracked leftover in a developer's working
-# copy (a scratch test, a debug script, a .bak copy) cannot fail a check that is
-# meant to validate the committed tree. Outside a git work tree the filesystem
-# listing is used instead.
+# Check existing tracked files in the working tree, including staged additions.
+# Ignore deleted index entries and untracked scratch files. Outside a git work
+# tree the filesystem listing is used instead.
 repository_files() {
   local pattern="$1"
   shift
   if git -C "$REPOSITORY_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    git -C "$REPOSITORY_ROOT" ls-files -- "$@" | grep -E "$pattern" || true
+    git -C "$REPOSITORY_ROOT" ls-files -- "$@"
   else
-    (cd "$REPOSITORY_ROOT" && rg --files "$@") | grep -E "$pattern" || true
-  fi
+    (cd "$REPOSITORY_ROOT" && rg --files "$@")
+  fi | grep -E "$pattern" | while IFS= read -r file; do
+    if [[ -f "$REPOSITORY_ROOT/$file" ]]; then
+      printf '%s\n' "$file"
+    fi
+  done || true
 }
 
 log "checking Bash syntax"
@@ -81,8 +84,12 @@ fi
 
 log "compiling Python sources"
 python_sources=()
+pytest_tests=()
 while IFS= read -r source; do
   python_sources+=("$REPOSITORY_ROOT/$source")
+  if [[ "${source##*/}" == test_*.py || "${source##*/}" == *_test.py ]]; then
+    pytest_tests+=("$REPOSITORY_ROOT/$source")
+  fi
 done < <(repository_files '\.py$' hermes .github/scripts | sort)
 PYTHONPYCACHEPREFIX="$CHECK_TEMP/pycache" python3 -m py_compile "${python_sources[@]}"
 
@@ -104,7 +111,7 @@ if python3 -c 'import pytest' >/dev/null 2>&1; then
   log "running pytest suite"
   PYTHONPYCACHEPREFIX="$CHECK_TEMP/pycache" python3 -m pytest -q \
     --no-header --disable-warnings \
-    "$REPOSITORY_ROOT/hermes" "$REPOSITORY_ROOT/.github/scripts"
+    "${pytest_tests[@]}"
 elif [[ "$REQUIRE_TOOLS" == true ]]; then
   printf '[hermes-check] ERROR: required Python module is missing: pytest\n' >&2
   exit 1
