@@ -43,50 +43,84 @@ for required_command in git python3 rg; do
   }
 done
 
+# Check existing tracked files in the working tree, including staged additions.
+# Ignore deleted index entries and untracked scratch files. Outside a git work
+# tree the filesystem listing is used instead.
+repository_files() {
+  local pattern="$1"
+  shift
+  if git -C "$REPOSITORY_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git -C "$REPOSITORY_ROOT" ls-files -- "$@"
+  else
+    (cd "$REPOSITORY_ROOT" && rg --files "$@")
+  fi | grep -E "$pattern" | while IFS= read -r file; do
+    if [[ -f "$REPOSITORY_ROOT/$file" ]]; then
+      printf '%s\n' "$file"
+    fi
+  done || true
+}
+
 log "checking Bash syntax"
 while IFS= read -r script; do
   bash -n "$REPOSITORY_ROOT/$script"
-done < <(cd "$REPOSITORY_ROOT" && rg --files hermes -g '*.sh' | sort)
+done < <(repository_files '\.sh$' hermes | sort)
 
 if optional_tool shellcheck; then
   log "running shellcheck"
-  shellcheck -x \
-    -P "$HERMES_DIR" \
-    -P "$HERMES_DIR/ops" \
-    "$HERMES_DIR/check.sh" \
-    "$HERMES_DIR/deploy-hermes.sh" \
-    "$HERMES_DIR/ops/install-ops.sh" \
-    "$HERMES_DIR/docker/start-local.sh" \
-    "$HERMES_DIR/ops/backup.sh" \
-    "$HERMES_DIR/ops/health-check.sh" \
-    "$HERMES_DIR/ops/install-browser-automation.sh" \
-    "$HERMES_DIR/ops/api-retry-loop.sh" \
-    "$HERMES_DIR/ops/notify-doctor.sh" \
-    "$HERMES_DIR/ops/startup-notify.sh"
+  # Only existing targets: a script removed from the working tree must not abort
+  # the run, same as the tracked-file lists above.
+  shellcheck_sources=()
+  for script in \
+    check.sh deploy-hermes.sh ops/install-ops.sh docker/start-local.sh \
+    ops/backup.sh ops/health-check.sh ops/install-browser-automation.sh \
+    ops/api-retry-loop.sh ops/notify-doctor.sh ops/startup-notify.sh; do
+    if [[ -f "$HERMES_DIR/$script" ]]; then
+      shellcheck_sources+=("$HERMES_DIR/$script")
+    fi
+  done
+  if ((${#shellcheck_sources[@]} > 0)); then
+    shellcheck -x -P "$HERMES_DIR" -P "$HERMES_DIR/ops" "${shellcheck_sources[@]}"
+  fi
 fi
 
 log "compiling Python sources"
 python_sources=()
+pytest_tests=()
 while IFS= read -r source; do
   python_sources+=("$REPOSITORY_ROOT/$source")
-done < <(cd "$REPOSITORY_ROOT" && rg --files hermes .github/scripts -g '*.py' | sort)
+  if [[ "${source##*/}" == test_*.py || "${source##*/}" == *_test.py ]]; then
+    pytest_tests+=("$REPOSITORY_ROOT/$source")
+  fi
+done < <(repository_files '\.py$' hermes .github/scripts | sort)
 PYTHONPYCACHEPREFIX="$CHECK_TEMP/pycache" python3 -m py_compile "${python_sources[@]}"
 
 log "running Python tests"
 python_tests=()
 while IFS= read -r test_file; do
   python_tests+=("$REPOSITORY_ROOT/$test_file")
-done < <(cd "$REPOSITORY_ROOT" && rg --files hermes -g 'test_*.py' | sort)
+done < <(repository_files '(^|/)test_[^/]*\.py$' hermes | sort)
 PYTHONPYCACHEPREFIX="$CHECK_TEMP/pycache" python3 -m unittest "${python_tests[@]}"
+
+# Discovery keeps the repository root as the working directory: these tests read
+# paths such as `.github/REVIEWER.md` relative to it, and a tracked-only file
+# list cannot be passed to discovery, so the directory is scanned as before.
 PYTHONPYCACHEPREFIX="$CHECK_TEMP/pycache" python3 -m unittest discover \
   -s "$REPOSITORY_ROOT/.github/scripts" \
   -p 'test_*.py'
 
-if optional_tool pytest; then
+if python3 -c 'import pytest' >/dev/null 2>&1; then
   log "running pytest suite"
   PYTHONPYCACHEPREFIX="$CHECK_TEMP/pycache" python3 -m pytest -q \
     --no-header --disable-warnings \
-    "$REPOSITORY_ROOT/hermes" "$REPOSITORY_ROOT/.github/scripts"
+    "${pytest_tests[@]}"
+elif [[ "$REQUIRE_TOOLS" == true ]]; then
+  printf '[hermes-check] ERROR: required Python module is missing: pytest\n' >&2
+  exit 1
+else
+  # A `pytest` executable in PATH can belong to a different interpreter than the
+  # `python3` used here, so the module is probed in this interpreter instead of
+  # letting `-m pytest` fail and look like a failing test suite.
+  log "skipping pytest suite: pytest is not installed for $(python3 -c 'import sys; print(sys.executable)')"
 fi
 
 if optional_tool promtool; then
