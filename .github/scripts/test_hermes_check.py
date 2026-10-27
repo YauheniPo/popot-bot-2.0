@@ -73,6 +73,24 @@ class HermesCheckTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("all Hermes checks passed", result.stdout)
 
+    def test_deleted_shellcheck_target_does_not_abort_the_check(self):
+        self.executable("shellcheck", (
+            "#!/bin/sh\n"
+            "for path in \"$@\"; do\n"
+            "  case \"$path\" in\n"
+            "    -*) continue ;;\n"
+            "  esac\n"
+            "  [ -e \"$path\" ] || { echo \"missing: $path\" >&2; exit 1; }\n"
+            "done\n"
+            "exit 0\n"
+        ))
+        target = self.write("hermes/ops/health-check.sh", "#!/bin/sh\nexit 0\n")
+        self.run_git("add", str(target.relative_to(self.root)))
+        target.unlink()
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("all Hermes checks passed", result.stdout)
+
     @unittest.skipUnless(HAS_PYTEST, "pytest is required for real collection checks")
     def test_untracked_hermes_files_are_ignored_by_every_suite(self):
         self.write("hermes/scratch.sh", "invalid shell syntax )\n")

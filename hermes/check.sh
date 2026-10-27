@@ -67,19 +67,20 @@ done < <(repository_files '\.sh$' hermes | sort)
 
 if optional_tool shellcheck; then
   log "running shellcheck"
-  shellcheck -x \
-    -P "$HERMES_DIR" \
-    -P "$HERMES_DIR/ops" \
-    "$HERMES_DIR/check.sh" \
-    "$HERMES_DIR/deploy-hermes.sh" \
-    "$HERMES_DIR/ops/install-ops.sh" \
-    "$HERMES_DIR/docker/start-local.sh" \
-    "$HERMES_DIR/ops/backup.sh" \
-    "$HERMES_DIR/ops/health-check.sh" \
-    "$HERMES_DIR/ops/install-browser-automation.sh" \
-    "$HERMES_DIR/ops/api-retry-loop.sh" \
-    "$HERMES_DIR/ops/notify-doctor.sh" \
-    "$HERMES_DIR/ops/startup-notify.sh"
+  # Only existing targets: a script removed from the working tree must not abort
+  # the run, same as the tracked-file lists above.
+  shellcheck_sources=()
+  for script in \
+    check.sh deploy-hermes.sh ops/install-ops.sh docker/start-local.sh \
+    ops/backup.sh ops/health-check.sh ops/install-browser-automation.sh \
+    ops/api-retry-loop.sh ops/notify-doctor.sh ops/startup-notify.sh; do
+    if [[ -f "$HERMES_DIR/$script" ]]; then
+      shellcheck_sources+=("$HERMES_DIR/$script")
+    fi
+  done
+  if ((${#shellcheck_sources[@]} > 0)); then
+    shellcheck -x -P "$HERMES_DIR" -P "$HERMES_DIR/ops" "${shellcheck_sources[@]}"
+  fi
 fi
 
 log "compiling Python sources"
