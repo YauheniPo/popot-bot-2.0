@@ -71,6 +71,9 @@ is configured with `NOMINATIM_LANGUAGE` in `.env` and defaults to English.
 
 Python 3.11 or newer is required.
 
+The requirements use Python version markers to select a compatible
+`timezonefinder` release for Python 3.11 and for Python 3.12 or newer.
+
 1. Create a bot with [@BotFather](https://t.me/BotFather) and obtain its token.
 2. From the repository root, open the project directory, create a virtual
    environment, and install the dependencies:

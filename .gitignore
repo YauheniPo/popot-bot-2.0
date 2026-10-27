@@ -40,3 +40,10 @@ venv/
 # JavaScript coverage consumed by the SonarCloud scan workflow.
 hermes-runtime.lcov
 .runtime/swarm-missions.json
+
+# Local backup copies. A stale `.bak` next to a maintained script shadows
+# nothing but invites edits to a file that never runs; they must not be
+# committed by accident either.
+*.bak
+*.bak[0-9]
+*.orig
