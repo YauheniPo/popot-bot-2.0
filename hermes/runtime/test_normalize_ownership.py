@@ -80,22 +80,37 @@ class NormalizeOwnershipTests(unittest.TestCase):
                 self.assertNotIn('ownership-changed=', result.stdout)
                 self.assertNotIn('find:', result.stderr)
 
-    def test_failed_chown_is_not_hidden_by_a_successful_find_traversal(self):
+    def test_repair_does_not_spawn_external_find_or_chown(self):
+        # The repair must stay inside the interpreter: argv values used to
+        # reach find/chown (Sonar S8705). Any external child would be
+        # observable through PATH shims that mark their invocation.
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            command = root / 'chown'
-            command.write_text('#!/bin/sh\nexit 7\n')
-            command.chmod(0o755)
-            # An impossible expected UID makes find select the fixture, while
-            # the shim prevents any real ownership change.
-            with (root / 'find').open('w') as handle:
-                handle.write('#!' + sys.executable + '\nimport os, sys\n'
-                             "args = sys.argv[1:]\nargs[args.index('-user') + 1] = '2147483646'\n"
-                             "os.execv('/usr/bin/find', ['find', *args])\n")
-            (root / 'find').chmod(0o755)
-            result = subprocess.run([sys.executable, str(HELPER), str(root),
-                                     pwd.getpwuid(os.getuid()).pw_name, grp.getgrgid(os.getgid()).gr_name],
-                                    env={**os.environ, 'PATH': str(root) + os.pathsep + os.environ['PATH']},
-                                    capture_output=True, text=True, timeout=10)
+            (root / 'file').write_text('unchanged')
+            probe = root / 'probe'
+            for name in ('find', 'chown'):
+                shim = root / name
+                shim.write_text(f'#!/bin/sh\ntouch "{probe}"\nexit 0\n')
+                shim.chmod(0o755)
+            result = subprocess.run(
+                [sys.executable, str(HELPER), str(root),
+                 pwd.getpwuid(os.getuid()).pw_name, grp.getgrgid(os.getgid()).gr_name],
+                env={**os.environ, 'PATH': str(root) + os.pathsep + os.environ['PATH']},
+                capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), 'ownership-changed=false')
+            self.assertFalse(probe.exists(), 'repair must not spawn external find/chown')
+
+    def test_failed_chown_is_not_hidden_by_other_repairs(self):
+        if os.geteuid() == 0:
+            self.skipTest('requires a non-root user so chown fails with EPERM')
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / 'file').write_text('keep')
+            # An impossible owner id selects every entry, while chown as a
+            # non-root user cannot apply it: the failure must be reported.
+            impossible = '2147483646'
+            result = subprocess.run(
+                [sys.executable, str(HELPER), str(directory), impossible, impossible],
+                capture_output=True, text=True, timeout=10)
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn('ownership-changed=', result.stdout)

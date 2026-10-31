@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
-"""Repair ownership in one native traversal, without following symlinks."""
+"""Repair ownership in one traversal, without following symlinks."""
 
 import argparse
+import grp
 import os
+import pwd
 import re
-import subprocess
+import sys
 
-# User and group operands are embedded in the find expression and in the
-# chown owner spec below. Restrict them to ordinary POSIX account names
-# (or numeric ids) before any child process runs, so agent-supplied values
-# such as '-exec', '--help' or 'a:b' are rejected instead of reaching
-# find/chown (S8705).
+# User and group operands select the target owner and never reach an
+# external command: names are validated against the POSIX account shape
+# and resolved to numeric ids in-process, then the traversal repairs
+# mismatched entries with os.chown instead of find/chown (S8705).
 OWNER_RE = re.compile(r'^[A-Za-z0-9_][A-Za-z0-9_.-]*\$?$')
+
+
+def owner_id(value, database):
+    if value.isdigit():
+        return int(value)
+    return database(value)
 
 
 def main():
@@ -24,12 +31,44 @@ def main():
         parser.error(f'invalid user operand: {args.user!r}')
     if not OWNER_RE.fullmatch(args.group):
         parser.error(f'invalid group operand: {args.group!r}')
-    result = subprocess.run([
-        'find', '-P', os.path.abspath(args.root),
-        '(', '!', '-user', args.user, '-o', '!', '-group', args.group, ')',
-        '-exec', 'chown', '-h', f'{args.user}:{args.group}', '{}', '+', '-print',
-    ], stdout=subprocess.PIPE, check=True)
-    print('ownership-changed=' + str(bool(result.stdout)).lower())
+    try:
+        uid = owner_id(args.user, lambda name: pwd.getpwnam(name).pw_uid)
+        gid = owner_id(args.group, lambda name: grp.getgrnam(name).gr_gid)
+    except KeyError as error:
+        parser.error(f'unknown owner operand: {error.args[0]!r}')
+
+    root = os.path.abspath(args.root)
+    errors = []
+    changed = []
+
+    def repair(path):
+        try:
+            status = os.lstat(path)
+        except OSError as error:
+            errors.append(f'{path}: {error}')
+            return
+        if status.st_uid == uid and status.st_gid == gid:
+            return
+        try:
+            os.chown(path, uid, gid, follow_symlinks=False)
+        except (OSError, OverflowError) as error:
+            errors.append(f'{path}: {error}')
+            return
+        changed.append(path)
+
+    repair(root)
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False,
+                                                onerror=lambda error: errors.append(str(error))):
+        for name in (*filenames, *dirnames):
+            repair(os.path.join(dirpath, name))
+
+    if errors:
+        for message in errors:
+            print(message, file=sys.stderr)
+        raise SystemExit(1)
+    for path in changed:
+        print(path)
+    print('ownership-changed=' + str(bool(changed)).lower())
 
 
 if __name__ == '__main__':
