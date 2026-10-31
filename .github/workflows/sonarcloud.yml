@@ -88,8 +88,16 @@ jobs:
             exit 1
           fi
           # The adapter tests transpile upstream TypeScript with the version the
-          # pinned checkout expects; install it in place of a full pnpm install.
-          npm install --prefix "$upstream" --no-save --no-audit --no-fund typescript@5
+          # pinned checkout expects. `npm install --prefix "$upstream"` would
+          # resolve the checkout's whole manifest and pull in hundreds of
+          # unpinned transitive packages; install TypeScript alone and link it
+          # into the checkout instead.
+          ts_install="$RUNNER_TEMP/typescript-only"
+          mkdir -p "$ts_install"
+          printf '{"name":"typescript-only","private":true}\n' > "$ts_install/package.json"
+          npm install --prefix "$ts_install" --no-save --no-audit --no-fund typescript@5
+          mkdir -p "$upstream/node_modules"
+          ln -s "$ts_install/node_modules/typescript" "$upstream/node_modules/typescript"
           mapfile -t runtime_tests < <(find hermes/runtime -maxdepth 1 -name 'test-*.mjs' | sort)
           WORKSPACE_UPSTREAM_DIR="$upstream" node --test \
             --experimental-test-coverage \
