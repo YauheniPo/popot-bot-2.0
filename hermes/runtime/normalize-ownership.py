@@ -39,9 +39,10 @@ def main():
 
     root = os.path.abspath(args.root)
     errors = []
-    changed = []
+    changed = False
 
     def repair(path):
+        nonlocal changed
         try:
             status = os.lstat(path)
         except OSError as error:
@@ -54,7 +55,7 @@ def main():
         except (OSError, OverflowError) as error:
             errors.append(f'{path}: {error}')
             return
-        changed.append(path)
+        changed = True
 
     repair(root)
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False,
@@ -66,9 +67,7 @@ def main():
         for message in errors:
             print(message, file=sys.stderr)
         raise SystemExit(1)
-    for path in changed:
-        print(path)
-    print('ownership-changed=' + str(bool(changed)).lower())
+    print('ownership-changed=' + str(changed).lower())
 
 
 if __name__ == '__main__':
