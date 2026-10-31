@@ -66,6 +66,20 @@ class NormalizeOwnershipTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn('ownership-changed=false', result.stdout)
 
+    def test_rejects_option_like_owner_arguments_before_spawning_children(self):
+        # S8705 hardening: owner arguments reach find/chown unvalidated, so a
+        # value such as 'a:b' or 'a b' is handed to the child processes.
+        # The helper must reject them itself before any child runs.
+        group = grp.getgrgid(os.getgid()).gr_name
+        for value in ('a:b', 'a b', 'a$b', 'a;b'):
+            with self.subTest(value=value):
+                result = subprocess.run(
+                    [sys.executable, str(HELPER), '/tmp', value, group],
+                    capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn('ownership-changed=', result.stdout)
+                self.assertNotIn('find:', result.stderr)
+
     def test_failed_chown_is_not_hidden_by_a_successful_find_traversal(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
