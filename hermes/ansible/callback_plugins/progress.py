@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import time
 
 from ansible.plugins.callback import CallbackBase
 
@@ -21,9 +22,14 @@ class CallbackModule(CallbackBase):
         self._started_tasks = 0
         self._task_positions = {}
         self._dynamic_tasks = 0
+        self._task_starts = {}
+        self._timings = {}
+        self._play_started = None
 
     def v2_playbook_on_play_start(self, play) -> None:
         """Count statically imported tasks before the play starts."""
+        if self._play_started is None:
+            self._play_started = time.monotonic()
         for entry in play.compile():
             for task in self._tasks_in(entry):
                 if task.implicit:
@@ -41,6 +47,7 @@ class CallbackModule(CallbackBase):
         if task.implicit:
             return
 
+        self._task_starts[task._uuid] = time.monotonic()
         self._started_tasks += 1
         number = self._task_positions.get(task._uuid)
         if number is None:
@@ -52,6 +59,25 @@ class CallbackModule(CallbackBase):
             f"[progress {number}/{total}] [{started_at}] {task.get_name().strip()}"
         )
 
+    def v2_playbook_on_handler_task_start(self, task) -> None:
+        self._task_starts[task._uuid] = time.monotonic()
+
+    def _finish(self, result) -> None:
+        started = self._task_starts.get(result._task._uuid)
+        if started is not None:
+            host = result._host.get_name()
+            self._timings[result._task._uuid, host] = (
+                time.monotonic() - started, result._task.get_name().strip(), host)
+
+    def v2_runner_on_ok(self, result) -> None:
+        self._finish(result)
+
+    def v2_runner_on_failed(self, result, ignore_errors=False) -> None:
+        self._finish(result)
+
+    def v2_runner_on_unreachable(self, result) -> None:
+        self._finish(result)
+
     def v2_playbook_on_stats(self, stats) -> None:
         """Make it clear when dynamic tasks made the initial count approximate."""
         if self._dynamic_tasks:
@@ -59,3 +85,7 @@ class CallbackModule(CallbackBase):
                 "[progress] Added "
                 f"{self._dynamic_tasks} dynamically included task(s) to the plan."
             )
+        for elapsed, name, host in sorted(self._timings.values(), reverse=True)[:10]:
+            self._display.display(f"[timing] {elapsed:.2f}s {name} ({host})")
+        if self._play_started is not None:
+            self._display.display(f"[timing] total {time.monotonic() - self._play_started:.2f}s")

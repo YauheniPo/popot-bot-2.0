@@ -43,6 +43,22 @@ class SonarConfigurationTests(unittest.TestCase):
         self.assertLess(test_command, threshold_command)
         self.assertLess(threshold_command, report_command)
 
+    def test_hermes_coverage_installs_required_ansible_collections(self) -> None:
+        workflow = (
+            Path(__file__).resolve().parents[1] / "workflows" / "sonarcloud.yml"
+        ).read_text(encoding="utf-8")
+        hermes_step = workflow.split(
+            "      - name: Run Hermes tests with coverage", 1
+        )[1].split("\n      - name:", 1)[0]
+        install = (
+            "ansible-galaxy collection install --requirements-file "
+            "hermes/ansible/requirements.yml"
+        )
+
+        self.assertIn(install, hermes_step)
+        self.assertLess(hermes_step.index("python -m pip install"), hermes_step.index(install))
+        self.assertLess(hermes_step.index(install), hermes_step.index("coverage run"))
+
 
 if __name__ == "__main__":
     unittest.main()

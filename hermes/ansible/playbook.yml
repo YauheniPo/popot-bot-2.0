@@ -98,6 +98,8 @@
           - hermes_commit is match('^[0-9a-f]{40}$')
           - hermes_installer_sha256 is match('^[0-9a-f]{64}$')
           - hermes_deploy_mode in ['full', 'config-only', 'runtime-only']
+          - vps_deploy.notifications.timeout_seconds | int > 0
+          - vps_deploy.notifications.max_parallel | int > 0
           - vps_deploy.hermes_source.raw_base_url == 'https://raw.githubusercontent.com/NousResearch/hermes-agent'
           - not (hermes_lock_public_ssh | bool) or (hermes_enable_tailscale | bool)
           - vps_ops is mapping
@@ -358,23 +360,80 @@
         group: root
         mode: "0755"
 
-    - name: Synchronize the versioned deployment domain modules
+    - name: Synchronize the allowlisted Hermes deployment bundle
       ansible.posix.synchronize:
-        src: ../deploy/
-        dest: "{{ hermes_bundle_dir }}/deploy/"
+        src: "{{ playbook_dir }}/../"
+        dest: "{{ hermes_bundle_dir }}/"
         archive: true
         checksum: true
         owner: false
         group: false
+        rsync_opts:
+          - --exclude=/skills/__pycache__
+          - --exclude=/skills/*.pyc
+          - --exclude=/skills/test_*.py
+          - --exclude=/skills/.env
+          - --exclude=/skills/.env.*
+          - --exclude=/skills/.envrc
+          - --exclude=/skills/dotenv
+          - --exclude=/skills/env
+          - --exclude=/skills/env.*
+          - --exclude=/skills/*.secret
+          - --exclude=/skills/*.key
+          - --exclude=/skills/*.pem
+          - --exclude=/skills/credentials.yml
+          - --exclude=/skills/credentials.yaml
+          - --exclude=/skills/vault.yml
+          - --exclude=/skills/vault.yaml
+          - --exclude=/skills/id_rsa
+          - --exclude=/skills/id_ed25519
+          - --exclude=/skills/*.p12
+          - --exclude=/skills/*.pfx
+          - --exclude=/skills/.netrc
+          - --exclude=/skills/node_modules
+          - --exclude=/skills/**/__pycache__
+          - --exclude=/skills/**/*.pyc
+          - --exclude=/skills/**/test_*.py
+          - --exclude=/skills/**/.env
+          - --exclude=/skills/**/.env.*
+          - --exclude=/skills/**/.envrc
+          - --exclude=/skills/**/dotenv
+          - --exclude=/skills/**/env
+          - --exclude=/skills/**/env.*
+          - --exclude=/skills/**/*.secret
+          - --exclude=/skills/**/*.key
+          - --exclude=/skills/**/*.pem
+          - --exclude=/skills/**/credentials.yml
+          - --exclude=/skills/**/credentials.yaml
+          - --exclude=/skills/**/vault.yml
+          - --exclude=/skills/**/vault.yaml
+          - --exclude=/skills/**/id_rsa
+          - --exclude=/skills/**/id_ed25519
+          - --exclude=/skills/**/*.p12
+          - --exclude=/skills/**/*.pfx
+          - --exclude=/skills/**/.netrc
+          - --exclude=/skills/**/node_modules
+          - --include=/deploy/
+          - --include=/deploy/**
+          - --include=/ops/
+          - --include=/ops/**
+          - --include=/observability/
+          - --include=/observability/**
+          - --include=/config/
+          - --include=/config/**
+          - --include=/runtime/
+          - --include=/runtime/**
+          - --include=/skills/
+          - --include=/skills/**
+          - --include=/vscode-server/
+          - --include=/vscode-server/**
+          - --exclude=*
 
-    - name: Synchronize the versioned operations layer without controller secrets
-      ansible.posix.synchronize:
-        src: ../ops/
-        dest: "{{ hermes_bundle_dir }}/ops/"
-        archive: true
-        checksum: true
-        owner: false
-        group: false
+    - name: Preserve shared bundle access after synchronization
+      ansible.builtin.file:
+        path: "{{ hermes_bundle_dir }}"
+        state: directory
+        mode: "0755"
 
     - name: Install the one-command Tailscale access bootstrap
       ansible.builtin.copy:
@@ -383,65 +442,6 @@
         owner: root
         group: root
         mode: "0755"
-
-    - name: Synchronize versioned Grafana and Prometheus provisioning files
-      ansible.posix.synchronize:
-        src: ../observability/
-        dest: "{{ hermes_bundle_dir }}/observability/"
-        archive: true
-        checksum: true
-        owner: false
-        group: false
-
-    - name: Synchronize shared VPS runtime configuration
-      ansible.posix.synchronize:
-        src: ../config/
-        dest: "{{ hermes_bundle_dir }}/config/"
-        archive: true
-        checksum: true
-        owner: false
-        group: false
-
-    - name: Synchronize shared VPS runtime helpers
-      ansible.posix.synchronize:
-        src: ../runtime/
-        dest: "{{ hermes_bundle_dir }}/runtime/"
-        archive: true
-        checksum: true
-        owner: false
-        group: false
-
-    - name: Synchronize repository-owned Hermes skills
-      ansible.posix.synchronize:
-        src: "{{ playbook_dir }}/../skills/"
-        dest: "{{ hermes_bundle_dir }}/skills/"
-        archive: true
-        checksum: true
-        owner: false
-        group: false
-        rsync_opts:
-          - --exclude=__pycache__
-          - --exclude=*.pyc
-          - --exclude=test_*.py
-          - --exclude=.env
-          - --exclude=.env.*
-          - --exclude=.envrc
-          - --exclude=dotenv
-          - --exclude=env
-          - --exclude=env.*
-          - --exclude=*.secret
-          - --exclude=*.key
-          - --exclude=*.pem
-          - --exclude=credentials.yml
-          - --exclude=credentials.yaml
-          - --exclude=vault.yml
-          - --exclude=vault.yaml
-          - --exclude=id_rsa
-          - --exclude=id_ed25519
-          - --exclude=*.p12
-          - --exclude=*.pfx
-          - --exclude=.netrc
-          - --exclude=node_modules
 
     - name: Copy repository-owned Hermes workspace instructions
       ansible.builtin.copy:
@@ -464,15 +464,6 @@
         group: root
         mode: "0644"
 
-    - name: Synchronize the versioned code-server deployment files
-      ansible.posix.synchronize:
-        src: ../vscode-server/
-        dest: "{{ hermes_bundle_dir }}/vscode-server/"
-        archive: true
-        checksum: true
-        owner: false
-        group: false
-
     - name: Normalize synchronized bundle ownership
       ansible.builtin.file:
         path: "{{ hermes_bundle_dir }}"
@@ -480,6 +471,23 @@
         owner: root
         group: root
         recurse: true
+
+    - name: Verify required runtime helpers before maintenance
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            from pathlib import Path
+            import sys
+            root = Path(sys.argv[1]) / 'runtime'
+            required = ('normalize-ownership.py', 'deployment-notify.py',
+                        'verify-update-state.py', 'apply-hermes-patches.py')
+            missing = [name for name in required if not (root / name).is_file()]
+            if missing:
+                raise SystemExit('Incomplete Hermes runtime bundle: ' + ', '.join(missing))
+          - "{{ hermes_bundle_dir }}"
+      changed_when: false
 
     - name: Check whether Hermes is already installed
       ansible.builtin.stat:
@@ -685,17 +693,17 @@
               # `hermes backup` (running as hermes_user) skip them and report an
               # incomplete backup. Force ownership back to hermes_user so the
               # mandatory backup below can read everything.
-              ansible.builtin.file:
-                path: "{{ hermes_home }}"
-                state: directory
-                owner: "{{ hermes_user }}"
-                group: "{{ hermes_user }}"
-                recurse: true
-                # `follow` defaults to true, and a recursive run then chowns the
-                # target of every symlink it meets — including venv/bin/python,
-                # which points at the system interpreter. Touch the links
-                # themselves only.
-                follow: false
+              # Native find batches chown only for mismatched UID/GID. -P and
+              # chown -h preserve the links, including venv/bin/python.
+              ansible.builtin.command:
+                argv:
+                  - python3
+                  - "{{ hermes_bundle_dir }}/runtime/normalize-ownership.py"
+                  - "{{ hermes_home }}"
+                  - "{{ hermes_user }}"
+                  - "{{ hermes_user }}"
+              register: hermes_home_ownership
+              changed_when: "'ownership-changed=true' in hermes_home_ownership.stdout"
 
             - name: Apply only the backup runtime exclusion patch
               ansible.builtin.command:
