@@ -12,14 +12,15 @@ import sys
 # User and group names are validated against the POSIX account shape and
 # resolved to numeric ids in-process (S8705). The root must be an absolute
 # path built from POSIX-shaped components, so no caller-supplied operand can
-# smuggle traversal (..), whitespace, or control characters into the chown
-# sink; it is then canonicalized with realpath and must resolve to an
-# existing directory before any repair, so parent-directory symlinks or path
-# components cannot redirect the traversal (S8707). Repair itself stays
-# inside the interpreter: os.lchown fixes mismatched entries without
-# following symlinks.
+# smuggle traversal, whitespace, or control characters into the chown sink;
+# dot-prefixed components such as .hermes are allowed, while the exact "."
+# and ".." entries are rejected by the per-component lookaheads. The path is
+# then canonicalized with realpath and must resolve to an existing directory
+# before any repair, so parent-directory symlinks or path components cannot
+# redirect the traversal (S8707). Repair itself stays inside the
+# interpreter: os.lchown fixes mismatched entries without following symlinks.
 OWNER_RE = re.compile(r'^[A-Za-z0-9_][A-Za-z0-9_.-]*\$?$')
-ROOT_RE = re.compile(r'^/(?:[A-Za-z0-9_][A-Za-z0-9_.-]*/)*[A-Za-z0-9_][A-Za-z0-9_.-]*/?$')
+ROOT_RE = re.compile(r'^/(?:(?!\.(?:/|$))(?!\.\.(?:/|$))[A-Za-z0-9_.-]+/)*(?!\.(?:/|$))(?!\.\.(?:/|$))[A-Za-z0-9_.-]+/?$')
 
 
 def owner_id(value, database):

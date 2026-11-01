@@ -154,6 +154,34 @@ class NormalizeOwnershipTests(unittest.TestCase):
                 self.assertNotIn('ownership-changed=', result.stdout)
                 self.assertIn('invalid root operand', result.stderr)
 
+    def test_root_accepts_dot_components_but_rejects_dot_and_dotdot(self):
+        # Dot-prefixed components such as .hermes are legitimate roots; only
+        # the exact "." and ".." entries (and any traversal through them) are
+        # rejected.
+        helper = load_helper()
+        for value in ('/home/hermes/.hermes', '/home/hermes/.config/app'):
+            with self.subTest(accepted=value):
+                self.assertIsNotNone(helper.ROOT_RE.fullmatch(value))
+        user = pwd.getpwuid(os.getuid()).pw_name
+        group = grp.getgrgid(os.getgid()).gr_name
+        for value in ('/home/hermes/../etc', '/home/hermes/.', '/home/hermes/..',
+                      '/home/hermes/a/../b'):
+            with self.subTest(rejected=value):
+                self.assertIsNone(helper.ROOT_RE.fullmatch(value))
+                result = call_main(None, argv_override=[str(HELPER), value, user, group])
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn('ownership-changed=', result.stdout)
+                self.assertIn('invalid root operand', result.stderr)
+
+    def test_root_accepts_hidden_directory_end_to_end(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / '.hermes'
+            root.mkdir()
+            (root / 'file').write_text('keep')
+            result = self.run_helper(root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), 'ownership-changed=false')
+
     def test_unknown_owner_operand_is_rejected(self):
         result = call_main(None, argv_override=[
             str(HELPER), '/tmp', 'no_such_user_zzz', grp.getgrgid(os.getgid()).gr_name])
