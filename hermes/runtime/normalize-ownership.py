@@ -30,25 +30,29 @@ def owner_id(value, database):
 
 
 def resolve_root(path):
-    """Return the canonical root path, requiring an existing directory."""
-    root = os.path.realpath(path)
+    """Return the root path, requiring a real directory without symlinks."""
+    root = os.path.normpath(path.rstrip('/'))
+    if os.path.realpath(root) != root:
+        raise ValueError(f'root must not contain symlinks: {path!r}')
     if not os.path.isdir(root):
         raise ValueError(f'root must resolve to an existing directory: {path!r}')
     return root
 
 
-def repair(path, uid, gid, errors):
+def repair(dir_fd, name, uid, gid, errors):
+    """Repair one entry relative to dir_fd without following a final symlink."""
+    label = name if name == '.' else os.path.join('.', name)
     try:
-        status = os.lstat(path)
+        status = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
     except OSError as error:
-        errors.append(f'{path}: {error}')
+        errors.append(f'{label}: {error}')
         return False
     if status.st_uid == uid and status.st_gid == gid:
         return False
     try:
-        os.lchown(path, uid, gid)
+        os.chown(name, uid, gid, dir_fd=dir_fd, follow_symlinks=False)
     except (OSError, OverflowError) as error:
-        errors.append(f'{path}: {error}')
+        errors.append(f'{label}: {error}')
         return False
     return True
 
@@ -76,11 +80,21 @@ def main():
         parser.error(str(error))
 
     errors = []
-    changed = repair(root, uid, gid, errors)
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False,
-                                                onerror=lambda error: errors.append(str(error))):
-        for name in (*filenames, *dirnames):
-            changed = repair(os.path.join(dirpath, name), uid, gid, errors) or changed
+    try:
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as error:
+        parser.error(f'cannot open root without following symlinks: {error}')
+    try:
+        # The traversal is anchored on a directory descriptor opened with
+        # O_NOFOLLOW, so swapping the root path after validation cannot
+        # redirect chown outside the validated tree.
+        changed = repair(root_fd, '.', uid, gid, errors)
+        for _, dirnames, filenames, dir_fd in os.fwalk(
+                '.', dir_fd=root_fd, follow_symlinks=False):
+            for name in (*filenames, *dirnames):
+                changed = repair(dir_fd, name, uid, gid, errors) or changed
+    finally:
+        os.close(root_fd)
 
     if errors:
         for message in errors:

@@ -103,28 +103,24 @@ class NormalizeOwnershipTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn('ownership-changed=false', result.stdout)
 
-    def test_root_symlink_is_resolved_before_repair(self):
-        # S8707 hardening: the root is canonicalized with realpath, so the
-        # traversal repairs the real directory even when the root is reached
-        # through a symlink, and the link itself is never rewritten.
-        drift = self.second_group()
+    def test_symlinked_root_is_rejected_before_any_repair(self):
+        # A service account that owns hermes_home can replace it with a
+        # symlink to /etc. The root helper runs as root, so following that
+        # link would hand the tree to the unprivileged user (S8707).
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             real = base / 'real'
             (real / 'nested').mkdir(parents=True)
             (real / 'nested/file').write_text('keep')
-            os.chown(real, -1, drift, follow_symlinks=False)
-            os.chown(real / 'nested', -1, drift, follow_symlinks=False)
-            os.chown(real / 'nested/file', -1, drift, follow_symlinks=False)
             link = base / 'link'
             link.symlink_to(real, target_is_directory=True)
+
             result = self.run_helper(link)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.strip(), 'ownership-changed=true')
-            self.assertEqual(real.stat().st_gid, os.getgid())
-            self.assertEqual((real / 'nested').stat().st_gid, os.getgid())
-            self.assertEqual((real / 'nested/file').stat().st_gid, os.getgid())
-            self.assertEqual(link.lstat().st_gid, os.getgid())
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('symlink', result.stderr)
+            self.assertNotIn('ownership-changed=true', result.stdout)
+            self.assertTrue((real / 'nested/file').exists())
 
     def test_rejects_option_like_owner_arguments_before_spawning_children(self):
         # S8705 hardening: owner arguments reach find/chown unvalidated, so a
@@ -195,10 +191,14 @@ class NormalizeOwnershipTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'file'
             path.write_text('keep')
-            repaired = helper.repair(str(path / 'child'), os.getuid(), os.getgid(), errors)
+            fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                repaired = helper.repair(fd, 'child', os.getuid(), os.getgid(), errors)
+            finally:
+                os.close(fd)
         self.assertFalse(repaired)
         self.assertEqual(len(errors), 1)
-        self.assertIn(str(path / 'child'), errors[0])
+        self.assertIn('./child', errors[0])
 
     def test_repair_reports_success_when_chown_succeeds(self):
         # A no-op ownership change (-1, -1) is permitted for non-root users,
@@ -208,7 +208,11 @@ class NormalizeOwnershipTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'file'
             path.write_text('keep')
-            repaired = helper.repair(str(path), -1, -1, errors)
+            fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                repaired = helper.repair(fd, path.name, -1, -1, errors)
+            finally:
+                os.close(fd)
         self.assertTrue(repaired)
         self.assertEqual(errors, [])
 
