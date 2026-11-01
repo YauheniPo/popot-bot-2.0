@@ -249,7 +249,7 @@ The workflow defaults and current repository Variables are:
 
 Repository Actions variables override these YAML defaults; update both when
 retiring a route.
-The NVIDIA NIM route and the Nous `poolside/laguna-s-2.1:free` fallback now fail the live JSON preflight with HTTP 404; the defaults above moved to free OpenRouter and Nous routes, and the repository Variables must be updated to match. Historically, a full review of PR #70 at
+The Direct API defaults moved from the NVIDIA NIM route and the Nous `poolside/laguna-s-2.1:free` fallback, which now fail the live JSON preflight with HTTP 404, to a free OpenRouter primary and a Nous `stepfun/step-3.7-flash:free` fallback; the `DIRECT_REVIEW_*` repository Variables must be updated to match. Historically, a full review of PR #70 at
 `ad4a03b` validated both chunks and all 14 eligible files in 112.9 provider seconds
 in [run 37979872334](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/37979872334).
 Its Nous fallback completed a full review in
