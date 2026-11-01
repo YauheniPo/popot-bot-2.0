@@ -90,7 +90,8 @@ def main():
         # redirect chown outside the validated tree.
         changed = repair(root_fd, '.', uid, gid, errors)
         for _, dirnames, filenames, dir_fd in os.fwalk(
-                '.', dir_fd=root_fd, follow_symlinks=False):
+                '.', dir_fd=root_fd, follow_symlinks=False,
+                onerror=lambda error: errors.append(str(error))):
             for name in (*filenames, *dirnames):
                 changed = repair(dir_fd, name, uid, gid, errors) or changed
     finally:

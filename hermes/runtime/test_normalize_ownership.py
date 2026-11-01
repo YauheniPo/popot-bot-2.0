@@ -185,6 +185,40 @@ class NormalizeOwnershipTests(unittest.TestCase):
         self.assertIn('unknown owner operand', result.stderr)
         self.assertNotIn('ownership-changed=', result.stdout)
 
+    @unittest.skipIf(os.geteuid() == 0, 'root can read mode-000 directories')
+    def test_unreadable_subdirectory_fails_closed(self):
+        # os.fwalk silently skips a subtree it cannot open unless onerror is
+        # passed; a partial repair must never report success.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'root'
+            locked = root / 'locked'
+            locked.mkdir(parents=True)
+            (locked / 'file').write_text('keep')
+            os.chmod(locked, 0o000)
+            try:
+                result = self.run_helper(root)
+            finally:
+                os.chmod(locked, 0o700)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('Permission denied', result.stderr)
+            self.assertNotIn('ownership-changed=true', result.stdout)
+
+    @unittest.skipIf(os.geteuid() == 0, 'root can open mode-000 directories')
+    def test_unreadable_root_fails_before_any_repair(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'root'
+            root.mkdir()
+            os.chmod(root, 0o000)
+            try:
+                result = self.run_helper(root)
+            finally:
+                os.chmod(root, 0o700)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('cannot open root', result.stderr)
+            self.assertNotIn('ownership-changed', result.stdout)
+
     def test_repair_reports_lstat_failures(self):
         helper = load_helper()
         errors = []
