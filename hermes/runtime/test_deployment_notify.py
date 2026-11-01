@@ -285,6 +285,7 @@ class DeploymentNotifyInProcessTests(unittest.TestCase):
         # NO_READ makes the child record its start immediately, before the
         # second process start fails and the finally block reaps it.
         env = {**self.environment, 'NOTIFY_TEST_NO_READ': '1'}
+        payload = json.loads(self.payload())
         with mock.patch.dict(os.environ, env, clear=False):
             with mock.patch.object(subprocess, 'Popen', flaky_popen):
                 with self.assertRaises(FileNotFoundError):

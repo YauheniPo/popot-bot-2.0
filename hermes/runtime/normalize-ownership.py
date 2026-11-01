@@ -10,12 +10,16 @@ import sys
 
 # Operands select the target owner and never reach an external command.
 # User and group names are validated against the POSIX account shape and
-# resolved to numeric ids in-process (S8705). The root path is canonicalized
-# with realpath and must resolve to an existing directory before any repair,
-# so parent-directory symlinks or path components cannot redirect the
-# traversal (S8707). Repair itself stays inside the interpreter: os.lchown
-# fixes mismatched entries without following symlinks.
+# resolved to numeric ids in-process (S8705). The root must be an absolute
+# path built from POSIX-shaped components, so no caller-supplied operand can
+# smuggle traversal (..), whitespace, or control characters into the chown
+# sink; it is then canonicalized with realpath and must resolve to an
+# existing directory before any repair, so parent-directory symlinks or path
+# components cannot redirect the traversal (S8707). Repair itself stays
+# inside the interpreter: os.lchown fixes mismatched entries without
+# following symlinks.
 OWNER_RE = re.compile(r'^[A-Za-z0-9_][A-Za-z0-9_.-]*\$?$')
+ROOT_RE = re.compile(r'^/(?:[A-Za-z0-9_][A-Za-z0-9_.-]*/)*[A-Za-z0-9_][A-Za-z0-9_.-]*/?$')
 
 
 def owner_id(value, database):
@@ -58,6 +62,8 @@ def main():
         parser.error(f'invalid user operand: {args.user!r}')
     if not OWNER_RE.fullmatch(args.group):
         parser.error(f'invalid group operand: {args.group!r}')
+    if not ROOT_RE.fullmatch(args.root):
+        parser.error(f'invalid root operand: {args.root!r}')
     try:
         uid = owner_id(args.user, lambda name: pwd.getpwnam(name).pw_uid)
         gid = owner_id(args.group, lambda name: grp.getgrnam(name).gr_gid)

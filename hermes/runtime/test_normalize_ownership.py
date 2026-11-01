@@ -142,6 +142,18 @@ class NormalizeOwnershipTests(unittest.TestCase):
                     self.assertNotIn('ownership-changed=', result.stdout)
                     self.assertNotIn('find:', result.stderr)
 
+    def test_root_operand_must_be_an_absolute_posix_path(self):
+        # S8707 hardening: the root reaches os.lchown, so callers must not be
+        # able to smuggle traversal, whitespace, or relative fragments into it.
+        user = pwd.getpwuid(os.getuid()).pw_name
+        group = grp.getgrgid(os.getgid()).gr_name
+        for value in ('relative/path', '/tmp/../etc', '/tmp/a b', '~/home', '/', '/tmp//x'):
+            with self.subTest(root=value):
+                result = call_main(None, argv_override=[str(HELPER), value, user, group])
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn('ownership-changed=', result.stdout)
+                self.assertIn('invalid root operand', result.stderr)
+
     def test_unknown_owner_operand_is_rejected(self):
         result = call_main(None, argv_override=[
             str(HELPER), '/tmp', 'no_such_user_zzz', grp.getgrgid(os.getgid()).gr_name])
