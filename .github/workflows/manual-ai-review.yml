@@ -33,13 +33,13 @@ on:
       model:
         description: Model for the direct reviewer
         required: true
-        default: nvidia/nemotron-3-super-120b-a12b
-        # Verified NIM route; every run must pass the live JSON preflight.
+        default: cohere/north-mini-code:free
+        # Free OpenRouter route; every run must pass the live JSON preflight.
         type: string
       provider:
         description: Provider for the direct reviewer
         required: true
-        default: nvidia
+        default: openrouter
         type: choice
         options:
           - ollama-cloud
@@ -322,7 +322,7 @@ jobs:
         with:
           model: ${{ inputs.model }}
           provider: ${{ inputs.provider }}
-          fallback_model: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'poolside/laguna-s-2.1:free' }}
+          fallback_model: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'stepfun/step-3.7-flash:free' }}
           fallback_provider: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'nous' }}
           base_sha: ${{ steps.context.outputs.base_sha }}
           head_sha: ${{ steps.context.outputs.head_sha }}

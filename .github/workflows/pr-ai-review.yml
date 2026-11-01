@@ -14,9 +14,9 @@ env:
   # 1 = DirectAPI; 2 = ClaudeCodePlugin gating with Observable corroboration.
   PR_REVIEWER: ${{ vars.PR_REVIEWER || '0' }}
   # Claude uses these settings; Observable overrides its routes at job level.
-  DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'nvidia' }}
-  DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'nvidia/nemotron-3-super-120b-a12b' }}
-  DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'poolside/laguna-s-2.1:free' }}
+  DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'openrouter' }}
+  DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'cohere/north-mini-code:free' }}
+  DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'stepfun/step-3.7-flash:free' }}
   DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'nous' }}
   CLAUDE_REVIEW_PROVIDER: ${{ vars.CLAUDE_REVIEW_PROVIDER || 'ollama-cloud' }}
   CLAUDE_REVIEW_MODEL: ${{ vars.CLAUDE_REVIEW_MODEL || 'deepseek-v4.1-flash:cloud' }}

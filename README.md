@@ -243,13 +243,13 @@ The workflow defaults and current repository Variables are:
 
 | Reviewer | Primary | Fallback |
 | --- | --- | --- |
-| Direct API | `nvidia / nvidia/nemotron-3-super-120b-a12b` | `nous / poolside/laguna-s-2.1:free` |
+| Direct API | `openrouter / cohere/north-mini-code:free` | `nous / stepfun/step-3.7-flash:free` |
 | Claude Code | `ollama-cloud / deepseek-v4.1-flash:cloud` | `nous / poolside/laguna-s-2.1:free` |
 | Observable | `openrouter / cohere/north-mini-code:free` | `nous / poolside/laguna-s-2.1:free` |
 
 Repository Actions variables override these YAML defaults; update both when
 retiring a route.
-Direct API uses the existing NVIDIA NIM key. A full review of PR #70 at
+The NVIDIA NIM route and the Nous `poolside/laguna-s-2.1:free` fallback now fail the live JSON preflight with HTTP 404; the defaults above moved to free OpenRouter and Nous routes, and the repository Variables must be updated to match. Historically, a full review of PR #70 at
 `ad4a03b` validated both chunks and all 14 eligible files in 112.9 provider seconds
 in [run 37979872334](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/37979872334).
 Its Nous fallback completed a full review in

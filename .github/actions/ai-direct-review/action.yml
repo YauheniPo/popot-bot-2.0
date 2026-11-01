@@ -44,7 +44,7 @@ inputs:
   fallback_model:
     description: "Fallback model"
     required: false
-    default: "poolside/laguna-s-2.1:free"
+    default: "stepfun/step-3.7-flash:free"
   fallback_provider:
     description: "Fallback provider"
     required: false
