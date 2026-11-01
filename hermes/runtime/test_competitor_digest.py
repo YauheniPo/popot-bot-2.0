@@ -726,6 +726,19 @@ class CompetitorDigestTests(unittest.TestCase):
             guard.finalize_with_repair(repair)
         repair.assert_not_called()
 
+    def test_foreign_artifact_with_non_list_errors_fails_closed_without_repair(self):
+        guard = self.begin()
+        record = self.record(guard)
+        record["run_id"] = "old-run"
+        record["coverage_complete"] = True
+        record["errors"] = None
+        self.save(guard, record)
+        repair = mock.Mock()
+        with self.assertRaisesRegex(ValueError, "run_id"):
+            guard.finalize_with_repair(repair)
+        repair.assert_not_called()
+        guard.close()
+
     def test_partial_report_is_rendered_from_record_and_never_advances_cutoff(self):
         guard = self.begin()
         self.save(guard, self.record(guard))

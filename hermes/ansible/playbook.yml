@@ -98,8 +98,11 @@
           - hermes_commit is match('^[0-9a-f]{40}$')
           - hermes_installer_sha256 is match('^[0-9a-f]{64}$')
           - hermes_deploy_mode in ['full', 'config-only', 'runtime-only']
+          - vps_deploy.notifications is mapping
           - vps_deploy.notifications.timeout_seconds | int > 0
+          - vps_deploy.notifications.timeout_seconds | int <= 60
           - vps_deploy.notifications.max_parallel | int > 0
+          - vps_deploy.notifications.max_parallel | int <= 8
           - vps_deploy.hermes_source.raw_base_url == 'https://raw.githubusercontent.com/NousResearch/hermes-agent'
           - not (hermes_lock_public_ssh | bool) or (hermes_enable_tailscale | bool)
           - vps_ops is mapping
@@ -242,9 +245,11 @@
         fail_msg: Tailscale Serve requires a non-empty vps_tailscale.serve.services list.
       when: vps_deploy.features.tailscale | bool
 
-    - name: Install rsync for incremental bundle synchronization
+    - name: Install rsync and curl for bundle sync and deployment notifications
       ansible.builtin.apt:
-        name: rsync
+        name:
+          - rsync
+          - curl
         state: present
         update_cache: true
 
@@ -368,7 +373,31 @@
         checksum: true
         owner: false
         group: false
+        # Deny credentials, local state and test artefacts anywhere in the bundle.
+        # rsync is first-match-wins, so these stay ahead of the allow list.
         rsync_opts:
+          - --exclude=__pycache__
+          - --exclude=*.pyc
+          - --exclude=test_*.py
+          - --exclude=.env
+          - --exclude=.env.*
+          - --exclude=.envrc
+          - --exclude=dotenv
+          - --exclude=env
+          - --exclude=env.*
+          - --exclude=*.secret
+          - --exclude=*.key
+          - --exclude=*.pem
+          - --exclude=credentials.yml
+          - --exclude=credentials.yaml
+          - --exclude=vault.yml
+          - --exclude=vault.yaml
+          - --exclude=id_rsa
+          - --exclude=id_ed25519
+          - --exclude=*.p12
+          - --exclude=*.pfx
+          - --exclude=.netrc
+          - --exclude=node_modules
           - --exclude=/skills/__pycache__
           - --exclude=/skills/*.pyc
           - --exclude=/skills/test_*.py

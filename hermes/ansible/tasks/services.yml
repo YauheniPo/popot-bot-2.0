@@ -26,6 +26,7 @@
 - name: Find legacy Edge TTS only outside caches and unrelated Hermes state
   ansible.builtin.find:
     paths:
+      - "{{ hermes_home }}/hermes-agent"
       - "{{ hermes_home }}/tools"
       - "{{ hermes_user_home }}/.local/lib"
     patterns: tts_tool.py

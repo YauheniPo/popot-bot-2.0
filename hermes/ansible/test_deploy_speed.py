@@ -26,7 +26,9 @@ def all_tasks(tasks):
 
 class DeploySpeedTests(unittest.TestCase):
     def setUp(self):
-        self.tasks = list(all_tasks(yaml.safe_load((ANSIBLE / 'playbook.yml').read_text())[0]['tasks']))
+        play = yaml.safe_load((ANSIBLE / 'playbook.yml').read_text())[0]
+        self.tasks = list(all_tasks(play['tasks']))
+        self.pre_tasks = list(all_tasks(play.get('pre_tasks', [])))
 
     def test_backup_ownership_uses_native_scan(self):
         task = next(t for t in self.tasks if t.get('name') == 'Normalize Hermes home ownership before backup')
@@ -49,7 +51,10 @@ class DeploySpeedTests(unittest.TestCase):
                        'runtime/verify-update-state.py', 'runtime/apply-hermes-patches.py',
                        'deploy/run.sh', 'ops/health.sh', 'observability/rules/a.yml',
                        'config/defaults.yml', 'skills/demo/SKILL.md', 'vscode-server/Dockerfile']
-            excluded = ['ansible/group_vars/all/vault.yml', '.env', 'docs/private.md', 'skills/demo/.env']
+            excluded = ['ansible/group_vars/all/vault.yml', '.env', 'docs/private.md', 'skills/demo/.env',
+                        'runtime/.env', 'runtime/test_leak.py', 'runtime/__pycache__/leak.pyc',
+                        'deploy/server.pem', 'deploy/client.key', 'config/credentials.yml',
+                        'config/vault.yml', 'ops/.netrc']
             for name in allowed + excluded:
                 path = source / name
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -152,6 +157,7 @@ class DeploySpeedTests(unittest.TestCase):
                          '{{ hermes_home }}/hermes-agent/tools/tts_tool.py')
         fallback = next(t for t in tasks if 'ansible.builtin.find' in t)
         self.assertIn('not hermes_tts_tool.stat.exists', fallback['when'])
+        self.assertIn('{{ hermes_home }}/hermes-agent', fallback['ansible.builtin.find']['paths'])
         self.assertNotIn('{{ hermes_home }}', fallback['ansible.builtin.find']['paths'])
         self.assertNotIn('{{ hermes_user_home }}/.local', fallback['ansible.builtin.find']['paths'])
 
@@ -227,6 +233,42 @@ class DeploySpeedTests(unittest.TestCase):
                                         capture_output=True, text=True, timeout=30,
                                         env={**os.environ, 'ANSIBLE_CONFIG': str(ANSIBLE / 'ansible.cfg')})
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_bundle_sync_installs_every_binary_the_bundle_shells_out_to(self):
+        install = next(t for t in self.pre_tasks
+                       if t.get('name', '').startswith('Install rsync'))
+        names = install['ansible.builtin.apt']['name']
+        packages = [names] if isinstance(names, str) else names
+        self.assertIn('rsync', packages)
+        self.assertIn('curl', packages, 'deployment-notify.py shells out to curl')
+
+    @unittest.skipUnless(shutil.which('ansible-playbook'), 'Ansible is required')
+    def test_notification_timeouts_and_fanout_are_bounded(self):
+        guard = next(t for t in self.pre_tasks
+                     if 'ansible.builtin.assert' in t
+                     and any('vps_deploy.notifications.timeout_seconds' in condition
+                             for condition in t['ansible.builtin.assert']['that']))
+        conditions = [condition for condition in guard['ansible.builtin.assert']['that']
+                      if 'vps_deploy.notifications' in condition]
+        self.assertIn('vps_deploy.notifications is mapping', conditions)
+        for notifications, expected in (
+                ({'timeout_seconds': 15, 'max_parallel': 3}, True),
+                ({'timeout_seconds': 90, 'max_parallel': 3}, False),
+                ({'timeout_seconds': 15, 'max_parallel': 99}, False),
+                ('15', False),
+        ):
+            with self.subTest(notifications=notifications), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                play = [{'hosts': 'localhost', 'gather_facts': False, 'vars': {
+                    'ansible_python_interpreter': sys.executable,
+                    'vps_deploy': {'notifications': notifications},
+                }, 'tasks': [{'ansible.builtin.assert': {'that': conditions}}]}]
+                path = root / 'check.yml'
+                path.write_text(yaml.safe_dump(play))
+                result = subprocess.run(['ansible-playbook', '-i', 'localhost,', '-c', 'local', str(path)],
+                                        capture_output=True, text=True, timeout=30,
+                                        env={**os.environ, 'ANSIBLE_CONFIG': str(ANSIBLE / 'ansible.cfg')})
+                self.assertEqual(result.returncode == 0, expected, result.stdout + result.stderr)
 
     def test_notifications_are_one_waited_batch_with_secret_stdin(self):
         tasks = yaml.safe_load((ANSIBLE / 'tasks/deployment-notify.yml').read_text())

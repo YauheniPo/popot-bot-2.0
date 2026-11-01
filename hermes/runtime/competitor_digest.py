@@ -637,7 +637,9 @@ class RunGuard:
             record.setdefault(field, value)
         try:
             # Research failures can only lower coverage, never advance its cutoff.
-            if record.get("coverage_complete") is True and strings(record.get("errors")):
+            if (record.get("coverage_complete") is True
+                and isinstance(record.get("errors"), list)
+                and strings(record.get("errors"))):
                 record["coverage_complete"] = False
             validate(record, self.watch, self.window_start, self.window_end, self.run_id)
             if self.budget:
