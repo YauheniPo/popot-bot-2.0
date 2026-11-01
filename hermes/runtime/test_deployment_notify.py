@@ -289,7 +289,7 @@ class DeploymentNotifyInProcessTests(unittest.TestCase):
         with mock.patch.dict(os.environ, env, clear=False):
             with mock.patch.object(subprocess, 'Popen', flaky_popen):
                 with self.assertRaises(FileNotFoundError):
-                    helper.send(json.loads(self.payload()), 3, 2)
+                    helper.send(payload, 3, 2)
         self.assertEqual(len(calls), 2)
         events = [e for e in self.events() if e['kind'] == 'start']
         self.assertEqual(len(events), 1)
