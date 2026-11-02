@@ -16,6 +16,8 @@ from unittest import mock
 
 
 HELPER = Path(__file__).with_name('normalize-ownership.py')
+# macOS exposes its temporary directory through the /var symlink.
+TEMP_PARENT = Path(tempfile.gettempdir()).resolve()
 
 
 def load_helper():
@@ -57,7 +59,7 @@ class NormalizeOwnershipTests(unittest.TestCase):
         return groups[0]
 
     def test_correct_tree_is_unchanged(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=TEMP_PARENT) as directory:
             os.chown(directory, -1, os.getgid())
             path = Path(directory) / 'file'
             path.write_text('unchanged')
@@ -74,7 +76,7 @@ class NormalizeOwnershipTests(unittest.TestCase):
             groups = [group.gr_gid for group in grp.getgrall() if group.gr_gid != os.getgid()]
         if not groups:
             self.skipTest('A second permitted group is needed to create ownership drift')
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=TEMP_PARENT) as directory:
             root = Path(directory)
             managed, outside = root / 'home', root / 'outside'
             (managed / 'nested').mkdir(parents=True)
@@ -98,7 +100,7 @@ class NormalizeOwnershipTests(unittest.TestCase):
             self.assertEqual(repeated.stdout.strip(), 'ownership-changed=false')
 
     def test_failed_scan_does_not_report_success(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=TEMP_PARENT) as directory:
             result = self.run_helper(Path(directory) / 'missing')
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn('ownership-changed=false', result.stdout)
@@ -107,7 +109,7 @@ class NormalizeOwnershipTests(unittest.TestCase):
         # A service account that owns hermes_home can replace it with a
         # symlink to /etc. The root helper runs as root, so following that
         # link would hand the tree to the unprivileged user (S8707).
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=TEMP_PARENT) as directory:
             base = Path(directory)
             real = base / 'real'
             (real / 'nested').mkdir(parents=True)
@@ -170,7 +172,7 @@ class NormalizeOwnershipTests(unittest.TestCase):
                 self.assertIn('invalid root operand', result.stderr)
 
     def test_root_accepts_hidden_directory_end_to_end(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=TEMP_PARENT) as directory:
             root = Path(directory) / '.hermes'
             root.mkdir()
             (root / 'file').write_text('keep')
@@ -189,7 +191,7 @@ class NormalizeOwnershipTests(unittest.TestCase):
     def test_unreadable_subdirectory_fails_closed(self):
         # os.fwalk silently skips a subtree it cannot open unless onerror is
         # passed; a partial repair must never report success.
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=TEMP_PARENT) as directory:
             root = Path(directory) / 'root'
             locked = root / 'locked'
             locked.mkdir(parents=True)
@@ -206,7 +208,7 @@ class NormalizeOwnershipTests(unittest.TestCase):
 
     @unittest.skipIf(os.geteuid() == 0, 'root can open mode-000 directories')
     def test_unreadable_root_fails_before_any_repair(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=TEMP_PARENT) as directory:
             root = Path(directory) / 'root'
             root.mkdir()
             os.chmod(root, 0o000)
@@ -222,7 +224,7 @@ class NormalizeOwnershipTests(unittest.TestCase):
     def test_repair_reports_lstat_failures(self):
         helper = load_helper()
         errors = []
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=TEMP_PARENT) as directory:
             path = Path(directory) / 'file'
             path.write_text('keep')
             fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
@@ -239,7 +241,7 @@ class NormalizeOwnershipTests(unittest.TestCase):
         # so the successful os.lchown path can be exercised deterministically.
         helper = load_helper()
         errors = []
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=TEMP_PARENT) as directory:
             path = Path(directory) / 'file'
             path.write_text('keep')
             fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
@@ -254,7 +256,7 @@ class NormalizeOwnershipTests(unittest.TestCase):
         # The repair must stay inside the interpreter: argv values used to
         # reach find/chown (Sonar S8705). Any external child would be
         # observable through PATH shims that mark their invocation.
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=TEMP_PARENT) as directory:
             root = Path(directory)
             (root / 'file').write_text('unchanged')
             probe = root / 'probe'
@@ -271,7 +273,7 @@ class NormalizeOwnershipTests(unittest.TestCase):
     def test_failed_chown_is_not_hidden_by_other_repairs(self):
         if os.geteuid() == 0:
             self.skipTest('requires a non-root user so chown fails with EPERM')
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=TEMP_PARENT) as directory:
             (Path(directory) / 'file').write_text('keep')
             # An impossible owner id selects every entry, while chown as a
             # non-root user cannot apply it: the failure must be reported.
@@ -281,7 +283,7 @@ class NormalizeOwnershipTests(unittest.TestCase):
             self.assertNotIn('ownership-changed=', result.stdout)
 
     def test_module_entry_point_runs_main(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=TEMP_PARENT) as directory:
             os.chown(directory, -1, os.getgid())
             argv = [str(HELPER), str(directory),
                     pwd.getpwuid(os.getuid()).pw_name, grp.getgrgid(os.getgid()).gr_name]

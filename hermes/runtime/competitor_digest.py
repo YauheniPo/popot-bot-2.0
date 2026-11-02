@@ -636,6 +636,7 @@ class RunGuard:
                              ("window_end", self.window_end.isoformat())):
             record.setdefault(field, value)
         try:
+            _validate_record_identity(record, self.watch, self.window_start, self.window_end, self.run_id)
             # Research failures can only lower coverage, never advance its cutoff.
             if (record.get("coverage_complete") is True
                 and isinstance(record.get("errors"), list)

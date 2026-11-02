@@ -1272,15 +1272,16 @@
                 - vps_deploy.features.vscode_server | default(false) | bool
                 - hermes_deploy_mode != 'runtime-only'
           rescue:
+            # Failure variables may omit _ansible_no_log even for protected
+            # tasks. Forward only metadata, never msg/stdout/stderr.
             - name: Capture the failed Hermes deployment task
               ansible.builtin.set_fact:
                 hermes_deployment_notification: >-
                   ❌ Hermes deployment failed
                   Task: {{ ansible_failed_task.name | default('unknown task') }}
                   Host: {{ inventory_hostname }}
-                  Error: {{ 'details hidden because the failed task protects sensitive output' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.msg | default('no error details')) }}
-                  RC: {{ 'hidden' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.rc | default('n/a')) }}
-                  Details: {{ 'hidden' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.stderr | default(ansible_failed_result.stdout | default(''), true) | trim | truncate(1200, true, '...')) }}
+                  RC: {{ ansible_failed_result.rc | default('n/a') }}
+                  Details are omitted; inspect the failed task output on the controller.
                 hermes_deployment_failed: true
               no_log: true
 
@@ -1292,9 +1293,8 @@
                 msg: >-
                   Hermes deployment failed at task
                   '{{ ansible_failed_task.name | default('unknown task') }}'.
-                  Error: {{ 'details hidden because the failed task protects sensitive output' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.msg | default('no error details')) }}
-                  RC: {{ 'hidden' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.rc | default('n/a')) }}
-                  Details: {{ 'hidden' if (ansible_failed_result._ansible_no_log | default(false) | bool) else (ansible_failed_result.stderr | default(ansible_failed_result.stdout | default(''), true) | trim | truncate(4000, true, '...')) }}
+                  RC: {{ ansible_failed_result.rc | default('n/a') }}
+                  Details are omitted; inspect the failed task output on the controller.
           always:
             - name: Restore previously active configuration UIs after deployment
               ansible.builtin.systemd_service:

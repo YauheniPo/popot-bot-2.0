@@ -287,6 +287,54 @@ class DeploySpeedTests(unittest.TestCase):
         self.assertIn('to_json', command['stdin'])
 
     @unittest.skipUnless(shutil.which('ansible-playbook'), 'Ansible is required')
+    def test_deployment_rescue_does_not_forward_failed_task_output(self):
+        capture = next(t for t in self.tasks if t.get('name') == 'Capture the failed Hermes deployment task')
+        reraise = next(t for t in self.tasks if t.get('name') == 'Re-raise the Hermes deployment failure')
+        marker = 'test-only-sensitive-output'
+        failures = [
+            {'ansible.builtin.command': {'argv': [sys.executable, '-c',
+             f'import sys; print("{marker}"); print("{marker}", file=sys.stderr); sys.exit(7)']}},
+            {'ansible.builtin.fail': {'msg': marker}},
+        ]
+        for failure in failures:
+            for protected in (False, True):
+                with self.subTest(module=next(iter(failure)), no_log=protected), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    saved = root / 'result.json'
+                    play = [{'hosts': 'localhost', 'gather_facts': False, 'vars': {
+                        'ansible_python_interpreter': sys.executable,
+                    }, 'tasks': [{'block': [dict(failure, name='Synthetic failed task', no_log=protected)],
+                        'rescue': [capture, {'block': [reraise], 'rescue': [{
+                            'ansible.builtin.copy': {'dest': str(saved), 'content': (
+                                "{{ {'notification': hermes_deployment_notification, "
+                                "'deployment_failed': hermes_deployment_failed, "
+                                "'failed': ansible_failed_result.failed, "
+                                "'failure': ansible_failed_result.msg} | to_json }}")},
+                            'no_log': True,
+                        }]}],
+                    }]}]
+                    path = root / 'check.yml'
+                    path.write_text(yaml.safe_dump(play))
+                    result = subprocess.run(['ansible-playbook', '-i', 'localhost,', '-c', 'local', str(path)],
+                                            capture_output=True, text=True, timeout=30,
+                                            env={**os.environ, 'ANSIBLE_CONFIG': str(ANSIBLE / 'ansible.cfg')})
+                    output = result.stdout + result.stderr
+                    self.assertEqual(result.returncode, 0, output)
+                    report = json.loads(saved.read_text())
+                    self.assertTrue(report['deployment_failed'])
+                    self.assertTrue(report['failed'])
+                    for field in ('notification', 'failure'):
+                        self.assertIn('Synthetic failed task', report[field])
+                        self.assertIn('RC: 7' if 'ansible.builtin.command' in failure else 'RC: n/a', report[field])
+                        self.assertNotIn(marker, report[field])
+                    # The original task's diagnostics belong to Ansible;
+                    # our rescue must not repeat them, regardless of no_log.
+                    _, separator, rescue_output = output.partition(
+                        'TASK [Capture the failed Hermes deployment task]')
+                    self.assertTrue(separator, output)
+                    self.assertNotIn(marker, rescue_output)
+
+    @unittest.skipUnless(shutil.which('ansible-playbook'), 'Ansible is required')
     def test_real_notification_task_keeps_secrets_private_and_failure_best_effort(self):
         task = yaml.safe_load((ANSIBLE / 'tasks/deployment-notify.yml').read_text())[0]
         task['register'] = 'notification_result'

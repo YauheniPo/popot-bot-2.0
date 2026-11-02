@@ -726,18 +726,27 @@ class CompetitorDigestTests(unittest.TestCase):
             guard.finalize_with_repair(repair)
         repair.assert_not_called()
 
-    def test_foreign_artifact_with_non_list_errors_fails_closed_without_repair(self):
+    def test_foreign_artifact_with_invalid_errors_fails_closed_without_repair(self):
         guard = self.begin()
-        record = self.record(guard)
-        record["run_id"] = "old-run"
-        record["coverage_complete"] = True
-        record["errors"] = None
-        self.save(guard, record)
-        repair = mock.Mock()
-        with self.assertRaisesRegex(ValueError, "run_id"):
-            guard.finalize_with_repair(repair)
-        repair.assert_not_called()
-        guard.close()
+        for errors in (None, [{}], [""]):
+            with self.subTest(errors=errors):
+                record = self.record(guard, complete=True)
+                record["run_id"] = "old-run"
+                record["errors"] = errors
+                self.save(guard, record)
+                repaired = dict(record, errors=[])
+                repaired.pop("run_id")
+                repair = mock.Mock(side_effect=lambda prompt: self.save(guard, repaired))
+
+                with self.assertRaisesRegex(self.module.ReportIdentityError, "run_id"):
+                    guard.finalize_with_repair(repair)
+
+                repair.assert_not_called()
+                self.assertIsNone(guard.record)
+                self.assertEqual(json.loads(guard.artifact_path.read_text()), record)
+                with self.assertRaisesRegex(ValueError, "validation required"):
+                    guard.commit()
+                self.assertFalse(guard.state_path.exists())
 
     def test_partial_report_is_rendered_from_record_and_never_advances_cutoff(self):
         guard = self.begin()
