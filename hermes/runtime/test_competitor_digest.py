@@ -345,6 +345,30 @@ class CompetitorDigestTests(unittest.TestCase):
         self.save(guard, record)
         with self.assertRaisesRegex(self.module.ReportValidationError, "external source coverage"):
             guard.finalize()
+        for checks in (None, {}, ["checked"], "checked",
+                       {"media": "checked", "marketplaces": "no_results", "listings": "blocked"},
+                       {"media": "checked", "marketplaces": "no_results", "listings": "not_checked"}):
+            with self.subTest(source_checks=checks):
+                record["coverage"][0]["source_checks"] = checks
+                self.save(guard, record)
+                with self.assertRaisesRegex(self.module.ReportValidationError, "external source coverage"):
+                    guard.finalize()
+                self.assertIsNone(guard.record)
+
+    def test_managed_complete_coverage_accepts_checked_and_no_results_sources(self):
+        self.research_policy()
+        guard = self.begin()
+        record = self.record(guard, complete=True)
+        record["coverage"][0]["source_checks"]["media"] = "no_results"
+        self.save(guard, record)
+        self.assertIn("Coverage: complete", guard.finalize())
+
+    def test_external_source_checks_are_optional_without_managed_policy(self):
+        guard = self.begin()
+        record = self.record(guard, complete=True)
+        record["coverage"][0].pop("source_checks")
+        self.save(guard, record)
+        self.assertIn("Coverage: complete", guard.finalize())
 
     def test_independent_market_mention_does_not_require_company_announcement(self):
         guard = self.begin()
@@ -573,6 +597,65 @@ class CompetitorDigestTests(unittest.TestCase):
         self.assertIn("partial", guard.finalize_with_repair(repair).lower())
         repair.assert_not_called()
 
+    def test_research_errors_downgrade_complete_report_without_repair_or_cutoff_advance(self):
+        self.research_policy()
+        directory = self.watch_path.with_suffix("")
+        directory.mkdir()
+        cutoff = "2026-09-01T00:00:00Z"
+        (directory / ".publication.json").write_text(json.dumps({
+            "config": self.module.config(self.watch), "last_cutoff": cutoff,
+        }))
+        guard = self.begin()
+        guard.prepare_agent(SimpleNamespace(tool_progress_callback=None), "research")
+        record = self.record(guard, complete=True)
+        record["errors"] = ["Storefront extraction blocked", "Search budget exhausted"]
+        self.save(guard, record)
+        repair = mock.Mock()
+
+        report = guard.finalize_with_repair(repair)
+
+        repair.assert_not_called()
+        self.assertIn("Coverage: partial", report)
+        self.assertIn("BetterMe — 1 new", report)
+        self.assertFalse(guard.record["coverage_complete"])
+        self.assertEqual(guard.record["errors"], record["errors"])
+        self.assertEqual(guard.record["events"], record["events"])
+        self.assertEqual(json.loads(guard.artifact_path.read_text()), guard.record)
+        self.assertEqual(json.loads(guard.state_path.read_text())["last_cutoff"], cutoff)
+
+        guard.commit()  # Simulate confirmed delivery of the partial report.
+        state = json.loads(guard.state_path.read_text())
+        self.assertEqual(state["last_cutoff"], cutoff)
+        self.assertEqual(state["pending_window_start"], guard.window_start.isoformat())
+        self.assertEqual(state["last_run_status"], "coverage_incomplete")
+        self.assertTrue(state["delivered_event_keys"])
+
+    def test_research_errors_do_not_bypass_invalid_report_fields(self):
+        guard = self.begin()
+        for mutate, error in (
+            (lambda r: r["events"][0].update(primary_evidence_urls=["https://other.example/news"]),
+             "event evidence was not recorded as read"),
+            (lambda r: r.update(errors=[{"error": "not text"}]), "missing or oversized text field"),
+            (lambda r: r.update(coverage_complete="true"), "inconsistent coverage_complete"),
+        ):
+            with self.subTest(error=error):
+                record = self.record(guard, complete=True)
+                record["errors"] = ["Storefront extraction blocked"]
+                mutate(record)
+                self.save(guard, record)
+                with self.assertRaisesRegex(self.module.ReportValidationError, error):
+                    guard.finalize()
+                self.assertIsNone(guard.record)
+                self.assertFalse(guard.state_path.exists())
+
+    def test_runtime_never_promotes_explicit_partial_coverage(self):
+        guard = self.begin()
+        record = self.record(guard, complete=True)
+        record["coverage_complete"] = False
+        self.save(guard, record)
+        self.assertIn("Coverage: partial", guard.finalize())
+        self.assertFalse(guard.record["coverage_complete"])
+
     def test_identity_validator_rejects_a_report_from_another_run(self):
         record = {
             "run_id": "old-run", "watch_slug": "fitness",
@@ -666,6 +749,28 @@ class CompetitorDigestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "watch changed"):
             guard.finalize_with_repair(repair)
         repair.assert_not_called()
+
+    def test_foreign_artifact_with_invalid_errors_fails_closed_without_repair(self):
+        guard = self.begin()
+        for errors in (None, [{}], [""]):
+            with self.subTest(errors=errors):
+                record = self.record(guard, complete=True)
+                record["run_id"] = "old-run"
+                record["errors"] = errors
+                self.save(guard, record)
+                repaired = dict(record, errors=[])
+                repaired.pop("run_id")
+                repair = mock.Mock(side_effect=lambda prompt: self.save(guard, repaired))
+
+                with self.assertRaisesRegex(self.module.ReportIdentityError, "run_id"):
+                    guard.finalize_with_repair(repair)
+
+                repair.assert_not_called()
+                self.assertIsNone(guard.record)
+                self.assertEqual(json.loads(guard.artifact_path.read_text()), record)
+                with self.assertRaisesRegex(ValueError, "validation required"):
+                    guard.commit()
+                self.assertFalse(guard.state_path.exists())
 
     def test_partial_report_is_rendered_from_record_and_never_advances_cutoff(self):
         guard = self.begin()

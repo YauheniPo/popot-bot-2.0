@@ -29,6 +29,20 @@ jobs:
       - name: Run Hermes tests with coverage
         run: |
           python -m pip install --requirement hermes/requirements-dev.txt coverage==7.16.0
+          for attempt in 1 2 3; do
+            if ansible-galaxy collection install --requirements-file hermes/ansible/requirements.yml; then
+              installed=1
+              break
+            fi
+            echo "ansible-galaxy attempt ${attempt} failed; retrying..." >&2
+            if [ "${attempt}" -lt 3 ]; then
+              sleep $((attempt * 10))
+            fi
+          done
+          if [ -z "${installed:-}" ]; then
+            echo "ansible-galaxy failed after 3 attempts" >&2
+            exit 1
+          fi
           mapfile -t hermes_tests < <(find hermes -type f -name 'test_*.py' | sort)
           coverage run --source=hermes --omit='**/test_*.py' -m unittest "${hermes_tests[@]}"
           coverage report --fail-under=80
@@ -76,8 +90,16 @@ jobs:
             exit 1
           fi
           # The adapter tests transpile upstream TypeScript with the version the
-          # pinned checkout expects; install it in place of a full pnpm install.
-          npm install --prefix "$upstream" --no-save --no-audit --no-fund typescript@5
+          # pinned checkout expects. `npm install --prefix "$upstream"` would
+          # resolve the checkout's whole manifest and pull in hundreds of
+          # unpinned transitive packages; install TypeScript alone and link it
+          # into the checkout instead.
+          ts_install="$RUNNER_TEMP/typescript-only"
+          mkdir -p "$ts_install"
+          printf '{"name":"typescript-only","private":true}\n' > "$ts_install/package.json"
+          npm install --prefix "$ts_install" --no-save --no-audit --no-fund typescript@5
+          mkdir -p "$upstream/node_modules"
+          ln -s "$ts_install/node_modules/typescript" "$upstream/node_modules/typescript"
           mapfile -t runtime_tests < <(find hermes/runtime -maxdepth 1 -name 'test-*.mjs' | sort)
           WORKSPACE_UPSTREAM_DIR="$upstream" node --test \
             --experimental-test-coverage \

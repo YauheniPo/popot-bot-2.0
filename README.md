@@ -243,13 +243,13 @@ The workflow defaults and current repository Variables are:
 
 | Reviewer | Primary | Fallback |
 | --- | --- | --- |
-| Direct API | `nvidia / nvidia/nemotron-3-super-120b-a12b` | `nous / poolside/laguna-s-2.1:free` |
+| Direct API | `openrouter / cohere/north-mini-code:free` | `nous / reflection/beam-1.0-501b-a23b:free` |
 | Claude Code | `ollama-cloud / deepseek-v4.1-flash:cloud` | `nous / poolside/laguna-s-2.1:free` |
 | Observable | `openrouter / cohere/north-mini-code:free` | `nous / poolside/laguna-s-2.1:free` |
 
 Repository Actions variables override these YAML defaults; update both when
 retiring a route.
-Direct API uses the existing NVIDIA NIM key. A full review of PR #70 at
+The Direct API uses a free OpenRouter primary and a Nous `reflection/beam-1.0-501b-a23b:free` fallback. The former NVIDIA NIM and Nous `poolside/laguna-s-2.1:free` routes failed live JSON preflight with HTTP 404; Nous `stepfun/step-3.7-flash:free` and `upstage/solar-mini4:free` returned HTTP 400. The Reflection fallback passed live JSON preflight and completed a review in [run 41595498559](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/41595498559). Set the `DIRECT_REVIEW_*` repository Variables to match these defaults. Historically, a full review of PR #70 at
 `ad4a03b` validated both chunks and all 14 eligible files in 112.9 provider seconds
 in [run 37979872334](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/37979872334).
 Its Nous fallback completed a full review in
@@ -758,6 +758,11 @@ The [Sonar workflow](.github/workflows/sonarcloud.yml) uploads both Python cover
 reports and waits up to 300 seconds for the gate result. A failed gate or timeout
 fails the scan job. Dependabot PRs still run tests but skip the authenticated scan
 because the Sonar token is unavailable to them.
+
+Before Hermes coverage tests, the workflow installs Ansible collections from
+`hermes/ansible/requirements.yml`, including `ansible.posix` for the real
+synchronization tests. Installation gets up to three attempts; failure stops
+the job before tests and scanning.
 
 Sonar checks only new-code conditions in pull requests; both new-code and overall
 conditions apply on `main`. Thus the 75% overall threshold is not a pre-merge PR

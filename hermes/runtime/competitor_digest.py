@@ -168,6 +168,15 @@ def validate_coverage(coverage, companies):
         covered = _validate_row(row, companies, covered)
     return coverage
 
+
+def _validate_external_coverage(coverage):
+    for row in coverage:
+        checks = row.get("source_checks") or {}
+        if row["status"] == "complete" and (not isinstance(checks, dict) or any(
+                checks.get(source) not in {"checked", "no_results"} for source in EXTERNAL_CHECKS)):
+            raise ValueError("competitor report: incomplete external source coverage")
+
+
 def _validate_event_fields(event):
     for field in ("what_changed", "why_it_matters", "confidence", "confidence_reason"):
         text(event.get(field))
@@ -569,7 +578,11 @@ class RunGuard:
                 + ", window_end=" + self.window_end.isoformat() + ". "
                 "JSON: coverage_complete (boolean), errors (list of strings), coverage (list), events (list); "
                 "optional greeting (plain text, max 160 characters, preserve the job's requested "
-                "personal salutation without repeating the leaf emoji). Coverage must list "
+                "personal salutation without repeating the leaf emoji). "
+                "Set coverage_complete=true only when errors=[] and every company is complete. "
+                "errors are blocking research failures; put normal no-results and old/rejected "
+                "candidates in result_summary/discarded_candidates instead. Never delete genuine "
+                "failures to claim full coverage. Coverage must list "
                 "every watch company exactly once with company, status complete/partial/not_checked, "
                 "checked_urls (only actually read URLs), gaps (list; required when not complete). "
                 "Also include result_summary for every company: one short sentence (at most 20 words) "
@@ -632,13 +645,15 @@ class RunGuard:
                              ("window_end", self.window_end.isoformat())):
             record.setdefault(field, value)
         try:
+            _validate_record_identity(record, self.watch, self.window_start, self.window_end, self.run_id)
+            # Research failures can only lower coverage, never advance its cutoff.
+            if (record.get("coverage_complete") is True
+                and isinstance(record.get("errors"), list)
+                and strings(record.get("errors"))):
+                record["coverage_complete"] = False
             validate(record, self.watch, self.window_start, self.window_end, self.run_id)
             if self.budget:
-                for row in record["coverage"]:
-                    checks = row.get("source_checks") or {}
-                    if row["status"] == "complete" and (not isinstance(checks, dict) or any(
-                            checks.get(source) not in {"checked", "no_results"} for source in EXTERNAL_CHECKS)):
-                        raise ValueError("competitor report: incomplete external source coverage")
+                _validate_external_coverage(record["coverage"])
         except ReportIdentityError:
             raise
         except ValueError as error:

@@ -19,14 +19,17 @@ ENV = (ANSIBLE / "templates" / "hermes.env.j2").read_text()
 
 class DigestDeployTests(unittest.TestCase):
     def test_repository_skills_are_copied_and_existing_paths_preserved(self):
-        self.assertIn('src: "{{ playbook_dir }}/../skills/"', PLAYBOOK)
-        self.assertIn("- --exclude=__pycache__\n", PLAYBOOK)
+        self.assertIn('- --include=/skills/\n', PLAYBOOK)
+        self.assertIn('- --include=/skills/**\n', PLAYBOOK)
+        self.assertIn('- --exclude=/skills/__pycache__\n', PLAYBOOK)
+        self.assertIn('- --exclude=/skills/**/__pycache__\n', PLAYBOOK)
         self.assertEqual(PLAYBOOK.count("rsync_opts:"), 1)
         for pattern in (".env", ".env.*", ".envrc", "dotenv", "env", "env.*",
                         "*.secret", "*.key", "*.pem", "credentials.yml",
                         "credentials.yaml", "vault.yml", "vault.yaml", "id_rsa",
                         "id_ed25519", "*.p12", "*.pfx", ".netrc", "node_modules"):
-            self.assertIn(f"- --exclude={pattern}\n", PLAYBOOK)
+            for prefix in ('/skills/', '/skills/**/'):
+                self.assertIn(f"- --exclude={prefix}{pattern}\n", PLAYBOOK)
         self.assertIn("hermes_bundle_dir ~ '/skills'", RUNTIME)
         self.assertIn("hermes_existing_config.get('skills', {}).get('external_dirs', [])", RUNTIME)
 
