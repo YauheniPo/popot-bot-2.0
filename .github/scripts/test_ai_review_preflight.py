@@ -236,11 +236,11 @@ class OllamaReviewTest(unittest.TestCase):
                     if key.startswith(('DIRECT_REVIEW_', 'CLAUDE_REVIEW_')) and "'" in value}
         self.assertEqual(
             (defaults['DIRECT_REVIEW_FALLBACK_PROVIDER'], defaults['DIRECT_REVIEW_FALLBACK_MODEL']),
-            ('nous', 'stepfun/step-3.7-flash:free'),
+            ('nous', 'reflection/beam-1.0-501b-a23b:free'),
         )
         direct_action = yaml.safe_load((root / '.github/actions/ai-direct-review/action.yml').read_text())
         self.assertEqual(direct_action['inputs']['fallback_provider']['default'], 'nous')
-        self.assertEqual(direct_action['inputs']['fallback_model']['default'], 'stepfun/step-3.7-flash:free')
+        self.assertEqual(direct_action['inputs']['fallback_model']['default'], 'reflection/beam-1.0-501b-a23b:free')
         for engine in ('DIRECT', 'CLAUDE'):
             with self.subTest(engine=engine):
                 primary_provider = defaults[engine + '_REVIEW_PROVIDER']

@@ -16,7 +16,7 @@ env:
   # Claude uses these settings; Observable overrides its routes at job level.
   DIRECT_REVIEW_PROVIDER: ${{ vars.DIRECT_REVIEW_PROVIDER || 'openrouter' }}
   DIRECT_REVIEW_MODEL: ${{ vars.DIRECT_REVIEW_MODEL || 'cohere/north-mini-code:free' }}
-  DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'stepfun/step-3.7-flash:free' }}
+  DIRECT_REVIEW_FALLBACK_MODEL: ${{ vars.DIRECT_REVIEW_FALLBACK_MODEL || 'reflection/beam-1.0-501b-a23b:free' }}
   DIRECT_REVIEW_FALLBACK_PROVIDER: ${{ vars.DIRECT_REVIEW_FALLBACK_PROVIDER || 'nous' }}
   CLAUDE_REVIEW_PROVIDER: ${{ vars.CLAUDE_REVIEW_PROVIDER || 'ollama-cloud' }}
   CLAUDE_REVIEW_MODEL: ${{ vars.CLAUDE_REVIEW_MODEL || 'deepseek-v4.1-flash:cloud' }}

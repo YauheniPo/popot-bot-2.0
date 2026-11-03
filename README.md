@@ -243,13 +243,13 @@ The workflow defaults and current repository Variables are:
 
 | Reviewer | Primary | Fallback |
 | --- | --- | --- |
-| Direct API | `openrouter / cohere/north-mini-code:free` | `nous / stepfun/step-3.7-flash:free` |
+| Direct API | `openrouter / cohere/north-mini-code:free` | `nous / reflection/beam-1.0-501b-a23b:free` |
 | Claude Code | `ollama-cloud / deepseek-v4.1-flash:cloud` | `nous / poolside/laguna-s-2.1:free` |
 | Observable | `openrouter / cohere/north-mini-code:free` | `nous / poolside/laguna-s-2.1:free` |
 
 Repository Actions variables override these YAML defaults; update both when
 retiring a route.
-The Direct API defaults moved from the NVIDIA NIM route and the Nous `poolside/laguna-s-2.1:free` fallback, which now fail the live JSON preflight with HTTP 404, to a free OpenRouter primary and a Nous `stepfun/step-3.7-flash:free` fallback; the `DIRECT_REVIEW_*` repository Variables must be updated to match. Historically, a full review of PR #70 at
+The Direct API uses a free OpenRouter primary and a Nous `reflection/beam-1.0-501b-a23b:free` fallback. The former NVIDIA NIM and Nous `poolside/laguna-s-2.1:free` routes failed live JSON preflight with HTTP 404; Nous `stepfun/step-3.7-flash:free` and `upstage/solar-mini4:free` returned HTTP 400. The Reflection fallback passed live JSON preflight and completed a review in [run 41595498559](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/41595498559). Set the `DIRECT_REVIEW_*` repository Variables to match these defaults. Historically, a full review of PR #70 at
 `ad4a03b` validated both chunks and all 14 eligible files in 112.9 provider seconds
 in [run 37979872334](https://github.com/YauheniPo/popot-bot-2.0/actions/runs/37979872334).
 Its Nous fallback completed a full review in
