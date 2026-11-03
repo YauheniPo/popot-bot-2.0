@@ -31,6 +31,35 @@ def run_play(root, tasks, variables, handlers=None):
 
 @unittest.skipUnless(shutil.which('ansible-playbook'), 'Ansible is required')
 class ReconciliationPlaybookTests(unittest.TestCase):
+    def test_deployment_preflight_accepts_defaults_and_validates_release_tags(self):
+        play = yaml.safe_load((ANSIBLE / 'playbook.yml').read_text())[0]
+        validation = next(t for t in play['pre_tasks']
+                          if t.get('name', '').startswith('Validate supported operating system'))
+        variables = {**yaml.safe_load((ANSIBLE.parent / 'config/vps-defaults.yml').read_text()),
+                     **yaml.safe_load((ANSIBLE / 'group_vars/all/vars.yml').read_text()),
+                     'ansible_facts': {'system': 'Linux', 'distribution': 'Ubuntu'}}
+        cases = [
+            ({}, None),
+            ({'ansible_facts': {'system': 'Linux', 'distribution': 'Debian'}}, None),
+            ({'hermes_release': 'v2026.9.21'}, None),
+            ({'hermes_release': 'v1.123.456'}, None),
+            *[({'hermes_release': release}, 'hermes_release') for release in
+              ('', 'main', '1.2.3', 'v1.2', 'v1.2.3-rc.1', '../v1.2.3', 'v1.2.3\n')],
+            ({'hermes_user': 'root'}, 'hermes_user'),
+            ({'ansible_facts': {'system': 'Darwin', 'distribution': 'MacOSX'}}, 'system'),
+        ]
+        for overrides, rejected_field in cases:
+            with self.subTest(overrides=overrides), tempfile.TemporaryDirectory() as directory:
+                result = run_play(Path(directory), [validation], {**variables, **overrides})
+                log = result.stdout + result.stderr
+                if rejected_field is None:
+                    self.assertEqual(result.returncode, 0, log)
+                    self.assertIn('changed=0', result.stdout)
+                else:
+                    self.assertNotEqual(result.returncode, 0, log)
+                    self.assertIn('"evaluated_to": false', log)
+                    self.assertIn(rejected_field, log)
+
     def test_mcp_filter_does_not_copy_ansible_plugin_loaders(self):
         with tempfile.TemporaryDirectory() as directory:
             result = run_play(Path(directory), [

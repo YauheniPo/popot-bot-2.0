@@ -316,7 +316,7 @@ validate_inputs() {
     die "invalid branch name: $HERMES_BRANCH"
   [[ "$HERMES_VERSION" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]] ||
     die "invalid Hermes version: $HERMES_VERSION"
-  [[ "$HERMES_RELEASE" =~ ^v[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}$ ]] ||
+  [[ "$HERMES_RELEASE" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]] ||
     die "invalid Hermes release: $HERMES_RELEASE"
   [[ "$HERMES_COMMIT" =~ ^[a-f0-9]{40}$ ]] ||
     die "--commit must be a full 40-character hexadecimal SHA"

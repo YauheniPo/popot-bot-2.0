@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 
 enable_observability_plugin() {
-    local hermes_python="${HERMES_HOME}/hermes-agent/venv/bin/python"
+    local hermes_python="${HERMES_HOME}/python"
     local result
     local gateway_service
     local -a configure_args=(

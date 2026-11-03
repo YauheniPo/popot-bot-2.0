@@ -7,7 +7,10 @@ context adaptation, cooldown and the continuation of the current API request.
 import copy
 import re
 
-import yaml
+try:
+    import yaml
+except ModuleNotFoundError:
+    import hermes_yaml as yaml
 
 from hermes_fallback_exclusions import fallback_excluded_pairs
 

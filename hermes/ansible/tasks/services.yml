@@ -183,7 +183,7 @@
 - name: Install the Hermes system gateway unit
   ansible.builtin.command:
     argv:
-      - "{{ hermes_home }}/hermes-agent/venv/bin/python"
+      - "{{ hermes_home }}/python"
       - "{{ hermes_bundle_dir }}/runtime/ensure-gateway-unit.py"
       - --user
       - "{{ hermes_user }}"

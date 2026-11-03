@@ -10,7 +10,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import yaml
+try:
+    import yaml
+except ModuleNotFoundError:
+    import hermes_yaml as yaml
 
 from hermes_config_io import load_config, validated_config_path, write_config
 

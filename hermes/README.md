@@ -348,7 +348,7 @@ terminal и не создают отдельные MCP schemas в model context.
 | Google | `gws` через Hermes-managed Node/npm | Gmail, Calendar, Drive, Docs, Sheets, Contacts |
 | Private network | `tailscale`, `tailscaled` | Private WireGuard network и Tailscale SSH |
 | Контейнеры (Ansible, host-admin) | `docker.io`, Docker Engine | Сборка, запуск и администрирование контейнеров без `sudo`; группа `docker` root-equivalent |
-| Hermes | `hermes`, managed Python venv, managed Node/npm | Agent runtime, skills, plugins, MCP, gateway и update |
+| Hermes | `hermes`, PM-managed Python/dependencies, managed Node/npm | Agent runtime, skills, plugins, MCP, gateway и update |
 
 Docker Engine устанавливается только Ansible deploy при
 `vps_deploy.features.host_admin: true`; прямой `deploy-hermes.sh` его не ставит.
@@ -494,7 +494,7 @@ Secrets в этот файл добавлять нельзя: они остаю�
 | Путь | Владелец | Содержимое |
 |---|---|---|
 | `/home/hermes/.hermes` | `hermes` | Config, auth, sessions, memory, skills, plugins и ops database |
-| `/home/hermes/.hermes/hermes-agent` | `hermes` | Checkout и runtime-файлы установленного Hermes; обновляется командой Hermes |
+| `/home/hermes/.hermes/hermes-agent` | `hermes` | Checkout установленного Hermes; обновляется managed deploy |
 | `/home/hermes/.hermes/.env` | `hermes`, mode `0600` | API keys и messenger tokens, доставленные из Ansible Vault либо мастером Hermes |
 | `/home/hermes/.local/bin/hermes` | `hermes` | Hermes CLI launcher, вызываемый systemd и из SSH |
 | `/home/hermes/workspace` | `hermes` | Репозитории и рабочие файлы агента |
@@ -1066,8 +1066,30 @@ Tailscale-доступа временно задайте `lock_public_ssh: false
 
 ### Управляемое обновление и автоподъём
 
-Текущий pin — стабильный [Hermes 0.21.4 / v2026.9.21](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.9.21).
+Текущий VPS pin — стабильный [Hermes 0.22.6](https://github.com/NousResearch/hermes-agent/releases/tag/v0.22.6).
 Commit и SHA-256 installer берутся только из `vps_deploy.hermes_source`.
+Preflight в Ansible и `deploy-hermes.sh` допускает стабильные release tags `vMAJOR.MINOR.PATCH` и прежние
+`vYYYY.M.D`; ветки и prerelease-теги не принимаются.
+Версия проверяется через штатный `get_version_info()` и release tag: поле
+`pyproject.toml` теперь содержит служебное `0.0.0`.
+
+Python и зависимости устанавливает upstream PM в `tools/` и `installs/`.
+Managed helpers и Workspace используют стабильный `<hermes_home>/python`,
+который при каждом запуске выбирает и удерживает текущую генерацию зависимостей.
+Старый `venv/bin/python` доступен через него только для pre-PM установки;
+повреждённый PM runtime не переключается молча на старый venv.
+Node/npm публикуются в прежнем `<hermes_home>/node/bin`, а глобальные npm-пакеты
+сохраняются в `<hermes_home>/node/lib/node_modules`.
+Backup исключает восстанавливаемые PM runtime-каталоги и кэши секретов;
+`cache/generated` с пользовательскими медиа сохраняется. Проверка pre-update
+backup учитывает политику установленной старой версии. После обновления
+проверяется также наличие ранее сохранённых файлов, даже если новый backup
+исключает их каталог.
+Для `competitor_digest` и `ai_digest` исследование, repair и прямая доставка
+остаются в одном cron worker, удерживающем artifact lock: checkpoint фиксируется
+только после подтверждённой отправки. Общая модель из чата сохраняет managed
+fallback; индивидуальные pin при отключённой общей политике следуют upstream.
+Остальные cron-задания используют штатную очередь upstream.
 Локальные gateway/Telegram-патчи адаптированы к разделённым upstream-модулям;
 Edge TTS retry оборачивает новый provider entry point, сохраняя остальные providers.
 Изменение pin в Git само по себе не обновляет работающий VPS — нужен deploy ниже.
@@ -1075,6 +1097,13 @@ Edge TTS retry оборачивает новый provider entry point, сохр�
 После проверки SHA-256 скачанного installer managed deploy адаптирует его
 Git-update: существующий checkout переключается сразу на pinned commit, без
 промежуточного обновления `main`, и лишь затем восстанавливаются локальные правки.
+Перед сменой commit точные зарегистрированные managed-патчи снимаются и затем
+применяются в редакции для нового upstream. Исходное tracked-дерево сохраняется
+в `refs/hermes-managed/pre-upgrade/<timestamp>` внутри checkout. Его можно
+просмотреть через `git show <ref>:<path>`; refs не удаляются автоматически.
+Пользовательские изменения вне этих блоков и untracked-файлы проходят через stash.
+Изменённые вручную блоки не считаются известными патчами; staged-изменения
+останавливают эту подготовку до записи файлов.
 Python-подготовщик получает только текст через stdin и возвращает его через stdout;
 он не принимает файловые пути. Shell заменяет свой временный файл только после
 успешной подготовки, сохраняя скачанный installer при ошибке преобразования.
@@ -1122,7 +1151,7 @@ ansible-playbook -i inventory.ini playbook.yml -e hermes_deploy_mode=runtime-onl
 ```
 
 Оба быстрых режима откажутся запускаться, если установленный Hermes не совпадает
-с pinned commit, отсутствует его venv или маркер успешного завершения установщика
+с pinned commit, не проходит проверка runtime или отсутствует маркер успешного завершения установщика
 `<hermes_user_home>/.hermes-install-complete` с этим commit. В этом случае сначала
 запустите `full`. На ранее установленных VPS без маркера потребуется один полный
 проход установщика с обязательным backup. Маркер удаляется только после успешной
@@ -1133,7 +1162,7 @@ ansible-playbook -i inventory.ini playbook.yml -e hermes_deploy_mode=runtime-onl
 
 Production VPS обновляется повторным запуском Ansible playbook. Playbook
 сравнивает установленный commit и маркер завершения с `vps_deploy.hermes_source.commit`,
-проверяет наличие venv и повторяет установку при расхождении или незавершённом
+проверяет запуск runtime и повторяет установку при расхождении или незавершённом
 предыдущем запуске. Перед изменением кода deploy обязательно:
 
 1. синхронизирует restorable mirror личного workspace `AGENTS.md` и
@@ -1165,8 +1194,8 @@ apt-кэш без необходимости установки или изме�
 прав доступа и systemd units определяют, какие именно службы нужно перезапустить.
 Простое копирование bundle на VPS не вызывает restart. Rsync не переносит
 владельцев с controller; root ownership bundle проверяется отдельно.
-Рекурсивное исправление владельца venv выполняется перед нужной переустановкой
-Hermes, а проверка владельцев Hermes home перед backup сохраняется.
+Проверка владельцев Hermes home перед backup сохраняется; отдельный старый
+venv больше не создаётся и не обходится рекурсивно.
 
 Bundle передаётся одним checksum-rsync: разрешены только `deploy`, `ops`,
 `observability`, `config`, `runtime`, `skills` и `vscode-server`. Исключения
@@ -1977,12 +2006,17 @@ runtime-профили браузера. Отсутствие обязатель
 deploy; сообщение ограничено количеством и первыми 20 отсутствующими путями.
 
 При source update установщик сначала скачивается по закреплённому commit и
-проверяется по SHA-256, пока gateway продолжает работать. Загрузка допускает
-до четырёх попыток при временных ошибках (включая HTTP 429), учитывает
-`Retry-After`: таймаут соединения — 10 секунд, одной передачи — 30 секунд,
-бюджет повторов — 120 секунд (последняя передача может добавить до 30 секунд).
-В логах видны повторы, итоговый HTTP status и код ошибки curl, без содержимого
-ответа. Ошибка загрузки или checksum прерывает deploy без остановки gateway.
+проверяется по SHA-256, пока gateway продолжает работать. Сначала используется
+`raw.githubusercontent.com`; если повторы исчерпаны при временной HTTP-ошибке
+(включая 429) или соединение не дало HTTP-ответа, загрузка переходит на официальный
+GitHub Contents API (`api.github.com`) для того же commit, без токена.
+Для каждого из двух адресов допускается до четырёх попыток с учётом `Retry-After`:
+таймаут соединения — 10 секунд, одной передачи — 30 секунд, бюджет повторов —
+120 секунд (последняя передача может добавить до 30 секунд на адрес).
+В логах видны источник, повторы, итоговый HTTP status и код ошибки curl, без
+содержимого ответа. HTTP 404 и несовпадение SHA-256 прерывают deploy без перехода
+на другой адрес. Если оба адреса недоступны, deploy также завершается без
+остановки gateway; проверка checksum обязательна для любого источника.
 Только после успешной проверки установщика gateway останавливается для
 согласованного полного backup; установка начинается после проверки backup.
 

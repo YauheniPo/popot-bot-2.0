@@ -88,12 +88,15 @@ class DeployOptimizationTests(unittest.TestCase):
                 else:
                     self.assertEqual(result.returncode, 0, log)
 
-    def test_venv_ownership_walk_is_only_needed_before_source_installation(self):
+    def test_runtime_health_is_checked_before_source_installation_decision(self):
         tasks = yaml.safe_load(PLAYBOOK)[0]['tasks']
-        repair = next(t for t in tasks if t.get('name') == 'Ensure the Hermes virtual environment directory exists')
+        probe = next(t for t in tasks if t.get('register') == 'hermes_runtime_probe')
         decision = next(t for t in tasks if t.get('name') == 'Decide whether the pinned Hermes source needs installation')
-        self.assertLess(tasks.index(decision), tasks.index(repair))
-        self.assertIn('hermes_source_update_required | bool', repair['when'])
+        self.assertLess(tasks.index(probe), tasks.index(decision))
+        self.assertEqual(probe['become_user'], '{{ hermes_user }}')
+        self.assertEqual(probe['ansible.builtin.command']['argv'][0], '{{ hermes_home }}/python')
+        self.assertIs(probe['changed_when'], False)
+        self.assertIs(probe['failed_when'], False)
 
     def test_staging_sync_does_not_restore_controller_ownership_or_restart_services(self):
         tasks = yaml.safe_load(PLAYBOOK)[0]['tasks']

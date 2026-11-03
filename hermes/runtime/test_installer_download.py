@@ -19,18 +19,25 @@ INSTALLER = b"#!/bin/sh\necho fixture\n"
 
 @unittest.skipUnless(shutil.which("curl"), "curl is required")
 class InstallerDownloadTests(unittest.TestCase):
-    def run_download(self, statuses, *, checksum=None, retry_after="1", prepare_fails=False):
+    def run_download(self, statuses, *, api_statuses=None, api_body=INSTALLER,
+                     checksum=None, retry_after="1", prepare_fails=False):
         requests = []
+        api_statuses = statuses if api_statuses is None else api_statuses
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
-                status = statuses[min(len(requests), len(statuses) - 1)]
-                requests.append(time.monotonic())
+                is_api = self.path.startswith("/api/")
+                responses = api_statuses if is_api else statuses
+                attempts = sum(request["path"] == self.path for request in requests)
+                status = responses[min(attempts, len(responses) - 1)]
+                requests.append({"time": time.monotonic(), "path": self.path,
+                                 "accept": self.headers.get("Accept")})
                 self.send_response(status)
                 if status == 429:
                     self.send_header("Retry-After", retry_after)
                 self.end_headers()
-                self.wfile.write(INSTALLER if status == 200 else b"untrusted error body")
+                body = api_body if is_api else INSTALLER
+                self.wfile.write(body if status == 200 else b"untrusted error body")
 
             def log_message(self, *_args):
                 pass
@@ -46,12 +53,13 @@ class InstallerDownloadTests(unittest.TestCase):
                     # An executable wrapper behaves like curl on the VPS, without
                     # inheriting Bash 3.2's ERR trap into a shell-function mock.
                     curl_wrapper.write_text(f"""#!/bin/bash
-printf '%s\\n' "$@" > {shlex.quote(str(arguments))}
+printf '%s\\n' "$@" >> {shlex.quote(str(arguments))}
 args=()
 for arg in "$@"; do
   case "$arg" in
     '=https') args+=('=http') ;;
-    https://raw.githubusercontent.com/*) args+=(http://127.0.0.1:{server.server_port}/installer) ;;
+    https://raw.githubusercontent.com/*) args+=("http://127.0.0.1:{server.server_port}/raw/${{arg#https://raw.githubusercontent.com/}}") ;;
+    https://api.github.com/*) args+=("http://127.0.0.1:{server.server_port}/api/${{arg#https://api.github.com/}}") ;;
     *) args+=("$arg") ;;
   esac
 done
@@ -106,7 +114,7 @@ main
         result, requests, _ = self.run_download([429, 200])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(requests), 2)
-        self.assertGreaterEqual(requests[1] - requests[0], 0.9)
+        self.assertGreaterEqual(requests[1]["time"] - requests[0]["time"], 0.9)
         self.assertLess(result.stdout.index("Installer checksum verified"), result.stdout.index("GATEWAY_STOP"))
         self.assertLess(result.stdout.index("Installer checksum verified"), result.stdout.index("PREPARE"))
         self.assertLess(result.stdout.index("PREPARE"), result.stdout.index("GATEWAY_STOP"))
@@ -116,11 +124,37 @@ main
     def test_exhausted_429_keeps_gateway_running(self):
         result, requests, _ = self.run_download([429])
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(len(requests), 4)
+        self.assertEqual(len(requests), 8)
         self.assertNotIn("GATEWAY_STOP", result.stdout)
         self.assertNotIn("BACKUP", result.stdout)
         self.assertIn("http_status=429", result.stderr)
+        self.assertIn("source=api.github.com", result.stderr)
         self.assertNotIn("untrusted error body", result.stderr)
+
+    def test_exhausted_raw_429_falls_back_to_pinned_api_content(self):
+        result, requests, args = self.run_download([429], api_statuses=[200])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(requests), 5)
+        raw_path = f"/raw/NousResearch/hermes-agent/{'a' * 40}/scripts/install.sh"
+        self.assertEqual([request["path"] for request in requests[:4]], [raw_path] * 4)
+        self.assertEqual(requests[-1]["path"],
+                         f"/api/repos/NousResearch/hermes-agent/contents/scripts/install.sh?ref={'a' * 40}")
+        self.assertEqual(requests[-1]["accept"], "application/vnd.github.raw+json")
+        self.assertEqual(args.count("--retry-max-time"), 2)
+        self.assertEqual(args.count("=https"), 2)
+        self.assertLess(result.stdout.index("Installer checksum verified"), result.stdout.index("PREPARE"))
+        self.assertLess(result.stdout.index("PREPARE"), result.stdout.index("GATEWAY_STOP"))
+        self.assertLess(result.stdout.index("BACKUP"), result.stdout.index("INSTALL"))
+
+    def test_api_content_is_verified_before_any_gateway_or_source_changes(self):
+        result, requests, _ = self.run_download(
+            [429], api_statuses=[200], api_body=b"untrusted API body", retry_after="3600")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(requests), 2)
+        self.assertIn("installer checksum mismatch", result.stderr)
+        for step in ("PREPARE", "GATEWAY_STOP", "BACKUP", "INSTALL"):
+            self.assertNotIn(step, result.stdout)
+        self.assertNotIn("untrusted API body", result.stderr)
 
     def test_unsupported_installer_keeps_gateway_running(self):
         result, _, _ = self.run_download([200], prepare_fails=True)
@@ -160,7 +194,7 @@ main
     def test_retry_after_beyond_budget_fails_without_waiting(self):
         result, requests, _ = self.run_download([429], retry_after="3600")
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(len(requests), 1)
+        self.assertEqual(len(requests), 2)
         self.assertNotIn("GATEWAY_STOP", result.stdout)
 
 

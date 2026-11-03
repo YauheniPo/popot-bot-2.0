@@ -1,6 +1,8 @@
 """Behavior checks against the pinned extraction pipeline, without network calls."""
 
 import asyncio
+import ast
+import re
 import importlib.util
 import json
 import os
@@ -44,15 +46,24 @@ class WebExtractQualityTests(unittest.TestCase):
         modules = {
             'tools': ModuleType('tools'),
             'tools.tool_backend_helpers': SimpleNamespace(selection_error=mock.Mock(), selection_exists=mock.Mock()),
-            'tools.url_safety': SimpleNamespace(normalize_url_for_request=lambda url: url),
+            'tools.url_safety': SimpleNamespace(normalize_url_for_request=lambda url: url,
+                                                async_is_safe_url=mock.AsyncMock(return_value=True)),
             'tools.web_tools_rescue': SimpleNamespace(_rescue_eligible=self.eligible, _rescue_extract=self.rescue),
             'tools.web_tools': SimpleNamespace(_load_web_config=lambda: {}),
             'tools.website_policy': SimpleNamespace(check_website_access=lambda url: None),
             'tools.spill_safety': SimpleNamespace(write_text_exclusive=lambda path, text, **kw: path.write_text(text)),
             'utils': SimpleNamespace(atomic_json_write=lambda path, data, **kw: path.write_text(json.dumps(data))),
+            'plugins.web._common': SimpleNamespace(),
             'plugins.web.keyless_mcp': SimpleNamespace(
                 _is_rate_limitish=lambda message: any(word in message.lower() for word in ('rate limit', '429'))),
         }
+        common_source = (Path(UPSTREAM) / 'plugins/web/_common.py').read_text()
+        common = {'re': re}
+        for node in ast.parse(common_source).body:
+            if (getattr(node, 'name', '') == 'is_origin_http_error' or isinstance(node, ast.Assign)
+                    and any(getattr(t, 'id', '') == '_ORIGIN_HTTP_ERROR_RE' for t in node.targets)):
+                exec('from __future__ import annotations\n' + ast.unparse(node), common)
+        modules['plugins.web._common'].is_origin_http_error = common['is_origin_http_error']
         patcher = mock.patch.dict(sys.modules, modules)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -92,7 +103,8 @@ class WebExtractQualityTests(unittest.TestCase):
         self.assertEqual(result, [good, rescued, missing])
         self.rescue.assert_called_once_with('firecrawl', [B], [limited])
         provider.extract.assert_awaited_once_with([A, B, C], format='markdown')
-        self.assertEqual([call.args[0] for call in put.call_args_list], [A])
+        # Upstream 0.22.6 never caches a batch after any backend rescue.
+        put.assert_not_called()
 
     def test_rescue_disabled_or_already_keyless_does_not_switch_backend(self):
         self.eligible.return_value = False
@@ -152,7 +164,8 @@ class WebExtractQualityTests(unittest.TestCase):
         ring.extract_with_failover.assert_called_once_with('firecrawl', [B])
         self.assertIn('consent', results[1]['error'])
         self.assertEqual(results[1]['content'], '')
-        self.assertEqual([call.args[0] for call in put.call_args_list], [A])
+        # Upstream 0.22.6 never caches a batch after any backend rescue.
+        put.assert_not_called()
 
     def test_whole_batch_rescue_still_works_without_caching_and_checks_page_quality(self):
         self.rescue.return_value = [{'url': A, 'content': CONSENT}]

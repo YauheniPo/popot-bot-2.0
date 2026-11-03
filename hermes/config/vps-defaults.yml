@@ -15,14 +15,14 @@ vps_deploy:
     raw_base_url: https://raw.githubusercontent.com/NousResearch/hermes-agent
     # Upstream branch passed to the installer; commit remains the exact pin.
     branch: main
-    # Expected pyproject.toml version verified after installation.
-    version: "0.21.4"
+    # Expected native runtime version verified after installation.
+    version: "0.22.6"
     # Human-readable upstream release label shown in deployment logs.
-    release: v2026.9.21
+    release: v0.22.6
     # Exact source revision; Ansible updates Hermes only when this differs.
-    commit: d337b736aa1e8ebecfab043842d13e4a2d2f48a3
+    commit: f0d94882e89ab8d4098b5bb2f166adfb9ee0a0ab
     # Expected checksum of install.sh downloaded from that exact commit.
-    installer_sha256: 00f9080c6452bf87f03ef2fffb4b2c23b9f43f946aaae956e4c547d17e310b22
+    installer_sha256: abf338605dae6dd28d101673ac6aed7995c955745db46d47676bc591a7957209
   # Local directory for this repository's managed deployment files. It is not
   # part of the upstream Hermes Agent checkout.
   bundle:

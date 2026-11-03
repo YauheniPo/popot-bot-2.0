@@ -13,7 +13,7 @@
 - name: Provision Swarm profiles and independent worktrees
   ansible.builtin.command:
     argv:
-      - "{{ hermes_home }}/hermes-agent/venv/bin/python"
+      - "{{ hermes_home }}/python"
       - "{{ hermes_bundle_dir }}/runtime/workspace-swarm.py"
       - --home
       - "{{ hermes_home }}"

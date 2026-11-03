@@ -400,6 +400,7 @@ class FallbackIntegrationTests(unittest.TestCase):
         ns = {'logger': mock.Mock(), 'contextlib': __import__('contextlib'), 'errno': errno,
               '_CronAgentSetup': lambda **kw: SimpleNamespace(blocked=None, fallback_notice=None, **kw),
               'get_fallback_chain': fallback['get_fallback_chain'],
+              'scoped_fallback_chain': fallback['scoped_fallback_chain'],
               '_guard_job_credential_exfil': mock.Mock(), '_cron_preflight_enabled': lambda cfg: True,
               '_load_prefill_messages': lambda *a: None, '_load_credential_pool': lambda *a: None,
               '_resolve_job_reasoning_config': lambda *a: None, '_init_cron_mcp_tools': mock.Mock(),
@@ -409,11 +410,11 @@ class FallbackIntegrationTests(unittest.TestCase):
               '_sched': SimpleNamespace(get_fallback_chain=fallback['get_fallback_chain']),
               'cron_env_setting': lambda key: '', '_credential_store_scope_label': lambda: 'fixture'}
         names = {'_preflight_check_provider_key', '_preflight_or_block', '_resolve_job_runtime',
-                 '_is_transient_provider_resolve_error',
+                 '_is_transient_provider_resolve_error', '_job_fallback_chain', '_job_route_pinned',
                  '_resolve_cron_agent_setup', '_construct_cron_agent', '_fallback_entries', '_init_fallback_chain'}
         constants = {'_TRANSIENT_NET_EXC_NAMES', '_DNS_FAILURE_NEEDLES', '_TRANSIENT_OSERROR_NEEDLES',
                      '_TRANSIENT_HTTP_NEEDLES', '_TRANSIENT_ERRNOS'}
-        for path in ('cron/scheduler_preflight.py', 'cron/scheduler.py', 'agent/agent_init.py'):
+        for path in ('cron/scheduler_preflight.py', 'cron/scheduler.py', 'agent/agent_init_fallback.py'):
             tree = ast.parse(self.patched(path))
             for node in tree.body:
                 if isinstance(node, ast.FunctionDef) and node.name in names:
@@ -425,7 +426,7 @@ class FallbackIntegrationTests(unittest.TestCase):
         ns['_preflight_job_config'] = ns['_preflight_check_provider_key']
         self.enterContext(mock.patch.dict('sys.modules', {
             'hermes_cli.fallback_config': SimpleNamespace(**fallback),
-            'hermes_cli.providers': SimpleNamespace(ALIASES={}),
+            'hermes_cli.providers': SimpleNamespace(ALIASES={}, normalize_provider=lambda value: value.lower()),
             'hermes_cli.runtime_provider': SimpleNamespace(resolve_runtime_provider=resolver,
                                                          format_runtime_provider_error=lambda exc: 'unavailable'),
             'hermes_cli.auth': SimpleNamespace(AuthError=auth_error, is_rate_limited_auth_error=lambda exc: False),
@@ -433,7 +434,7 @@ class FallbackIntegrationTests(unittest.TestCase):
             'agent.agent_runtime_helpers': SimpleNamespace(sync_credential_pool_entry_id=lambda agent: None),
         }))
         jc = SimpleNamespace(cfg=config, model='selected', model_cfg={'provider': 'primary'}, cron_default_provider='')
-        job = {'id': 'cron-fixture', 'model': 'selected', 'provider': 'primary'}
+        job = {'id': 'cron-fixture', 'model': 'selected', 'provider': 'primary', '_managed_shared_model': True}
         return ns, resolver, auth_error, jc, job
 
     def test_cron_primary_auth_or_network_failure_tries_eligible_backups_in_order(self):
@@ -504,10 +505,31 @@ class FallbackIntegrationTests(unittest.TestCase):
         fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'try_activate_fallback')
         code = ast.unparse(fn)
         self.assertIn('begin_fallback_walk(agent, reason)', code)
-        self.assertLess(code.index('allow_fallback_candidate(agent, fb)'), code.index('resolve_provider_client('))
+        self.assertLess(code.index('allow_fallback_candidate(agent, fb)'), code.index('bind_route_entry('))
         self.assertNotIn('_execute_tool_calls', code)
         compiled = self.patched('hermes_cli/fallback_config.py')
         self.assertIn('def run_fallback_command(', compiled)
+
+    def native_route_modules(self, ns):
+        tree = ast.parse(self.patched('agent/route_binding.py'))
+        function = next(n for n in tree.body if getattr(n, 'name', '') == 'bind_route_entry')
+        ns['base_url_host_matches'] = lambda url, host: __import__('urllib.parse', fromlist=['urlsplit']).urlsplit(url).hostname == host
+        for name in ('_fallback_api_mode_resolved', '_rebind_fallback_credential_pool',
+                     '_reresolve_fallback_reasoning_config', '_rescope_fallback_extra_body',
+                     '_update_fallback_context_compressor'):
+            ns.setdefault(name, mock.Mock())
+        exec('from __future__ import annotations\n' + ast.unparse(function), ns)
+        return {
+            'agent.route_binding': SimpleNamespace(bind_route_entry=ns['bind_route_entry']),
+            'agent.chat_completion_helpers': SimpleNamespace(**ns),
+            'agent.turn_recovery_codex': SimpleNamespace(reset_codex_reasoning_replay=mock.Mock()),
+            'hermes_cli.observability.shared_metrics_events': SimpleNamespace(record_fallback=mock.Mock()),
+        }
+
+    def test_explicit_cron_pin_still_disables_global_fallback(self):
+        ns, _, _, jc, job = self.cron_runtime()
+        job.pop('_managed_shared_model')
+        self.assertIsNone(ns['_job_fallback_chain'](job, jc.cfg))
 
     def test_real_fallback_walk_never_resolves_quota_provider_or_paid_route(self):
         policy = load_module('fallback_runtime', ROOT / 'runtime/fallback-policy.py')
@@ -521,7 +543,8 @@ class FallbackIntegrationTests(unittest.TestCase):
         exec('from __future__ import annotations\n' + ast.unparse(fn), ns)
         resolver = mock.Mock(return_value=(None, None))
         modules = {
-            'hermes_cli.providers': SimpleNamespace(ALIASES={}),
+            **self.native_route_modules(ns),
+            'hermes_cli.providers': SimpleNamespace(ALIASES={}, normalize_provider=lambda value: value.lower()),
             'agent.fallback_cooldown': SimpleNamespace(_arm_rate_limit_cooldown=lambda *a, **kw: 60,
                                                        switch_deferred_by_reset=lambda *a: False),
             'hermes_cli.fallback_config': SimpleNamespace(begin_fallback_walk=policy.begin_fallback_walk,
@@ -556,6 +579,7 @@ class FallbackIntegrationTests(unittest.TestCase):
         def swap(agent, replacement, *args):
             agent.client, agent.api_key = replacement, replacement.api_key
         modules = {
+            **self.native_route_modules(ns),
             'hermes_cli.providers': SimpleNamespace(ALIASES={}, is_actual_route=lambda *a: False),
             'agent.fallback_cooldown': SimpleNamespace(_arm_rate_limit_cooldown=lambda *a, **kw: None,
                                                       switch_deferred_by_reset=lambda *a: False),

@@ -64,14 +64,15 @@ render() {
     local target="$2"
     local mode="$3"
     local temporary
-    local hermes_python="${HERMES_HOME}/hermes-agent/venv/bin/python"
+    local hermes_python="${HERMES_HOME}/python"
     local settings_file="${SCRIPT_DIR}/../config/vps-defaults.yml"
     local config_applier="${SCRIPT_DIR}/../runtime/apply-config.py"
     temporary="$(mktemp)"
     [[ -f "${settings_file}" ]] || die "VPS settings are missing: ${settings_file}"
     [[ -f "${config_applier}" ]] || die "VPS config renderer is missing: ${config_applier}"
     [[ -x "${hermes_python}" ]] || die "Hermes Python is missing: ${hermes_python}"
-    "${hermes_python}" "${config_applier}" render \
+    runuser -u "${HERMES_USER}" -- env HOME="${USER_HOME}" HERMES_HOME="${HERMES_HOME}" \
+        "${hermes_python}" "${config_applier}" render \
         --settings "${settings_file}" \
         --template "${source}" \
         --hermes-user "${HERMES_USER}" \
@@ -88,23 +89,25 @@ render() {
 
 managed_services() {
     local group="$1"
-    local hermes_python="${HERMES_HOME}/hermes-agent/venv/bin/python"
+    local hermes_python="${HERMES_HOME}/python"
     local settings_file="${SCRIPT_DIR}/../config/vps-defaults.yml"
     local config_applier="${SCRIPT_DIR}/../runtime/apply-config.py"
 
     [[ -x "${hermes_python}" ]] || die "Hermes Python is missing: ${hermes_python}"
     [[ -f "${settings_file}" ]] || die "VPS settings are missing: ${settings_file}"
     [[ -f "${config_applier}" ]] || die "VPS config applier is missing: ${config_applier}"
-    "${hermes_python}" "${config_applier}" services --settings "${settings_file}" "${group}"
+    runuser -u "${HERMES_USER}" -- env HOME="${USER_HOME}" HERMES_HOME="${HERMES_HOME}" \
+        "${hermes_python}" "${config_applier}" services --settings "${settings_file}" "${group}"
     return
 }
 
 managed_value() {
     local key="$1"
-    local hermes_python="${HERMES_HOME}/hermes-agent/venv/bin/python"
+    local hermes_python="${HERMES_HOME}/python"
     local settings_file="${SCRIPT_DIR}/../config/vps-defaults.yml"
     local config_applier="${SCRIPT_DIR}/../runtime/apply-config.py"
 
-    "${hermes_python}" "${config_applier}" value --settings "${settings_file}" "${key}"
+    runuser -u "${HERMES_USER}" -- env HOME="${USER_HOME}" HERMES_HOME="${HERMES_HOME}" \
+        "${hermes_python}" "${config_applier}" value --settings "${settings_file}" "${key}"
     return
 }

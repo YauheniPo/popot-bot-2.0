@@ -121,18 +121,22 @@ class CompressionRecoveryUpstreamTests(unittest.TestCase):
         return ns[name]
 
     def test_real_reset_handler_preserves_timeout_and_resets_structural_exhaustion(self):
-        ns = {'asyncio': asyncio, 'logger': mock.Mock()}
-        handle = self.method('gateway/run_turn.py', '_hmwa_compression_exhaustion_reset', ns)
+        ns = {'asyncio': asyncio, 'logger': mock.Mock(),
+              'Platform': SimpleNamespace(API_SERVER='api'), 'detached_route_of': lambda s: False,
+              't': lambda key: 'Session auto-reset'}
+        handle = self.method('gateway/run_turn_persistence.py', '_hmwa_compression_exhaustion_reset', ns)
         old, new, source = (SimpleNamespace(session_id=key) for key in ('old', 'new', 'source'))
         runner = SimpleNamespace(async_session_store=SimpleNamespace(reset_session=mock.AsyncMock(return_value=new)),
                                  _evict_cached_agent=mock.Mock(), _clear_conversation_scope=mock.Mock(),
-                                 _sync_telegram_topic_binding=mock.Mock())
+                                 _sync_telegram_topic_binding=mock.Mock(),
+                                 _hmwa_defer_exhaustion_reset=mock.Mock(return_value=False),
+                                 _hmwa_rotate_exhausted_session=mock.AsyncMock(return_value=new))
         for result in ({'compression_exhausted': True, 'turn_exit_reason': 'context_compression_timeout'},
                        {'compression_deferred': True, 'compression_exhausted': True}, {}):
             with self.subTest(result=result):
                 _, entry = asyncio.run(handle(runner, result, 'response', old, 'key', source))
                 self.assertIs(entry, old)
-                runner.async_session_store.reset_session.assert_not_awaited()
+                runner._hmwa_rotate_exhausted_session.assert_not_awaited()
                 runner._evict_cached_agent.assert_not_called()
                 runner._clear_conversation_scope.assert_not_called()
                 runner._sync_telegram_topic_binding.assert_not_called()
@@ -140,12 +144,10 @@ class CompressionRecoveryUpstreamTests(unittest.TestCase):
                                              'response', old, 'key', source))
         self.assertIs(entry, new)
         self.assertIn('auto-reset', response)
-        runner.async_session_store.reset_session.assert_awaited_once_with('key')
-        runner._sync_telegram_topic_binding.assert_called_once_with(
-            source, new, reason='compression-exhausted-reset')
+        runner._hmwa_rotate_exhausted_session.assert_awaited_once_with(old, 'key', source)
 
     def test_all_touched_upstream_files_parse(self):
-        for path in ('gateway/run_turn.py', 'gateway/run_turn_runner.py', 'agent/auxiliary_client.py'):
+        for path in ('gateway/run_turn_persistence.py', 'gateway/run_turn_runner.py', 'agent/auxiliary_client.py'):
             with self.subTest(path=path):
                 self.source(path)
 
@@ -181,7 +183,7 @@ class CompressionRecoveryUpstreamTests(unittest.TestCase):
             resolve.assert_not_called()
 
     def test_touched_patches_apply_and_repeat_without_writes(self):
-        paths = {'gateway/run_turn.py', 'gateway/run_turn_runner.py', 'agent/auxiliary_client.py'}
+        paths = {'gateway/run_turn_persistence.py', 'gateway/run_turn_runner.py', 'agent/auxiliary_client.py'}
         selected = [patch for patch in PATCHER._PATCHES if patch[0] in paths]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

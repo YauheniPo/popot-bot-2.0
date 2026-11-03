@@ -778,7 +778,7 @@ class ApplyHermesPatchesTests(unittest.TestCase):
         }
         namespace = {}
         helper = patches["# Local Hermes: copyable Telegram model route"].split(
-            "\ndef _tool_call_logger", 1)[0]
+            "\nclass GatewayTurnPersistenceMixin", 1)[0]
         exec(helper, namespace)
         footer = namespace["_local_telegram_model_route"]
         self.assertEqual(
@@ -826,7 +826,7 @@ class ApplyHermesPatchesTests(unittest.TestCase):
             self.assertEqual(source.count(old), 1)
             source = source.replace(old, new, 1)
         footer = patches["# Local Hermes: copyable Telegram model route"][1].split(
-            "\ndef _tool_call_logger", 1)[0]
+            "\nclass GatewayTurnPersistenceMixin", 1)[0]
         namespace = {
             "Platform": SimpleNamespace(TELEGRAM="telegram"),
             "logger": mock.Mock(),

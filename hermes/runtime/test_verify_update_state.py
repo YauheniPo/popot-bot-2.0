@@ -167,6 +167,43 @@ class VerifyUpdateStateTests(unittest.TestCase):
                 with self.assertRaisesRegex(verify_update_state.VerificationError, "missing live Hermes"):
                     verify_update_state.verify_backup(backup_path, snapshot)
 
+    def test_pm_policy_preserves_generated_media_and_nested_user_data(self):
+        paths = ('tools/python/runtime', 'installs/gen/dependencies', 'bws_cache.json',
+                 'bws_cache.enc.json', 'op_cache.json', 'photon-sidecar.json')
+        for prefix in ('', 'profiles/builder/', 'skills/custom/'):
+            for name in (*paths, 'cache/generated/picture.png'):
+                path = self.home / (prefix + name)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('fixture')
+        legacy = verify_update_state.create_snapshot(self.home)['files']
+        self.assertIn('tools/python/runtime', legacy)
+        self.assertNotIn('cache/generated/picture.png', legacy)
+        marker = self.home / 'hermes-agent/pm/environments.py'
+        marker.parent.mkdir(parents=True)
+        marker.touch()
+        files = verify_update_state.create_snapshot(self.home)['files']
+        for prefix in ('', 'profiles/builder/'):
+            for name in paths:
+                self.assertNotIn(prefix + name, files)
+            self.assertIn(prefix + 'cache/generated/picture.png', files)
+        for name in paths:
+            self.assertIn('skills/custom/' + name, files)
+
+    def test_policy_transition_checks_old_files_even_when_new_backup_excludes_them(self):
+        old_file = self.home / 'tools/personal-note.txt'
+        old_file.parent.mkdir()
+        old_file.write_text('keep this data')
+        before = verify_update_state.create_snapshot(self.home)
+        marker = self.home / 'hermes-agent/pm/environments.py'
+        marker.parent.mkdir(parents=True)
+        marker.touch()
+        after = verify_update_state.create_snapshot(self.home, previous_snapshot=before)
+        verify_update_state.compare_snapshots(before, after)
+        old_file.unlink()
+        after = verify_update_state.create_snapshot(self.home, previous_snapshot=before)
+        with self.assertRaisesRegex(verify_update_state.VerificationError, 'disappeared'):
+            verify_update_state.compare_snapshots(before, after)
+
     def test_runtime_exclusions_keep_home_and_profile_container_paths(self) -> None:
         for relative in (".", "profiles", "profiles/builder", "profiles/builder/cache",
                          "profiles/cache", "profiles/cache/cache", "profiles/browser_profiles/cache"):

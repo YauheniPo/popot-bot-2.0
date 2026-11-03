@@ -12,7 +12,7 @@ install_review_metrics_sync() {
         "${HERMES_HOME}/scripts/hermes-ai-review-metrics-sync.py" 0755 "${HERMES_USER}" "${HERMES_GROUP}"
     local result
     result="$(timeout 60s runuser -u "${HERMES_USER}" -- env HOME="${USER_HOME}" HERMES_HOME="${HERMES_HOME}" \
-        "${HERMES_HOME}/hermes-agent/venv/bin/python" "${SCRIPT_DIR}/../runtime/apply-config.py" review-metrics-job \
+        "${HERMES_HOME}/python" "${SCRIPT_DIR}/../runtime/apply-config.py" review-metrics-job \
         --settings "${SCRIPT_DIR}/../config/vps-defaults.yml" --hermes-home "${HERMES_HOME}")"
     printf '%s\n' "$result"
     if [[ "$result" == *review-metrics-job-changed=true* ]]; then
