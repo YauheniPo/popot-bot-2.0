@@ -128,7 +128,7 @@ services:
   # The node-exporter image is used only as a Prometheus metrics provider.
   # It deliberately has no macOS host mounts or host-level metrics access.
   metrics-provider:
-    image: quay.io/prometheus/node-exporter:v1.11.1@sha256:0f422f62c15f154af8d8572b23d623aebfb10cec73a5c654d18f911f3f9df241
+    image: quay.io/prometheus/node-exporter:v1.12.1@sha256:1b4e4438faca4dd7e001dd445d161a4a2091b0fededa84093b3a8dfeae1f1be0
     container_name: hermes-local-metrics-provider
     command:
       - --collector.textfile.directory=/metrics
@@ -150,7 +150,7 @@ services:
       - hermes_observability
 
   prometheus:
-    image: prom/prometheus:v3.13.1@sha256:3c42b892cf723fa54d2f262c37a0e1f80aa8c8ddb1da7b9b0df9455a35a7f893
+    image: prom/prometheus:v3.15.1@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2
     container_name: hermes-local-prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -178,7 +178,7 @@ services:
       - metrics-provider
 
   grafana:
-    image: grafana/grafana:13.1.0@sha256:121a7a9ece6dc10b969f1f96eed64b4f07dfac0d0b8abc070f7cb83bbde86f63
+    image: grafana/grafana:13.3.0@sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205
     container_name: hermes-local-grafana
     env_file:
       - path: ./grafana.env
@@ -198,7 +198,8 @@ services:
       - "127.0.0.1:3000:3000"
     read_only: true
     tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=32m
+      # The SQLite plugin archive needs about 92 MiB during installation.
+      - /tmp:rw,noexec,nosuid,nodev,size=128m
     cap_drop:
       - ALL
     security_opt:

@@ -50,14 +50,6 @@ class NormalizeOwnershipTests(unittest.TestCase):
     def run_helper(self, root):
         return call_main(root)
 
-    def second_group(self):
-        groups = [gid for gid in os.getgroups() if gid != os.getgid()]
-        if not groups and os.geteuid() == 0:
-            groups = [group.gr_gid for group in grp.getgrall() if group.gr_gid != os.getgid()]
-        if not groups:
-            self.skipTest('A second permitted group is needed to create ownership drift')
-        return groups[0]
-
     def test_correct_tree_is_unchanged(self):
         with tempfile.TemporaryDirectory(dir=TEMP_PARENT) as directory:
             os.chown(directory, -1, os.getgid())
@@ -131,21 +123,29 @@ class NormalizeOwnershipTests(unittest.TestCase):
         user = pwd.getpwuid(os.getuid()).pw_name
         group = grp.getgrgid(os.getgid()).gr_name
         for operand in ('user', 'group'):
-            for value in ('a:b', 'a b', 'a$b', 'a;b'):
+            for value in ('a:b', 'a b', 'a$b', 'a;b', 'éuser', '用户', 'a\n'):
                 with self.subTest(operand=operand, value=value):
                     argv = [str(HELPER), '/tmp', user, group]
                     argv[2 if operand == 'user' else 3] = value
                     result = call_main(None, argv_override=argv)
                     self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(f'invalid {operand} operand', result.stderr)
                     self.assertNotIn('ownership-changed=', result.stdout)
                     self.assertNotIn('find:', result.stderr)
+
+    def test_owner_operand_accepts_ascii_names_and_numeric_ids(self):
+        helper = load_helper()
+        for value in ('hermes', '_hermes', '1000', 'build.bot-1', 'machine$'):
+            with self.subTest(owner=value):
+                self.assertIsNotNone(helper.OWNER_RE.fullmatch(value))
 
     def test_root_operand_must_be_an_absolute_posix_path(self):
         # S8707 hardening: the root reaches os.lchown, so callers must not be
         # able to smuggle traversal, whitespace, or relative fragments into it.
         user = pwd.getpwuid(os.getuid()).pw_name
         group = grp.getgrgid(os.getgid()).gr_name
-        for value in ('relative/path', '/tmp/../etc', '/tmp/a b', '~/home', '/', '/tmp//x'):
+        for value in ('relative/path', '/tmp/../etc', '/tmp/a b', '~/home', '/', '/tmp//x',
+                      '/tmp/éuser', '/tmp/用户', '/tmp/a\n', '//tmp', '/tmp//'):
             with self.subTest(root=value):
                 result = call_main(None, argv_override=[str(HELPER), value, user, group])
                 self.assertNotEqual(result.returncode, 0)
@@ -157,13 +157,14 @@ class NormalizeOwnershipTests(unittest.TestCase):
         # the exact "." and ".." entries (and any traversal through them) are
         # rejected.
         helper = load_helper()
-        for value in ('/home/hermes/.hermes', '/home/hermes/.config/app'):
+        for value in ('/home/hermes/.hermes', '/home/hermes/.config/app', '/tmp/',
+                      '/home/hermes/...', '/home/hermes/.config/app-v1.2_3/'):
             with self.subTest(accepted=value):
                 self.assertIsNotNone(helper.ROOT_RE.fullmatch(value))
         user = pwd.getpwuid(os.getuid()).pw_name
         group = grp.getgrgid(os.getgid()).gr_name
         for value in ('/home/hermes/../etc', '/home/hermes/.', '/home/hermes/..',
-                      '/home/hermes/a/../b'):
+                      '/home/hermes/a/../b', '/home/hermes/./b', '/tmp/./', '/tmp/../'):
             with self.subTest(rejected=value):
                 self.assertIsNone(helper.ROOT_RE.fullmatch(value))
                 result = call_main(None, argv_override=[str(HELPER), value, user, group])

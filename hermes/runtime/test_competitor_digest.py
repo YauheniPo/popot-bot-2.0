@@ -345,6 +345,30 @@ class CompetitorDigestTests(unittest.TestCase):
         self.save(guard, record)
         with self.assertRaisesRegex(self.module.ReportValidationError, "external source coverage"):
             guard.finalize()
+        for checks in (None, {}, ["checked"], "checked",
+                       {"media": "checked", "marketplaces": "no_results", "listings": "blocked"},
+                       {"media": "checked", "marketplaces": "no_results", "listings": "not_checked"}):
+            with self.subTest(source_checks=checks):
+                record["coverage"][0]["source_checks"] = checks
+                self.save(guard, record)
+                with self.assertRaisesRegex(self.module.ReportValidationError, "external source coverage"):
+                    guard.finalize()
+                self.assertIsNone(guard.record)
+
+    def test_managed_complete_coverage_accepts_checked_and_no_results_sources(self):
+        self.research_policy()
+        guard = self.begin()
+        record = self.record(guard, complete=True)
+        record["coverage"][0]["source_checks"]["media"] = "no_results"
+        self.save(guard, record)
+        self.assertIn("Coverage: complete", guard.finalize())
+
+    def test_external_source_checks_are_optional_without_managed_policy(self):
+        guard = self.begin()
+        record = self.record(guard, complete=True)
+        record["coverage"][0].pop("source_checks")
+        self.save(guard, record)
+        self.assertIn("Coverage: complete", guard.finalize())
 
     def test_independent_market_mention_does_not_require_company_announcement(self):
         guard = self.begin()

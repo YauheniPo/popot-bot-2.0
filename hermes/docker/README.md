@@ -5,6 +5,14 @@
 CLI в изолированном container. Telegram gateway запускается автоматически,
 только если заданы обе Telegram-переменные.
 
+Образы Prometheus, Grafana и node-exporter закреплены в
+`docker-compose.local.yml` одновременно по release tag и multi-architecture
+digest. При обновлении меняйте оба значения и проверяйте конфигурацию и rules
+новым `promtool`. Эти pins относятся только к локальному Docker-мониторингу;
+версии пакетов мониторинга на VPS определяются его APT-репозиториями.
+Grafana использует `/tmp` размером 128 MiB для установки SQLite-плагина:
+его архив не помещается в прежний лимит 32 MiB.
+
 В обычном local запуске Hermes может через `sudo` устанавливать пакеты и
 настраивать **свой container** по вашему запросу. Это не даёт ему Docker socket,
 host mounts, devices, privileged mode или доступ к macOS. Изменения вне

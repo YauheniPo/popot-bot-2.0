@@ -255,7 +255,7 @@ vps_external_skills:
   matt_pocock_engineering:
     enabled: true
     repository: https://github.com/mattpocock/skills.git
-    revision: 3cca18b368ae95cdbdebbff572ccafa662551015
+    revision: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
     checkout_dir: /opt/hermes-external-skills/mattpocock-skills
     # Hermes discovers each immediate directory that contains a SKILL.md.
     # This exposes the repository's engineering skills, not unrelated domains.
@@ -265,7 +265,7 @@ vps_external_skills:
 # Secrets: hermes_secret_env.API_SERVER_KEY and HERMES_WORKSPACE_PASSWORD in Vault.
 vps_workspace_ui:
   revision: c631425d8baa933f8c61d8447040f4ec8b5f571c
-  pnpm_version: "10.28.2"
+  pnpm_version: "10.34.9"
   bind_address: 127.0.0.1
   port: 3002
   api_port: 8642

@@ -168,6 +168,15 @@ def validate_coverage(coverage, companies):
         covered = _validate_row(row, companies, covered)
     return coverage
 
+
+def _validate_external_coverage(coverage):
+    for row in coverage:
+        checks = row.get("source_checks") or {}
+        if row["status"] == "complete" and (not isinstance(checks, dict) or any(
+                checks.get(source) not in {"checked", "no_results"} for source in EXTERNAL_CHECKS)):
+            raise ValueError("competitor report: incomplete external source coverage")
+
+
 def _validate_event_fields(event):
     for field in ("what_changed", "why_it_matters", "confidence", "confidence_reason"):
         text(event.get(field))
@@ -644,11 +653,7 @@ class RunGuard:
                 record["coverage_complete"] = False
             validate(record, self.watch, self.window_start, self.window_end, self.run_id)
             if self.budget:
-                for row in record["coverage"]:
-                    checks = row.get("source_checks") or {}
-                    if row["status"] == "complete" and (not isinstance(checks, dict) or any(
-                            checks.get(source) not in {"checked", "no_results"} for source in EXTERNAL_CHECKS)):
-                        raise ValueError("competitor report: incomplete external source coverage")
+                _validate_external_coverage(record["coverage"])
         except ReportIdentityError:
             raise
         except ValueError as error:

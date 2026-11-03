@@ -87,6 +87,8 @@ OpenAI/Groq, но **не Nous**; наличие Nous в настройках н�
 В `config/vps-defaults.yml` включён `vps_deploy.features.workspace_ui`.
 Настройки установки находятся в `vps_workspace_ui`: исходники закреплены
 commit SHA, pnpm — версией, зависимости устанавливаются с `--frozen-lockfile`.
+pnpm обновляется в пределах ветки 10.x. Его версия входит в маркер успешной
+сборки: смена pin вызывает установку tooling и пересборку UI при следующем deploy.
 Версии обновляются явно через deploy, не автоматически при старте службы.
 Требуется установленный Hermes Node >= 22. Upstream all-in-one installer,
 `start:all` и отдельная установка Hermes не используются.

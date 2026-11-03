@@ -19,8 +19,8 @@ import sys
 # before any repair, so parent-directory symlinks or path components cannot
 # redirect the traversal (S8707). Repair itself stays inside the
 # interpreter: os.lchown fixes mismatched entries without following symlinks.
-OWNER_RE = re.compile(r'^[A-Za-z0-9_][A-Za-z0-9_.-]*\$?$')
-ROOT_RE = re.compile(r'^/(?:(?!\.(?:/|$))(?!\.\.(?:/|$))[A-Za-z0-9_.-]+/)*(?!\.(?:/|$))(?!\.\.(?:/|$))[A-Za-z0-9_.-]+/?$')
+OWNER_RE = re.compile(r'^\w[\w.-]*\$?$', re.ASCII)
+ROOT_RE = re.compile(r'^(?:/(?!\.{1,2}(?:/|$))[\w.-]+)+/?$', re.ASCII)
 
 
 def owner_id(value, database):
