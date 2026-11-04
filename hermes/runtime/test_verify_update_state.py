@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import sqlite3
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -451,6 +454,47 @@ class VerifyUpdateStateTests(unittest.TestCase):
         outside.write_text("escape", encoding="utf-8")
         with self.assertRaisesRegex(verify_update_state.VerificationError, "escapes HERMES_HOME"):
             verify_update_state._archivable_file(self.home, self.root, "outside.txt")
+
+    def test_previous_inventory_paths_must_stay_inside_home(self) -> None:
+        for escape in ("../outside.txt", "/etc/passwd"):
+            with self.subTest(path=escape):
+                with self.assertRaisesRegex(
+                        verify_update_state.VerificationError,
+                        "previous inventory path escapes HERMES_HOME"):
+                    verify_update_state.create_snapshot(self.home, previous_snapshot={"files": [escape]})
+
+    def test_previous_inventory_keeps_live_files_listed_once(self) -> None:
+        before = verify_update_state.create_snapshot(self.home)
+        self.assertIn("skills/custom-review/SKILL.md", before["files"])
+
+        after = verify_update_state.create_snapshot(self.home, previous_snapshot=before)
+
+        self.assertEqual(after["files"].count("skills/custom-review/SKILL.md"), 1)
+
+    def test_cli_snapshot_preserves_the_previous_inventory(self) -> None:
+        before_path = self.root / "before.json"
+        output_path = self.root / "after.json"
+        verify_update_state.write_snapshot(verify_update_state.create_snapshot(self.home), before_path)
+        output = io.StringIO()
+        with mock.patch.object(sys, "argv", ["verify-update-state.py", "snapshot", "--hermes-home",
+                                             str(self.home), "--output", str(output_path),
+                                             "--before", str(before_path)]), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(verify_update_state.main(), 0)
+        self.assertIn("Hermes state snapshot verified", output.getvalue())
+        self.assertEqual(verify_update_state.load_snapshot(output_path)["files"],
+                         verify_update_state.load_snapshot(before_path)["files"])
+
+    def test_previous_inventory_through_a_symlinked_parent_is_skipped(self) -> None:
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("outside home\n", encoding="utf-8")
+        (self.home / "linked").symlink_to(outside)
+
+        snapshot = verify_update_state.create_snapshot(
+            self.home, previous_snapshot={"files": ["linked/secret.txt"]})
+
+        self.assertNotIn("linked/secret.txt", snapshot["files"])
 
 
 if __name__ == "__main__":
