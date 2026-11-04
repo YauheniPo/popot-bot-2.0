@@ -8,6 +8,35 @@ import shlex
 import tempfile
 
 
+def wrapper_script(name, command, prefix):
+    """Render one wrapper, pinning the private prefix for the npm family."""
+    content = '#!/bin/sh\n'
+    if name != 'node':
+        content += ('if [ -z "${NPM_CONFIG_PREFIX:-}" ]; then\n'
+                    f'    export NPM_CONFIG_PREFIX={shlex.quote(str(prefix))}\nfi\n')
+    return content + 'exec ' + shlex.join(command) + ' "$@"\n'
+
+
+def install_wrapper(target, content):
+    """Atomically install one wrapper; return True when the target changed."""
+    encoded = content.encode()
+    if not target.is_symlink() and target.is_file() and target.read_bytes() == encoded:
+        if target.stat().st_mode & 0o777 != 0o750:
+            target.chmod(0o750)
+            return True
+        return False
+    with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(encoded)
+            stream.flush()
+            temporary.chmod(0o750)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return True
+
+
 def publish(home):
     from pm import installed_package
     node, npm = installed_package('node'), installed_package('npm')
@@ -26,27 +55,8 @@ def publish(home):
     directory.mkdir(parents=True, exist_ok=True)
     changed = False
     for name, command in commands.items():
-        content = '#!/bin/sh\n'
-        if name != 'node':
-            content += ('if [ -z "${NPM_CONFIG_PREFIX:-}" ]; then\n'
-                        f'    export NPM_CONFIG_PREFIX={shlex.quote(str(prefix))}\nfi\n')
-        content += 'exec ' + shlex.join(command) + ' "$@"\n'
-        target = directory / name
-        if not target.is_symlink() and target.is_file() and target.read_bytes() == content.encode():
-            if target.stat().st_mode & 0o777 != 0o750:
-                target.chmod(0o750)
-                changed = True
-            continue
-        with tempfile.NamedTemporaryFile(dir=directory, delete=False) as stream:
-            temporary = Path(stream.name)
-            try:
-                stream.write(content.encode())
-                stream.flush()
-                temporary.chmod(0o750)
-                os.replace(temporary, target)
-            finally:
-                temporary.unlink(missing_ok=True)
-        changed = True
+        if install_wrapper(directory / name, wrapper_script(name, command, prefix)):
+            changed = True
     return changed
 
 

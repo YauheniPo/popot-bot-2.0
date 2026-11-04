@@ -48,7 +48,8 @@ class StandaloneYamlFallbackTests(unittest.TestCase):
         path = SCRIPTS[name]
         shim = _shim()
         spec = importlib.util.spec_from_file_location(name, path)
-        assert spec is not None and spec.loader is not None
+        assert spec is not None
+        assert spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         finder = _MissingPyYAML()
         saved = {key: sys.modules.pop(key, None) for key in (name, "yaml", "hermes_yaml", "hermes_config_io")}

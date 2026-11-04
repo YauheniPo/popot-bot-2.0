@@ -20,7 +20,8 @@ ROOT = Path(__file__).resolve().parent
 
 def load_launcher():
     spec = importlib.util.spec_from_file_location("hermes_python_launcher", ROOT / "hermes-python.py")
-    assert spec is not None and spec.loader is not None
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

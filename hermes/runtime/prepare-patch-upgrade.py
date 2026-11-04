@@ -18,67 +18,86 @@ def git(root, *args):
     return subprocess.check_output(['git', '-C', str(root), *args], timeout=60)  # NOSONAR
 
 
-def retire(original, current, records):
-    spans = []
-    for marker, record in records.items():
-        if not isinstance(record, dict):
-            continue
-        block = record.get('source', '')
-        if (not isinstance(block, str) or not marker.startswith('# Local Hermes:')
-                or marker not in block or current.count(block) != 1
-                or hashlib.sha256(block.encode()).hexdigest() != record.get('digest')):
-            continue
-        start = current.index(block)
-        end = start + len(block)
-        # difflib can attach an adjacent blank-line separator to an insertion.
-        # Admit only newline bytes outside the exact recorded block.
-        while start and current[start - 1] in '\r\n':
-            start -= 1
-        while end < len(current) and current[end] in '\r\n':
-            end += 1
-        spans.append((start, end))
+def recorded_span(current, marker, record):
+    """Return the newline-expanded span of one exact recorded block, else None."""
+    if not isinstance(record, dict):
+        return None
+    block = record.get('source', '')
+    if (not isinstance(block, str) or not marker.startswith('# Local Hermes:')
+            or marker not in block or current.count(block) != 1
+            or hashlib.sha256(block.encode()).hexdigest() != record.get('digest')):
+        return None
+    start = current.index(block)
+    end = start + len(block)
+    # difflib can attach an adjacent blank-line separator to an insertion.
+    # Admit only newline bytes outside the exact recorded block.
+    while start and current[start - 1] in '\r\n':
+        start -= 1
+    while end < len(current) and current[end] in '\r\n':
+        end += 1
+    return start, end
+
+
+def merged_spans(current, records):
+    """Return recorded block spans with overlapping ones merged together."""
+    spans = [span for span in (recorded_span(current, marker, record)
+                               for marker, record in records.items())
+             if span is not None]
     merged = []
     for start, end in sorted(spans):
         if merged and start <= merged[-1][1]:
             merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
         else:
             merged.append((start, end))
-    spans = merged
-    if not spans:
-        return current
-    before, after = original.splitlines(keepends=True), current.splitlines(keepends=True)
+    return merged
+
+
+def line_offsets(lines):
     offsets = [0]
-    for line in after:
+    for line in lines:
         offsets.append(offsets[-1] + len(line))
+    return offsets
+
+
+def char_edits(old, new, offset, spans):
+    """Keep only the changed bytes that fall inside a retired span."""
+    edits = []
+    for change, a, b, c, d in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
+        if change == 'equal':
+            continue
+        start, end = offset + c, offset + d
+        if any(lo <= start < end <= hi or lo < start == end < hi for lo, hi in spans):
+            edits.append((start, end, old[a:b]))
+    return edits
+
+
+def block_edits(before, after, offsets, spans):
+    """Refine each changed block so operator edits sharing its line survive."""
     edits = []
     for tag, i, end_i, j, end_j in difflib.SequenceMatcher(None, before, after, autojunk=False).get_opcodes():
         if tag == 'equal':
             continue
-        old, new = ''.join(before[i:end_i]), ''.join(after[j:end_j])
         # Character-level refinement retains operator edits sharing a line with
         # a managed block; only exact recorded bytes may be retired.
-        for change, a, b, c, d in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
-            if change == 'equal':
-                continue
-            start, end = offsets[j] + c, offsets[j] + d
-            if any(lo <= start < end <= hi or lo < start == end < hi for lo, hi in spans):
-                edits.append((start, end, old[a:b]))
+        edits.extend(char_edits(''.join(before[i:end_i]), ''.join(after[j:end_j]), offsets[j], spans))
+    return edits
+
+
+def retire(original, current, records):
+    spans = merged_spans(current, records)
+    if not spans:
+        return current
+    before, after = original.splitlines(keepends=True), current.splitlines(keepends=True)
+    edits = block_edits(before, after, line_offsets(after), spans)
     for start, end, replacement in reversed(edits):
         current = current[:start] + replacement + current[end:]
     return current
 
 
-def prepare(root):
-    state = root / '.local-hermes-patches.json'
-    if not state.is_file():
-        return None
-    if git(root, 'diff', '--cached', '--name-only'):
-        raise RuntimeError('Installed checkout has staged changes; reconcile them before upgrading')
-    records = json.loads(state.read_text())
-    if not isinstance(records, dict):
-        raise RuntimeError('Invalid managed patch state')
+def pending_writes(root, names, records):
+    """Return the (target, cleaned) pairs whose recorded blocks can be retired."""
     writes = []
-    for name in git(root, 'diff', 'HEAD', '--name-only', '-z').split(b'\0'):
+    for name in names:
         if not name:
             continue
         relative = name.decode()
@@ -93,6 +112,20 @@ def prepare(root):
         cleaned = retire(original, current, records)
         if cleaned != current:
             writes.append((target, cleaned))
+    return writes
+
+
+def prepare(root):
+    state = root / '.local-hermes-patches.json'
+    if not state.is_file():
+        return None
+    if git(root, 'diff', '--cached', '--name-only'):
+        raise RuntimeError('Installed checkout has staged changes; reconcile them before upgrading')
+    records = json.loads(state.read_text())
+    if not isinstance(records, dict):
+        raise RuntimeError('Invalid managed patch state')
+    names = git(root, 'diff', 'HEAD', '--name-only', '-z').split(b'\0')
+    writes = pending_writes(root, names, records)
     if not writes:
         return None
     snapshot = git(root, 'stash', 'create', 'managed patch upgrade recovery').decode().strip()

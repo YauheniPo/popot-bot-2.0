@@ -72,6 +72,7 @@ class PatchUpgradeTests(unittest.TestCase):
     def test_staged_edits_are_rejected_before_mutation(self):
         _, current = self.managed_edit()
         self.git(self.repo, 'add', 'gateway.py')
+        prepare = self.prepare_managed()['prepare']
         with self.assertRaisesRegex(RuntimeError, 'staged'):
-            self.prepare_managed()['prepare'](self.repo)
+            prepare(self.repo)
         self.assertEqual((self.repo / 'gateway.py').read_text(), current)

@@ -144,13 +144,11 @@ download_installer() {
       log "Installer download completed: http_status=$http_status source=$source_host"
       break
     fi
-    if [[ "$installer_url" == "$raw_url" ]]; then
-      case "$http_status" in
-        000|408|429|500|502|503|504)
-          warn "Installer download failed: curl_exit=$curl_exit http_status=$http_status source=$source_host; trying api.github.com for the same pinned commit"
-          continue
-          ;;
-      esac
+    # Only transient statuses on the raw URL are worth a second source; any
+    # other status is permanent for this pin and falls through to die.
+    if [[ "$installer_url" == "$raw_url" && "$http_status" =~ ^(000|408|429|500|502|503|504)$ ]]; then
+      warn "Installer download failed: curl_exit=$curl_exit http_status=$http_status source=$source_host; trying api.github.com for the same pinned commit"
+      continue
     fi
     die "Installer download failed: curl_exit=$curl_exit http_status=$http_status; source=$source_host commit=$HERMES_COMMIT; no Hermes code changes started"
   done

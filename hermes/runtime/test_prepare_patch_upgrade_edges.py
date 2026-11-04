@@ -53,8 +53,9 @@ class PatchUpgradeEdgeCaseTests(unittest.TestCase):
     def test_state_file_must_contain_a_mapping(self):
         self.managed_edit()
         self.write_records(['# Local Hermes: fixture'])
+        prepare = self.prepare_managed()['prepare']
         with self.assertRaisesRegex(RuntimeError, 'Invalid managed patch state'):
-            self.prepare_managed()['prepare'](self.repo)
+            prepare(self.repo)
 
     def test_deleted_and_symlinked_targets_are_skipped(self):
         self.managed_edit()
