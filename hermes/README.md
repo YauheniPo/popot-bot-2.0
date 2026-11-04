@@ -545,6 +545,20 @@ Secrets в этот файл добавлять нельзя: они остаю�
     изменения units — `systemd-analyze verify` на Linux.
 14. Обновлять этот паспорт, таблицу flags и команды проверки вместе с кодом.
 
+Для Ansible controller и полного набора проверок нужен Python 3.13 или новее:
+`ansible-core` 2.22 больше не поддерживает Python 3.12 на controller. GitHub и
+Azure CI используют Python 3.13. Подготовка окружения из корня репозитория:
+
+```bash
+python3.13 -m venv .venv
+source .venv/bin/activate
+python -m pip install --requirement hermes/requirements-dev.txt
+ansible-galaxy collection install --requirements-file hermes/ansible/requirements.yml
+```
+
+`requirements-dev.txt` задаёт зависимости проверок, включая FastAPI. Python и
+библиотеки работающего Hermes на VPS управляются upstream PM отдельно.
+
 Единая локальная проверка перед передачей изменений:
 
 ```bash

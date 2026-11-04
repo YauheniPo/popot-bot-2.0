@@ -8,6 +8,8 @@ import subprocess
 import tempfile
 import unittest
 
+import yaml
+
 
 class SonarConfigurationTests(unittest.TestCase):
     def test_python_version_matches_the_supported_ci_range(self) -> None:
@@ -15,7 +17,17 @@ class SonarConfigurationTests(unittest.TestCase):
             Path(__file__).resolve().parents[2] / "sonar-project.properties"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("sonar.python.version=3.11,3.12", properties)
+        versions = next(line.split("=", 1)[1].split(",") for line in properties.splitlines()
+                        if line.startswith("sonar.python.version="))
+        self.assertIn("3.11", versions)  # The standalone bot still supports Python 3.11.
+        workflows = Path(__file__).resolve().parents[1] / "workflows"
+        for name in ("hermes-ci.yml", "telegram-user-info-bot-ci.yml", "sonarcloud.yml"):
+            workflow = yaml.load((workflows / name).read_text(), Loader=yaml.BaseLoader)
+            for job in workflow["jobs"].values():
+                for step in job.get("steps", []):
+                    if step.get("uses", "").startswith("actions/setup-python@"):
+                        with self.subTest(workflow=name, step=step["name"]):
+                            self.assertIn(step["with"]["python-version"], versions)
 
     def test_telegram_bot_is_included_in_coverage_report(self) -> None:
         workflow = (

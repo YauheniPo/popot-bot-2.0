@@ -1,2 +1,2 @@
 timezonefinder==9.0.0; python_version < "3.12"
-timezonefinder==9.1.0; python_version >= "3.12"
+timezonefinder==9.2.0; python_version >= "3.12"

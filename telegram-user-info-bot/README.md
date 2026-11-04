@@ -71,8 +71,9 @@ is configured with `NOMINATIM_LANGUAGE` in `.env` and defaults to English.
 
 Python 3.11 or newer is required.
 
-The requirements use Python version markers to select a compatible
-`timezonefinder` release for Python 3.11 and for Python 3.12 or newer.
+The requirements use Python version markers to select `timezonefinder` 9.0.0
+for Python 3.11 and 9.2.0 for Python 3.12 or newer. The bot does not require the
+Python 3.13 controller environment used by the separate Hermes Ansible tooling.
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) and obtain its token.
 2. From the repository root, open the project directory, create a virtual
