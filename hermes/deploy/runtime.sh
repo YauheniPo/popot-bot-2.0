@@ -133,24 +133,26 @@ download_installer() {
   for installer_url in "$raw_url" "$api_url"; do
     source_host="${installer_url#https://}"
     source_host="${source_host%%/*}"
-    if http_status="$(curl --proto '=https' --tlsv1.2 --fail --no-progress-meter --show-error --location \
+    curl_exit=0
+    # curl 8.14 returns 0 after a Retry-After beyond --retry-max-time even with
+    # --fail, so the HTTP status, not only the exit code, decides success.
+    http_status="$(curl --proto '=https' --tlsv1.2 --fail --no-progress-meter --show-error --location \
       --connect-timeout 10 --max-time 30 --retry 3 --retry-max-time 120 \
       --header 'Accept: application/vnd.github.raw+json' \
-      --write-out '%{http_code}' "$installer_url" --output "$INSTALLER_FILE" || exit "$?")"; then
+      --write-out '%{http_code}' "$installer_url" --output "$INSTALLER_FILE")" || curl_exit=$?
+    if ((curl_exit == 0)) && [[ "$http_status" == 2* ]]; then
       log "Installer download completed: http_status=$http_status source=$source_host"
       break
-    else
-      curl_exit=$?
-      if [[ "$installer_url" == "$raw_url" ]]; then
-        case "$http_status" in
-          000|408|429|500|502|503|504)
-            warn "Installer download failed: curl_exit=$curl_exit http_status=$http_status source=$source_host; trying api.github.com for the same pinned commit"
-            continue
-            ;;
-        esac
-      fi
-      die "Installer download failed: curl_exit=$curl_exit http_status=$http_status; source=$source_host commit=$HERMES_COMMIT; no Hermes code changes started"
     fi
+    if [[ "$installer_url" == "$raw_url" ]]; then
+      case "$http_status" in
+        000|408|429|500|502|503|504)
+          warn "Installer download failed: curl_exit=$curl_exit http_status=$http_status source=$source_host; trying api.github.com for the same pinned commit"
+          continue
+          ;;
+      esac
+    fi
+    die "Installer download failed: curl_exit=$curl_exit http_status=$http_status; source=$source_host commit=$HERMES_COMMIT; no Hermes code changes started"
   done
 
   local actual_sha256
