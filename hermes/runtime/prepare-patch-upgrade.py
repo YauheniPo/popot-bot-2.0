@@ -14,7 +14,8 @@ import time
 
 
 def git(root, *args):
-    return subprocess.check_output(['git', '-C', str(root), *args], timeout=60)
+    # Shell-free: dynamic values are git paths/refs consumed after fixed subcommands or -C.
+    return subprocess.check_output(['git', '-C', str(root), *args], timeout=60)  # NOSONAR
 
 
 def retire(original, current, records):

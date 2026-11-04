@@ -46,7 +46,8 @@ def main():
         legacy = root / 'venv/bin/python'
         if not legacy.is_file():
             raise RuntimeError('Hermes runtime is missing')
-        os.execv(str(legacy), [str(legacy), *sys.argv[1:]])
+        # Shell-free interpreter shim: argv belongs to the caller that already runs as hermes.
+        os.execv(str(legacy), [str(legacy), *sys.argv[1:]])  # NOSONAR
     # These upstream modules use only stdlib and support the host Python 3.11.
     os.environ.setdefault('HERMES_HOME', str(home))
     sys.path.insert(0, str(root))
