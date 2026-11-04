@@ -52,10 +52,12 @@ class HermesPythonInProcessTests(unittest.TestCase):
         self.repo = self.root / "hermes-agent"
         self.module = load_launcher()
         self.saved_argv = list(sys.argv)
+        self.saved_path = list(sys.path)
         self.addCleanup(self.restore_process_state)
 
     def restore_process_state(self):
         sys.argv = self.saved_argv
+        sys.path[:] = self.saved_path
         for name in ("hermes_cli", "hermes_cli._launchers"):
             sys.modules.pop(name, None)
 
