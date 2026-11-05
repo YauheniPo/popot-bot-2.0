@@ -43,6 +43,8 @@ EXCLUDED_DIRECTORIES = {
 # Match the pinned Hermes backup policy at HERMES_HOME and profiles/<name>/
 # only. A skill's nested node/, models/ or cache/ can contain user data.
 EXCLUDED_ROOT_DIRECTORIES = {"models", "runtimes", "node", "browser_profiles"}
+PM_EXCLUDED_ROOT_ENTRIES = {"tools", "installs", "bws_cache.json", "bws_cache.enc.json",
+                            "op_cache.json", "photon-sidecar.json"}
 KEPT_CACHE_SUBDIRECTORIES = {"images", "audio", "videos", "documents", "screenshots", "citations"}
 # Process locks can disappear between inventory and hashing as workers stop.
 # They are not restorable user state; do not broadly ignore missing files or *.lock.
@@ -55,7 +57,7 @@ class VerificationError(RuntimeError):
     """Raised when an update safety invariant is not satisfied."""
 
 
-def _excluded_runtime_path(relative_path: Path) -> bool:
+def _excluded_runtime_path(relative_path: Path, pm_runtime: bool = False) -> bool:
     parts = relative_path.parts
     if parts and parts[0] == "hermes-agent":
         return True
@@ -64,12 +66,13 @@ def _excluded_runtime_path(relative_path: Path) -> bool:
     if not parts:
         return False
     # hermes-agent is root-only upstream, not excluded inside a named profile.
-    if parts[0] in EXCLUDED_ROOT_DIRECTORIES:
+    if parts[0] in EXCLUDED_ROOT_DIRECTORIES or (pm_runtime and parts[0] in PM_EXCLUDED_ROOT_ENTRIES):
         return True
-    return parts[0] == "cache" and len(parts) >= 2 and parts[1] not in KEPT_CACHE_SUBDIRECTORIES
+    kept_cache = KEPT_CACHE_SUBDIRECTORIES | ({"generated"} if pm_runtime else set())
+    return parts[0] == "cache" and len(parts) >= 2 and parts[1] not in kept_cache
 
 
-def _archivable_file(root: Path, current: Path, name: str) -> Path | None:
+def _archivable_file(root: Path, current: Path, name: str, pm_runtime: bool = False) -> Path | None:
     """Return the file if it is archivable, or None if it must be skipped."""
     path = current / name
     if path.is_symlink():
@@ -82,7 +85,7 @@ def _archivable_file(root: Path, current: Path, name: str) -> Path | None:
         path.resolve().relative_to(root)
     except ValueError as exc:
         raise VerificationError(f"backup file escapes HERMES_HOME: {path}") from exc
-    if _excluded_runtime_path(path.relative_to(root)):
+    if _excluded_runtime_path(path.relative_to(root), pm_runtime):
         return None
     return path
 
@@ -90,17 +93,18 @@ def _archivable_file(root: Path, current: Path, name: str) -> Path | None:
 def _inventory_directory(root: Path) -> list[Path]:
     """Walk HERMES_HOME and return every archivable file, fail-closed on escapes."""
     files: list[Path] = []
+    pm_runtime = (root / "hermes-agent/pm/environments.py").is_file()
     for directory, directory_names, file_names in os.walk(root, followlinks=False):
         current = Path(directory)
         directory_names[:] = [
             name
             for name in directory_names
             if name not in EXCLUDED_DIRECTORIES
-            and not _excluded_runtime_path((current / name).relative_to(root))
+            and not _excluded_runtime_path((current / name).relative_to(root), pm_runtime)
             and not (current / name).is_symlink()
         ]
         for name in file_names:
-            path = _archivable_file(root, current, name)
+            path = _archivable_file(root, current, name, pm_runtime)
             if path is not None:
                 files.append(path)
     return files
@@ -189,7 +193,7 @@ def inspect_kanban_database(path: Path) -> dict[str, Any]:
     }
 
 
-def create_snapshot(hermes_home: Path) -> dict[str, Any]:
+def create_snapshot(hermes_home: Path, *, previous_snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
     root = hermes_home.expanduser().resolve()
     if not root.is_dir():
         raise VerificationError(f"HERMES_HOME is not a directory: {root}")
@@ -199,7 +203,22 @@ def create_snapshot(hermes_home: Path) -> dict[str, Any]:
         relative_path = path.relative_to(root).as_posix()
         databases[relative_path] = inspect_kanban_database(path)
 
-    backup_files = discover_backup_files(root)
+    backup_files = set(discover_backup_files(root))
+    # A new runtime's backup exclusions must not masquerade as lost old files,
+    # or hide their actual loss. Retain the pre-update inventory for comparison.
+    for name in (previous_snapshot or {}).get("files", []):
+        relative = Path(name)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise VerificationError("previous inventory path escapes HERMES_HOME")
+        path = root / relative
+        if path in backup_files:
+            continue
+        if any((root / parent).is_symlink() for parent in relative.parents):
+            continue
+        retained = _archivable_file(root, path.parent, path.name)
+        if retained is not None:
+            backup_files.add(retained)
+    backup_files = sorted(backup_files)
     files = [path.relative_to(root).as_posix() for path in backup_files]
     file_hashes = {
         path.relative_to(root).as_posix(): _hash_file(path) for path in backup_files
@@ -398,6 +417,7 @@ def build_parser() -> argparse.ArgumentParser:
     snapshot_parser = subparsers.add_parser("snapshot")
     snapshot_parser.add_argument("--hermes-home", type=Path, required=True)
     snapshot_parser.add_argument("--output", type=Path, required=True)
+    snapshot_parser.add_argument("--before", type=Path, help="Preserve the pre-update file inventory when backup policy changes")
 
     backup_parser = subparsers.add_parser("verify-backup")
     backup_parser.add_argument("--backup", type=Path, required=True)
@@ -413,7 +433,8 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         if args.command == "snapshot":
-            snapshot = create_snapshot(args.hermes_home)
+            snapshot = create_snapshot(args.hermes_home,
+                                       previous_snapshot=load_snapshot(args.before) if args.before else None)
             write_snapshot(snapshot, args.output)
             print(
                 "Hermes state snapshot verified: "

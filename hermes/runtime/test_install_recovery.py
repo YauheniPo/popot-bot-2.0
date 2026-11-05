@@ -17,6 +17,56 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class InstallRecoveryTests(unittest.TestCase):
+    def test_deploy_entrypoint_validates_current_pin_and_release_overrides(self):
+        source = (ROOT / 'deploy-hermes.sh').read_text()
+        # Exercise the real argument parser, pin resolver, validation and main.
+        # Substitute only host facts/stat syntax; stop before any host mutation.
+        # EUID is readonly in Bash, so the fixture uses a test variable for it.
+        self.assertEqual(source.count('((EUID == 0))'), 1)
+        source = source.replace('((EUID == 0))', '((FIXTURE_EUID == 0))')
+        self.assertTrue(source.endswith('\nmain\n'))
+        source = source.removesuffix('\nmain\n') + r'''
+uname() { printf '%s\n' "$FIXTURE_SYSTEM"; }
+stat() {
+  [[ "$1" == '-c' && "$2" == '%a' ]] || return 1
+  python3 -c 'import os, sys; print(format(os.stat(sys.argv[1]).st_mode & 0o7777, "o"))' "$3"
+}
+install_host_dependencies() { printf 'INPUTS_VALIDATED\n'; exit 0; }
+main
+'''
+        pin = yaml.safe_load((ROOT / 'config/vps-defaults.yml').read_text())['vps_deploy']['hermes_source']
+        cases = [
+            ([], {}, None),
+            (['--release', pin['release']], {}, None),
+            (['--release', 'v2026.9.21'], {}, None),
+            (['--release', 'v1.123.456'], {}, None),
+            *[(['--release', release], {}, 'invalid Hermes release') for release in
+              ('main', '1.2.3', 'v1.2', 'v1.2.3-rc.1', '../v1.2.3', 'v1.2.3\n')],
+            (['--release', ''], {}, '--release requires a value'),
+            ([], {'FIXTURE_EUID': '1000'}, 'run this script as root'),
+            ([], {'FIXTURE_SYSTEM': 'Darwin'}, 'only Linux VPS hosts are supported'),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / 'deploy-hermes.sh'
+            script.write_text(source)
+            for name in ('deploy', 'config', 'runtime'):
+                (root / name).symlink_to(ROOT / name, target_is_directory=True)
+            env = {**os.environ, 'FIXTURE_EUID': '0', 'FIXTURE_SYSTEM': 'Linux',
+                   'PATH': str(Path(sys.executable).parent) + os.pathsep + os.environ['PATH']}
+            for arguments, overrides, error in cases:
+                with self.subTest(arguments=arguments, overrides=overrides):
+                    result = subprocess.run(
+                        ['bash', str(script), '--skip-setup', '--skip-mcp', '--without-tailscale', *arguments],
+                        capture_output=True, text=True, timeout=10, env={**env, **overrides})
+                    if error is None:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(result.stdout, 'INPUTS_VALIDATED\n')
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn(error, result.stderr)
+                        self.assertNotIn('INPUTS_VALIDATED', result.stdout)
+
     def run_shell(self, home, body):
         script = f"""
 set -Eeuo pipefail
@@ -90,7 +140,7 @@ run_as_hermes() {{
             with self.subTest(completed=completed, binary=binary, python=python, head=head):
                 result = Environment().from_string(expression).render(
                     hermes_binary={"stat": {"exists": binary}},
-                    hermes_venv_python={"stat": {"exists": python}},
+                    hermes_runtime_probe={"rc": 0 if python else 1},
                     hermes_installed_commit={"stdout": head}, hermes_commit="pinned",
                     hermes_completed_install={"stdout": completed})
                 self.assertEqual(result.strip(), str(expected))
@@ -100,8 +150,8 @@ run_as_hermes() {{
             with self.subTest(installed_commit=installed_commit), tempfile.TemporaryDirectory() as directory:
                 home = Path(directory)
                 install_dir = home / "state/hermes-agent"
-                (install_dir / "venv/bin").mkdir(parents=True)
-                (install_dir / "venv/bin/python").touch(mode=0o755)
+                install_dir.mkdir(parents=True)
+                (install_dir.parent / "python").touch(mode=0o755)
                 capture = home / "patch-args"
                 body = f"""
 HERMES_BIN={shlex.quote(sys.executable)}
@@ -153,11 +203,11 @@ HERMES_USER=test HERMES_HOME="$HERMES_USER_HOME/state" HERMES_INSTALL_DIR="$HERM
 HERMES_BIN=/bin/bash INSTALLER_FILE=/fixture/installer WITH_BROWSER=false
 UPDATE_GUARD_ACTIVE=true RUN_SETUP=false RUN_MCP_PICKER=false ENABLE_GATEWAY=false
 run_as_hermes() {{
-  if [[ "$1" == bash && "$2" == "$INSTALLER_FILE" ]]; then
+  if [[ "$1" == env && "$3" == bash && "$4" == "$INSTALLER_FILE" ]]; then
     [[ ! -s "$HERMES_USER_HOME/.hermes-install-complete" ]] || exit 91
     [[ {shlex.quote(fail_at)} != installer ]] || exit 92
   elif [[ "$1" == git ]]; then printf 'pinned\\n';
-  elif [[ "$1" == */venv/bin/python ]]; then printf 'test\\n';
+  elif [[ "$1" == */python ]]; then printf 'test\\n';
   else "$@"; fi
 }}
 """
@@ -204,7 +254,7 @@ run_as_hermes() {{
             play = [{"hosts": "localhost", "gather_facts": False, "vars": {
                 "ansible_python_interpreter": sys.executable,
                 "hermes_binary": {"stat": {"exists": True}},
-                "hermes_venv_python": {"stat": {"exists": True}},
+                "hermes_runtime_probe": {"rc": 0},
                 "hermes_installed_commit": {"stdout": "pinned"}, "hermes_commit": "pinned",
             }, "tasks": checks}]
             path = root / "check.yml"

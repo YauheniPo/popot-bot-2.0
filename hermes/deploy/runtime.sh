@@ -43,6 +43,7 @@ resolve_user_paths() {
 
   install -d -o "$HERMES_USER" -g "$HERMES_GROUP" -m 0750 "$HERMES_WORKSPACE"
   install -d -o "$HERMES_USER" -g "$HERMES_GROUP" -m 0700 "$HERMES_BACKUP_DIR"
+  install -d -o "$HERMES_USER" -g "$HERMES_GROUP" -m 0700 "$HERMES_HOME"
   return
 }
 
@@ -118,24 +119,39 @@ quiesce_existing_gateway_for_update() {
 }
 
 download_installer() {
-  local installer_url="$HERMES_RAW_BASE_URL/$HERMES_COMMIT/scripts/install.sh"
+  local raw_url="$HERMES_RAW_BASE_URL/$HERMES_COMMIT/scripts/install.sh"
+  local api_url="https://api.github.com/repos/NousResearch/hermes-agent/contents/scripts/install.sh?ref=$HERMES_COMMIT"
   INSTALLER_FILE="$(mktemp /tmp/hermes-installer.XXXXXX)"
   chmod 0755 "$INSTALLER_FILE"
 
   log "Downloading the Hermes installer pinned to $HERMES_COMMIT"
-  log "Download limits: up to 4 attempts, connect 10s, transfer 30s, retry budget 120s"
+  log "Download limits per source: up to 4 attempts, connect 10s, transfer 30s, retry budget 120s; at most 2 sources"
   # curl retries transient failures (including 429) and honors Retry-After.
   # Keep retry warnings visible without a progress meter or response bodies.
-  # The last transfer may take up to 30s beyond the retry budget.
-  local http_status curl_exit
-  if http_status="$(curl --proto '=https' --tlsv1.2 --fail --no-progress-meter --show-error --location \
-    --connect-timeout 10 --max-time 30 --retry 3 --retry-max-time 120 \
-    --write-out '%{http_code}' "$installer_url" --output "$INSTALLER_FILE" || exit "$?")"; then
-    log "Installer download completed: http_status=$http_status"
-  else
-    curl_exit=$?
-    die "Installer download failed: curl_exit=$curl_exit http_status=$http_status; source=raw.githubusercontent.com commit=$HERMES_COMMIT; no Hermes code changes started"
-  fi
+  # Each source's last transfer may take up to 30s beyond its retry budget.
+  local installer_url source_host http_status curl_exit
+  for installer_url in "$raw_url" "$api_url"; do
+    source_host="${installer_url#https://}"
+    source_host="${source_host%%/*}"
+    curl_exit=0
+    # curl 8.14 returns 0 after a Retry-After beyond --retry-max-time even with
+    # --fail, so the HTTP status, not only the exit code, decides success.
+    http_status="$(curl --proto '=https' --tlsv1.2 --fail --no-progress-meter --show-error --location \
+      --connect-timeout 10 --max-time 30 --retry 3 --retry-max-time 120 \
+      --header 'Accept: application/vnd.github.raw+json' \
+      --write-out '%{http_code}' "$installer_url" --output "$INSTALLER_FILE")" || curl_exit=$?
+    if ((curl_exit == 0)) && [[ "$http_status" == 2* ]]; then
+      log "Installer download completed: http_status=$http_status source=$source_host"
+      break
+    fi
+    # Only transient statuses on the raw URL are worth a second source; any
+    # other status is permanent for this pin and falls through to die.
+    if [[ "$installer_url" == "$raw_url" && "$http_status" =~ ^(000|408|429|500|502|503|504)$ ]]; then
+      warn "Installer download failed: curl_exit=$curl_exit http_status=$http_status source=$source_host; trying api.github.com for the same pinned commit"
+      continue
+    fi
+    die "Installer download failed: curl_exit=$curl_exit http_status=$http_status; source=$source_host commit=$HERMES_COMMIT; no Hermes code changes started"
+  done
 
   local actual_sha256
   actual_sha256="$(sha256sum "$INSTALLER_FILE" | cut -d' ' -f1)"
@@ -165,9 +181,6 @@ backup_existing_installation() {
   fi
   [[ -x "$HERMES_BIN" ]] ||
     die "existing Hermes CLI is unusable; refusing to update without a verified backup"
-  if [[ ! -x "$HERMES_INSTALL_DIR/venv/bin/python" ]]; then
-    die "existing Hermes venv interpreter is missing; refusing to update without a verified backup"
-  fi
   [[ -f "$UPDATE_STATE_VERIFIER" ]] ||
     die "update-state verifier is missing: $UPDATE_STATE_VERIFIER"
 
@@ -236,7 +249,6 @@ install_hermes() {
     --skip-setup
     --branch "$HERMES_BRANCH"
     --commit "$HERMES_COMMIT"
-    --force-commit
     --hermes-home "$HERMES_HOME"
   )
 
@@ -247,26 +259,37 @@ install_hermes() {
   if [[ "$UPDATE_GUARD_ACTIVE" == true ]]; then
     UPDATE_MUTATION_STARTED=true
   fi
-  # A matching HEAD/venv does not prove the rest of this installer succeeded.
+  # A matching HEAD/runtime does not prove the rest of this installer succeeded.
   # Invalidate only after the backup gate; a failed download/backup leaves the
   # previously completed installation eligible for fast deployment.
   run_as_hermes rm -f -- "$HERMES_USER_HOME/.hermes-install-complete"
   log "Installing Hermes $HERMES_RELEASE ($HERMES_VERSION, $HERMES_COMMIT) as $HERMES_USER"
-  run_as_hermes bash "$INSTALLER_FILE" "${installer_args[@]}"
+  run_as_hermes env HERMES_MANAGED_PATCH_PREPARER="$SCRIPT_DIR/runtime/prepare-patch-upgrade.py" \
+    bash "$INSTALLER_FILE" "${installer_args[@]}"
   [[ -x "$HERMES_BIN" ]] || die "Hermes launcher was not created at $HERMES_BIN"
 
+  if ! cmp -s "$SCRIPT_DIR/runtime/hermes-python.py" "$HERMES_HOME/python"; then
+    install -o "$HERMES_USER" -g "$HERMES_GROUP" -m 0750 \
+      "$SCRIPT_DIR/runtime/hermes-python.py" "$HERMES_HOME/python"
+  fi
   local actual_commit actual_version
   actual_commit="$(run_as_hermes git -C "$HERMES_INSTALL_DIR" rev-parse HEAD)"
   [[ "$actual_commit" == "$HERMES_COMMIT" ]] ||
     die "installed Hermes commit mismatch (got $actual_commit)"
+  run_as_hermes git -C "$HERMES_INSTALL_DIR" fetch origin \
+    "refs/tags/$HERMES_RELEASE:refs/tags/$HERMES_RELEASE"
+  local release_commit
+  release_commit="$(run_as_hermes git -C "$HERMES_INSTALL_DIR" rev-parse "$HERMES_RELEASE^{commit}")"
+  [[ "$release_commit" == "$HERMES_COMMIT" ]] || die "Hermes release tag does not match the pinned commit"
   actual_version="$(
-    run_as_hermes "$HERMES_INSTALL_DIR/venv/bin/python" -c \
-      'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["project"]["version"])' \
-      "$HERMES_INSTALL_DIR/pyproject.toml"
+    run_as_hermes "$HERMES_HOME/python" -c \
+      'from hermes_cli.version_info import get_version_info; print(get_version_info().base_version)'
   )"
   [[ "$actual_version" == "$HERMES_VERSION" ]] ||
     die "installed Hermes version mismatch (got $actual_version)"
   log "Hermes source identity verified"
+  run_as_hermes "$HERMES_HOME/python" "$SCRIPT_DIR/runtime/publish-managed-node.py" \
+    --hermes-home "$HERMES_HOME"
   return
 }
 
@@ -282,7 +305,8 @@ verify_updated_kanban_state() {
   log "Inventorying Hermes state and checking every Kanban database after the update"
   python3 "$UPDATE_STATE_VERIFIER" snapshot \
     --hermes-home "$HERMES_HOME" \
-    --output "$KANBAN_AFTER_SNAPSHOT"
+    --output "$KANBAN_AFTER_SNAPSHOT" \
+    --before "$KANBAN_BEFORE_SNAPSHOT"
   chown "$HERMES_USER:$HERMES_GROUP" "$KANBAN_AFTER_SNAPSHOT"
   chmod 0600 "$KANBAN_AFTER_SNAPSHOT"
   python3 "$UPDATE_STATE_VERIFIER" compare \
@@ -411,7 +435,7 @@ install_google_workspace_cli() {
 
   local npm_bin="$HERMES_NODE_BIN/npm"
   local setup_script="$HERMES_INSTALL_DIR/skills/productivity/google-workspace/scripts/setup.py"
-  local python_bin="$HERMES_INSTALL_DIR/venv/bin/python"
+  local python_bin="$HERMES_HOME/python"
   local google_cli_version
   local package_json="$HERMES_HOME/node/lib/node_modules/@googleworkspace/cli/package.json"
   local installed_version=""
@@ -491,7 +515,7 @@ initialize_skills_hub() {
 }
 
 apply_recommended_defaults() {
-  local hermes_python="$HERMES_HOME/hermes-agent/venv/bin/python"
+  local hermes_python="$HERMES_HOME/python"
   local -a args=(
     apply
     --settings "$VPS_SETTINGS_FILE"

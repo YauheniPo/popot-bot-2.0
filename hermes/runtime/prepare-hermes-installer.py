@@ -6,55 +6,50 @@ import sys
 
 PATCHES = (
     (
-        '            local autostash_ref=""\n',
-        '''            local autostash_ref=""
-            # HERMES MANAGED: only our own interrupted runs block a retry.
-            # Historical upstream stashes remain untouched, not auto-restored.
-            if [ -n "$(git stash list --format=%gs --grep=hermes-managed-install-autostash-)" ]; then
-                log_error "Pending managed installer stash: restore/reconcile it before retrying the managed update."
+        'stage_repository() {\n    local pinned=false channel="" release="" origin\n',
+        '''stage_repository() {
+    local pinned=false channel="" release="" origin
+    # HERMES MANAGED: update directly to the pin and restore only this run's stash.
+    [ -n "$INSTALL_COMMIT" ] || { log_error "Managed installer requires --commit."; return 1; }
+    if [ -e "$INSTALL_DIR/.git" ]; then
+        git -C "$INSTALL_DIR" rev-parse --verify HEAD >/dev/null 2>&1 || {
+            log_error "Unusable Git checkout: reconcile it before retrying the managed update."
+            return 1
+        }
+        if [ -n "$(git -C "$INSTALL_DIR" stash list --format=%gs --grep=hermes-managed-install-autostash-)" ]; then
+            log_error "Pending managed installer stash: restore/reconcile it before retrying the managed update."
+            return 1
+        fi
+        if [ -n "$(git -C "$INSTALL_DIR" ls-files --unmerged)" ]; then
+            log_error "Unresolved Git conflicts: reconcile them before retrying the managed update."
+            return 1
+        fi
+        if [ "$(git -C "$INSTALL_DIR" rev-parse HEAD)" != "$INSTALL_COMMIT" ] \
+                && [ -n "${HERMES_MANAGED_PATCH_PREPARER:-}" ]; then
+            python3 "$HERMES_MANAGED_PATCH_PREPARER" "$INSTALL_DIR" || return 1
+        fi
+        local autostash_ref=""
+        if [ -n "$(git -C "$INSTALL_DIR" status --porcelain)" ]; then
+            git -C "$INSTALL_DIR" stash push --include-untracked \
+                -m "hermes-managed-install-autostash-$(date -u +%Y%m%d-%H%M%S)" || return 1
+            autostash_ref="$(git -C "$INSTALL_DIR" rev-parse refs/stash)" || return 1
+        fi
+        git -C "$INSTALL_DIR" fetch origin "$INSTALL_COMMIT" || return 1
+        git -C "$INSTALL_DIR" checkout --detach "$INSTALL_COMMIT" || return 1
+        if [ -n "$autostash_ref" ]; then
+            if ! git -C "$INSTALL_DIR" stash apply "$autostash_ref"; then
+                log_error "Managed update aborted; stash and conflicted working tree preserved."
                 return 1
             fi
-''',
-    ),
-    (
-        '                stash_name="hermes-install-autostash-$(date -u +%Y%m%d-%H%M%S)"\n',
-        '                stash_name="hermes-managed-install-autostash-$(date -u +%Y%m%d-%H%M%S)"\n',
-    ),
-    (
-        '                    git reset -q\n',
-        '''                    log_error "Unresolved Git conflicts: reconcile them before retrying the managed update."
-                    return 1
-''',
-    ),
-    (
-        '''            git remote set-branches origin "$BRANCH" 2>/dev/null || true
-            git fetch origin "$BRANCH"
-            git checkout "$BRANCH"
-            # Managed installs should follow origin/$BRANCH exactly. If the
-            # checkout has diverged (or has local-only commits), ff-only pull
-            # cannot succeed — mirror ``hermes update`` and reset to the
-            # fetched remote so bootstrap/install can recover.
-            if ! git pull --ff-only origin "$BRANCH"; then
-                log_warn "Fast-forward not possible; resetting managed install to origin/$BRANCH..."
-                git reset --hard "origin/$BRANCH"
-            fi
-''',
-        '''            # HERMES MANAGED: restore local changes only onto the pinned source.
-            if [ -z "$INSTALL_COMMIT" ] || [ "$FORCE_COMMIT" != true ]; then
-                log_error "Managed installer requires --commit and --force-commit."
+            # A concurrent user stash must never be dropped in place of ours.
+            if [ "$(git -C "$INSTALL_DIR" rev-parse refs/stash)" != "$autostash_ref" ]; then
+                log_error "Stash changed during update; reconcile the managed stash before retrying."
                 return 1
             fi
-            git fetch origin "$INSTALL_COMMIT"
-            git checkout --detach "$INSTALL_COMMIT"
-''',
-    ),
-    (
-        '''                        git reset --hard HEAD >/dev/null 2>&1 || true
-                        log_info "Working tree reset to clean state."
-                        log_info "Restore your changes later with: git stash apply $autostash_ref"
-''',
-        '''                        log_error "Managed update aborted; stash and conflicted working tree preserved."
-                        return 1
+            git -C "$INSTALL_DIR" stash drop 'stash@{0}' || return 1
+        fi
+        return 0
+    fi
 ''',
     ),
 )

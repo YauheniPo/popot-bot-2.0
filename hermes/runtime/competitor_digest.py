@@ -17,7 +17,10 @@ import threading
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import uuid
 
-import yaml
+try:
+    import yaml
+except ModuleNotFoundError:
+    import hermes_yaml as yaml
 
 MAX_JSON_BYTES = 2 * 1024 * 1024
 STATE_FIELDS = {"last_cutoff", "last_success_at", "last_run_record", "last_run_at", "last_run_status"}

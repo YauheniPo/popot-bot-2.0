@@ -15,43 +15,15 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 PREPARE = ROOT / "runtime/prepare-hermes-installer.py"
-# Minimal upstream clone_repo fixture; the opt-in suite also runs the exact
+# Minimal upstream stage_repository fixture; the opt-in suite also runs the exact
 # function from the pinned checkout with the same real-Git scenarios.
-FIXTURE = '''clone_repo() {
-    cd "$INSTALL_DIR"
-            local autostash_ref=""
-    if [ -n "$(git ls-files --unmerged)" ]; then
-                    git reset -q
-    fi
-    if [ -n "$(git status --porcelain)" ]; then
-        local stash_name
-                stash_name="hermes-install-autostash-$(date -u +%Y%m%d-%H%M%S)"
-        git stash push --include-untracked -m "$stash_name"
-        autostash_ref="stash@{0}"
-    fi
-            git remote set-branches origin "$BRANCH" 2>/dev/null || true
-            git fetch origin "$BRANCH"
-            git checkout "$BRANCH"
-            # Managed installs should follow origin/$BRANCH exactly. If the
-            # checkout has diverged (or has local-only commits), ff-only pull
-            # cannot succeed — mirror ``hermes update`` and reset to the
-            # fetched remote so bootstrap/install can recover.
-            if ! git pull --ff-only origin "$BRANCH"; then
-                log_warn "Fast-forward not possible; resetting managed install to origin/$BRANCH..."
-                git reset --hard "origin/$BRANCH"
-            fi
-    if [ -n "$autostash_ref" ]; then
-        if git stash apply "$autostash_ref"; then
-            git stash drop "$autostash_ref"
-        else
-                        git reset --hard HEAD >/dev/null 2>&1 || true
-                        log_info "Working tree reset to clean state."
-                        log_info "Restore your changes later with: git stash apply $autostash_ref"
-        fi
-    fi
-    git checkout --detach "$INSTALL_COMMIT"
+FIXTURE = '''stage_repository() {
+    local pinned=false channel="" release="" origin
+    # The native fresh-clone branch is left intact by the transformer.
+    return 99
 }
 '''
+
 
 
 class InstallerPinTests(unittest.TestCase):
@@ -108,9 +80,9 @@ log_error() {{ printf '%s\\n' "$*" >&2; }}
 discard_update_lockfile_churn() {{ :; }}
 INSTALL_DIR={shlex.quote(str(self.repo))}
 INSTALL_COMMIT={pin or self.pin}
-BRANCH=main FORCE_COMMIT=true
+BRANCH=main CHANNEL=""
 source {shlex.quote(str(self.installer))}
-clone_repo
+stage_repository
 '''
         return subprocess.run(["bash", "-c", script], env=self.env, stdin=subprocess.DEVNULL,
                               capture_output=True, text=True, timeout=20)
@@ -222,7 +194,7 @@ clone_repo
         subprocess.run(["bash", "-n", str(self.installer)], check=True, timeout=10)
         self.assertEqual(self.prepare().returncode, 0)
         self.assertEqual(self.installer.read_bytes(), prepared)
-        for source in ("unknown installer\n", self.source.replace("git reset -q", "git reset --quiet")):
+        for source in ("unknown installer\n", self.source.replace('local pinned=false', 'local pinned=true')):
             self.installer.write_text(source)
             result = self.prepare()
             self.assertNotEqual(result.returncode, 0)
@@ -239,7 +211,7 @@ clone_repo
     def test_stream_output_contains_only_the_prepared_script(self):
         result = self.run_prepare([])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(result.stdout.startswith("clone_repo() {"))
+        self.assertTrue(result.stdout.startswith("stage_repository() {"))
         self.assertIn("# HERMES MANAGED:", result.stdout)
         self.assertEqual(self.installer.read_text(), self.source)
 
@@ -266,5 +238,5 @@ prepare_installer
 class PinnedUpstreamInstallerTests(InstallerPinTests):
     def setUp(self):
         source = (Path(os.environ["HERMES_UPSTREAM_DIR"]) / "scripts/install.sh").read_text()
-        self.source = "clone_repo() {" + source.split("\nclone_repo() {", 1)[1].split("\nsetup_venv()", 1)[0]
+        self.source = "stage_repository() {" + source.split("\nstage_repository() {", 1)[1].split("\nstage_venv()", 1)[0]
         super().setUp()

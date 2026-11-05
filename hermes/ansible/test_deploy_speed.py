@@ -94,7 +94,9 @@ class DeploySpeedTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('normalize-ownership.py', result.stderr)
             self.assertIn('deployment-notify.py', result.stderr)
-            for name in ('normalize-ownership.py', 'deployment-notify.py', 'verify-update-state.py', 'apply-hermes-patches.py'):
+            for name in ('normalize-ownership.py', 'deployment-notify.py', 'verify-update-state.py', 'apply-hermes-patches.py',
+                         'hermes-python.py', 'publish-managed-node.py',
+                         'prepare-hermes-installer.py', 'prepare-patch-upgrade.py'):
                 path = root / 'runtime' / name
                 path.parent.mkdir(exist_ok=True)
                 path.write_text('fixture')

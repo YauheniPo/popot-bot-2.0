@@ -10,7 +10,10 @@ import subprocess
 import sys
 import tempfile
 
-import yaml
+try:
+    import yaml
+except ModuleNotFoundError:
+    import hermes_yaml as yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'ops'))
 from hermes_config_io import load_config, validated_config_path, write_config

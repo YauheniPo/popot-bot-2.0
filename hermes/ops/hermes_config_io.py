@@ -13,7 +13,10 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-import yaml
+try:
+    import yaml
+except ModuleNotFoundError:
+    import hermes_yaml as yaml
 
 
 def validated_config_path(path: Path, home: Path) -> Path:

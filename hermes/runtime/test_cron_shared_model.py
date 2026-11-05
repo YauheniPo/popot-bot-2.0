@@ -54,7 +54,7 @@ class SharedCronModelTests(unittest.TestCase):
         self.assertEqual(first_run['model'], 'old')
         shared.persist_chat_model(self.selection)
         second_run = shared.routed_job(job)
-        self.assertEqual(second_run, {**before, **self.config['cron']['shared_model']})
+        self.assertEqual(second_run, {**before, **self.config['cron']['shared_model'], '_managed_shared_model': True})
         self.assertEqual(job, before)
         self.assertEqual(first_run['model'], 'old')
         self.assertIsNone(first_run['base_url'])

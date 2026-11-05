@@ -72,7 +72,7 @@
           disabled.
       when: vps_deploy.features.workspace_ui | default(false) | bool
 
-    - name: Validate supported operating system
+    - name: Validate supported operating system and deployment configuration
       ansible.builtin.assert:
         that:
           - ansible_facts['system'] == "Linux"
@@ -94,7 +94,7 @@
           - not hermes_workspace.endswith('/..')
           - not hermes_backup_dir.endswith('/..')
           - hermes_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
-          - hermes_release is match('^v[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}$')
+          - hermes_release is match('^v[0-9]+\.[0-9]+\.[0-9]+\Z')
           - hermes_commit is match('^[0-9a-f]{40}$')
           - hermes_installer_sha256 is match('^[0-9a-f]{64}$')
           - hermes_deploy_mode in ['full', 'config-only', 'runtime-only']
@@ -222,7 +222,10 @@
           - (vps_observability.grafana.port | int) != (vps_observability.prometheus.port | int)
           - (vps_observability.grafana.port | int) != (vps_observability.node_exporter.port | int)
           - (vps_observability.prometheus.port | int) != (vps_observability.node_exporter.port | int)
-        fail_msg: This playbook supports Debian/Ubuntu and a non-root Hermes user.
+        fail_msg: >-
+          Invalid operating system or deployment configuration. Debian/Ubuntu
+          and a non-root Hermes user are required; see the failed assertion
+          for the specific setting to correct.
 
     - name: Refuse public SSH lock-down when Ansible uses another port
       ansible.builtin.assert:
@@ -511,7 +514,9 @@
             import sys
             root = Path(sys.argv[1]) / 'runtime'
             required = ('normalize-ownership.py', 'deployment-notify.py',
-                        'verify-update-state.py', 'apply-hermes-patches.py')
+                        'verify-update-state.py', 'apply-hermes-patches.py',
+                        'hermes-python.py', 'publish-managed-node.py',
+                        'prepare-hermes-installer.py', 'prepare-patch-upgrade.py')
             missing = [name for name in required if not (root / name).is_file()]
             if missing:
                 raise SystemExit('Incomplete Hermes runtime bundle: ' + ', '.join(missing))
@@ -585,14 +590,26 @@
       changed_when: false
       when: hermes_binary.stat.exists
 
-    # follow: true so a dangling symlink (broken venv interpreter) reports as
-    # missing, not present -- lstat on the link itself would say "exists" even
-    # though exec-ing it fails with ENOENT.
-    - name: Stat the installed Hermes Python interpreter path
-      ansible.builtin.stat:
-        path: "{{ hermes_home }}/hermes-agent/venv/bin/python"
-        follow: true
-      register: hermes_venv_python
+    - name: Install the managed Hermes Python launcher
+      ansible.builtin.copy:
+        src: ../runtime/hermes-python.py
+        dest: "{{ hermes_home }}/python"
+        owner: "{{ hermes_user }}"
+        group: "{{ hermes_user }}"
+        mode: "0750"
+      when: hermes_binary.stat.exists
+
+    - name: Probe the installed Hermes runtime
+      ansible.builtin.command:
+        argv: ["{{ hermes_home }}/python", -c, "import hermes_cli, hermes_yaml; print('ready')"]
+      become_user: "{{ hermes_user }}"
+      environment:
+        HOME: "{{ hermes_user_home }}"
+        HERMES_HOME: "{{ hermes_home }}"
+      register: hermes_runtime_probe
+      changed_when: false
+      failed_when: false
+      when: hermes_binary.stat.exists
 
     - name: Read the last completed Hermes installation commit
       ansible.builtin.command:
@@ -602,7 +619,7 @@
       register: hermes_completed_install
       changed_when: false
       # Missing/unreadable markers fail closed to a full installation, not a
-      # fast deployment inferred from a partially updated HEAD and venv.
+      # fast deployment inferred from a partially updated HEAD and runtime.
       failed_when: hermes_completed_install.rc not in [0, 1]
 
     - name: Decide whether the pinned Hermes source needs installation
@@ -610,25 +627,8 @@
         hermes_source_update_required: >-
           {{ (not hermes_binary.stat.exists) or
              (hermes_installed_commit.stdout | default('') != hermes_commit) or
-             (not hermes_venv_python.stat.exists) or
+             (hermes_runtime_probe.rc | default(1) != 0) or
              (hermes_completed_install.stdout | default('') != hermes_commit) }}
-
-    # The bundled installer recreates this venv on every update. If any file
-    # under it ended up owned by a different UID (e.g. a prior run before
-    # become_user was consistently hermes), `rm` during recreation fails with
-    # Permission denied and aborts the whole install. This is metadata-only
-    # (owner/group), never deletes anything. Skip the full venv walk when the
-    # installed source and completion marker already match the pinned commit.
-    - name: Ensure the Hermes virtual environment directory exists
-      ansible.builtin.file:
-        path: "{{ hermes_home }}/hermes-agent/venv"
-        state: directory
-        owner: "{{ hermes_user }}"
-        group: "{{ hermes_user }}"
-        recurse: true
-      when:
-        - hermes_binary.stat.exists
-        - hermes_source_update_required | bool
 
     - name: Require a current Hermes source for a fast deployment mode
       ansible.builtin.assert:
@@ -636,7 +636,7 @@
           - hermes_binary.stat.exists
           - not (hermes_source_update_required | bool)
         fail_msg: >-
-          Fast deployment modes require the installed Hermes source, venv and
+          Fast deployment modes require the installed Hermes source, runtime and
           successful installer completion marker to match the pinned commit.
           Run with -e hermes_deploy_mode=full instead.
       when: hermes_deploy_mode != 'full'
@@ -1209,26 +1209,14 @@
           when: hermes_enable_ops | bool
           no_log: true
 
-        # Re-stat after the install task above, which reinstalls the full venv
-        # (interpreter + Hermes package + dependencies) via deploy-hermes.sh
-        # whenever the earlier stat found it missing or broken. A bare
-        # `python3 -m venv` here would only recreate an empty interpreter with no
-        # Hermes package installed into it, breaking the next task differently.
-        - name: Re-stat the Hermes venv Python interpreter
-          ansible.builtin.stat:
-            path: "{{ hermes_home }}/hermes-agent/venv/bin/python"
-            follow: true
-          register: hermes_venv_python
-
-        - name: Fail loudly if the Hermes venv is still broken after installation
-          ansible.builtin.assert:
-            that: hermes_venv_python.stat.exists
-            fail_msg: >-
-              {{ hermes_home }}/hermes-agent/venv/bin/python is still missing or
-              broken after running deploy-hermes.sh. Investigate the installer
-              output on the VPS manually; Hermes runtime configuration and
-              dependent services cannot proceed.
-          when: hermes_binary.stat.exists
+        - name: Verify the installed Hermes runtime after installation
+          ansible.builtin.command:
+            argv: ["{{ hermes_home }}/python", -c, "import hermes_cli, hermes_yaml; print('ready')"]
+          become_user: "{{ hermes_user }}"
+          environment:
+            HOME: "{{ hermes_user_home }}"
+            HERMES_HOME: "{{ hermes_home }}"
+          changed_when: false
 
         - name: Complete Hermes deployment and report its result
           block:
@@ -1252,7 +1240,6 @@
 
             - name: Configure Hermes runtime
               ansible.builtin.import_tasks: tasks/runtime.yml
-              when: hermes_venv_python.stat.exists
 
             - name: Configure managed GitHub tooling and access
               ansible.builtin.import_tasks: tasks/github.yml

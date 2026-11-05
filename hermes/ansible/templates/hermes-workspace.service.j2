@@ -24,7 +24,7 @@ Environment="HERMES_SWARM_ROSTER={{ hermes_home }}/swarm/swarm.yaml"
 Environment="HERMES_SWARM_MEMORY_ROOT={{ hermes_home }}/swarm"
 {% endif %}
 Environment="PATH={{ hermes_user_home }}/.local/bin:{{ hermes_home }}/node/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart={{ hermes_home }}/hermes-agent/venv/bin/python {{ hermes_bundle_dir }}/runtime/workspace-launch.py --node {{ hermes_home }}/node/bin/node --source {{ hermes_user_home }}/.local/share/hermes-workspace/{{ vps_workspace_ui.revision }} --port {{ vps_workspace_ui.port }} --api-port {{ vps_workspace_ui.api_port }} --dashboard-port {{ vps_observability.dashboard.port }}
+ExecStart={{ hermes_home }}/python {{ hermes_bundle_dir }}/runtime/workspace-launch.py --node {{ hermes_home }}/node/bin/node --source {{ hermes_user_home }}/.local/share/hermes-workspace/{{ vps_workspace_ui.revision }} --port {{ vps_workspace_ui.port }} --api-port {{ vps_workspace_ui.api_port }} --dashboard-port {{ vps_observability.dashboard.port }}
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30

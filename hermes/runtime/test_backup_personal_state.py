@@ -203,8 +203,8 @@ class BackupPersonalStateTests(unittest.TestCase):
         binaries = self.root / "bin"
         flock = self.put(binaries, "flock", "#!/bin/sh\nexit 0\n")
         flock.chmod(0o700)
-        interpreter = self.home / "hermes-agent/venv/bin/python"
-        interpreter.parent.mkdir(parents=True)
+        interpreter = self.home / "python"
+        interpreter.parent.mkdir(parents=True, exist_ok=True)
         interpreter.symlink_to(sys.executable)
         cli = self.put(binaries, "hermes", f"#!{sys.executable}\n" + '''
 import os, pathlib, sys, zipfile

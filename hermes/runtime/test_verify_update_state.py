@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import sqlite3
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -166,6 +169,43 @@ class VerifyUpdateStateTests(unittest.TestCase):
                 create_backup(self.home, backup_path, omit=relative)
                 with self.assertRaisesRegex(verify_update_state.VerificationError, "missing live Hermes"):
                     verify_update_state.verify_backup(backup_path, snapshot)
+
+    def test_pm_policy_preserves_generated_media_and_nested_user_data(self):
+        paths = ('tools/python/runtime', 'installs/gen/dependencies', 'bws_cache.json',
+                 'bws_cache.enc.json', 'op_cache.json', 'photon-sidecar.json')
+        for prefix in ('', 'profiles/builder/', 'skills/custom/'):
+            for name in (*paths, 'cache/generated/picture.png'):
+                path = self.home / (prefix + name)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('fixture')
+        legacy = verify_update_state.create_snapshot(self.home)['files']
+        self.assertIn('tools/python/runtime', legacy)
+        self.assertNotIn('cache/generated/picture.png', legacy)
+        marker = self.home / 'hermes-agent/pm/environments.py'
+        marker.parent.mkdir(parents=True)
+        marker.touch()
+        files = verify_update_state.create_snapshot(self.home)['files']
+        for prefix in ('', 'profiles/builder/'):
+            for name in paths:
+                self.assertNotIn(prefix + name, files)
+            self.assertIn(prefix + 'cache/generated/picture.png', files)
+        for name in paths:
+            self.assertIn('skills/custom/' + name, files)
+
+    def test_policy_transition_checks_old_files_even_when_new_backup_excludes_them(self):
+        old_file = self.home / 'tools/personal-note.txt'
+        old_file.parent.mkdir()
+        old_file.write_text('keep this data')
+        before = verify_update_state.create_snapshot(self.home)
+        marker = self.home / 'hermes-agent/pm/environments.py'
+        marker.parent.mkdir(parents=True)
+        marker.touch()
+        after = verify_update_state.create_snapshot(self.home, previous_snapshot=before)
+        verify_update_state.compare_snapshots(before, after)
+        old_file.unlink()
+        after = verify_update_state.create_snapshot(self.home, previous_snapshot=before)
+        with self.assertRaisesRegex(verify_update_state.VerificationError, 'disappeared'):
+            verify_update_state.compare_snapshots(before, after)
 
     def test_runtime_exclusions_keep_home_and_profile_container_paths(self) -> None:
         for relative in (".", "profiles", "profiles/builder", "profiles/builder/cache",
@@ -414,6 +454,47 @@ class VerifyUpdateStateTests(unittest.TestCase):
         outside.write_text("escape", encoding="utf-8")
         with self.assertRaisesRegex(verify_update_state.VerificationError, "escapes HERMES_HOME"):
             verify_update_state._archivable_file(self.home, self.root, "outside.txt")
+
+    def test_previous_inventory_paths_must_stay_inside_home(self) -> None:
+        for escape in ("../outside.txt", "/etc/passwd"):
+            with self.subTest(path=escape):
+                with self.assertRaisesRegex(
+                        verify_update_state.VerificationError,
+                        "previous inventory path escapes HERMES_HOME"):
+                    verify_update_state.create_snapshot(self.home, previous_snapshot={"files": [escape]})
+
+    def test_previous_inventory_keeps_live_files_listed_once(self) -> None:
+        before = verify_update_state.create_snapshot(self.home)
+        self.assertIn("skills/custom-review/SKILL.md", before["files"])
+
+        after = verify_update_state.create_snapshot(self.home, previous_snapshot=before)
+
+        self.assertEqual(after["files"].count("skills/custom-review/SKILL.md"), 1)
+
+    def test_cli_snapshot_preserves_the_previous_inventory(self) -> None:
+        before_path = self.root / "before.json"
+        output_path = self.root / "after.json"
+        verify_update_state.write_snapshot(verify_update_state.create_snapshot(self.home), before_path)
+        output = io.StringIO()
+        with mock.patch.object(sys, "argv", ["verify-update-state.py", "snapshot", "--hermes-home",
+                                             str(self.home), "--output", str(output_path),
+                                             "--before", str(before_path)]), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(verify_update_state.main(), 0)
+        self.assertIn("Hermes state snapshot verified", output.getvalue())
+        self.assertEqual(verify_update_state.load_snapshot(output_path)["files"],
+                         verify_update_state.load_snapshot(before_path)["files"])
+
+    def test_previous_inventory_through_a_symlinked_parent_is_skipped(self) -> None:
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("outside home\n", encoding="utf-8")
+        (self.home / "linked").symlink_to(outside)
+
+        snapshot = verify_update_state.create_snapshot(
+            self.home, previous_snapshot={"files": ["linked/secret.txt"]})
+
+        self.assertNotIn("linked/secret.txt", snapshot["files"])
 
 
 if __name__ == "__main__":

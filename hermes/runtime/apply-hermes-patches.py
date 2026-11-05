@@ -60,7 +60,7 @@ _GATEWAY_SLASH_COMMANDS_PATH = "gateway/slash_commands.py"
 _GATEWAY_RUN_PATH = "gateway/run.py"
 _GATEWAY_BUSY_PATH = "gateway/run_busy.py"
 _GATEWAY_STATUS_PATH = "gateway/slash_commands_status.py"
-_GATEWAY_TURN_PATH = "gateway/run_turn.py"
+_GATEWAY_TURN_PERSISTENCE_PATH = "gateway/run_turn_persistence.py"
 _MODEL_SWITCH_PATH = "hermes_cli/model_switch.py"
 _TURN_RUNNER_PATH = "gateway/run_turn_runner.py"
 _AUXILIARY_CLIENT_PATH = "agent/auxiliary_client.py"
@@ -455,14 +455,16 @@ _PATCHES: list[tuple[str, str, str, str]] = [
     (
         _CRON_SCHEDULER_PATH,
         _PREFIX + " competitor guard lifetime",
-        '''    _scope_token = None
+        '''    _fire_scope_tokens = None
     _terminal_scope_token = None
+    _identity_token = None
     try:
 ''',
         '''    # Local Hermes: competitor guard lifetime
     competitor_guard = None
-    _scope_token = None
+    _fire_scope_tokens = None
     _terminal_scope_token = None
+    _identity_token = None
     try:
 ''',
     ),
@@ -520,6 +522,13 @@ _PATCHES: list[tuple[str, str, str, str]] = [
     ),
     (
         _CRON_SCHEDULER_PATH,
+        _PREFIX + " guarded report direct delivery",
+        "    if execution_id and not job.get('no_agent'):\n",
+        "    # Local Hermes: guarded report direct delivery\n"
+        "    if execution_id and not job.get('no_agent') and competitor_guard is None:\n",
+    ),
+    (
+        _CRON_SCHEDULER_PATH,
         _PREFIX + " competitor delivered checkpoint",
         '''                for_failure=not d.success,
             )
@@ -570,7 +579,7 @@ _PATCHES: list[tuple[str, str, str, str]] = [
 ''',
     ),
     (
-        _CRON_SCHEDULER_PATH,
+        'cron/scheduler_bookkeeping.py',
         _PREFIX + " execution delivery verification",
         '''    if delivery_outcome in ("delivered", "not_configured") and not d.success:
 ''',
@@ -605,8 +614,11 @@ def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000, *, output_fil
     (
         _CRONJOB_TOOLS_PATH,
         _PREFIX + " manual run response only",
-        '''        files = sorted((get_cron_output_dir() / job_id).glob("*.md"))
-        text = files[-1].read_text(encoding="utf-8", errors="replace").strip() if files else ""
+        '''        out_dir = get_cron_output_dir() / job_id
+        files = sorted(out_dir.glob("*.md"))
+        if not files:
+            return None
+        text = files[-1].read_text(encoding="utf-8-sig", errors="replace").strip()
         if not text:
             return None
         if len(text) > max_chars:
@@ -618,7 +630,7 @@ def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000, *, output_fil
         path = Path(output_file)
         if path.is_symlink() or path.resolve().parent != (get_cron_output_dir() / job_id).resolve():
             return None
-        text = path.read_text(encoding="utf-8", errors="replace").strip()
+        text = path.read_text(encoding="utf-8-sig", errors="replace").strip()
         # Upstream documents include the full skill/prompt before the actual answer.
         # Managed competitor output is already the rendered report without that wrapper.
         if text.startswith("# Cron Job:"):
@@ -683,10 +695,10 @@ def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000, *, output_fil
     (
         _TOOL_GUARDRAILS_PATH,
         _PREFIX + " actionable file mutation warning",
-        '''            if warnings and exact_count >= self.config.exact_failure_warn_after:
+        '''            if warnings and not throttled and exact_count >= self.config.exact_failure_warn_after:
                 return self._decide("warn", "repeated_exact_failure_warning", tool_name, exact_count, signature)
 ''',
-        '''            if warnings and exact_count >= self.config.exact_failure_warn_after:
+        '''            if warnings and not throttled and exact_count >= self.config.exact_failure_warn_after:
                 # Local Hermes: actionable file mutation warning
                 return self._decide(
                     "warn", "repeated_exact_failure_warning", tool_name, exact_count, signature,
@@ -863,19 +875,18 @@ def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
     (
         _TURN_RUNNER_PATH,
         _PREFIX + " return actual turn provider",
-        '''            "model": getattr(agent, "model", None) if agent else None,
-            "context_length": (getattr(comp, "context_length", 0) or 0) if has_comp else 0,
-''',
-        '''            "model": getattr(agent, "model", None) if agent else None,
-            # Local Hermes: return actual turn provider
+        '''            # Most failed results name no provider; the error card's sign-in / update-key action needs it.
             "provider": getattr(agent, "provider", None) if agent else None,
-            "context_length": (getattr(comp, "context_length", 0) or 0) if has_comp else 0,
+''',
+        '''            # Local Hermes: return actual turn provider
+            # Most failed results name no provider; the error card's sign-in / update-key action needs it.
+            "provider": getattr(agent, "provider", None) if agent else None,
 ''',
     ),
     (
-        _GATEWAY_TURN_PATH,
+        _GATEWAY_TURN_PERSISTENCE_PATH,
         _PREFIX + " copyable Telegram model route",
-        '''def _tool_call_logger() -> logging.Logger:
+        '''class GatewayTurnPersistenceMixin:
 ''',
         '''# Local Hermes: copyable Telegram model route
 def _local_telegram_model_route(agent_result):
@@ -887,11 +898,12 @@ def _local_telegram_model_route(agent_result):
         return ""
     return f"🤖 **Model:**\\n```\\n{route}\\n```"
 
-def _tool_call_logger() -> logging.Logger:
+
+class GatewayTurnPersistenceMixin:
 ''',
     ),
     (
-        _GATEWAY_TURN_PATH,
+        _GATEWAY_TURN_PERSISTENCE_PATH,
         _PREFIX + " deliver Telegram model route",
         '''        adapter = self._delivery_adapter_for(source)
         # Auto voice reply (TTS audio before the text) unless streaming TTS already delivered audio.
@@ -906,7 +918,7 @@ def _tool_call_logger() -> logging.Logger:
 ''',
     ),
     (
-        _GATEWAY_TURN_PATH,
+        _GATEWAY_TURN_PERSISTENCE_PATH,
         _PREFIX + " streamed Telegram model route",
         '''            # Return None so the body isn't sent twice; stash the delivered text on the event for the
 ''',
@@ -920,7 +932,7 @@ def _tool_call_logger() -> logging.Logger:
 ''',
     ),
     (
-        _GATEWAY_TURN_PATH,
+        _GATEWAY_TURN_PERSISTENCE_PATH,
         _PREFIX + " append Telegram model route",
         '''        return response
 
@@ -934,11 +946,11 @@ def _tool_call_logger() -> logging.Logger:
         _HERMES_CLI_COMMANDS_PATH,
         _PREFIX + " model_global CommandDef",
         '''    CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
-               args_hint="[model] [--provider name] [--reasoning level] [--global|--session] [--refresh]",
+               args_hint="[model|reset] [--provider name] [--reasoning level] [--global|--session] [--refresh]",
                busy_policy="reject", busy_handler="model", desktop="hidden"),
 ''',
         '''    CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
-               args_hint="[model] [--provider name] [--reasoning level] [--global|--session] [--refresh]",
+               args_hint="[model|reset] [--provider name] [--reasoning level] [--global|--session] [--refresh]",
                busy_policy="reject", busy_handler="model", desktop="hidden"),
     # Local Hermes: model_global CommandDef
     CommandDef("model_global", "Set the global default model for all topics/sessions", "Configuration",
@@ -961,14 +973,11 @@ def _tool_call_logger() -> logging.Logger:
     (
         _GATEWAY_SLASH_COMMANDS_MODEL_PATH,
         _PREFIX + " chat model for all cron jobs",
-        '''        global_error = await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
-        reply = await self._model_switch_confirmation(
+        '''        reply = await self._model_switch_confirmation(
             result, ctx, one_turn=one_turn, picker=picker, global_error=global_error,
         )
-        if ctx.reasoning_effort and not one_turn:
 ''',
-        '''        global_error = await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
-        # Local Hermes: chat model for all cron jobs
+        '''        # Local Hermes: chat model for all cron jobs
         cron_notice = ""
         if not one_turn:
             try:
@@ -982,7 +991,6 @@ def _tool_call_logger() -> logging.Logger:
             result, ctx, one_turn=one_turn, picker=picker, global_error=global_error,
         )
         reply += cron_notice
-        if ctx.reasoning_effort and not one_turn:
 ''',
     ),
     (
@@ -1024,14 +1032,10 @@ def _tool_call_logger() -> logging.Logger:
     (
         "tui_gateway/model_switch.py",
         _PREFIX + " TUI model for all cron jobs",
-        '''    if reasoning_effort:
-        _apply_switch_reasoning(sid, session, agent, reasoning_effort, persist_global=persist_global, one_turn=one_turn)
-    return {
+        '''    return {
         "value": result.new_model, "warning": result.warning_message or "",
 ''',
-        '''    if reasoning_effort:
-        _apply_switch_reasoning(sid, session, agent, reasoning_effort, persist_global=persist_global, one_turn=one_turn)
-    # Local Hermes: TUI model for all cron jobs
+        '''    # Local Hermes: TUI model for all cron jobs
     cron_notice = ""
     if not one_turn and (pin_session_override or persist_global):
         try:
@@ -1344,9 +1348,9 @@ def _tool_call_logger() -> logging.Logger:
     (
         _GATEWAY_BUSY_PATH,
         _PREFIX + " doctor route",
-        '''        "commands", "profile", "login", "update", "version",
+        '''        "commands", "profile", "login", "update", "version", "autoprune",
 ''',
-        '''        "commands", "profile", "login", "update", "version",
+        '''        "commands", "profile", "login", "update", "version", "autoprune",
         # Local Hermes: doctor route
         "doctor",
 ''',
@@ -1680,8 +1684,9 @@ _PATCHES.extend([
 ''',
     ),
     (
-        _GATEWAY_TURN_PATH, _PREFIX + " preserve session on compression timeout",
-        '        if agent_result.get("compression_deferred"):\n',
+        _GATEWAY_TURN_PERSISTENCE_PATH, _PREFIX + " preserve session on compression timeout",
+        '''        if agent_result.get("compression_deferred"):
+''',
         '''        # Local Hermes: preserve session on compression timeout
         # A host/provider timeout does not prove this history cannot be compressed.
         # Keep the session binding and overrides; never replay tools here.
@@ -1699,8 +1704,9 @@ _PATCHES.extend([
 ''',
     ),
     (
-        _GATEWAY_TURN_PATH, _PREFIX + " hide reasoning on unsuccessful turns",
-        '        last_reasoning = agent_result.get("last_reasoning")\n',
+        _GATEWAY_TURN_PERSISTENCE_PATH, _PREFIX + " hide reasoning on unsuccessful turns",
+        '''        last_reasoning = agent_result.get("last_reasoning")
+''',
         '''        # Local Hermes: hide reasoning on unsuccessful turns
         if any(agent_result.get(flag) for flag in (
             "failed", "error", "interrupted", "compression_exhausted", "compression_deferred",
@@ -1849,43 +1855,41 @@ _PATCHES.extend([
     ),
     (
         _WEB_TOOLS_EXTRACT_PATH, _PREFIX + " partial extraction rescue",
-        '''    if results and all(r.get("error") for r in results) and _rescue_eligible(provider):
-        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
-''',
+        '''    return results, False
+
+
+async def _final_url_refusal''',
         '''    # Local Hermes: partial extraction rescue
-    rescued_indices = set()
-    if results and any(r.get("error") for r in results) and _rescue_eligible(provider):
-        if all(r.get("error") for r in results):
-            return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
+    rescued_any = False
+    if results and _rescue_eligible(provider):
         indices = _rate_limited_extract_indices(results, fetch_urls)
         if indices:
             urls = [_requested_extract_url(results[i], fetch_urls) for i in indices]
             rescued = await asyncio.to_thread(
                 _rescue_extract, provider.name, urls, [results[i] for i in indices])
-            # Match by URL, never position: a rescue may omit or reorder entries.
             for i, url in zip(indices, urls):
                 matches = [r for r in rescued if _requested_extract_url(r, urls) == url]
                 if len(matches) == 1 and not matches[0].get("error"):
                     results[i] = matches[0]
-                    rescued_indices.add(i)
-    _mark_incomplete_extractions(results)
-''',
+                    rescued_any = True
+    return _mark_incomplete_extractions(results), rescued_any
+
+
+async def _final_url_refusal''',
     ),
     (
         _WEB_TOOLS_EXTRACT_PATH, _PREFIX + " extraction cache quality",
         '''    for fetched in results:
         meta = fetched.get("metadata")''',
         '''    # Local Hermes: extraction cache quality
-    for index, fetched in enumerate(results):
-        if index in rescued_indices:
-            continue  # a one-shot free-tier rescue must not become sticky
+    for fetched in results:
         meta = fetched.get("metadata")''',
     ),
     (
         _WEB_TOOLS_EXTRACT_PATH, _PREFIX + " extraction cache dates",
-        '''            extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)''',
+        '''            stored = extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)''',
         '''            # Local Hermes: extraction cache dates
-            extract_cache_put(url, _content, fetched.get("title", ""), format=format,
+            stored = extract_cache_put(url, _content, fetched.get("title", ""), format=format,
                               provider=provider.name, metadata=_safe_extract_metadata(meta))''',
     ),
     (
@@ -1918,31 +1922,35 @@ _PATCHES.extend([
     ),
     (
         _WEB_RESULT_CACHE_PATH, _PREFIX + " cached extraction dates",
-        '''    return {"url": url, "title": entry.get("title", ""), "content": content, "error": None, "cached": True}''',
+        '''    return {"url": url, "title": entry.get("title", ""), "content": content, "error": None, "cached": True,
+            "final_url": entry.get("final_url") or url}''',
         '''    # Local Hermes: cached extraction dates
     from tools.web_tools_extract import _safe_extract_metadata
     dates = _safe_extract_metadata(entry.get("metadata"))
     return {"url": url, "title": entry.get("title", ""), "content": content, "error": None, "cached": True,
+            "final_url": entry.get("final_url") or url,
             **({"metadata": dates} if dates else {})}''',
     ),
     (
         _WEB_RESULT_CACHE_PATH, _PREFIX + " extraction cache metadata argument",
         '''    url: str, content: str, title: str = "", format: Optional[str] = None, provider: str = ""
-) -> None:''',
+) -> bool:''',
         '''    # Local Hermes: extraction cache metadata argument
     url: str, content: str, title: str = "", format: Optional[str] = None, provider: str = "", metadata=None
-) -> None:''',
+) -> bool:''',
     ),
     (
         _WEB_RESULT_CACHE_PATH, _PREFIX + " stored extraction dates",
         '''            index[_url_digest(url, format, provider)] = {
                 "url": url, "file": str(file_path), "title": title or "", "fetched_at": time.time(),
+                "content_sha256": _content_sha(content),
             }''',
         '''            # Local Hermes: stored extraction dates
             from tools.web_tools_extract import _safe_extract_metadata
             dates = _safe_extract_metadata(metadata)
             index[_url_digest(url, format, provider)] = {
                 "url": url, "file": str(file_path), "title": title or "", "fetched_at": time.time(),
+                "content_sha256": _content_sha(content),
                 **({"metadata": dates} if dates else {}),
             }''',
     ),
@@ -2296,6 +2304,29 @@ _PATCHES.extend([
         task_name = job.get("name", job["id"])''',
     ),
 ])
+
+
+_PATCHES.append((
+    _CRON_SCHEDULER_PATH, _PREFIX + " shared cron fallback",
+    '    return any(isinstance(job.get(k), str) and job[k].strip() for k in ("provider", "model", "base_url"))\n',
+    '''    # Local Hermes: shared cron fallback
+    # A route selected by the shared chat policy is a default, not an individual pin.
+    if job.get("_managed_shared_model") is True:
+        return False
+    return any(isinstance(job.get(k), str) and job[k].strip() for k in ("provider", "model", "base_url"))
+''',
+))
+
+
+_PATCHES.append((
+    _CRON_SCHEDULER_PATH, _PREFIX + " guarded report execution",
+    '    if not job.get("no_agent") and owner_execution is None:\n',
+    '''    # Local Hermes: guarded report execution
+    # The guard owns a local artifact lock and bounded repair callback. Keep it
+    # with the firing worker through validation, confirmed delivery and commit.
+    if not job.get('no_agent') and owner_execution is None and competitor_guard is None:
+''',
+))
 
 
 def _apply_one_patch(

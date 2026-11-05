@@ -59,7 +59,7 @@ install_superpowers_plugin() {
 }
 
 enable_superpowers_plugin() {
-    local hermes_python="${HERMES_HOME}/hermes-agent/venv/bin/python"
+    local hermes_python="${HERMES_HOME}/python"
     local result
     [[ -x "${hermes_python}" ]] || {
         log "WARNING: Hermes Python environment is unavailable; the superpowers plugin was not enabled"

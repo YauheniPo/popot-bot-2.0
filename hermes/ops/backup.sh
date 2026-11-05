@@ -15,7 +15,7 @@ HERMES_FULL_BACKUP_KEEP="${HERMES_FULL_BACKUP_KEEP:-5}"
 HERMES_DEPLOYMENT_BACKUP_KEEP="${HERMES_DEPLOYMENT_BACKUP_KEEP:-10}"
 HERMES_BACKUP_PRUNER="${HERMES_BACKUP_PRUNER:-$(dirname "${BASH_SOURCE[0]}")/prune-backups.py}"
 PERSONAL_BACKUP_HELPER="$(dirname "${BASH_SOURCE[0]}")/backup-personal-state.py"
-HERMES_PYTHON="${HERMES_PYTHON:-${HERMES_HOME}/hermes-agent/venv/bin/python}"
+HERMES_PYTHON="${HERMES_PYTHON:-${HERMES_HOME}/python}"
 
 run_backup_command() {
     if [[ "${EUID}" -eq 0 && -n "${HERMES_RUN_AS_USER}" ]]; then

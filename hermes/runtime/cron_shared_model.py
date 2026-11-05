@@ -56,4 +56,4 @@ def routed_job(job):
     _path, cron = _shared_config()
     if cron.get('follow_chat_model') is not True:
         return job
-    return {**job, **_route(cron.get('shared_model'))}
+    return {**job, **_route(cron.get('shared_model')), '_managed_shared_model': True}

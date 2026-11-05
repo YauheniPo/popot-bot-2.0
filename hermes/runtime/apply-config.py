@@ -12,7 +12,10 @@ from pathlib import Path
 from string import Template
 from typing import Any, NamedTuple
 
-import yaml
+try:
+    import yaml
+except ModuleNotFoundError:
+    import hermes_yaml as yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'ops'))
 from hermes_config_io import load_config as load_private_config, validated_config_path, write_config

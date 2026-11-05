@@ -69,7 +69,7 @@ install_operations_layer() {
 }
 
 restart_managed_runtime() {
-  local hermes_python="$HERMES_HOME/hermes-agent/venv/bin/python"
+  local hermes_python="$HERMES_HOME/python"
   local services_output
   local -a groups=()
   local -a services=()
@@ -87,7 +87,7 @@ restart_managed_runtime() {
 
   ((${#groups[@]} > 0)) || return 0
   [[ -x "$hermes_python" ]] || die "Hermes Python is missing: $hermes_python"
-  services_output="$("$hermes_python" "$VPS_CONFIG_APPLIER" services \
+  services_output="$(run_as_hermes "$hermes_python" "$VPS_CONFIG_APPLIER" services \
     --settings "$VPS_SETTINGS_FILE" "${groups[@]}")" ||
     die "could not resolve managed Hermes service groups"
   mapfile -t services <<<"$services_output"

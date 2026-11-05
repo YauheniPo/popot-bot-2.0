@@ -1,4 +1,19 @@
 ---
+- name: Publish managed Node and npm wrappers from the pinned Hermes runtime
+  ansible.builtin.command:
+    argv:
+      - "{{ hermes_home }}/python"
+      - "{{ hermes_bundle_dir }}/runtime/publish-managed-node.py"
+      - --hermes-home
+      - "{{ hermes_home }}"
+  become_user: "{{ hermes_user }}"
+  environment:
+    HOME: "{{ hermes_user_home }}"
+    HERMES_HOME: "{{ hermes_home }}"
+  register: hermes_managed_node
+  changed_when: hermes_managed_node.stdout == 'changed'
+  notify: restart Hermes Workspace
+
 - name: Create the managed native team workflow plugin directory
   ansible.builtin.file:
     path: "{{ hermes_home }}/plugins/team-workflow"
@@ -338,7 +353,7 @@
     argv: >-
       {{
         [
-          hermes_home ~ '/hermes-agent/venv/bin/python',
+          hermes_home ~ '/python',
           hermes_bundle_dir ~ '/runtime/apply-config.py',
           'apply',
           '--settings', hermes_bundle_dir ~ '/config/vps-defaults.yml',
@@ -355,7 +370,6 @@
   register: hermes_runtime_configuration
   changed_when: "'0 change(s)' not in hermes_runtime_configuration.stdout"
   no_log: true
-  when: hermes_venv_python.stat.exists
   notify: restart Hermes gateway
 
 - name: Update Agent-Reach and its dependencies in an isolated user environment
