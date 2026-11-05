@@ -89,9 +89,9 @@ stages:
               DEPLOY_BRANCH: ${{ parameters.deployBranch }}
 
           - task: UsePythonVersion@0
-            displayName: Use Python 3.12 for repository tests
+            displayName: Use Python 3.13 for repository tests
             inputs:
-              versionSpec: "3.12"
+              versionSpec: "3.13"
 
           - bash: |
               set -euo pipefail
@@ -288,9 +288,9 @@ stages:
                     HERMES_TAILSCALE_KEY_FILE: $(Agent.TempDirectory)/hermes-deploy-secrets/tailscale-auth-key
 
                 - task: UsePythonVersion@0
-                  displayName: Use Python 3.12
+                  displayName: Use Python 3.13
                   inputs:
-                    versionSpec: "3.12"
+                    versionSpec: "3.13"
 
                 - bash: |
                     set -euo pipefail

@@ -120,9 +120,9 @@ jobs:
         persistCredentials: false
 
       - task: UsePythonVersion@0
-        displayName: Use Python 3.12
+        displayName: Use Python 3.13
         inputs:
-          versionSpec: "3.12"
+          versionSpec: "3.13"
 
       - bash: |
           set -euo pipefail

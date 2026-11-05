@@ -130,7 +130,8 @@ class HermesCheckTests(unittest.TestCase):
 
     def test_foreign_pytest_entrypoint_does_not_bypass_missing_module(self):
         environment = self.root / "without-pytest"
-        venv.EnvBuilder(with_pip=False).create(environment)
+        # A copied uv-managed Python cannot locate its shared library on macOS.
+        venv.EnvBuilder(with_pip=False, symlinks=True).create(environment)
         self.python(environment / "bin/python")
         self.executable("pytest", "#!/bin/sh\nexit 0\n")
         for strict in (False, True):
