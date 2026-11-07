@@ -25,6 +25,7 @@ COPY --chmod=0555 hermes/ops/export-metrics.py /opt/hermes-local/export-metrics.
 COPY --chmod=0644 hermes/docker/AGENTS.md /opt/hermes-local/container-admin-AGENTS.md
 COPY --chmod=0644 hermes/instructions/common.md /opt/hermes-local/common-AGENTS.md
 COPY --chmod=0555 hermes/runtime/manage-workspace-agents.py /opt/hermes-local/manage-workspace-agents.py
+COPY --chmod=0444 hermes/runtime/safe_files.py /opt/hermes-local/safe_files.py
 # Frozen migration input, not a second source of active rules.
 COPY --chmod=0644 hermes/runtime/legacy/container-instructions.md /opt/hermes-local/legacy-container-AGENTS.md
 

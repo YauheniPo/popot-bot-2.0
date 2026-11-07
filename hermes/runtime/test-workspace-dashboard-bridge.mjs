@@ -173,6 +173,26 @@ test('bounds a hung upstream request', async () => {
   await assert.rejects(bridge.handle(request(session), () => bridge.fetch(`${dashboardUrl}/api/sessions`)));
 });
 
+for (const inputKind of ['Request', 'caller AbortSignal']) {
+  test(`bounds Dashboard headers with ${inputKind}`, async () => {
+    const controller = new AbortController();
+    const url = `${dashboardUrl}/api/sessions`;
+    const input = inputKind === 'Request' ? new Request(url) : url;
+    const init = inputKind === 'caller AbortSignal' ? { signal: controller.signal } : undefined;
+    const bridge = createDashboardBridge({ dashboardUrl, timeoutMs: 20,
+      fetchImpl: async (_url, options) => new Promise((resolve, reject) => {
+        const timer = setTimeout(() => resolve(new Response('late response')), 100);
+        options.signal.addEventListener('abort', () => {
+          clearTimeout(timer);
+          reject(options.signal.reason);
+        }, { once: true });
+      }) });
+    await assert.rejects(bridge.handle(request(session), () => bridge.fetch(input, init)),
+      { name: 'TimeoutError' });
+    assert.equal(controller.signal.aborted, false);
+  });
+}
+
 test('rejects remote dashboard origins instead of forwarding credentials', () => {
   for (const url of ['https://example.com', 'http://127.0.0.1:9119/path', 'http://user:pass@127.0.0.1:9119']) {
     assert.throws(() => createDashboardBridge({ dashboardUrl: url }));
@@ -217,15 +237,20 @@ test('preserves CRUD methods, query, bodies, errors and caller cancellation', as
 
 test('does not abort an established dashboard stream at the connection deadline', async () => {
   let signal;
+  const controller = new AbortController();
   const bridge = createDashboardBridge({ dashboardUrl, timeoutMs: 15,
     fetchImpl: async (_url, init) => {
       signal = init.signal;
       return new Response('data: alive\n\n', { headers: { 'content-type': 'text/event-stream' } });
     } });
-  const result = await bridge.handle(request(session), () => bridge.fetch(`${dashboardUrl}/api/events`));
+  const result = await bridge.handle(request(session), () => bridge.fetch(
+    new Request(`${dashboardUrl}/api/events`, { signal: controller.signal })));
   await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal(signal.aborted, false);
   assert.equal(await result.text(), 'data: alive\n\n');
+  controller.abort(new Error('caller cancelled stream'));
+  assert.equal(signal.aborted, true);
+  assert.equal(signal.reason, controller.signal.reason);
 });
 
 test('background work cannot inherit a completed browser request session', async () => {
@@ -410,7 +435,10 @@ test('bridgedFetch accepts a string url, a Request and explicit init parts', asy
     method: 'GET', headers: { 'x-init': 'yes' }, signal: controller.signal,
   });
   assert.equal(seen[0].headers.get('x-init'), 'yes');
-  assert.equal(seen[0].signal, controller.signal);
+  assert.equal(seen[0].signal.aborted, false);
+  controller.abort(new Error('caller cancelled'));
+  assert.equal(seen[0].signal.aborted, true);
+  assert.equal(seen[0].signal.reason, controller.signal.reason);
 
   // Request input with no init at all: the Request halves supply everything.
   const requestWithParts = new Request(`${dashboardUrl}/api/gateway-status`, {

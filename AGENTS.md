@@ -90,3 +90,12 @@
 - Названия веток, commit messages и PR descriptions — на английском.
   Для созданных тобой commit messages и PR descriptions добавляй собственный
   `Assisted-by:` trailer с именем агента. Не создавай их без запроса.
+
+## Agent skills
+
+- **Issue tracker**: для чтения, публикации или изменения задач и спецификаций
+  прочитай [issue-tracker.md](docs/agents/issue-tracker.md).
+- **Triage labels**: перед triage или назначением triage-ролей задачам прочитай
+  [triage-labels.md](docs/agents/triage-labels.md).
+- **Domain docs**: перед исследованием кода, изменением терминологии или
+  архитектурными решениями прочитай [domain.md](docs/agents/domain.md).

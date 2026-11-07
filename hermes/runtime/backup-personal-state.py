@@ -14,10 +14,10 @@ import zipfile
 
 
 SPEC = importlib.util.spec_from_file_location(
-    "workspace_instruction_io", Path(__file__).with_name("manage-workspace-agents.py")
+    "safe_files", Path(__file__).with_name("safe_files.py")
 )
-instruction_io = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(instruction_io)
+safe_files = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(safe_files)
 MANIFEST = "operator-state/workspace-instructions.json"
 INVENTORY = "operator-state/personal-backup-inventory.json"
 EXCLUDED_DIRS = {
@@ -33,17 +33,6 @@ PERSONAL_NAMES = {
 
 def instruction_name(name: str) -> bool:
     return name == "AGENTS.md" or (name.startswith("AGENTS.") and name.endswith(".md"))
-
-
-def regular_file(path: Path) -> bool:
-    """Check through directory descriptors; do not follow even parent symlinks."""
-    try:
-        with instruction_io._parent_directory(path) as parent:
-            metadata = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
-            instruction_io._require_regular(metadata)
-        return True
-    except FileNotFoundError:
-        return False
 
 
 def files_under(root: Path):
@@ -63,19 +52,19 @@ def mirror_workspace(home: Path, workspace: Path) -> None:
     if workspace.exists():
         for path in files_under(workspace):
             if instruction_name(path.name):
-                content = instruction_io.read_optional(path)
+                content = safe_files.read_optional(path)
                 if content is None:
                     raise RuntimeError("Workspace instructions changed during backup; retry")
                 files[path.relative_to(workspace).as_posix()] = content
     payload = json.dumps({"version": 1, "files": files}, ensure_ascii=False, indent=2) + "\n"
     # One atomic manifest replaces the old inventory, including removed entries.
-    if instruction_io.read_optional(home / MANIFEST) != payload:
-        instruction_io.write_atomic(home / MANIFEST, payload)
+    if safe_files.read_optional(home / MANIFEST) != payload:
+        safe_files.write_atomic(home / MANIFEST, payload)
 
 
 def restore_workspace(home: Path, workspace: Path, archive: Path | None = None) -> int | None:
     if archive is None:
-        content = instruction_io.read_optional(home / MANIFEST)
+        content = safe_files.read_optional(home / MANIFEST)
     else:
         # An import merges state. Do not restore a stale local manifest when
         # importing a legacy archive that never contained one.
@@ -96,9 +85,9 @@ def restore_workspace(home: Path, workspace: Path, archive: Path | None = None) 
                 or not isinstance(text, str)):
             raise ValueError("Unsafe workspace instruction entry")
         # Preflight every existing destination before writing any entry.
-        instruction_io.read_optional(workspace / path)
+        safe_files.read_optional(workspace / path)
     for name, text in files.items():
-        instruction_io.write_atomic(workspace / name, text)
+        safe_files.write_atomic(workspace / name, text)
     return len(files)
 
 
@@ -118,7 +107,7 @@ def personal_files(home: Path) -> list[str]:
         if (root / "memories").exists():
             selected.update(files_under(root / "memories"))
     return sorted(path.relative_to(home).as_posix() for path in selected
-                  if not shared_profile_secret(path, home) and regular_file(path))
+                  if not shared_profile_secret(path, home) and safe_files.regular_file(path))
 
 
 def shared_profile_secret(path: Path, home: Path) -> bool:
@@ -154,8 +143,8 @@ def _expand_state_files(home: Path, names) -> set[str]:
         source = home / name
         if source.is_dir():
             expected.update(path.relative_to(home).as_posix()
-                            for path in files_under(source) if regular_file(path))
-        elif regular_file(source):
+                            for path in files_under(source) if safe_files.regular_file(path))
+        elif safe_files.regular_file(source):
             expected.add(name)
     return expected
 
@@ -170,7 +159,7 @@ def _verified_snapshot(snapshot: Path, expected: set[str]) -> None:
         raise RuntimeError("Hermes reported an incomplete quick backup")
     for name in expected:
         path = snapshot / name
-        if not regular_file(path) or path.stat().st_size != files[name]:
+        if not safe_files.regular_file(path) or path.stat().st_size != files[name]:
             raise RuntimeError("Quick backup file verification failed")
 
 
@@ -223,11 +212,11 @@ def main() -> int:
     parser.add_argument("--archive", type=Path)
     args = parser.parse_args()
     os.umask(0o077)
-    home = instruction_io._destination(args.hermes_home)
+    home = safe_files.absolute_path(args.hermes_home)
     if args.command in ("mirror", "restore"):
         if args.workspace is None:
             parser.error("--workspace is required")
-        workspace = instruction_io._destination(args.workspace)
+        workspace = safe_files.absolute_path(args.workspace)
         if args.command == "mirror":
             mirror_workspace(home, workspace)
         else:
@@ -237,11 +226,11 @@ def main() -> int:
             else:
                 print(f"Restored {count} workspace instruction file(s)")
     elif args.command == "inventory":
-        instruction_io.write_atomic(home / INVENTORY, json.dumps(personal_files(home)))
+        safe_files.write_atomic(home / INVENTORY, json.dumps(personal_files(home)))
     elif args.command == "verify-full":
         if args.archive is None:
             parser.error("--archive is required")
-        verify_full(args.archive, json.loads(instruction_io.read_optional(home / INVENTORY)))
+        verify_full(args.archive, json.loads(safe_files.read_optional(home / INVENTORY)))
     else:
         sys.path.insert(0, str(home / "hermes-agent"))
         from hermes_cli import backup

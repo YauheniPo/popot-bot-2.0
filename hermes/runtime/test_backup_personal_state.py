@@ -198,7 +198,7 @@ class BackupPersonalStateTests(unittest.TestCase):
         installed = self.root / "installed"
         installed.mkdir()
         for path in [repo / "ops/backup.sh", repo / "runtime/backup-personal-state.py",
-                     repo / "runtime/manage-workspace-agents.py"]:
+                     repo / "runtime/safe_files.py"]:
             shutil.copy2(path, installed / path.name)
         binaries = self.root / "bin"
         flock = self.put(binaries, "flock", "#!/bin/sh\nexit 0\n")
@@ -476,14 +476,14 @@ with zipfile.ZipFile(output, "w") as archive:
                          {"version": 1, "files": {"../AGENTS.md": "x"}},
                          {"version": 1, "files": {"AGENTS.md": 5}}):
             # Writing the manifest is setup; only the restore below must raise.
-            self.module.instruction_io.write_atomic(
+            self.module.safe_files.write_atomic(
                 self.home / self.module.MANIFEST, json.dumps(manifest))
             with self.subTest(manifest=manifest), self.assertRaises(ValueError):
                 self.module.restore_workspace(self.home, self.workspace)
 
     def test_instruction_read_failure_during_backup_is_reported(self):
         self.put(self.workspace, "AGENTS.md")
-        with mock.patch.object(self.module.instruction_io, "read_optional", return_value=None):
+        with mock.patch.object(self.module.safe_files, "read_optional", return_value=None):
             with self.assertRaisesRegex(RuntimeError, "changed during backup"):
                 self.module.mirror_workspace(self.home, self.workspace)
 

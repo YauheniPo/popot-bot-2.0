@@ -136,10 +136,12 @@ download_installer() {
     curl_exit=0
     # curl 8.14 returns 0 after a Retry-After beyond --retry-max-time even with
     # --fail, so the HTTP status, not only the exit code, decides success.
+    # Handle failure inside the substitution so inherited ERR traps preserve
+    # curl's exit status on Bash 3.2 as well.
     http_status="$(curl --proto '=https' --tlsv1.2 --fail --no-progress-meter --show-error --location \
       --connect-timeout 10 --max-time 30 --retry 3 --retry-max-time 120 \
       --header 'Accept: application/vnd.github.raw+json' \
-      --write-out '%{http_code}' "$installer_url" --output "$INSTALLER_FILE")" || curl_exit=$?
+      --write-out '%{http_code}' "$installer_url" --output "$INSTALLER_FILE" || exit "$?")" || curl_exit=$?
     if ((curl_exit == 0)) && [[ "$http_status" == 2* ]]; then
       log "Installer download completed: http_status=$http_status source=$source_host"
       break
