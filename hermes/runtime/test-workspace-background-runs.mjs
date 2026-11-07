@@ -16,8 +16,8 @@ const dismissFile = '/src/routes/api/runs/$sessionKey.$runId.abandon.ts';
 const uiFile = '/src/components/agent-view/background-runs-section.tsx';
 const now = 1800000000000;
 
-function load(file, modules = {}, globals = {}) {
-  const source = fs.readFileSync(path.join(upstream, file), 'utf8');
+function load(file, modules = {}, globals = {}, rewrite = source => source) {
+  const source = rewrite(fs.readFileSync(path.join(upstream, file), 'utf8'));
   const code = adapter.workspaceBackgroundRuns().transform(source, file)?.code ?? source;
   const require = createRequire(path.join(upstream, 'package.json'));
   const ts = require('typescript');
@@ -31,12 +31,14 @@ function load(file, modules = {}, globals = {}) {
   return context.exports;
 }
 
-function fixture(t) {
+function fixture(t, { staleAfterMs } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'background-runs-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const live = new Set();
   const tracker = { hasActiveSendRun: id => live.has(id) };
-  const store = load(storeFile, { './claude-paths': { getHermesRoot: () => root }, './send-run-tracker': tracker });
+  const store = load(storeFile, { './claude-paths': { getHermesRoot: () => root }, './send-run-tracker': tracker }, {},
+    source => staleAfterMs === undefined ? source : source.replace(
+      /const STALE_RUN_THRESHOLD_MS = [^\n]+/, `const STALE_RUN_THRESHOLD_MS = ${staleAfterMs}`));
   const run = { sessionKey: 'main', friendlyId: 'main', runId: 'old-run', status: 'active',
     createdAt: now - 7200000, updatedAt: now - 3600000, lastEventAt: now - 3600000,
     assistantText: 'Last saved output', thinkingText: '', toolCalls: [], lifecycleEvents: [] };
@@ -76,6 +78,28 @@ test('list distinguishes a registered stream from a stale record without claimin
   assert.equal(runs.find(r => r.runId === 'registered').canDismiss, false);
   assert.equal(runs.find(r => r.runId === 'old-run').localStreamActive, false);
   assert.equal(runs.find(r => r.runId === 'old-run').canDismiss, true);
+});
+test('store and route share the configured dismissal threshold and stream state', enabled, async t => {
+  const threshold = 60_000;
+  const f = fixture(t, { staleAfterMs: threshold });
+  for (const [age, active, expected] of [
+    [threshold, false, true], [threshold - 1, false, false],
+    [threshold + 1, false, true], [threshold, true, false], [-1, false, false],
+  ]) {
+    f.live.clear();
+    if (active) f.live.add(f.run.runId);
+    const run = { ...f.run, updatedAt: now - age };
+    f.write(run);
+    const response = await f.route(activeFile).GET({ request: new Request('https://workspace.test/api/runs/active', {
+      headers: { 'X-Test-Auth': 'yes' },
+    }) });
+    const { runs } = await response.json();
+    assert.equal(runs[0].canDismiss, expected, `age=${age}, active=${active}`);
+    const [record] = await f.store.listRunRecords();
+    assert.equal(record.canDismiss, expected);
+    assert.equal(record.localStreamActive, active);
+    assert.equal((await f.dismiss(run)).status, expected ? 200 : 409);
+  }
 });
 test('dismiss hides only the old record, preserves status/history and permits resumed output', enabled, async t => {
   const f = fixture(t);

@@ -49,6 +49,7 @@ class DeploySpeedTests(unittest.TestCase):
             target.mkdir()
             allowed = ['runtime/normalize-ownership.py', 'runtime/deployment-notify.py',
                        'runtime/verify-update-state.py', 'runtime/apply-hermes-patches.py',
+                       'runtime/safe_files.py',
                        'deploy/run.sh', 'ops/health.sh', 'observability/rules/a.yml',
                        'config/defaults.yml', 'skills/demo/SKILL.md', 'vscode-server/Dockerfile']
             excluded = ['ansible/group_vars/all/vault.yml', '.env', 'docs/private.md', 'skills/demo/.env',

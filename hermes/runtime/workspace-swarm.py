@@ -143,6 +143,8 @@ def _write_profile_config(profile, base, model, info, worktree):
     config.setdefault('delegation', {}).update(provider=model['provider'], model=model['default'])
     config.setdefault('terminal', {})['cwd'] = str(worktree)
     config.setdefault('approvals', {})['mode'] = 'manual'
+    # Shared .env provides model credentials; only default owns the Telegram bot.
+    config.setdefault('platforms', {}).setdefault('telegram', {})['enabled'] = False
     if config != previous or not path.exists():
         write_config(path, config)
         return 1

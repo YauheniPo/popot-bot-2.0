@@ -60,7 +60,7 @@ def create_backup(
 class VerifyUpdateStateTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary_directory.name)
+        self.root = Path(self.temporary_directory.name).resolve()
         self.home = self.root / ".hermes"
         self.home.mkdir()
         (self.home / "config.yaml").write_text("model: test\n", encoding="utf-8")

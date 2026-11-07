@@ -3,18 +3,49 @@
 SUPERPOWERS_REPO="https://github.com/obra/superpowers.git"
 SUPERPOWERS_REF="v6.3.0"
 
+_superpowers_source_is_complete() {
+    local source_dir="$1" changes
+    [[ -d "$source_dir/.git" && -f "$source_dir/.hermes-plugin/plugin.yaml" && \
+       -f "$source_dir/.hermes-plugin/__init__.py" && -d "$source_dir/skills" ]] || return 1
+    # Validate the installed payload against its Git snapshot, including files
+    # missing from a still-present skills directory and unexpected additions.
+    changes="$(git -C "$source_dir" status --porcelain --untracked-files=all --ignored -- \
+        .hermes-plugin/plugin.yaml .hermes-plugin/__init__.py skills 2>/dev/null)" || return 1
+    [[ -z "$changes" ]]
+}
+
 install_superpowers_plugin() {
     log "installing the superpowers skills plugin (flattened layout)"
     install -d -o "${HERMES_USER}" -g "${HERMES_GROUP}" -m 0700 \
         "${HERMES_HOME}/plugins/superpowers"
 
-    local tmp
-    tmp="$(mktemp -d /tmp/superpowers-clone.XXXXXX)"
-    if ! git clone --depth 1 --branch "${SUPERPOWERS_REF}" \
-        "${SUPERPOWERS_REPO}" "${tmp}/repo" >/dev/null 2>&1; then
-        log "WARNING: could not clone ${SUPERPOWERS_REPO} (${SUPERPOWERS_REF}); skipping superpowers install"
-        rm -rf -- "${tmp}"
-        return 0
+    # Keep the reference copy outside the writable Hermes home: a cache hit
+    # still compares and repairs installed files instead of trusting a marker
+    # beside the plugin. Publish only a complete, successfully fetched source.
+    local cache_root=/var/lib/hermes-ops/superpowers-source
+    local source_dir="${cache_root}/${SUPERPOWERS_REF}" tmp
+    [[ "$SUPERPOWERS_REF" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || die "invalid superpowers source ref"
+    [[ ! -L /var/lib/hermes-ops && ! -L "$cache_root" && ! -L "$source_dir" ]] || \
+        die "superpowers source cache must not be a symlink"
+    install -d -o root -g root -m 0700 /var/lib/hermes-ops "$cache_root"
+    if ! cmp -s "$source_dir/.hermes-source" <(printf '%s\n%s\n' "$SUPERPOWERS_REPO" "$SUPERPOWERS_REF") || \
+        ! _superpowers_source_is_complete "$source_dir"; then
+        tmp="$(mktemp -d "${cache_root}/.fetch.XXXXXX")"
+        if ! timeout --foreground 120s git clone --depth 1 --branch "${SUPERPOWERS_REF}" \
+            "${SUPERPOWERS_REPO}" "${tmp}/repo" >/dev/null 2>&1; then
+            log "WARNING: could not clone ${SUPERPOWERS_REPO} (${SUPERPOWERS_REF}); skipping superpowers install"
+            rm -rf -- "${tmp}"
+            return 0
+        fi
+        if ! _superpowers_source_is_complete "${tmp}/repo"; then
+            rm -rf -- "${tmp}"
+            die "superpowers source is incomplete or modified"
+        fi
+        printf '%s\n%s\n' "$SUPERPOWERS_REPO" "$SUPERPOWERS_REF" > "${tmp}/repo/.hermes-source"
+        chmod -R go-rwx "${tmp}/repo"
+        rm -rf -- "$source_dir"
+        mv "${tmp}/repo" "$source_dir"
+        rm -rf -- "$tmp"
     fi
 
     # Flattened layout: the .hermes-plugin manifest files land at the plugin
@@ -25,15 +56,15 @@ install_superpowers_plugin() {
     local manifest gateway_service
     gateway_service="$(managed_services gateway)"
     for manifest in plugin.yaml __init__.py; do
-        install_managed_file "${tmp}/repo/.hermes-plugin/${manifest}" \
+        install_managed_file "${source_dir}/.hermes-plugin/${manifest}" \
             "${HERMES_HOME}/plugins/superpowers/${manifest}" 0600 \
             "${HERMES_USER}" "${HERMES_GROUP}" "$gateway_service"
     done
-    if ! diff -qr "${tmp}/repo/skills" "${HERMES_HOME}/plugins/superpowers/skills" >/dev/null 2>&1; then
+    if ! diff -qr "${source_dir}/skills" "${HERMES_HOME}/plugins/superpowers/skills" >/dev/null 2>&1; then
         mark_ops_change "$gateway_service"
         local skills_stage
         skills_stage="$(mktemp -d "${HERMES_HOME}/plugins/superpowers/.skills-stage.XXXXXX")"
-        cp -r "${tmp}/repo/skills" "${skills_stage}/skills"
+        cp -r "${source_dir}/skills" "${skills_stage}/skills"
         rm -rf -- "${HERMES_HOME}/plugins/superpowers/skills"
         mv "${skills_stage}/skills" "${HERMES_HOME}/plugins/superpowers/skills"
         rm -rf -- "${skills_stage}"
@@ -41,8 +72,6 @@ install_superpowers_plugin() {
     chown -R "${HERMES_USER}:${HERMES_GROUP}" \
         "${HERMES_HOME}/plugins/superpowers/skills"
     chmod -R go-rwx "${HERMES_HOME}/plugins/superpowers/skills"
-    rm -rf -- "${tmp}"
-
     if [[ -x "${HERMES_BIN}" ]]; then
         log "validating and enabling the superpowers plugin"
         if ! timeout --foreground 60s runuser -u "${HERMES_USER}" -- env -i \
