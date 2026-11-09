@@ -309,6 +309,10 @@ vps_network:
     default_outgoing: allow
 
 vps_runtime:
+  # Removed by the pinned Hermes browser migration. Reapplying "off" through
+  # its CLI stores false and triggers a config change/restart on every deploy.
+  unset:
+    - browser.backend
   set_if_missing:
     # Native prompt loading: available on deploy, without waiting for the model
     # to discover the verification skill. Preserve explicit user auto-load lists.
@@ -334,7 +338,6 @@ vps_runtime:
     agent.verify_on_stop: true
     # Also bounds rebuilt-message restarts while walking the fallback chain.
     agent.api_max_retries: 3
-    browser.backend: "off"
     tool_loop_guardrails.hard_stop_enabled: true
     # Validation/tool-contract failures may need a few corrected attempts after
     # the agent rereads the target. Repeating unchanged payloads is still

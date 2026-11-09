@@ -40,6 +40,7 @@ install_operations_assets() {
         "${SCRIPT_DIR}/startup-notify.sh" \
         "${SCRIPT_DIR}/api-retry-loop.sh" \
         "${SCRIPT_DIR}/../runtime/backup-personal-state.py" \
+        "${SCRIPT_DIR}/../runtime/safe_files.py" \
         "${SCRIPT_DIR}/../runtime/manage-workspace-agents.py"; do
         install_managed_file "$asset" "/usr/local/lib/hermes-ops/$(basename "$asset")" 0755 root root
     done

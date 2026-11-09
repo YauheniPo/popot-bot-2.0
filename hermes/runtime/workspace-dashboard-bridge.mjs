@@ -128,15 +128,14 @@ export function createDashboardBridge({ dashboardUrl, fetchImpl = globalThis.fet
   }
 
   // Bound queue/connection waits, not the lifetime of an established SSE
-  // response. Honor an upstream caller's explicit deadline when provided.
+  // response. Caller cancellation remains active after the headers arrive.
   function connectionSignal(input, init) {
     const supplied = init.signal || (input instanceof Request ? input.signal : null);
-    if (supplied) return { signal: supplied, timer: null };
     const deadline = new AbortController();
     const timer = setTimeout(() => {
       deadline.abort(new DOMException('Dashboard connection timed out', 'TimeoutError'));
     }, timeoutMs);
-    return { signal: deadline.signal, timer };
+    return { signal: supplied ? AbortSignal.any([supplied, deadline.signal]) : deadline.signal, timer };
   }
 
   async function bridgedFetch(input, init = {}) {
