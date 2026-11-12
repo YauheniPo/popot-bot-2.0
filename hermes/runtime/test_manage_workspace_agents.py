@@ -39,6 +39,7 @@ class ManageWorkspaceAgentsTests(unittest.TestCase):
             assets.mkdir()
             (state / "workspace").mkdir(parents=True)
             for source, dest in ((MODULE_PATH, "manage-workspace-agents.py"),
+                                 (MODULE_PATH.with_name("safe_files.py"), "safe_files.py"),
                                  (repo / "instructions/common.md", "common-AGENTS.md"),
                                  (repo / "docker/AGENTS.md", "container-admin-AGENTS.md"),
                                  (repo / "runtime/legacy/container-instructions.md", "legacy-container-AGENTS.md")):
@@ -146,6 +147,9 @@ class ManageWorkspaceAgentsTests(unittest.TestCase):
         self.assertIn("--common-source", playbook)
         self.assertIn("--common-source", bootstrap)
         self.assertIn("manage-workspace-agents.py", dockerfile)
+        self.assertIn("hermes/runtime/safe_files.py /opt/hermes-local/safe_files.py", dockerfile)
+        self.assertIn('"${SCRIPT_DIR}/../runtime/safe_files.py"',
+                      (root / "ops/install/assets.sh").read_text())
         self.assertNotIn("legacy_host_admin_instruction_marker", bootstrap)
 
     def test_instruction_source_map_points_to_existing_repository_files(self) -> None:
@@ -331,41 +335,6 @@ class ManageWorkspaceAgentsTests(unittest.TestCase):
             self.assertEqual(self.run_cli(root / "subdir/../AGENTS.md", source), 2)
             self.assertFalse((root / "AGENTS.md").exists())
 
-    def test_atomic_replace_is_not_redirected_by_parent_swap(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp).resolve()
-            workspace = root / "workspace"
-            workspace.mkdir()
-            target = workspace / "AGENTS.md"
-            target.write_text("Original\n")
-            outside = root / "outside"
-            outside.mkdir()
-            (outside / "AGENTS.md").write_text("Outside notes\n")
-            moved = root / "original-workspace"
-            original_replace = os.replace
-
-            def swap_parent(*args, **kwargs):
-                workspace.rename(moved)
-                workspace.symlink_to(outside, target_is_directory=True)
-                return original_replace(*args, **kwargs)
-
-            with mock.patch.object(os, "replace", side_effect=swap_parent):
-                manage_workspace_agents.write_atomic(target, "Updated\n")
-            self.assertEqual((outside / "AGENTS.md").read_text(), "Outside notes\n")
-            self.assertEqual((moved / "AGENTS.md").read_text(), "Updated\n")
-            self.assertEqual(set(moved.iterdir()), {moved / "AGENTS.md"})
-
-    def test_atomic_write_failure_preserves_original_and_removes_temp(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp).resolve()
-            target = root / "AGENTS.md"
-            target.write_text("Original\n")
-            with mock.patch.object(os, "replace", side_effect=OSError("injected failure")):
-                with self.assertRaises(OSError):
-                    manage_workspace_agents.write_atomic(target, "Updated\n")
-            self.assertEqual(target.read_text(), "Original\n")
-            self.assertEqual(set(root.iterdir()), {target})
-
     def test_new_files_are_private_and_repeated_run_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
@@ -397,21 +366,6 @@ class ManageWorkspaceAgentsTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, 0)
             self.assertFalse(target.exists())
 
-    def test_atomic_writer_itself_rejects_linked_destinations(self) -> None:
-        for kind in ("symlink", "hardlink"):
-            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temp:
-                root = Path(temp).resolve()
-                victim = root / "victim.md"
-                victim.write_text("Outside\n")
-                target = root / "AGENTS.md"
-                if kind == "symlink":
-                    target.symlink_to(victim)
-                else:
-                    os.link(victim, target)
-                with self.assertRaises(manage_workspace_agents.ManagedBlockError):
-                    manage_workspace_agents.write_atomic(target, "New content\n")
-                self.assertEqual(victim.read_text(), "Outside\n")
-
     def test_identical_legacy_content_is_replaced_by_managed_block(self) -> None:
         result = manage_workspace_agents.reconcile("Managed rules\n", "Managed rules\n", present=True)
         self.assertEqual(result.count("Managed rules"), 1)
@@ -436,13 +390,6 @@ class ManageWorkspaceAgentsTests(unittest.TestCase):
         tasks = yaml.safe_load((MODULE_PATH.parents[1] / "ansible/tasks/services.yml").read_text())
         task = next(task for task in tasks if task["name"] == "Install transient Edge TTS retry when the upstream tool is found")
         self.assertEqual(task["become_user"], "{{ hermes_user }}")
-
-    def test_atomic_write_keeps_workspace_instructions_private(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            target = Path(temp).resolve() / "AGENTS.md"
-            manage_workspace_agents.write_atomic(target, "Private operator notes\n")
-            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
-            self.assertEqual(target.read_text(), "Private operator notes\n")
 
     def test_new_managed_block_keeps_personal_instructions(self) -> None:
         result = manage_workspace_agents.reconcile(

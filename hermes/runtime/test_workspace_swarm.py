@@ -75,6 +75,7 @@ class SwarmTests(unittest.TestCase):
             self.assertNotIn('system_prompt', config)
             self.assertEqual(config['approvals']['mode'], 'manual')
             self.assertEqual(config['terminal']['cwd'], str(home / 'swarm/worktrees/builder'))
+            self.assertIs(config['platforms']['telegram']['enabled'], False)
             self.assertTrue((profile / '.env').is_symlink())
             wrapper = (user / '.local/bin/builder').read_text()
             self.assertNotIn('--yolo', wrapper)
@@ -134,6 +135,51 @@ class SwarmTests(unittest.TestCase):
                 Path(args[-2]).mkdir(parents=True)
             return subprocess.CompletedProcess(args, 0, str(repo / '.git') + '\n', '')
         return run
+
+    def test_shared_telegram_credential_stays_owned_by_default(self):
+        module = self._module()
+        policy = {'workers': {name: {'role': name.title(), 'instructions': 'Scoped task.'}
+                              for name in ('builder', 'researcher', 'reviewer')}}
+        for existing in (False, True):
+            with self.subTest(existing=existing), tempfile.TemporaryDirectory() as temp:
+                home, user, repo = self._swarm_env(temp)
+                base = {'model': {'provider': 'test', 'default': 'fixture'},
+                        'platforms': {'telegram': {'enabled': True, 'extra': {'fixture': 'keep'}},
+                                      'api_server': {'enabled': True}},
+                        'cron': {'follow_chat_model': True}}
+                base_text = yaml.safe_dump(base)
+                (home / 'config.yaml').write_text(base_text)
+                (home / '.env').write_text('TELEGRAM_BOT_TOKEN=fixture-bot-token\nMODEL_KEY=fixture-key\n')
+                (home / 'auth.json').write_text('{}\n')
+                for name in policy['workers']:
+                    profile = home / 'profiles' / name
+                    if existing:
+                        profile.mkdir(parents=True)
+                        (profile / '.managed-swarm').write_text(module.MARKER + '\n')
+                        (profile / 'config.yaml').write_text(base_text)
+                        (profile / '.env').symlink_to(home / '.env')
+                        (profile / 'sessions').mkdir()
+                        (profile / 'sessions/keep.txt').write_text('private history')
+                        (profile / 'cron').mkdir()
+                        (profile / 'cron/jobs.json').write_text('{"jobs": []}\n')
+                stub = self._run_stub(repo)
+                module.provision(home, user, repo, user / 'bin/hermes', policy, stub)
+                for name in policy['workers']:
+                    profile = home / 'profiles' / name
+                    config = yaml.safe_load((profile / 'config.yaml').read_text())
+                    self.assertIs(config['platforms']['telegram']['enabled'], False)
+                    self.assertEqual(config['platforms']['telegram']['extra'], {'fixture': 'keep'})
+                    self.assertEqual(config['platforms']['api_server'], base['platforms']['api_server'])
+                    self.assertEqual(config['cron'], base['cron'])
+                    self.assertFalse((profile / 'gateway.parked').exists())
+                    for shared in ('.env', 'auth.json'):
+                        self.assertTrue((profile / shared).is_symlink())
+                        self.assertEqual((profile / shared).resolve(), (home / shared).resolve())
+                    if existing:
+                        self.assertEqual((profile / 'sessions/keep.txt').read_text(), 'private history')
+                        self.assertEqual((profile / 'cron/jobs.json').read_text(), '{"jobs": []}\n')
+                self.assertEqual((home / 'config.yaml').read_text(), base_text)
+                self.assertEqual(module.provision(home, user, repo, user / 'bin/hermes', policy, stub), 0)
 
     def test_provision_rejects_invalid_policy_and_unconfigured_model(self):
         spec = importlib.util.spec_from_file_location('swarm_setup', PATH)

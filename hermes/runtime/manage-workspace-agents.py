@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
-import os
+import importlib.util
 from pathlib import Path
-import secrets
-import stat
 import sys
+
+
+SPEC = importlib.util.spec_from_file_location("safe_files", Path(__file__).with_name("safe_files.py"))
+safe_files = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(safe_files)
 
 
 BEGIN_MARKER = "<!-- BEGIN ANSIBLE MANAGED HOST ADMINISTRATION -->"
@@ -93,76 +95,6 @@ def reconcile_layers(existing: str, common: str, environment: str, *, legacy_sou
     return "\n\n".join(blocks) + "\n"
 
 
-def _destination(path: Path) -> Path:
-    path = path.expanduser().absolute()
-    if ".." in path.parts:
-        raise ManagedBlockError("instruction paths must not contain '..'")
-    return path
-
-
-@contextmanager
-def _parent_directory(path: Path, *, create: bool = False):
-    # Walk from the root using directory descriptors. Do not resolve symlinks:
-    # even a parent swapped after validation must not redirect reads or writes.
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    descriptor = os.open(path.anchor, flags)
-    try:
-        for part in path.parent.parts[1:]:
-            if create:
-                try:
-                    os.mkdir(part, dir_fd=descriptor)
-                except FileExistsError:
-                    pass
-            child = os.open(part, flags, dir_fd=descriptor)
-            os.close(descriptor)
-            descriptor = child
-        yield descriptor
-    finally:
-        os.close(descriptor)
-
-
-def _require_regular(metadata: os.stat_result) -> None:
-    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-        raise ManagedBlockError("instruction files must be regular files without links")
-
-
-def read_optional(path: Path) -> str | None:
-    try:
-        with _parent_directory(path) as directory:
-            descriptor = os.open(
-                path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory
-            )
-            with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
-                _require_regular(os.fstat(handle.fileno()))
-                return handle.read()
-    except FileNotFoundError:
-        return None
-
-
-def write_atomic(path: Path, content: str, *, mode: int = 0o600) -> None:
-    path = _destination(path)
-    with _parent_directory(path, create=True) as directory:
-        try:
-            _require_regular(os.stat(path.name, dir_fd=directory, follow_symlinks=False))
-        except FileNotFoundError:
-            pass
-        temporary = f".{path.name}.{secrets.token_hex(16)}.partial"
-        descriptor = os.open(
-            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-            0o600, dir_fd=directory,
-        )
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                os.fchmod(handle.fileno(), mode)
-                handle.write(content)
-            os.replace(temporary, path.name, src_dir_fd=directory, dst_dir_fd=directory)
-        finally:
-            try:
-                os.unlink(temporary, dir_fd=directory)
-            except FileNotFoundError:
-                pass
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", type=Path, required=True,
@@ -181,7 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _destination_pair(target: Path, backup_copy: Path | None) -> tuple[Path, Path | None]:
     """Validate both destinations, replacing None when no backup copy is wanted."""
-    return _destination(target), _destination(backup_copy) if backup_copy is not None else None
+    return safe_files.absolute_path(target), safe_files.absolute_path(backup_copy) if backup_copy is not None else None
 
 
 def _reconcile_instructions(args: argparse.Namespace, existing: str, managed_source: str) -> str:
@@ -201,20 +133,19 @@ def _reconcile_instructions(args: argparse.Namespace, existing: str, managed_sou
 def update_instructions(args: argparse.Namespace) -> int:
     args.target, args.backup_copy = _destination_pair(args.target, args.backup_copy)
     # Validate and read BOTH destinations before changing either one.
-    target_content = read_optional(args.target)
-    backup_content = read_optional(args.backup_copy) if args.backup_copy is not None else None
+    target_content = safe_files.read_optional(args.target)
+    backup_content = safe_files.read_optional(args.backup_copy) if args.backup_copy is not None else None
     managed_source = args.managed_source.read_text(encoding="utf-8")
     existing = target_content if target_content is not None else (backup_content or "")
     updated = _reconcile_instructions(args, existing, managed_source)
     changed = False
     if updated != existing or (updated and target_content is None):
-        write_atomic(args.target, updated)
+        safe_files.write_atomic(args.target, updated)
         changed = True
     if args.backup_copy is not None:
-        with _parent_directory(args.backup_copy, create=True) as directory:
-            os.fchmod(directory, 0o700)
+        safe_files.ensure_private_parent(args.backup_copy)
         if backup_content != updated:
-            write_atomic(args.backup_copy, updated, mode=0o600)
+            safe_files.write_atomic(args.backup_copy, updated, mode=0o600)
             changed = True
     print(
         "workspace AGENTS.md managed block updated"
@@ -228,7 +159,7 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         return update_instructions(args)
-    except (OSError, ValueError, ManagedBlockError) as error:
+    except (OSError, ValueError, ManagedBlockError, safe_files.UnsafeFileError) as error:
         print(f"workspace instructions refused: {error}", file=sys.stderr)
         return 2
 

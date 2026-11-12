@@ -16,15 +16,29 @@ export function workspaceBackgroundRuns() {
       replace(".filter((run) => !['complete', 'error'].includes(run.status))",
         ".filter((run) => (!run.dismissedAt || hasActiveSendRun(run.runId)) && !['complete', 'error'].includes(run.status))", 2);
       code += `
+function runRecordState(run: PersistedRunState, now: number) {
+  const localStreamActive = hasActiveSendRun(run.runId)
+  return {
+    localStreamActive,
+    canDismiss: !localStreamActive && Number.isFinite(run.updatedAt) &&
+      now - run.updatedAt >= STALE_RUN_THRESHOLD_MS &&
+      !['complete', 'error'].includes(run.status),
+  }
+}
+
+export async function listRunRecords() {
+  const runs = await listAllActiveRuns()
+  const now = Date.now()
+  return runs.map(run => ({ ...run, ...runRecordState(run, now) }))
+}
+
 // Serialize the freshness check with all other writes. Hiding is not failure,
 // completion, cancellation, or proof that a remote agent has stopped.
 export async function dismissRunRecord(sessionKey: string, runId: string, updatedAt: number) {
   return enqueueRunUpdate(sessionKey, runId, async () => {
     const run = await getPersistedRun(sessionKey, runId)
     if (!run) return { status: 404, error: 'Run not found' }
-    if (hasActiveSendRun(runId) || run.updatedAt !== updatedAt ||
-        !Number.isFinite(run.updatedAt) || Date.now() - run.updatedAt < STALE_RUN_THRESHOLD_MS ||
-        ['complete', 'error'].includes(run.status)) {
+    if (run.updatedAt !== updatedAt || !runRecordState(run, Date.now()).canDismiss) {
       return { status: 409, error: 'Run is locally active, recent or changed; refresh first' }
     }
     const dismissed = { ...run, dismissedAt: Date.now() }
@@ -35,10 +49,11 @@ export async function dismissRunRecord(sessionKey: string, runId: string, update
 `;
     } else if (file.endsWith('/src/routes/api/runs/active.ts')) {
       replace("import { listAllActiveRuns } from '../../../server/run-store'",
-        "import { listAllActiveRuns } from '../../../server/run-store'\nimport { hasActiveSendRun } from '../../../server/send-run-tracker'");
+        "import { listRunRecords } from '../../../server/run-store'");
+      replace('await listAllActiveRuns()', 'await listRunRecords()');
       replace('              status: run.status,', `              status: run.status,
-              localStreamActive: hasActiveSendRun(run.runId),
-              canDismiss: !hasActiveSendRun(run.runId) && Number.isFinite(run.updatedAt) && now - run.updatedAt >= 5 * 60 * 1000,`);
+              localStreamActive: run.localStreamActive,
+              canDismiss: run.canDismiss,`);
       replace('run.assistantText.slice(-160)', "(run.assistantText.length > 160 ? '…' : '') + run.assistantText.slice(-160)");
     } else if (file.endsWith('/src/routes/api/runs/$sessionKey.$runId.abandon.ts')) {
       replace('import { markRunStatus }', 'import { dismissRunRecord }');

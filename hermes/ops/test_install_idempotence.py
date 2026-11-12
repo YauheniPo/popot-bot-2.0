@@ -330,9 +330,24 @@ report_ops_changes
             (source / 'skills/example').mkdir(parents=True)
             skill = source / 'skills/example/SKILL.md'
             skill.write_text('original')
+            def source_git(*args):
+                subprocess.run(['git', '-c', 'user.name=Fixture', '-c',
+                                'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false',
+                                '-c', 'core.hooksPath=/dev/null', *args], cwd=source,
+                               check=True, capture_output=True, text=True, timeout=10)
+            source_git('init', '--quiet')
+            source_git('add', '.')
+            source_git('commit', '--quiet', '-m', 'Initial test source')
+            source_git('tag', 'fixture-first')
             body = """
 HERMES_BIN="$PWD/missing-hermes"
-git() { cp -R "$PWD/upstream" "${@: -1}"; }
+SUPERPOWERS_REPO="file://$PWD/upstream"
+SUPERPOWERS_REF="${SUPERPOWERS_TEST_REF:-fixture-first}"
+timeout() { shift 2; "$@"; }
+git() {
+  if [[ "$1" == clone ]]; then echo clone >> "$PWD/git-calls"; fi
+  command git "$@"
+}
 install_superpowers_plugin
 report_ops_changes
 acknowledge_ops_restarts
@@ -346,11 +361,94 @@ acknowledge_ops_restarts
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), 'ops-changed=false')
             self.assertEqual(installed.stat().st_ino, inode)
-            skill.write_text('updated')
+            self.assertEqual((root / 'git-calls').read_text().splitlines(), ['clone'])
+            # Reconcile drift against trusted cached sources, without a fetch.
+            installed.write_text('local drift')
             result = self.run_shell(root, body, ("common", "superpowers"))
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('ops-restart=hermes-gateway.service', result.stdout)
+            self.assertEqual(installed.read_text(), 'original')
+            self.assertEqual((root / 'git-calls').read_text().splitlines(), ['clone'])
+            # A damaged source snapshot must never delete a working installed
+            # skill. Recover the source, then compare the installed payload.
+            cache = root / 'var/lib/hermes-ops/superpowers-source'
+            inode = installed.stat().st_ino
+            for count, damage in enumerate(('missing', 'modified', 'extra', 'ignored'), start=2):
+                with self.subTest(cache_damage=damage):
+                    cached = cache / 'fixture-first'
+                    cached_skill = cached / 'skills/example/SKILL.md'
+                    if damage == 'missing':
+                        cached_skill.unlink()
+                        failed = self.run_shell(root, """
+HERMES_BIN="$PWD/missing-hermes"
+SUPERPOWERS_REPO="file://$PWD/upstream"
+SUPERPOWERS_REF=fixture-first
+timeout() { mkdir -p "${@: -1}"; return 124; }
+install_superpowers_plugin
+report_ops_changes
+""", ("common", "superpowers"))
+                        self.assertEqual(failed.returncode, 0, failed.stderr)
+                        self.assertEqual(failed.stdout.strip(), 'ops-changed=false')
+                        self.assertEqual(installed.read_text(), 'original')
+                        self.assertEqual(list(cache.glob('.fetch.*')), [])
+                    elif damage == 'modified':
+                        cached_skill.write_text('corrupted cache')
+                    else:
+                        (cached / 'skills/unexpected.txt').write_text('unexpected')
+                        if damage == 'ignored':
+                            (cached / '.git/info/exclude').write_text('skills/unexpected.txt\n')
+                    result = self.run_shell(root, body, ("common", "superpowers"))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertTrue(installed.is_file(), 'damaged cache removed the installed skill')
+                    self.assertEqual(result.stdout.strip(), 'ops-changed=false')
+                    self.assertEqual(installed.read_text(), 'original')
+                    self.assertEqual(installed.stat().st_ino, inode)
+                    self.assertFalse((installed.parents[1] / 'unexpected.txt').exists())
+                    self.assertEqual((root / 'git-calls').read_text().splitlines(), ['clone'] * count)
+            # A failed or timed-out fetch must not publish a partial new pin
+            # or remove the last working installed plugin.
+            failed = self.run_shell(root, """
+HERMES_BIN="$PWD/missing-hermes"
+SUPERPOWERS_REF=v-test-next
+timeout() { mkdir -p "${@: -1}"; return 124; }
+install_superpowers_plugin
+""", ("common", "superpowers"))
+            self.assertEqual(failed.returncode, 0, failed.stderr)
+            self.assertEqual(installed.read_text(), 'original')
+            self.assertFalse((cache / 'v-test-next').exists())
+            self.assertEqual(list(cache.glob('.fetch.*')), [])
+            skill.write_text('updated')
+            source_git('add', '.')
+            source_git('commit', '--quiet', '-m', 'Updated test source')
+            source_git('tag', 'v-test-next')
+            # A new source pin invalidates the cache; a mutable remote tag
+            # must not silently change an already pinned installation.
+            result = self.run_shell(root, 'SUPERPOWERS_TEST_REF=v-test-next\n' + body,
+                                    ("common", "superpowers"))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('ops-restart=hermes-gateway.service', result.stdout)
             self.assertEqual(installed.read_text(), 'updated')
+            self.assertEqual((root / 'git-calls').read_text().splitlines(), ['clone'] * 6)
+            # An incomplete cache is fetched again, not used as a successful install.
+            (cache / 'v-test-next/.hermes-plugin/plugin.yaml').unlink()
+            result = self.run_shell(root, 'SUPERPOWERS_TEST_REF=v-test-next\n' + body,
+                                    ("common", "superpowers"))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), 'ops-changed=false')
+            self.assertEqual((root / 'git-calls').read_text().splitlines(), ['clone'] * 7)
+
+    def test_superpowers_rejects_symlinked_source_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cache = root / 'var/lib/hermes-ops/superpowers-source'
+            cache.parent.mkdir(parents=True)
+            outside = root / 'outside'
+            outside.mkdir()
+            cache.symlink_to(outside, target_is_directory=True)
+            result = self.run_shell(root, 'install_superpowers_plugin', ("common", "superpowers"))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('source cache must not be a symlink', result.stderr)
+            self.assertEqual(list(outside.iterdir()), [])
 
 
 if __name__ == "__main__":

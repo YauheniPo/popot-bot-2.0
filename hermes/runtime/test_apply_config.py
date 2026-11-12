@@ -24,6 +24,24 @@ SPEC.loader.exec_module(apply_config)
 
 
 class ApplyConfigTests(unittest.TestCase):
+    def test_removed_browser_backend_is_cleaned_once_without_changing_browser_options(self):
+        settings = apply_config.load_settings(MODULE_PATH.parent.parent / 'config/vps-defaults.yml')
+        self.assertNotIn('browser.backend', settings['vps_runtime']['set'])
+        for legacy_value in ('off', False, 'local', None):
+            with self.subTest(legacy_value=legacy_value):
+                current = {'browser': {'backend': legacy_value, 'engine': 'chrome',
+                                       'allow_private_urls': False, 'command_timeout': 73}}
+                operations = apply_config.build_operations(
+                    settings, current, {'HERMES_WORKSPACE': '/workspace'}, set())
+                browser_ops = [op for op in operations if op.key.startswith('browser.')]
+                self.assertEqual(browser_ops, [apply_config.Operation('unset', 'browser.backend')])
+                del current['browser']['backend']
+                repeated = apply_config.build_operations(
+                    settings, current, {'HERMES_WORKSPACE': '/workspace'}, set())
+                self.assertFalse(any(op.key.startswith('browser.') for op in repeated))
+                self.assertEqual(current['browser'], {'engine': 'chrome',
+                    'allow_private_urls': False, 'command_timeout': 73})
+
     def test_verification_skill_is_seeded_without_replacing_user_autoload(self):
         settings = apply_config.load_settings(
             MODULE_PATH.parent.parent / 'config' / 'vps-defaults.yml')
@@ -596,8 +614,7 @@ class ApplyConfigTests(unittest.TestCase):
         # Numeric defaults remain tunable; budgets must stay bounded and positive.
         self.assertIsInstance(runtime["display.tool_progress"], str)
         self.assertIn(runtime["display.tool_progress"], {"off", "new", "all", "verbose", "log"})
-        self.assertIsInstance(runtime["browser.backend"], str)
-        self.assertTrue(runtime["browser.backend"].strip())
+        self.assertNotIn("browser.backend", runtime)
         for key in (
             "agent.max_turns",
             "goals.max_turns",
@@ -876,7 +893,7 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertTrue(
             all(isinstance(key, str) and key for key in runtime_settings)
         )
-        self.assertNotIn("unset", settings["vps_runtime"])
+        self.assertEqual(settings["vps_runtime"]["unset"], ["browser.backend"])
         self.assertIsInstance(settings["vps_github"]["enabled"], bool)
         self.assertIsInstance(settings["vps_github"]["require_auth"], bool)
         self.assertIsInstance(settings["vps_github"]["expected_login"], str)

@@ -70,6 +70,7 @@ class DeploymentStatePolicyTests(unittest.TestCase):
             bundle = root / "bundle"
             (bundle / "runtime").mkdir(parents=True)
             shutil.copyfile(HERMES_ROOT / "runtime/manage-workspace-agents.py", bundle / "runtime/manage-workspace-agents.py")
+            shutil.copyfile(HERMES_ROOT / "runtime/safe_files.py", bundle / "runtime/safe_files.py")
             shutil.copyfile(HERMES_ROOT / "ansible/AGENTS.md", root / "AGENTS.md")
             target = root / "workspace/AGENTS.md"
             target.parent.mkdir()
