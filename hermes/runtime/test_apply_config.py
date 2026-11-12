@@ -1144,6 +1144,37 @@ class ApplyConfigTests(unittest.TestCase):
 
         self.assertEqual(operations, [apply_config.Operation("unset", "web.search_backend")])
 
+    def test_unset_rules_preserve_order_duplicates_and_present_null_values(self) -> None:
+        settings = {"vps_runtime": {
+            "unset": ["feature.disabled", "missing.value", "feature.empty", "feature.disabled"],
+            "capabilities": {"search": {
+                "unset_when_missing": ["feature.empty", "missing.value", "feature.disabled"],
+            }},
+        }}
+        current = {"feature": {"disabled": False, "empty": None}}
+        original = copy.deepcopy(current)
+
+        operations = apply_config.build_operations(settings, current, {}, set())
+
+        self.assertEqual(operations, [
+            apply_config.Operation("unset", key) for key in (
+                "feature.disabled", "feature.empty", "feature.disabled",
+                "feature.empty", "feature.disabled",
+            )
+        ])
+        self.assertEqual(current, original)
+
+    def test_unset_rules_keep_their_validation_error_messages(self) -> None:
+        for field in ("unset", "unset_when_missing"):
+            for value in (None, "feature.flag", [""], [1], {}):
+                runtime = {field: value} if field == "unset" else {
+                    "capabilities": {"search": {field: value}},
+                }
+                with self.subTest(field=field, value=value), self.assertRaisesRegex(
+                    ValueError, f"^vps_runtime.{field} must be a list of non-empty strings$"
+                ):
+                    apply_config.build_operations({"vps_runtime": runtime}, {}, {}, set())
+
     def test_load_settings_rejects_a_path_not_named_vps_defaults_yml(self) -> None:
         with self.assertRaisesRegex(ValueError, "vps-defaults.yml"):
             apply_config.load_settings(Path("/tmp/not-vps-defaults.yml"))
@@ -1187,11 +1218,15 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
 
     def test_service_groups_are_deduplicated_in_order(self) -> None:
-        settings = {"vps_services": {"gateway": ["gateway.service"], "ops": ["a.service", "gateway.service"]}}
+        settings = {"vps_services": {
+            "gateway": ["gateway.service", "gateway.service"],
+            "ops": ["a.service", "gateway.service", "prune.timer", "a.service"],
+            "empty": [],
+        }}
 
         self.assertEqual(
-            apply_config.service_names(settings, ["gateway", "ops"]),
-            ["gateway.service", "a.service"],
+            apply_config.service_names(settings, ["empty", "gateway", "ops", "gateway"]),
+            ["gateway.service", "a.service", "prune.timer"],
         )
 
     def test_set_operations_reject_non_string_keys(self) -> None:

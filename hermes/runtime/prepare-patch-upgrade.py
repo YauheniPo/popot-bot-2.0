@@ -52,13 +52,6 @@ def merged_spans(current, records):
     return merged
 
 
-def line_offsets(lines):
-    offsets = [0]
-    for line in lines:
-        offsets.append(offsets[-1] + len(line))
-    return offsets
-
-
 def char_edits(old, new, offset, spans):
     """Keep only the changed bytes that fall inside a retired span."""
     edits = []
@@ -88,10 +81,15 @@ def retire(original, current, records):
     if not spans:
         return current
     before, after = original.splitlines(keepends=True), current.splitlines(keepends=True)
-    edits = block_edits(before, after, line_offsets(after), spans)
-    for start, end, replacement in reversed(edits):
-        current = current[:start] + replacement + current[end:]
-    return current
+    offsets = [0]
+    for line in after:
+        offsets.append(offsets[-1] + len(line))
+    parts, cursor = [], 0
+    for start, end, replacement in block_edits(before, after, offsets, spans):
+        parts.extend((current[cursor:start], replacement))
+        cursor = end
+    parts.append(current[cursor:])
+    return ''.join(parts)
 
 
 def pending_writes(root, names, records):

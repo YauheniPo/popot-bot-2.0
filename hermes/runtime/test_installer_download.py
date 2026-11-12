@@ -160,6 +160,7 @@ main
         result, _, _ = self.run_download([200], prepare_fails=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("PREPARE", result.stdout)
+        self.assertIn("command failed at line", result.stderr)
         self.assertNotIn("GATEWAY_STOP", result.stdout)
         self.assertNotIn("BACKUP", result.stdout)
 
@@ -170,6 +171,16 @@ main
         self.assertNotIn("GATEWAY_STOP", result.stdout)
         self.assertIn("curl_exit=22", result.stderr)
         self.assertIn("http_status=404", result.stderr)
+
+    def test_forbidden_preserves_curl_exit_without_triggering_generic_error_trap(self):
+        result, requests, _ = self.run_download([403])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(requests), 1)
+        self.assertIn("curl_exit=22", result.stderr)
+        self.assertIn("http_status=403", result.stderr)
+        self.assertNotIn("command failed at line", result.stderr)
+        for step in ("PREPARE", "GATEWAY_STOP", "BACKUP", "INSTALL"):
+            self.assertNotIn(step, result.stdout)
 
     def test_checksum_mismatch_keeps_gateway_running(self):
         result, requests, _ = self.run_download([200], checksum="0" * 64)

@@ -56,6 +56,25 @@ class PatchUpgradeTests(unittest.TestCase):
                                          ('# Local Hermes: second', second))}
         self.assertEqual(retire(original, current, records), original)
 
+    def test_multiple_retired_blocks_preserve_operator_edits_and_line_endings(self):
+        retire = self.prepare_managed()['retire']
+        for newline in ('\n', '\r\n'):
+            with self.subTest(newline=repr(newline)):
+                original, current, expected, records = '', '', '', {}
+                for index in range(12):
+                    marker = f'# Local Hermes: section {index}'
+                    block = newline.join((marker, f'managed_{index} = True', ''))
+                    setting = f'setting_{index} = "upstream"{newline}'
+                    operator = f'setting_{index} = "operator — {index}"{newline}'
+                    default = f'default_{index} = False{newline}'
+                    separator = newline * 2
+                    original += setting + default + separator
+                    current += operator + block + separator
+                    expected += operator + default + separator
+                    records[marker] = {'source': block, 'digest': hashlib.sha256(block.encode()).hexdigest()}
+
+                self.assertEqual(retire(original, current, records), expected)
+
     def test_failure_to_save_recovery_leaves_files_untouched(self):
         _, current = self.managed_edit()
         module = self.prepare_managed()

@@ -159,18 +159,6 @@ def _load_cron_store(home: Path):
         raise RuntimeError('cannot import installed Hermes cron storage API') from error
 
 
-def _ensure_profiles_directory_not_symlink(profiles: Path) -> None:
-    if profiles.is_symlink():
-        raise ValueError('Hermes profiles directory must not be a symlink')
-
-def _add_valid_profile_homes(profiles: Path, homes: list[Path]) -> None:
-    if profiles.exists():
-        for profile in sorted(profiles.iterdir()):
-            if profile.is_symlink():
-                raise ValueError('Hermes profile directories must not be symlinks')
-            if profile.is_dir():
-                homes.append(profile)
-
 def _validate_and_collect_cron_stores(homes: list[Path]) -> list[Path]:
     existing = []
     for location in homes:
@@ -188,8 +176,14 @@ def _cron_homes(home: Path) -> list[Path]:
     'Validate existing cron stores before starting a managed migration.'
     homes = [home]
     profiles = home / 'profiles'
-    _ensure_profiles_directory_not_symlink(profiles)
-    _add_valid_profile_homes(profiles, homes)
+    if profiles.is_symlink():
+        raise ValueError('Hermes profiles directory must not be a symlink')
+    if profiles.exists():
+        for profile in sorted(profiles.iterdir()):
+            if profile.is_symlink():
+                raise ValueError('Hermes profile directories must not be symlinks')
+            if profile.is_dir():
+                homes.append(profile)
     return _validate_and_collect_cron_stores(homes)
 
 
@@ -460,11 +454,11 @@ def _set_if_missing_operations(
 
 
 def _unset_operations(
-    settings: dict[str, Any],
+    keys: list[str],
     current_config: dict[str, Any],
 ) -> list[Operation]:
     operations: list[Operation] = []
-    for key in _string_list(settings, "unset"):
+    for key in keys:
         exists, _ = nested_value(current_config, key)
         if exists:
             operations.append(Operation("unset", key))
@@ -484,19 +478,7 @@ def _capability_operations(
         if capability in capabilities:
             operations.extend(_set_operations(raw_rules, current_config, variables))
         else:
-            operations.extend(_unset_operations_when_missing(raw_rules, current_config))
-    return operations
-
-
-def _unset_operations_when_missing(
-    rules: dict[str, Any],
-    current_config: dict[str, Any],
-) -> list[Operation]:
-    operations: list[Operation] = []
-    for key in _string_list(rules, "unset_when_missing"):
-        exists, _ = nested_value(current_config, key)
-        if exists:
-            operations.append(Operation("unset", key))
+            operations.extend(_unset_operations(_string_list(raw_rules, "unset_when_missing"), current_config))
     return operations
 
 
@@ -533,11 +515,6 @@ def _managed_compression_operations(route: Any, current_config: dict[str, Any]) 
     return operations
 
 
-def _build_runtime_operations(runtime, current_config, variables):
-    """Build operations for runtime settings."""
-    return _set_operations(runtime, current_config, variables)
-
-
 def _build_workspace_ui_operations(settings, current_config, runtime, operations):
     """Build operations for workspace UI owned sections."""
     if not settings.get('vps_deploy', {}).get('features', {}).get('workspace_ui', False):
@@ -558,19 +535,6 @@ def _build_workspace_ui_operations(settings, current_config, runtime, operations
         desired_mode = runtime.get('set', {}).get(_BUSY_INPUT_MODE_KEY)
         if desired_mode == 'steer':
             operations.append(Operation('set', _BUSY_INPUT_MODE_KEY, desired_mode))
-    return operations
-
-
-def _build_additional_runtime_operations(runtime, current_config, variables, operations):
-    """Build additional runtime operations (missing/unset)."""
-    operations.extend(_set_if_missing_operations(runtime, current_config, variables))
-    operations.extend(_unset_operations(runtime, current_config))
-    return operations
-
-
-def _build_capability_operations(capability_settings, capabilities, current_config, variables, operations):
-    """Build operations for capabilities."""
-    operations.extend(_capability_operations(capability_settings, capabilities, current_config, variables))
     return operations
 
 
@@ -627,14 +591,15 @@ def build_operations(
     if not isinstance(runtime, dict):
         raise ValueError("vps_runtime must be a mapping")
 
-    operations = _build_runtime_operations(runtime, current_config, variables)
+    operations = _set_operations(runtime, current_config, variables)
     operations = _build_workspace_ui_operations(settings, current_config, runtime, operations)
-    operations = _build_additional_runtime_operations(runtime, current_config, variables, operations)
+    operations.extend(_set_if_missing_operations(runtime, current_config, variables))
+    operations.extend(_unset_operations(_string_list(runtime, "unset"), current_config))
 
     capability_settings = runtime.get("capabilities", {})
     if not isinstance(capability_settings, dict):
         raise ValueError("vps_runtime.capabilities must be a mapping")
-    operations = _build_capability_operations(capability_settings, capabilities, current_config, variables, operations)
+    operations.extend(_capability_operations(capability_settings, capabilities, current_config, variables))
 
     operations = _build_route_operations(settings, current_config, operations)
     operations = _build_compression_operations(settings, current_config, operations)
@@ -675,9 +640,8 @@ def service_names(settings: dict[str, Any], groups: list[str]) -> list[str]:
         for value in values:
             if re.fullmatch(r"[A-Za-z0-9_.@:-]+[.](?:service|timer)", value) is None:
                 raise ValueError(f"vps_services.{group} contains an unsafe unit name")
-            if value not in result:
-                result.append(value)
-    return result
+        result.extend(values)
+    return list(dict.fromkeys(result))
 
 
 def setting_value(settings: dict[str, Any], dotted_key: str) -> Any:
