@@ -472,7 +472,53 @@ class ClaudeReviewRunnerTests(unittest.TestCase):
                 result = runner.execute_tool("Read", {"path": path}, root, {"link"})
                 self.assertNotIn("secret", result)
 
-    def test_inactivity_has_heartbeat_and_kills_worker(self):
+    def test_heartbeats_and_deadlines_include_worker_startup(self):
+        for expected, inactivity, total, startup in (
+            ("inactivity_timeout", 0.12, 2, 0),
+            ("attempt_timeout", 2, 0.12, 0),
+            ("inactivity_timeout", 0.12, 2, 0.2),
+            ("attempt_timeout", 2, 0.12, 0.2),
+        ):
+            with self.subTest(expected=expected, startup=startup), tempfile.TemporaryDirectory() as directory:
+                clock = [0.0]
+                context, worker, receive, send = mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock()
+                context.Pipe.return_value = receive, send
+                context.Process.return_value = worker
+                worker.is_alive.side_effect = lambda: not worker.terminate.called
+
+                def start_worker():
+                    clock[0] += startup
+
+                def poll(wait):
+                    clock[0] += wait
+                    return False
+
+                worker.start.side_effect = start_worker
+                receive.poll.side_effect = poll
+                log = io.StringIO()
+                with mock.patch.object(runner.multiprocessing, "get_context", return_value=context), \
+                        mock.patch.object(runner.time, "monotonic", side_effect=lambda: clock[0]):
+                    with self.assertRaisesRegex(runner.ReviewTimeout, expected):
+                        runner.run_review(
+                            endpoint="https://example.test/v1/messages", api_key="secret", model="test",
+                            prompt="private prompt", workspace=Path(directory), output=Path(directory)/"out",
+                            max_turns=2, attempt_timeout_seconds=total,
+                            inactivity_timeout_seconds=inactivity, heartbeat_seconds=0.03,
+                            log=log, allowed_files=set(),
+                        )
+                self.assertAlmostEqual(clock[0], max(startup, min(inactivity, total)))
+                if startup:
+                    receive.poll.assert_not_called()
+                else:
+                    self.assertIn("heartbeat", log.getvalue())
+                    self.assertIn("provider_processing=unknown", log.getvalue())
+                self.assertNotIn("secret", log.getvalue())
+                worker.terminate.assert_called_once_with()
+                worker.close.assert_called_once_with()
+                receive.close.assert_called_once_with()
+                send.close.assert_called()
+
+    def test_inactivity_timeout_kills_worker(self):
         self.check_timeout("inactivity_timeout", 0.12, 2)
 
     def test_total_deadline_cannot_be_reset_by_provider_activity(self):
@@ -493,8 +539,6 @@ class ClaudeReviewRunnerTests(unittest.TestCase):
                         log=log, allowed_files=set(),
                     )
             self.assertLess(time.monotonic() - started, 2)
-            self.assertIn("heartbeat", log.getvalue())
-            self.assertIn("provider_processing=unknown", log.getvalue())
             self.assertNotIn("secret", log.getvalue())
             self.assertEqual(before, {p.pid for p in multiprocessing.active_children()})
 
