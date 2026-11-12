@@ -176,6 +176,7 @@ class NormalizeOwnershipTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=TEMP_PARENT) as directory:
             root = Path(directory) / '.hermes'
             root.mkdir()
+            os.chown(root, -1, os.getgid())
             (root / 'file').write_text('keep')
             result = self.run_helper(root)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -259,6 +260,7 @@ class NormalizeOwnershipTests(unittest.TestCase):
         # observable through PATH shims that mark their invocation.
         with tempfile.TemporaryDirectory(dir=TEMP_PARENT) as directory:
             root = Path(directory)
+            os.chown(root, -1, os.getgid())
             (root / 'file').write_text('unchanged')
             probe = root / 'probe'
             for name in ('find', 'chown'):
