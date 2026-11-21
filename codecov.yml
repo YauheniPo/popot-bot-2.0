@@ -1,0 +1,24 @@
+coverage:
+  status:
+    patch:
+      default:
+        informational: true
+        only_pulls: true
+
+comment:
+  layout: "header, diff, flags, components, files, footer"
+
+component_management:
+  individual_components:
+    - component_id: hermes
+      name: Hermes
+      paths:
+        - hermes/**
+    - component_id: telegram_user_info_bot
+      name: Telegram User Info Bot
+      paths:
+        - telegram-user-info-bot/**
+    - component_id: review_scripts
+      name: GitHub review scripts
+      paths:
+        - .github/scripts/**

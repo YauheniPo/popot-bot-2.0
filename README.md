@@ -763,10 +763,16 @@ not as scanner properties. **Ignore duplication and coverage on small changes**
 is disabled for this project, so changes below 20 new lines are checked too.
 The organization-wide default gate is unchanged.
 
-The [Sonar workflow](.github/workflows/sonarcloud.yml) uploads both Python coverage
+The [Sonar workflow](.github/workflows/sonarcloud.yml) uploads Python and JavaScript coverage
 reports and waits up to 300 seconds for the gate result. A failed gate or timeout
 fails the scan job. Dependabot PRs still run tests but skip the authenticated scan
 because the Sonar token is unavailable to them.
+
+Codecov uses the same coverage reports and the JUnit results from the Python and
+Workspace tests. It reports patch coverage and groups files by component in PR
+comments. A separate GitHub Actions job authenticates with OIDC on pushes to
+`main` and same-repository PRs. Fork and Dependabot runs keep their reports in
+GitHub artifacts. [Codecov dashboard](https://app.codecov.io/github/YauheniPo/popot-bot-2.0)
 
 Before Hermes coverage tests, the workflow installs Ansible collections from
 `hermes/ansible/requirements.yml`, including `ansible.posix` for the real
