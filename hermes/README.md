@@ -2715,9 +2715,6 @@ policy, отсутствующая модель) сохраняются. Это 
 удаляются, если они не заданы явно в managed `model`. Это исправляет в том числе
 конфигурацию, где provider уже поменяли, но сохранился URL прежнего провайдера.
 Для собственного endpoint задайте `model.base_url` явно в managed overlay.
-Текущая резервная цепочка сначала пробует Nemotron Super через OpenRouter free,
-затем через NVIDIA, затем Step через Nous. Успех последних наблюдавшихся вызовов
-не гарантирует дальнейшую доступность провайдеров.
 
 Каждый элемент `default_routes` содержит **оба** поля: `provider` и `model`.
 Один provider может встречаться несколько раз с разными моделями; запрещён
@@ -2755,45 +2752,23 @@ policy, отсутствующая модель) сохраняются. Это 
 Временный HTTP 429 сам по себе не добавляет модель в постоянные исключения.
 Этот список управляет fallback Hermes; маршруты GitHub AI review задаются отдельно.
 
-Базовый список сверён с каталогами **29 сентября 2026**. Бесплатные варианты
-`inclusionai/ling-3.0-flash-fin:free` и `meituan/longcat-2.0:free` вернули 404
-при фактическом запуске, хотя каталог Nous всё ещё показывает второй ID.
-NVIDIA Super сохранил бесплатный endpoint; его ошибка в том запуске была
-перегрузкой, а не удалением модели.
+Задание `AI Digest Daily` получило HTTP 410 для Nemotron 3 Super 120B.
+NVIDIA сняла бесплатный endpoint с обслуживания 3 октября 2026. Отдельный
+маршрут OpenRouter `:free` ещё вернул tool call при проверке с VPS 4 октября,
+но на 21 ноября у него также нет активных endpoints. Обе пары внесены
+в `excluded_routes`, в том числе для ранее сохранённых цепочек профилей.
+[Статус NVIDIA](https://build.nvidia.com/nvidia/nemotron-3-super-120b-a12b) ·
+[Endpoints прежней модели OpenRouter](https://openrouter.ai/api/v1/models/nvidia/nemotron-3-super-120b-a12b:free/endpoints).
 
-| Порядок | Provider | Model ID | Основание выбора |
+| Порядок fallback | Provider | Model ID | Данные каталога на 21 ноября 2026 |
 | --- | --- | --- | --- |
-| 1 | `openrouter` | `google/gemma-4-31b-it:free` | Бесплатная мультиязычная модель с tools для общего анализа |
-| 2 | `nous` | `stepfun/step-3.7-flash:free` | Бесплатная рекомендация Nous, tools и длинный контекст |
-| 3 | `openrouter` | `nvidia/nemotron-3-super-120b-a12b:free` | Nemotron 3 Super 120B: tools, контекст 262K, бесплатный маршрут OpenRouter |
-| 4 | `nvidia` | `nvidia/nemotron-3-super-120b-a12b` | Бесплатный NIM endpoint с поддержкой tools |
+| 1 | `openrouter` | `nvidia/nemotron-3.5-super-vl:free` | Нулевые цены на вход и выход, поддержка tools. [OpenRouter](https://openrouter.ai/api/v1/models/nvidia/nemotron-3.5-super-vl:free/endpoints) |
+| 2 | `nvidia` | `nvidia/nemotron-3.5-super-vl-120b-a12b` | Бесплатный endpoint с поддержкой tools. [NVIDIA](https://build.nvidia.com/nvidia/nemotron-3.5-super-vl-120b-a12b) |
+| 3 | `nous` | `stepfun/step-3.7-flash:free` | Нулевые цены на вход и выход, поддержка tools. [Nous](https://inference-api.nousresearch.com/v1/models) |
 
-Источники: [каталог OpenRouter](https://openrouter.ai/api/v1/models),
-[Gemma 4 free](https://openrouter.ai/google/gemma-4-31b-it:free),
-[Nemotron 3 Super free](https://openrouter.ai/nvidia/nemotron-3-super-120b-a12b:free),
-[бесплатные рекомендации Nous](https://portal.nousresearch.com/api/nous/recommended-models),
-[каталог API Nous](https://inference-api.nousresearch.com/v1/models),
-[NVIDIA Super endpoint](https://build.nvidia.com/nvidia/nemotron-3-super-120b-a12b).
-У выбранных OpenRouter/Nous routes на дату проверки нулевые input/output цены
-и есть `tools` в supported parameters. NVIDIA предоставляет бесплатный endpoint
-для прототипирования с ограничениями [Developer Program](https://docs.api.nvidia.com/nim/docs/product),
-а не гарантированный бесплатный production SLA. Для Nous требуется существующий
-OAuth login, для остальных — их API keys; ключи этой правкой не добавляются.
-
-4 октября 2026 North Mini Code заменена на Nemotron 3 Super через OpenRouter;
-North остаётся в `excluded_routes`. Каталог OpenRouter подтверждает нулевые
-input/output цены и поддержку tools. Проверочный запрос с VPS вернул корректный
-tool call за 1 секунду при стоимости 0. Маршрут `openrouter` использует
-OpenRouter credentials; последний маршрут `nvidia` использует отдельный NIM key.
-Это одна модель у двух provider, поэтому блокировка provider по billing/quota
-не удаляет маршрут другого provider. Бесплатные endpoints имеют rate limits;
-успешная проверка не гарантирует доступность при длительной нагрузке.
-
-Это обоснованный стартовый набор, **не результат сравнительного live-теста**
-на ваших задачах. Настройка модели в review не доказывает качество её вердиктов.
-Проверка нового маршрута подтверждает доступность tools, не качество выполнения
-длинных задач. Free-квоты,
-модели и доступность могут меняться; для чувствительных данных учитывайте условия
+Для Nous требуется OAuth login, для OpenRouter и NVIDIA — соответствующие API keys.
+Доступность для конкретного ключа зависит от квоты провайдера.
+Для чувствительных данных учитывайте условия
 free endpoint (в частности, NVIDIA предупреждает о логировании запросов).
 Разные API providers также могут использовать общий upstream, поэтому
 независимость от общего сбоя не гарантируется. При общей квоте или billing
@@ -2987,10 +2962,11 @@ cooldown и размера контекста остаются; унаследо
 Deploy управляет полями `provider`, `model`, `fallback_chain` и явно заданным
 `reasoning_effort` сжатия из
 `vps_hermes.config.managed_overlay.auxiliary.compression` даже при UI-owned
-`auxiliary`. В текущей политике primary — NVIDIA Super, а отсутствие
-`fallback_chain` удаляет старую отдельную цепочку и включает наследование
-общих резервов. Чтобы закрепить отдельную цепочку или отключить её через `[]`,
-задайте список в managed overlay; ручная правка этих полей действует до
+`auxiliary`. Сжатие и проверочный CLI-запрос используют Nemotron 3.5 Super VL
+через NVIDIA. Если `fallback_chain` отсутствует, deploy удаляет старую отдельную
+цепочку сжатия и включает общие резервные маршруты. Чтобы закрепить отдельную
+цепочку или отключить её через `[]`, задайте список в managed overlay.
+Ручная правка этих полей действует до
 следующего deploy. Для summary задан `reasoning_effort: none`: модель генерирует
 summary без отдельного reasoning. Это не удаляет сообщения из истории.
 Общий потолок операции `compression.context_total_ceiling_seconds` увеличен
