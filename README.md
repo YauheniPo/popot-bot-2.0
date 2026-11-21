@@ -75,6 +75,15 @@ For a reproducible deployment, follow the Ansible flow in this order:
 
 Prefer a local dry run first? See the [Docker verification guide](hermes/docker/README.md).
 
+#### Update the runtime on an existing Hermes VPS
+
+If the VPS already runs the pinned Hermes version, apply runtime changes from
+the repository root (`popot-bot-2.0`). Enter the Ansible Vault password when prompted.
+
+```bash
+ANSIBLE_CONFIG=hermes/ansible/ansible.cfg ansible-playbook -i hermes/ansible/inventory.ini hermes/ansible/playbook.yml -e hermes_deploy_mode=runtime-only --ask-vault-pass
+```
+
 ### 2. Run the Telegram User Info Bot locally
 
 Use this if you need a transparent Bot API report tool rather than an AI agent.
