@@ -11,6 +11,9 @@ permissions:
 jobs:
   scan:
     runs-on: ubuntu-latest
+    outputs:
+      reports_artifact_id: ${{ steps.save-reports.outputs.artifact-id }}
+      coverage_ready: ${{ steps.workspace-tests.outcome == 'success' }}
     # Allow the scanner up to five minutes to await the server-side gate.
     timeout-minutes: 20
     steps:
@@ -44,14 +47,14 @@ jobs:
             exit 1
           fi
           mapfile -t hermes_tests < <(find hermes -type f -name 'test_*.py' | sort)
-          coverage run --source=hermes --omit='**/test_*.py' -m unittest "${hermes_tests[@]}"
+          coverage run --source=hermes --omit='**/test_*.py' -m pytest -q --junitxml=reports/hermes.junit.xml "${hermes_tests[@]}"
           coverage report --fail-under=80
           coverage xml -o hermes-coverage.xml
 
       - name: Run review-script tests with coverage
         run: |
-          coverage run --source=.github/scripts --omit='*test_*.py' -m unittest discover \
-            -s .github/scripts -p 'test_*.py'
+          coverage run --source=.github/scripts --omit='*test_*.py' -m pytest -q \
+            --junitxml=reports/review.junit.xml .github/scripts
           coverage xml -o github-scripts-coverage.xml
 
       - name: Set up Python for telegram-user-info-bot coverage
@@ -62,13 +65,13 @@ jobs:
           cache-dependency-path: telegram-user-info-bot/requirements.txt
 
       - name: Run telegram-user-info-bot tests with coverage
-        working-directory: telegram-user-info-bot
         run: |
-          python -m pip install --requirement requirements.txt coverage==7.17.1
-          coverage run --source=. -m unittest discover -s tests -v
-          coverage xml -o coverage.xml
+          python -m pip install -r telegram-user-info-bot/requirements.txt coverage==7.17.1 'pytest>=9.2.0,<10'
+          coverage run --source=telegram-user-info-bot -m pytest -q --junitxml=reports/bot.junit.xml telegram-user-info-bot/tests
+          coverage xml -o telegram-user-info-bot/coverage.xml
 
       - name: Run Workspace runtime tests with JavaScript coverage
+        id: workspace-tests
         # The managed Workspace adapters are JavaScript; Sonar counts them as
         # product code (see sonar.javascript.lcov.reportPaths). They need the
         # pinned upstream checkout plus its type tooling, and they self-skip
@@ -104,6 +107,7 @@ jobs:
           WORKSPACE_UPSTREAM_DIR="$upstream" node --test \
             --experimental-test-coverage \
             --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=junit --test-reporter-destination=reports/workspace.junit.xml \
             --test-reporter=lcov --test-reporter-destination=hermes-runtime.lcov \
             "${runtime_tests[@]}"
 
@@ -124,3 +128,60 @@ jobs:
             -Dsonar.coverage.exclusions=**/test_*.py,**/test-*.mjs,**/tests/**/*.py
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: Save coverage and JUnit reports
+        id: save-reports
+        if: ${{ !cancelled() && hashFiles('reports/*.junit.xml') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: codecov-reports-${{ github.run_attempt }}
+          path: |
+            hermes-coverage.xml
+            github-scripts-coverage.xml
+            telegram-user-info-bot/coverage.xml
+            hermes-runtime.lcov
+            reports/*.junit.xml
+          retention-days: 14
+          if-no-files-found: error
+
+  codecov:
+    name: Upload coverage to Codecov
+    needs: scan
+    if: >-
+      !cancelled() && needs.scan.outputs.reports_artifact_id != '' &&
+      github.actor != 'dependabot[bot]' &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        id: download-reports
+        with:
+          artifact-ids: ${{ needs.scan.outputs.reports_artifact_id }}
+          path: codecov-reports
+          merge-multiple: true
+      - name: Upload coverage
+        if: needs.scan.outputs.coverage_ready == 'true'
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: true
+          files: codecov-reports/hermes-coverage.xml,codecov-reports/github-scripts-coverage.xml,codecov-reports/telegram-user-info-bot/coverage.xml,codecov-reports/hermes-runtime.lcov
+          disable_search: true
+          disable_telem: true
+          fail_ci_if_error: true
+      - name: Upload JUnit test results
+        if: ${{ !cancelled() && steps.download-reports.outcome == 'success' }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: true
+          report_type: test_results
+          directory: codecov-reports/reports
+          disable_telem: true

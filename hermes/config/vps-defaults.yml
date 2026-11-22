@@ -89,6 +89,12 @@ vps_hermes:
       fallback_policy:
         # Exact provider/model pairs skipped even if present in the active chain.
         excluded_routes:
+          # AI Digest Daily received HTTP 410 from NVIDIA. The corresponding
+          # OpenRouter free route also has no endpoints (2026-11-21).
+          - provider: nvidia
+            model: nvidia/nemotron-3-super-120b-a12b
+          - provider: openrouter
+            model: nvidia/nemotron-3-super-120b-a12b:free
           - provider: openrouter
             model: cohere/north-mini-code:free
           # PR #70 Direct API review: two unfinished generations, 300s each.
@@ -111,16 +117,14 @@ vps_hermes:
           - provider: nous
             model: meituan/longcat-2.0:free
         # Repeated providers are allowed; each provider/model pair must be unique.
-        # Base catalogs checked 2026-09-29; OpenRouter Super probed 2026-10-04.
-        # Selection rationale and limits: hermes/README.md.
-        # Prefer routes with recent successful VPS calls (2026-10-14).
+        # Endpoint catalogs checked 2026-11-21. See hermes/README.md.
         # Billing/upstream quota skips the affected
         # provider; a model-level 429 can try another free model on that provider.
         default_routes:
           - provider: openrouter
-            model: nvidia/nemotron-3-super-120b-a12b:free
+            model: nvidia/nemotron-3.5-super-vl:free
           - provider: nvidia
-            model: nvidia/nemotron-3-super-120b-a12b
+            model: nvidia/nemotron-3.5-super-vl-120b-a12b
           - provider: nous
             model: stepfun/step-3.7-flash:free
         # Chat may only choose these existing integrations. No automatic keys,
@@ -138,7 +142,7 @@ vps_hermes:
       auxiliary:
         compression:
           provider: nvidia
-          model: nvidia/nemotron-3-super-120b-a12b
+          model: nvidia/nemotron-3.5-super-vl-120b-a12b
           reasoning_effort: none
       # The runtime derives cron's default route from model above; do not
       # duplicate it here. manage_cron_job_models migrates existing job pins.
@@ -452,7 +456,7 @@ vps_ops:
   # values from the root-owned /etc/hermes-ops.conf rendered at deployment.
   api_retry:
     provider: nvidia
-    model: nvidia/nemotron-3-super-120b-a12b
+    model: nvidia/nemotron-3.5-super-vl-120b-a12b
     message: Hello
     max_attempts: 10
     wait_seconds: 30

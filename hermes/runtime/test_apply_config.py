@@ -682,6 +682,24 @@ class ApplyConfigTests(unittest.TestCase):
         settings = apply_config.load_settings(MODULE_PATH.parent.parent / "config" / "vps-defaults.yml")
         self.assert_fallback_contract(settings["vps_hermes"]["config"]["managed_overlay"])
 
+    def test_repository_routes_exclude_retired_nemotron_endpoints(self):
+        settings = apply_config.load_settings(MODULE_PATH.parent.parent / 'config/vps-defaults.yml')
+        overlay = settings['vps_hermes']['config']['managed_overlay']
+        policy = overlay['fallback_policy']
+        model = 'nvidia/nemotron-3-super-120b-a12b'
+        retired = {('nvidia', model), ('openrouter', model + ':free')}
+
+        cron = apply_config.managed_model_values(settings)
+        routes = [
+            *policy['default_routes'],
+            overlay['auxiliary']['compression'],
+            settings['vps_ops']['api_retry'],
+            {'provider': cron['cron.model_provider'], 'model': cron['cron.model']},
+        ]
+        active = {(route['provider'], route['model']) for route in routes}
+        self.assertEqual(active & retired, set())
+        self.assertLessEqual(retired, apply_config.fallback_excluded_pairs(policy))
+
     def test_repository_fallbacks_span_allowed_providers(self) -> None:
         settings = apply_config.load_settings(MODULE_PATH.parent.parent / "config" / "vps-defaults.yml")
         overlay = settings['vps_hermes']['config']['managed_overlay']

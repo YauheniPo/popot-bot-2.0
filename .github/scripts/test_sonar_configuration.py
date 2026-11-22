@@ -12,6 +12,25 @@ import yaml
 
 
 class SonarConfigurationTests(unittest.TestCase):
+    def test_only_the_isolated_codecov_job_can_request_an_oidc_token(self) -> None:
+        path = Path(__file__).resolve().parents[1] / "workflows/sonarcloud.yml"
+        workflow = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
+        jobs = workflow["jobs"]
+        upload = jobs["codecov"]
+        self.assertNotIn("id-token", workflow["permissions"])
+        self.assertEqual(upload["permissions"], {"contents": "read", "id-token": "write"})
+        self.assertTrue(all("id-token" not in job.get("permissions", {})
+                            for name, job in jobs.items() if name != "codecov"))
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", upload["if"])
+        self.assertIn("github.event.pull_request.user.login != 'dependabot[bot]'", upload["if"])
+        self.assertFalse(any("run" in step for step in upload["steps"]))
+        uploads = [step["with"] for step in upload["steps"]
+                   if step.get("uses", "").startswith("codecov/codecov-action@")]
+        self.assertEqual({step.get("report_type", "coverage") for step in uploads}, {"coverage", "test_results"})
+        for step in uploads:
+            self.assertEqual(step["use_oidc"], "true")
+            self.assertNotIn("token", step)
+
     def test_python_version_matches_the_supported_ci_range(self) -> None:
         properties = (
             Path(__file__).resolve().parents[2] / "sonar-project.properties"
